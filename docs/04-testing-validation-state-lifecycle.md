@@ -82,7 +82,8 @@ Trigger.dev, real agents, or network access.
 Cover subsystem boundaries: database repositories, migrations, command handlers, outbox/inbox
 processing, Workflow Layer task wrappers, GitHub client against a mocked API, agent adapters with mock
 providers, artifact import/export, API endpoints, cost manager, and the design document generator.
-May use disposable SQLite databases and PostgreSQL containers.
+Integration tests run against **both** dialects — disposable SQLite databases **and** PostgreSQL
+containers — as a matrix, not SQLite alone (see §8).
 
 ### 4.3 System Tests
 Exercise end-to-end workflows with mock external systems.
@@ -198,6 +199,10 @@ minicoder db reset --env development
 GitHub Actions runs lint, typecheck, unit tests, integration tests, migration validation, a system
 test smoke scenario, Docker build, Docker Compose test (where applicable), and Trigger.dev task
 deployment validation. Longer system tests may run nightly or on release branches.
+
+**Cross-dialect matrix (required).** Migration validation and the integration suite run against
+**both** database targets — SQLite and PostgreSQL — as parallel CI jobs, so dialect differences in
+JSON querying, constraint behavior, and locking/transaction semantics are caught before release.
 
 ## 9. Kubernetes Requirements
 

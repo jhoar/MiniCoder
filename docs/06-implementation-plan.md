@@ -61,9 +61,10 @@ indexes, version columns, retention), the **config/secrets abstraction and envir
 CI.
 
 Acceptance: repository builds and tests run; SQLite works locally; the PostgreSQL path is
-supported; migrations create the initial schema; the ERD matches the migrations; secrets resolve
-only through the backend abstraction (no plaintext at rest); no SQLite network-storage assumption
-exists; CI validates lint, types, and tests.
+supported; migrations validate on **both** SQLite and PostgreSQL; migrations create the initial
+schema; the ERD matches the migrations; secrets resolve only through the backend abstraction (no
+plaintext at rest); no SQLite network-storage assumption exists; CI validates lint, types, and
+tests.
 
 ## Phase 2 — State Machine, Idempotency, and Command Layer
 
@@ -101,10 +102,11 @@ export-plan
 export-backlog
 ```
 
-These names use the canonical tokens defined in
-[`02-bootstrap-planner-clarification.md`](02-bootstrap-planner-clarification.md) §6; the remaining
-planner tasks (ingest, record-answer, complete-clarification, validate-backlog, request-approval,
-import-backlog) arrive with Phase 6.
+These names are the **exact** canonical token strings from
+[`02-bootstrap-planner-clarification.md`](02-bootstrap-planner-clarification.md) §6 and are used
+verbatim as the Trigger.dev task identifiers — no renaming or drift in the task wrappers. The
+remaining planner tasks (ingest, record-answer, complete-clarification, validate-backlog,
+request-approval, import-backlog) arrive with Phase 6.
 
 This phase also treats the self-hosted Workflow Layer as a **real operated subsystem**: deliver
 resource sizing for webapp/Postgres/Redis/worker, a version-upgrade strategy, backups for its
@@ -129,8 +131,10 @@ Kubernetes Job test templates. The full CLI surface is defined in
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) §5; behaviors are specified in
 [`04-testing-validation-state-lifecycle.md`](04-testing-validation-state-lifecycle.md).
 
-Acceptance: system tests run without real LLM calls; a Docker Compose scenario runs unattended;
-destructive commands are guarded; CI can run a system smoke scenario.
+Acceptance: system tests run without real LLM calls; the integration suite runs as a **cross-dialect
+matrix against both SQLite and PostgreSQL** (see [`04-testing-validation-state-lifecycle.md`](04-testing-validation-state-lifecycle.md) §8);
+a Docker Compose scenario runs unattended; destructive commands are guarded; CI can run a system
+smoke scenario.
 
 ## Phase 5 — Agent Adapter Foundation
 

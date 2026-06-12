@@ -70,6 +70,13 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 - **Default-deny egress.** Workspace network access is denied by default and allow-listed only for
   required endpoints (the assigned provider, GitHub). This contains exfiltration and
   prompt-injection-driven callbacks.
+- **Dependency provisioning under default-deny egress.** Because builds and `can_run_tests` use
+  `pnpm`/Node and would otherwise need public registry lookups, the workspace runner resolves
+  dependencies **without** opening general egress: it uses a **pre-baked base image layer** and/or a
+  **read-only bind-mounted, pre-indexed global `pnpm` store**, or routes registry traffic
+  **exclusively** through an authenticated **internal package proxy/mirror**. The public npm
+  registry is never directly reachable from the sandbox; the proxy/mirror is the only allow-listed
+  package endpoint.
 - **Bounded changes.** File changes are confined to the workspace, under a maximum diff size, and
   rejected on disallowed paths.
 - **No secret-bearing workflows on untrusted code.** CI/agent workflows that hold secrets must not

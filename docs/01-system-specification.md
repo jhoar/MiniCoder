@@ -244,6 +244,13 @@ review cycle.
 - **Forecast before run:** before an expensive agent run, the Cost Manager estimates the run cost
   and refuses to start (deferring, not stranding the branch) when the forecast would breach a hard
   limit — complementing the capacity pre-flight in §4.3.
+- **Per-`AgentRun` pre-flight cap:** every `AgentRun` carries a pre-flight **token/cost cap**;
+  enforcement is prospective (before the call), not only retrospective.
+- **Review/fix-loop circuit breaker:** the iterative `CoderAgentAdapter` ↔ `ReviewerAgentAdapter`
+  loop is a budget scope. When its cumulative cost crosses the feature's soft/hard threshold, the
+  Cost Manager trips a circuit breaker — pausing to `waiting_for_budget_approval` (soft) or
+  `paused_budget_exceeded` (hard) and escalating to the user for budget authorization — independent
+  of the §5.8 review-cycle count limit.
 - Every enforcement decision is recorded as a `policy_decision` and a `cost_record`.
 
 ### 5.12 Observability and Event System
@@ -286,12 +293,19 @@ MiniCoder uses a persistence abstraction supporting SQLite (local/single-node) a
 - scheduled reconciliation
 - state doctor tooling
 
-**Outbox/inbox draining.** Outbox and inbox events are drained by a dedicated scheduled Workflow
-Layer task (a Trigger.dev scheduled task) or an equivalent background worker that polls pending
-records and dispatches them with at-least-once delivery and idempotent handling. This preserves
+**Outbox/inbox draining.** The **default** drainer is a dedicated **scheduled Workflow Layer sweep**
+(a Trigger.dev scheduled task) that polls pending records with a **deterministic backoff** and
+dispatches them with at-least-once delivery and idempotent handling; a persistent background worker
+is an allowed alternative. Draining **must not** rely on database write-ahead-log (WAL) tailing or
+other engine-specific change streams, to stay portable across SQLite and PostgreSQL. This preserves
 transactional integrity between a database write and its downstream effects (event publication,
 webhook/inbox processing). Drain progress is observable, and stuck or failed records are surfaced
 and recoverable via state-doctor tooling.
+
+Each `outbox_events` / `inbox_events` row stores the raw JSON payload **and** the **Zod schema
+version** that produced it, so consumers validate against the correct schema version (parity with
+the versioned adapter I/O schemas in
+[`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md) §11.4).
 
 Sequential execution is enforced by policy (locks/lanes), not schema.
 
@@ -317,7 +331,8 @@ groups:
 - **Workflow:** `workflow_states`, `workflow_events`, `human_approvals`, `policy_decisions`,
   `merge_gate_evaluations` (one structured evidence record per merge-gate run — see §12)
 - **Consistency / durability:** `idempotency_keys`, `outbox_events`, `inbox_events`
-  (GitHub webhook events), `workflow_locks` (locks/leases for sequential execution),
+  (GitHub webhook events; both store the JSON payload **plus** its `payload_schema_version`),
+  `workflow_locks` (locks/leases for sequential execution),
   `triggerdev_runs` (correlation: `triggerdev_run_id`, `triggerdev_task_id`, `triggerdev_status`,
   `last_seen_at`, `linked_workflow_event_id`, `linked_agent_run_id`, `linked_feature_run_id`)
 - **Agents:** `agent_adapters`, `agent_capabilities`, `agent_configurations`, `agent_runs`,

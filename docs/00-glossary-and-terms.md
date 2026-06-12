@@ -82,6 +82,21 @@ draft → pending_approval → approved → activated_for_execution
   names describe different entities: `activated_for_execution` is a *plan* state;
   `approved_pending_execution` is the entry *feature* state.
 
+#### Project lifecycle
+
+The project machine sits above plans and features:
+
+```text
+active → implementation_complete → design_document_generating
+→ design_document_ready_for_review → design_document_approved → project_complete
+```
+
+Preconditions: `active → implementation_complete` requires all approved features `merged` and
+**Project Acceptance Validation** to pass (`01-system-specification.md` §13.1); the
+design-document states are in §3.4; `project_complete` requires human approval of the final design
+document. Allowed transitions, guards, and side effects are itemized in the state-transition matrix
+(§3.9).
+
 ### 3.2 Execution lifecycle (per feature request)
 
 ```text
@@ -106,11 +121,19 @@ automated **blocking** review finding, routes the feature `ci_failed → changes
 (re-using the review/fix loop and its limits in `01-system-specification.md` §5.8), and escalates to
 `human_required` once those limits are exceeded.
 
+**System-failure escape route.** On an infrastructure failure, sandbox crash, runner-node death, or
+third-party/API timeout that exceeds retry thresholds during **any** active state, the Orchestrator
+gracefully releases the feature's execution locks/leases, records `system_failed` with system
+diagnostics, and transitions the feature to `human_required` — so an orphaned lock or stale lease
+never leaves a feature branch permanently locked. Stale locks are also reclaimed by lease
+expiry/reconciliation (`state doctor`).
+
 ### 3.3 Failure / escalation states
 
 ```text
 blocked
 failed
+system_failed     (infrastructure/sandbox/timeout failure beyond retry thresholds; escalates to human_required)
 human_required
 ```
 
