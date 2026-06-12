@@ -79,6 +79,25 @@ idempotency_keys — standalone ((key, scope) UNIQUE; expires_at index for TTL s
 
 ---
 
+## Column Convention Exceptions
+
+The canonical schema contract (§8 of `01-system-specification.md`) requires every table to carry
+`version`, `created_at`, and `updated_at`. The following tables are explicitly exempt because their
+rows are immutable once written:
+
+| Table                         | Category                | Has `created_at` | Has `version`/`updated_at`                                                  |
+| ----------------------------- | ----------------------- | ---------------- | --------------------------------------------------------------------------- |
+| `workflow_events`             | Append-only event log   | ✓                | — rows are never mutated                                                    |
+| `agent_errors`                | Immutable audit record  | ✓                | — point-in-time observation                                                 |
+| `agent_tool_operations`       | Immutable audit record  | ✓                | — point-in-time observation                                                 |
+| `adapter_conformance_results` | Immutable test snapshot | ✓                | — completed run result                                                      |
+| `feature_dependencies`        | Link / edge table       | ✓                | — created/deleted atomically; owning `feature_requests` carries the version |
+
+All other tables — including `outbox_events`, `inbox_events`, and `idempotency_keys` — carry
+`version` and `updated_at` because fields are mutated after initial insert.
+
+---
+
 ## Table Definitions
 
 ### projects
@@ -274,6 +293,9 @@ Discovery features (`kind='discovery'`) are never directly executable.
 
 ### feature_dependencies
 
+**Exception: link table — no `version`/`updated_at`.** Rows are created or deleted atomically;
+the owning `feature_requests` row carries the version for optimistic concurrency.
+
 | Column       | Type      | Constraints                  |
 | ------------ | --------- | ---------------------------- |
 | id           | TEXT      | PRIMARY KEY                  |
@@ -355,6 +377,9 @@ Indexes: `feature_request_id`, `current_execution_state`.
 
 ### workflow_events
 
+**Exception: append-only event log — no `version`/`updated_at`.** Each row records a past state
+transition and is never mutated after insert.
+
 | Column                 | Type       | Constraints              |
 | ---------------------- | ---------- | ------------------------ |
 | id                     | TEXT       | PRIMARY KEY              |
@@ -395,16 +420,18 @@ fence held at acquisition is less than the current fence (stale-fence guard).
 
 ### idempotency_keys
 
-| Column     | Type       | Constraints               |
-| ---------- | ---------- | ------------------------- |
-| id         | TEXT       | PRIMARY KEY               |
-| key        | TEXT       | NOT NULL                  |
-| scope      | TEXT       | NOT NULL DEFAULT 'global' |
-| result     | TEXT/JSONB | nullable (cached result)  |
-| expires_at | timestamp  | NOT NULL                  |
-| created_at | timestamp  | NOT NULL                  |
+| Column                  | Type       | Constraints               |
+| ----------------------- | ---------- | ------------------------- |
+| id                      | TEXT       | PRIMARY KEY               |
+| key                     | TEXT       | NOT NULL                  |
+| scope                   | TEXT       | NOT NULL DEFAULT 'global' |
+| result                  | TEXT/JSONB | nullable (cached result)  |
+| expires_at              | timestamp  | NOT NULL                  |
+| version                 | INTEGER    | NOT NULL DEFAULT 1        |
+| created_at / updated_at | timestamp  | NOT NULL                  |
 
-Unique: `(key, scope)`. Index: `expires_at` (TTL sweep).
+`result` is NULL at creation and set once the idempotent operation completes, so `version` and
+`updated_at` apply. Unique: `(key, scope)`. Index: `expires_at` (TTL sweep).
 
 ---
 
@@ -421,6 +448,7 @@ Unique: `(key, scope)`. Index: `expires_at` (TTL sweep).
 | last_attempted_at       | timestamp  | nullable                   |
 | delivered_at            | timestamp  | nullable                   |
 | error                   | TEXT       | nullable                   |
+| version                 | INTEGER    | NOT NULL DEFAULT 1         |
 | created_at / updated_at | timestamp  | NOT NULL                   |
 
 Standalone — no FK (decoupled event delivery). Indexes: `status`, `created_at`.
@@ -445,6 +473,7 @@ Payload carries **references and IDs, never secrets**.
 | last_attempted_at       | timestamp  | nullable                                          |
 | processed_at            | timestamp  | nullable                                          |
 | error                   | TEXT       | nullable                                          |
+| version                 | INTEGER    | NOT NULL DEFAULT 1                                |
 | created_at / updated_at | timestamp  | NOT NULL                                          |
 
 Standalone. Unique: `dedup_key`. Index: `status`.
@@ -563,6 +592,9 @@ State values: `queued / running / succeeded / failed / cancelled`.
 
 ### agent_errors
 
+**Exception: immutable audit record — no `version`/`updated_at`.** Each row is a point-in-time
+error observation and is never mutated.
+
 | Column       | Type      | Constraints            |
 | ------------ | --------- | ---------------------- |
 | id           | TEXT      | PRIMARY KEY            |
@@ -578,6 +610,9 @@ Indexes: `agent_run_id`.
 ---
 
 ### agent_tool_operations
+
+**Exception: immutable audit record — no `version`/`updated_at`.** Each row records a completed
+tool invocation and is never mutated.
 
 | Column         | Type      | Constraints                |
 | -------------- | --------- | -------------------------- |
@@ -611,6 +646,9 @@ Context packs are the only sanctioned source of task input to Workflow Layer tas
 ---
 
 ### adapter_conformance_results
+
+**Exception: immutable test snapshot — no `version`/`updated_at`.** Each row is a completed
+conformance test run result and is never mutated.
 
 | Column       | Type       | Constraints                |
 | ------------ | ---------- | -------------------------- |

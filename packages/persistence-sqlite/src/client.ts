@@ -41,15 +41,24 @@ export class SqliteDbClient implements DbClient {
   // that pattern is not safe for async callbacks.
   async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
     if (this.inTransaction) throw new Error('Nested transactions are not supported.');
-    this.inTransaction = true;
-    this.db.exec('BEGIN');
-    const tx = new SqliteTxClient(this.db);
+    let rollbackRequired = false;
     try {
+      this.db.exec('BEGIN'); // flag stays false if this throws — client remains usable
+      rollbackRequired = true;
+      this.inTransaction = true;
+      const tx = new SqliteTxClient(this.db);
       const result = await fn(tx);
       this.db.exec('COMMIT');
+      rollbackRequired = false;
       return result;
     } catch (err) {
-      this.db.exec('ROLLBACK');
+      if (rollbackRequired) {
+        try {
+          this.db.exec('ROLLBACK');
+        } catch {
+          // ignore — connection may be dead; flag resets in finally
+        }
+      }
       throw err;
     } finally {
       this.inTransaction = false;

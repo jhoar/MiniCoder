@@ -390,6 +390,21 @@ constraints, and indexes — is authored as an implementation Phase 1 deliverabl
   idempotency keys, correlation IDs);
 - states a retention policy for high-volume rows (events, agent runs, cost records).
 
+**Explicit exceptions to the `version`/`updated_at` convention** — the following table categories
+carry only `created_at` (no `version` or `updated_at`) because their rows are immutable once
+written:
+
+| Category                 | Tables                                  | Rationale                                                                              |
+| ------------------------ | --------------------------------------- | -------------------------------------------------------------------------------------- |
+| Append-only event log    | `workflow_events`                       | Records a past state transition; never mutated                                         |
+| Immutable audit records  | `agent_errors`, `agent_tool_operations` | Each row is a point-in-time observation                                                |
+| Immutable test snapshots | `adapter_conformance_results`           | Each row is a completed test run result                                                |
+| Link / edge tables       | `feature_dependencies`                  | Rows are created or deleted atomically; the owning feature_request carries the version |
+
+All other tables — including `outbox_events`, `inbox_events`, and `idempotency_keys` — carry
+`version` and `updated_at` because their fields are mutated after the initial insert (status
+transitions, retry counters, result storage).
+
 ## 9. API Design
 
 The Orchestrator API exposes read endpoints, command endpoints, and webhook endpoints.

@@ -277,12 +277,14 @@ CREATE TABLE workflow_locks (
 -- ============================================================
 
 CREATE TABLE idempotency_keys (
-  id         TEXT PRIMARY KEY,
-  key        TEXT NOT NULL,
-  scope      TEXT NOT NULL DEFAULT 'global',
+  id         TEXT    PRIMARY KEY,
+  key        TEXT    NOT NULL,
+  scope      TEXT    NOT NULL DEFAULT 'global',
   result     TEXT,
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  expires_at TEXT    NOT NULL,
+  version    INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   UNIQUE(key, scope)
 );
 
@@ -298,6 +300,7 @@ CREATE TABLE outbox_events (
   last_attempted_at      TEXT,
   delivered_at           TEXT,
   error                  TEXT,
+  version                INTEGER NOT NULL DEFAULT 1,
   created_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
@@ -317,6 +320,7 @@ CREATE TABLE inbox_events (
   last_attempted_at      TEXT,
   processed_at           TEXT,
   error                  TEXT,
+  version                INTEGER NOT NULL DEFAULT 1,
   created_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );

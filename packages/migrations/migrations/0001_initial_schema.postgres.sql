@@ -280,7 +280,9 @@ CREATE TABLE idempotency_keys (
   scope      TEXT        NOT NULL DEFAULT 'global',
   result     JSONB,
   expires_at TIMESTAMPTZ NOT NULL,
+  version    INTEGER     NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(key, scope)
 );
 
@@ -296,6 +298,7 @@ CREATE TABLE outbox_events (
   last_attempted_at      TIMESTAMPTZ,
   delivered_at           TIMESTAMPTZ,
   error                  TEXT,
+  version                INTEGER     NOT NULL DEFAULT 1,
   created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -315,6 +318,7 @@ CREATE TABLE inbox_events (
   last_attempted_at      TIMESTAMPTZ,
   processed_at           TIMESTAMPTZ,
   error                  TEXT,
+  version                INTEGER     NOT NULL DEFAULT 1,
   created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
