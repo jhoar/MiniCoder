@@ -112,6 +112,10 @@ approved_pending_execution → selected → coding → code_pushed → pr_opened
 → approved_by_policy → merge_ready → merged
 ```
 
+`approved_by_policy` is computed automatically by the merge gate; `merge_ready → merged` is
+**initiated by an approver/admin via `merge-if-ready`** and the gate is re-evaluated immediately
+before the GitHub merge (see `01-system-specification.md` §12).
+
 **Every new push re-enters CI.** A fix always flows `fixing → code_pushed → ci_running` before
 returning to `under_review`; review and merge never act on un-tested code.
 
@@ -195,12 +199,12 @@ clarification_blocked
 ### 3.7 Review finding severities
 
 ```text
-blocking            (only this severity prevents merge)
+blocking                 (prevents merge until resolved)
 non_blocking
 question
 nit
 out_of_scope
-requires_human_decision
+requires_human_decision  (prevents merge until a human dispositions it; routes via human_required)
 ```
 
 ### 3.8 Automation control states (budget / pause gate)
@@ -247,6 +251,11 @@ artifact_export_state : pending | generating | exported | stale | failed
 The feature execution machine (§3.2) references but does not duplicate these; e.g., a feature in
 `under_review` has an associated `pr_review_state`.
 
+### 3.11 Identifiers
+
+Feature-request IDs are `FR-<zero-padded-int>` (e.g., `FR-002`), stable per project, and form the
+feature branch suffix `minicoder/FR-<n>` (see `01-system-specification.md` §5.7).
+
 ---
 
 ## 4. Agent Roles and Adapters (canonical names)
@@ -282,6 +291,13 @@ here and referenced by the UI and security specs:
 ```text
 viewer    | operator | approver | admin
 ```
+
+- **viewer:** read-only.
+- **operator:** viewer + may issue non-guarded commands (start next feature, request coder/review
+  run, recompute merge gate, reconcile, export artifacts). Cannot activate plans, override budgets,
+  resolve disagreements, merge-if-ready, approve design docs, or run guarded/destructive lifecycle
+  actions.
+- **approver / admin:** operator + the guarded actions below.
 
 `approver`/`admin` are required for plan activation, budget override, disagreement resolution,
 merge-if-ready, final design-document approval, and guarded state-lifecycle/destructive actions.
@@ -354,6 +370,10 @@ environment check, role/permission check, dry-run where possible, explicit confi
 an audit event. Production destructive operations are disallowed unless implemented as guarded
 safe-maintenance workflows.
 
+The `state repair --apply` confirmation token is **issued by `state repair --dry-run`** (which
+prints it alongside the planned changes), is **single-use**, **time-boxed** (short expiry), bound to
+the previewed change set, and its issuance and use are audited.
+
 ---
 
 ## 6. Deployment Profiles
@@ -374,11 +394,13 @@ and the thin, idempotent task wrappers isolate these choices from domain logic.
   payloads inside the user's boundary. Pairs naturally with the local/single-node state store.
 - **Self-host, HA cluster (option)** — clustered Postgres/Redis and multiple workers for redundancy
   and scale. Same SDK and task contracts; an infrastructure/ops change only.
-- **Trigger.dev Cloud (option)** — managed SaaS; no infrastructure to run.
+- **Trigger.dev Cloud (option)** — managed SaaS; no infrastructure to run (payloads leave the
+  user's boundary; see `07-security-and-secrets.md` §6a).
 
 All three tiers expose the same SDK, task contracts, queues, schedules, waitpoints, and run
-metadata. **Switching backends is a deployment/configuration decision, never an architectural
-change.**
+metadata. **Switching backends is a deployment/configuration decision** — except that moving
+payloads outside the boundary (Cloud) is also a **security/compliance** decision for deployments
+with data-residency constraints (see `07-security-and-secrets.md` §6a).
 
 ---
 
@@ -397,4 +419,5 @@ Workflow execution: Trigger.dev
 API framework:     Fastify
 Text UI:           Ink
 Web UI:            React / Next.js
+Security scanning: dependency audit (pnpm audit / OSV) + secret scan (gitleaks) + SAST (semgrep)
 ```

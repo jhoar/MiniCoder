@@ -175,8 +175,12 @@ non-zero exit codes on failure for CI/CD use.
 Required mock adapters: `MockPlannerAdapter`, `MockCoderAdapter`, `MockReviewerAdapter`,
 `MockArbiterAdapter`, `MockDocumentationAdapter`, `HumanTestAdapter`.
 
-Required mock external systems: `MockGitHubProvider`, `MockTriggerRunner` (or a Trigger.dev test
-harness wrapper), `MockCostProvider`, `MockArtifactStorage`.
+Required mock external systems: `MockGitHubProvider`, `MockTriggerRunner`, `MockCostProvider`,
+`MockArtifactStorage`. **Canonical test seam:** `MockTriggerRunner` is the seam for unit and
+integration tests; the real Trigger.dev test-harness wrapper is used **only** in the dedicated
+Trigger.dev integration job. (Full unattended testability holds only because domain logic lives in
+Orchestrator Core and task wrappers stay logic-free — enforced by the Phase 2 architectural fitness
+tests; see `06-implementation-plan.md` Phase 2.)
 
 Mock scenarios: planner returns sufficient / insufficient / sufficient_with_assumptions; coder
 succeeds / fails / produces invalid output; reviewer approves / requests changes / repeats the same
@@ -197,8 +201,10 @@ minicoder db reset --env development
 ## 8. CI/CD Requirements
 
 GitHub Actions runs lint, typecheck, unit tests, integration tests, migration validation, a system
-test smoke scenario, Docker build, Docker Compose test (where applicable), and Trigger.dev task
-deployment validation. Longer system tests may run nightly or on release branches.
+test smoke scenario, a **security scan** (dependency audit, secret scan, SAST — see
+[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §7), Docker build, Docker Compose test (where
+applicable), and Trigger.dev task deployment validation. Longer system tests may run nightly or on
+release branches.
 
 **Cross-dialect matrix (required).** Migration validation and the integration suite run against
 **both** database targets — SQLite and PostgreSQL — as parallel CI jobs, so dialect differences in
@@ -231,7 +237,16 @@ Required runbooks:
 - **Backup and restore** — database snapshot/restore (`db snapshot`/`db restore`); PostgreSQL
   backup and point-in-time restore; restore drills.
 - **Database migrations** — forward migrate and safe rollback (`db migrate`/`db rollback`),
-  including the dual SQLite/PostgreSQL paths and migration-status validation.
+  including the dual SQLite/PostgreSQL paths and migration-status validation. Includes a
+  **destructive column-change recipe**: SQLite's create-new-table → copy → drop → rename rebuild
+  pattern (SQLite has limited `ALTER`), with the PostgreSQL equivalent. **Dialect-specific DDL is
+  forbidden outside an approved migration helper**, keeping one migration set valid on both targets.
+- **Local footprint** — the default self-host single-node Trigger.dev backend runs
+  webapp + **Postgres + Redis** + worker via Docker Compose, so even a "local SQLite" install runs
+  two databases (the app's SQLite + Trigger.dev's Postgres/Redis). The default outbox drainer is a
+  Trigger.dev scheduled task, so outbox liveness inherits the single-node SPOF; the **persistent
+  background-worker** drainer alternative (`01-system-specification.md` §6) decouples outbox liveness
+  from the scheduler.
 - **Trigger.dev (self-host) operations** — resource sizing for webapp/Postgres/Redis/worker;
   version upgrades of the self-hosted stack; backup of its Postgres/Redis; queue draining
   (`trigger drain-queue`) and run replay (`trigger replay-run`).

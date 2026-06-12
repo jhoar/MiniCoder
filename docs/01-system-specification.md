@@ -209,7 +209,7 @@ operation when policy permits.
   statuses (read/write), metadata (read), webhooks. See `07-security-and-secrets.md`.
 - **Branch naming:** `minicoder/<feature-request-id>` (e.g., `minicoder/FR-002`); one branch per
   feature, owned by the active Coder run.
-- **PR labels / status check:** MiniCoder publishes the status check `agent-orchestrator/review-gate`;
+- **PR labels / status check:** MiniCoder publishes the status check `minicoder/review-gate`;
   blocking labels prevent merge (see §12).
 - **Merge method:** squash by default (configurable); **force-push to MiniCoder branches is
   disallowed** once a PR is open.
@@ -227,7 +227,7 @@ Detects unresolved or circular coder/reviewer conflicts and routes them to the A
 Agent.
 
 ### 5.10 Merge Gate
-Evaluates whether a PR may be merged and publishes `agent-orchestrator/review-gate`. Merge is
+Evaluates whether a PR may be merged and publishes `minicoder/review-gate`. Merge is
 allowed only when all policy and GitHub conditions pass (see §12).
 
 ### 5.11 Cost Manager
@@ -290,10 +290,16 @@ MiniCoder uses a persistence abstraction supporting SQLite (local/single-node) a
 - optimistic concurrency / version columns
 - outbox events
 - inbox / webhook events
-- workflow locks / leases
+- workflow locks / leases (with fencing tokens)
 - execution lanes
 - scheduled reconciliation
 - state doctor tooling
+
+**Lock fencing.** Each `workflow_locks` row carries a monotonically increasing **fence (fencing
+token)** assigned at acquisition. Every core write guarded by a lock includes the fence held at
+acquisition, and the persistence layer **rejects writes with a stale fence**. Lease expiry alone is
+insufficient under multi-worker (HA-cluster) backends: it prevents a paused, expired-lease worker
+from resuming and writing after a new holder has acquired the lock (zombie double-act).
 
 **Outbox/inbox draining.** The **default** drainer is a dedicated **scheduled Workflow Layer sweep**
 (a Trigger.dev scheduled task) that polls pending records with a **deterministic backoff** and
@@ -317,6 +323,13 @@ The canonical state lists (planning, execution, failure/escalation, completion/d
 readiness, clarification) are defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §3. Subsystems must use those names.
 
+**Where current state lives.** Each machine's *current* state is a column on its own entity table
+(e.g., `feature_requests`/`feature_runs` for execution, `implementation_plans` for the plan,
+`clarification_sessions` for clarification, `projects` for the project machine, `agent_runs`,
+`triggerdev_runs`, `artifact_exports`). `workflow_states` holds cross-cutting workflow status and
+the current-active-feature pointer; `workflow_events` is the append-only transition history. State
+columns are never duplicated across tables.
+
 ## 8. Data Design
 
 MiniCoder stores authoritative system state in its database (SQLite or PostgreSQL). Core table
@@ -326,21 +339,27 @@ groups:
 - **Planning:** `specification_inputs`, `planning_readiness_assessments`, `planning_gaps`,
   `planning_questions`, `planning_assumptions`, `clarification_sessions`, `clarification_questions`,
   `clarification_answers`, `clarification_decisions`, `implementation_plans`, `plan_sections`,
-  `feature_requests`, `feature_dependencies`, `acceptance_criteria`, `test_expectations`
+  `feature_requests` (incl. `kind` ∈ {feature, discovery} and `executable` flag — activation
+  excludes `kind = discovery`; see [`02-bootstrap-planner-clarification.md`](02-bootstrap-planner-clarification.md) §5),
+  `feature_dependencies`, `acceptance_criteria`, `test_expectations`
   (gaps and assumptions raised during clarification reuse `planning_gaps` / `planning_assumptions`
   with a nullable `clarification_session_id`; there are no separate `clarification_gaps` /
   `clarification_assumptions` tables)
-- **Workflow:** `workflow_states`, `workflow_events`, `human_approvals`, `policy_decisions`,
+- **Workflow:** `workflow_states`, `feature_runs` (one row per feature execution attempt:
+  `feature_request_id`, `attempt_no`, `current_execution_state`, `lock_id`, `started_at`,
+  `ended_at`, `outcome`), `workflow_events`, `human_approvals`, `policy_decisions`,
   `merge_gate_evaluations` (one structured evidence record per merge-gate run — see §12)
-- **Consistency / durability:** `idempotency_keys`, `outbox_events`, `inbox_events`
+- **Consistency / durability:** `idempotency_keys` (with a TTL — retained N days, then swept by the
+  scheduled drainer), `outbox_events`, `inbox_events`
   (GitHub webhook events; both store the JSON payload **plus** its `payload_schema_version`),
-  `workflow_locks` (locks/leases for sequential execution),
+  `workflow_locks` (locks/leases **with a `fence` token** for sequential execution; see §6),
   `triggerdev_runs` (correlation: `triggerdev_run_id`, `triggerdev_task_id`, `triggerdev_status`,
   `last_seen_at`, `linked_workflow_event_id`, `linked_agent_run_id`, `linked_feature_run_id`)
 - **Agents:** `agent_adapters`, `agent_capabilities`, `agent_configurations`, `agent_runs`,
   `agent_errors`, `agent_tool_operations`, `agent_context_packs`, `adapter_conformance_results`
 - **Review and disagreement:** `review_findings`, `coder_responses`, `disagreement_records`
-- **Cost and observability:** `cost_records`
+- **Cost and observability:** `budget_policies` (scope ∈ {project, feature, review_cycle};
+  `scope_ref`; `soft_limit`; `hard_limit`; `currency`; `window`; `active`), `cost_records`
 - **Artifacts and design documents:** `artifact_exports`, `design_documents`,
   `design_document_sections`, `design_decisions`, `glossary_terms`
 
@@ -417,17 +436,35 @@ and status. Severities are defined in glossary §3.7; only `blocking` findings p
 
 ## 12. Merge Policy
 
+**Merge authorization model.** `approved_by_policy` is computed automatically by the merge gate. The
+actual merge is **initiated by an `approver`/`admin` via `merge-if-ready`**, which re-evaluates the
+full gate immediately before invoking GitHub. "Required human approvals exist" (below) refers to
+upstream approvals recorded in `human_approvals` (e.g., assumption acceptance, budget override), not
+to the `merge-if-ready` invocation itself.
+
 A pull request may be merged only when it belongs to the active feature, targets the correct base
 branch, matches the database branch record, CI checks pass, no unresolved blocking findings remain,
-required conversations are resolved, review-cycle limits are not exceeded, the PR is mergeable, no
-blocking labels exist, budget gates pass, required human approvals exist, and GitHub branch
-protection permits merge.
+no unresolved `requires_human_decision` findings remain, required conversations are resolved,
+review-cycle limits are not exceeded, the PR is mergeable, no blocking labels exist, budget gates
+pass, required human approvals exist, and GitHub branch protection permits merge.
 
 **Merge-gate evidence.** Every merge-gate run writes a structured `merge_gate_evaluations` record
 capturing the inputs and outcome: CI result, review result, unresolved blocking-findings count,
-conversation-resolution status, branch-protection status, budget status, human-approval status, and
-the final decision (allow / block, with reason). These records make every merge decision auditable
-and replayable.
+unresolved `requires_human_decision` count, conversation-resolution status, branch-protection
+status, budget status, human-approval status, and the final decision (allow / block, with reason).
+These records make every merge decision auditable and replayable.
+
+**Gate-input traceability** (each input, the subsystem that produces it, and the phase that delivers
+it):
+
+| Merge-gate input | Produced by | Phase |
+|---|---|---|
+| CI result | GitHub Actions → GitHub Integration | 7 |
+| Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop | 10 |
+| Conversation resolution | GitHub Integration | 7 |
+| Branch protection / mergeability | GitHub Integration | 7 |
+| Budget status | Budget-gate primitive (Cost Manager) | 8 |
+| Human approvals | Human-required workflow / `human_approvals` | 11 |
 
 ## 13. Final System Design Document
 
@@ -436,9 +473,10 @@ and replayable.
 "Final validation" before design-document generation is an explicit, automated **Project Acceptance
 Validation** suite. The project may advance to `implementation_complete` only when all of the
 following pass: the full test suite (unit/integration/system), migration validation, build,
-lint/typecheck, a security scan, documentation-completeness check, a `state doctor` / reconciliation
-pass with no outstanding divergence, and a clean artifact-export pass. Failure holds the project and
-records the failing gate.
+lint/typecheck, the security scan (dependency audit, secret scan, SAST — see
+[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §7), documentation-completeness check, a
+`state doctor` / reconciliation pass with no outstanding divergence, and a clean artifact-export
+pass. Failure holds the project and records the failing gate.
 
 ### 13.2 Document Sections
 
@@ -481,7 +519,9 @@ execution backend** — each chosen without architectural change.
   payloads inside the user's boundary.
 - **Self-host, HA cluster — option.** Clustered Postgres/Redis and multiple workers for redundancy
   and scale; an infrastructure/ops change only.
-- **Trigger.dev Cloud — option.** Managed SaaS; no infrastructure to run.
+- **Trigger.dev Cloud — option.** Managed SaaS; no infrastructure to run (task payloads leave the
+  user's boundary — a security/compliance decision, not merely deployment config; see
+  [`07-security-and-secrets.md`](07-security-and-secrets.md) §6a).
 
 All tiers share the same SDK, task contracts, queues, schedules, waitpoints, and run metadata, so
 switching backends is a deployment/configuration decision, not an architecture change.

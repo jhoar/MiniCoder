@@ -60,6 +60,9 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 - **Rotation.** GitHub App keys/installation tokens, provider tokens, and webhook signing secrets
   are rotatable with zero stored plaintext and no downtime; rotation is a documented runbook
   ([`04-testing-validation-state-lifecycle.md`](04-testing-validation-state-lifecycle.md) §11).
+- **Webhook secret rotation overlap.** GitHub supports only a brief dual-secret window, so during a
+  bounded overlap MiniCoder verifies inbound signatures against the **current and previous** signing
+  secret, then retires the previous secret once the window closes.
 - **Audit.** Human approvals, destructive commands, budget overrides, and security-relevant actions
   are recorded with actor identity, role, and correlation ID, and retained per a defined retention
   policy.
@@ -78,10 +81,27 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
   **exclusively** through an authenticated **internal package proxy/mirror**. The public npm
   registry is never directly reachable from the sandbox; the proxy/mirror is the only allow-listed
   package endpoint.
+- **Local egress variant.** Standing up an authenticated internal mirror is heavy for the
+  local/single-node profile. Locally, a **pre-baked `pnpm` store** plus an **optional, clearly
+  labelled "local dev egress allow-list"** (registry hosts only) is permitted; this allow-list is
+  **forbidden in hosted/team profiles**, which require the pre-baked store and/or internal
+  proxy/mirror. A feature needing a dependency absent from the pre-baked store cannot be implemented
+  under strict default-deny without the mirror.
 - **Bounded changes.** File changes are confined to the workspace, under a maximum diff size, and
   rejected on disallowed paths.
 - **No secret-bearing workflows on untrusted code.** CI/agent workflows that hold secrets must not
   run against untrusted fork code.
+
+## 6a. Workflow-Layer Payload Hygiene
+
+- Task payloads carry **references and IDs, never secrets** and never raw secret-bearing material.
+- Context packs (already secret-free) are the only sanctioned source of task input.
+- **Data residency:** self-host keeps payloads in-boundary; **Trigger.dev Cloud transmits payloads
+  to managed infrastructure**. Deployments with data-residency constraints must use a self-host
+  backend. This is a **security/compliance** decision, not merely a deployment-config decision (see
+  `00-glossary-and-terms.md` §6.2, `01-system-specification.md` §14).
+- The "no secret in task payloads" rule is enforced as a Phase 2 architectural fitness test (see
+  `06-implementation-plan.md` Phase 2).
 
 ## 7. Prompt-Injection and Untrusted Content
 
