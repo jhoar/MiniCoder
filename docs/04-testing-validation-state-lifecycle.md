@@ -52,6 +52,7 @@ agents:
   reviewer: mock-reviewer
   arbiter: mock-arbiter
   documentation: mock-documentation
+  human: human-test          # HumanTestAdapter — deterministic mock of HumanAgentAdapter (§4.2 glossary)
 
 github:
   provider: mock

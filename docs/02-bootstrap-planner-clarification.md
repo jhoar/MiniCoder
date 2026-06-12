@@ -46,6 +46,16 @@ Clarification records: `clarification_sessions`, `clarification_questions`, `cla
 Clarification questions should be prioritized and limited. Recommended limit: 3–7 questions per
 clarification round.
 
+**Clarification circuit breaker.** To prevent runaway cost and indefinitely stalled workflows,
+clarification is bounded on two axes (both are policy settings, and reaching either is recorded as a
+workflow event):
+
+- **Per-round response timeout** — if a human does not answer an open clarification round within a
+  configurable timeout, the session is marked stalled and escalated.
+- **Maximum rounds** — if readiness has not reached `sufficient` or `sufficient_with_assumptions`
+  after a configurable maximum number of rounds (default: 3), MiniCoder moves the session to
+  `clarification_blocked` and raises a `human_required` escalation event rather than looping.
+
 ## 5. Planner Workflow
 
 ```text

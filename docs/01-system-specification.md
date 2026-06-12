@@ -113,9 +113,12 @@ switching between backends requires no architectural change (see §14).
 GitHub is authoritative for branches, commits, pull requests, reviews, comments, CI/check status,
 conversation resolution, mergeability, and merge result. **GitHub webhooks are the primary source
 for external GitHub changes; scheduled reconciliation is a fallback and repair mechanism.** Before
-expensive agent calls, MiniCoder performs pre-flight GitHub and database checks. SQLite/PostgreSQL
-is authoritative for orchestration intent, history, and policy decisions; MiniCoder reconciles its
-database state against GitHub state.
+expensive agent calls, MiniCoder performs pre-flight GitHub and database checks. These include a
+**capacity pre-flight**: before pulling a feature out of `approved_pending_execution`, the
+Orchestrator Core queries the remaining GitHub API rate limit (via Octokit) and the configured
+agent-provider token/quota limits, and defers the start — without stranding a branch mid-workflow —
+when remaining capacity is insufficient. SQLite/PostgreSQL is authoritative for orchestration
+intent, history, and policy decisions; MiniCoder reconciles its database state against GitHub state.
 
 ### 4.4 Vendor-Neutral Agents
 
@@ -251,6 +254,13 @@ MiniCoder uses a persistence abstraction supporting SQLite (local/single-node) a
 - execution lanes
 - scheduled reconciliation
 - state doctor tooling
+
+**Outbox/inbox draining.** Outbox and inbox events are drained by a dedicated scheduled Workflow
+Layer task (a Trigger.dev scheduled task) or an equivalent background worker that polls pending
+records and dispatches them with at-least-once delivery and idempotent handling. This preserves
+transactional integrity between a database write and its downstream effects (event publication,
+webhook/inbox processing). Drain progress is observable, and stuck or failed records are surfaced
+and recoverable via state-doctor tooling.
 
 Sequential execution is enforced by policy (locks/lanes), not schema.
 
