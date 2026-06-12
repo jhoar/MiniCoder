@@ -228,13 +228,27 @@ safe-maintenance workflows.
 
 ## 6. Deployment Profiles
 
-- **Local / Single-Node** — SQLite on local disk; Trigger.dev development or Cloud; local API;
-  local TUI; optional local Web UI.
-- **Hosted / Team** — PostgreSQL; Trigger.dev Cloud; hosted API; Web UI; GitHub OAuth;
-  GitHub webhooks.
+Deployment has **two independent axes**: the **state store** and the **Trigger.dev execution
+backend**. Either can be chosen without architectural change, because the persistence abstraction
+and the thin, idempotent task wrappers isolate these choices from domain logic.
 
-One architecture, two profiles. Cloud Trigger.dev is the only supported execution backend in both
-profiles; self-hosted Trigger.dev is a deferred future extension (see `06-implementation-plan.md`).
+### 6.1 State store
+
+- **Local / Single-Node** — SQLite on local disk; local API; local TUI; optional local Web UI.
+- **Hosted / Team** — PostgreSQL; hosted API; Web UI; GitHub OAuth; GitHub webhooks.
+
+### 6.2 Trigger.dev execution backend (default: self-host single-node)
+
+- **Self-host, single-node (DEFAULT)** — Trigger.dev webapp + Postgres + Redis + worker on one host
+  (Docker Compose). Low availability (single point of failure); simplest to operate; keeps task
+  payloads inside the user's boundary. Pairs naturally with the local/single-node state store.
+- **Self-host, HA cluster (option)** — clustered Postgres/Redis and multiple workers for redundancy
+  and scale. Same SDK and task contracts; an infrastructure/ops change only.
+- **Trigger.dev Cloud (option)** — managed SaaS; no infrastructure to run.
+
+All three tiers expose the same SDK, task contracts, queues, schedules, waitpoints, and run
+metadata. **Switching backends is a deployment/configuration decision, never an architectural
+change.**
 
 ---
 

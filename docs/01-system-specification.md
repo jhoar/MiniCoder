@@ -31,8 +31,8 @@ React / Next.js Web UI, Markdown artifact import/export, and final System Design
 generation.
 
 MiniCoder does **not** initially include parallel feature execution, SCM providers other than
-GitHub, multi-repository orchestration, self-hosted Trigger.dev, PDF/DOCX exports, a plugin
-marketplace, or advanced enterprise RBAC. These are future extensions, not separate architectures.
+GitHub, multi-repository orchestration, PDF/DOCX exports, a plugin marketplace, or advanced
+enterprise RBAC. These are future extensions, not separate architectures.
 
 > Note: **PostgreSQL is in scope** as the hosted/team state store (see §3, §14). It is not a
 > deferred "migration"; it is a first-class deployment profile supported by the persistence
@@ -67,17 +67,21 @@ State lifecycle tooling = required for database, Trigger.dev, GitHub simulation,
                      artifacts, and diagnostics.
 ```
 
+The state store and the Trigger.dev execution backend are independent deployment axes (see §14 and
+[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §6). The default Trigger.dev backend is
+**self-hosted single-node**; HA-cluster self-hosting and Trigger.dev Cloud are drop-in options.
+
 ### 3.1 Local / Single-Node Profile
 
 - SQLite on local disk.
-- Trigger.dev development or Cloud.
+- Trigger.dev backend: default self-hosted single-node (see §14).
 - GitHub repository.
 - Local API, local TUI, optional local Web UI.
 
 ### 3.2 Hosted / Team Profile
 
 - PostgreSQL.
-- Trigger.dev Cloud.
+- Trigger.dev backend: self-hosted single-node, self-hosted HA cluster, or Cloud (see §14).
 - Hosted API, Web UI.
 - GitHub OAuth (or equivalent) and GitHub webhooks.
 
@@ -100,7 +104,9 @@ MiniCoder uses Trigger.dev as its durable workflow execution engine from the ear
 phases. Trigger.dev owns durable task execution, retries, queues, schedules, waitpoints, and
 resumable long-running workflows. Trigger.dev does **not** own domain state, state-machine rules,
 merge policy, agent contracts, business logic, or GitHub truth. Trigger.dev tasks are thin,
-idempotent wrappers that call Orchestrator Core commands.
+idempotent wrappers that call Orchestrator Core commands. Because of this, the execution backend
+(self-hosted single-node by default, self-hosted HA cluster, or Cloud) is a deployment choice;
+switching between backends requires no architectural change (see §14).
 
 ### 4.3 GitHub as Repository Truth (webhook-driven)
 
@@ -353,9 +359,22 @@ Responsibility split:
 
 ## 14. Deployment Model
 
-One architecture, two profiles (§3.1, §3.2). Trigger.dev Cloud is the supported execution backend;
-self-hosted Trigger.dev is a deferred future extension (§16). Profile choice (SQLite vs.
-PostgreSQL, local vs. hosted API) is a deployment decision, not an architecture change.
+One architecture, with two independent deployment axes — the **state store** and the **Trigger.dev
+execution backend** — each chosen without architectural change.
+
+**State store:** SQLite (local/single-node) or PostgreSQL (hosted/team), per §3.1–§3.2.
+
+**Trigger.dev execution backend** (three swappable tiers):
+
+- **Self-host, single-node — DEFAULT.** Trigger.dev webapp + Postgres + Redis + worker on one host
+  (Docker Compose). Low availability / single point of failure; simplest to operate; keeps task
+  payloads inside the user's boundary.
+- **Self-host, HA cluster — option.** Clustered Postgres/Redis and multiple workers for redundancy
+  and scale; an infrastructure/ops change only.
+- **Trigger.dev Cloud — option.** Managed SaaS; no infrastructure to run.
+
+All tiers share the same SDK, task contracts, queues, schedules, waitpoints, and run metadata, so
+switching backends is a deployment/configuration decision, not an architecture change.
 
 ## 15. Security
 
@@ -370,5 +389,6 @@ untrusted fork code.
 The locked technology stack is defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md) §7.
 
 Explicitly deferred future extensions: parallel feature execution, multi-SCM support, multiple
-active repositories, advanced enterprise RBAC, self-hosted Trigger.dev, PDF/DOCX export, and a
-plugin marketplace. These are future features, not alternate initial architectures.
+active repositories, advanced enterprise RBAC, PDF/DOCX export, and a plugin marketplace. These are
+future features, not alternate initial architectures. (The Trigger.dev execution backend is a
+deployment axis, not a deferred extension — see §14.)

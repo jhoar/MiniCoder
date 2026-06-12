@@ -38,7 +38,7 @@ afterthought.
 | 15 | Next.js Web UI | Team-facing UI |
 | 16 | Observability, Cost, and Recovery | Operational hardening |
 | 17 | Final Design Document Generator | Final system design document after completion |
-| 18 | Future Extensions | Parallel execution, multi-repo, additional adapters/SCM, self-hosted Trigger.dev, PDF/DOCX |
+| 18 | Future Extensions | Parallel execution, multi-repo, additional adapters/SCM, PDF/DOCX |
 
 ## Phase 1 — Repository and Persistence Foundation
 
@@ -62,9 +62,11 @@ schema invariant**.
 
 ## Phase 3 — Trigger.dev Workflow Harness
 
-Deliver Trigger.dev project + local dev setup, a GitHub Actions deployment workflow for Trigger.dev
+Deliver Trigger.dev project setup with **self-hosted single-node as the default backend** (Docker
+Compose: webapp + Postgres + Redis + worker), a GitHub Actions deployment workflow for Trigger.dev
 tasks, the task-wrapper pattern, queue/retry config, waitpoint patterns, and Trigger.dev run
-metadata linked to the database.
+metadata linked to the database. Self-hosted HA cluster and Trigger.dev Cloud are drop-in backend
+options selected by configuration, not code (see [`01-system-specification.md`](01-system-specification.md) §14).
 
 Initial tasks:
 
@@ -81,9 +83,10 @@ artifact-export
 Task rule: Trigger.dev tasks call Orchestrator Core commands; they do not contain business rules
 directly.
 
-Acceptance: tasks deploy and run; a mock task updates the database through a core command; retry
-behavior is configured and idempotent; the waitpoint pattern is proven with a simulated human
-approval.
+Acceptance: tasks deploy and run on the default self-hosted single-node backend; a mock task updates
+the database through a core command; retry behavior is configured and idempotent; the waitpoint
+pattern is proven with a simulated human approval; and the same tasks run unchanged against an
+alternative backend (HA cluster or Cloud) selected by configuration only.
 
 ## Phase 4 — Test Harness and State Lifecycle Tooling
 
@@ -221,8 +224,9 @@ project reaches `project_complete` only after approval.
 ## Phase 18 — Future Extensions
 
 Deferred: parallel feature execution, multi-repository orchestration, additional coder/reviewer
-adapters and the adapter conformance suite, additional SCM providers, self-hosted Trigger.dev,
-optional advanced RBAC, and optional PDF/DOCX export.
+adapters and the adapter conformance suite, additional SCM providers, optional advanced RBAC, and
+optional PDF/DOCX export. (Trigger.dev backend tiers — self-host single-node default, self-host HA
+cluster, Cloud — are a Phase 3 deployment concern, not a deferred extension.)
 
 Acceptance: at least one alternative adapter can be added without changing core orchestration; future
 extensions do not change the baseline architecture.
