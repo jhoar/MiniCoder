@@ -180,7 +180,9 @@ function sqliteValidate(db: Database.Database): boolean {
   const existingTables = new Set(
     (
       db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_migrations'")
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_migrations'",
+        )
         .all() as Array<{ name: string }>
     ).map((r) => r.name),
   );
@@ -202,9 +204,7 @@ function sqliteReset(db: Database.Database): void {
   db.pragma('foreign_keys = OFF');
   // Drop all user tables and the migrations table
   const tables = (
-    db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
-      .all() as Array<{ name: string }>
+    db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
   ).map((r) => r.name);
   for (const table of tables) {
     db.exec(`DROP TABLE IF EXISTS "${table}"`);

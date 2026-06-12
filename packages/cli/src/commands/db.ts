@@ -5,14 +5,10 @@ import * as path from 'path';
 const runnerPath = path.resolve(__dirname, '../../../migrations/src/runner.ts');
 
 function runMigrationCommand(subCommand: string, extraArgs: string[] = []): void {
-  const result = spawnSync(
-    'tsx',
-    [runnerPath, subCommand, ...extraArgs],
-    {
-      stdio: 'inherit',
-      env: process.env,
-    },
-  );
+  const result = spawnSync('tsx', [runnerPath, subCommand, ...extraArgs], {
+    stdio: 'inherit',
+    env: process.env,
+  });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }

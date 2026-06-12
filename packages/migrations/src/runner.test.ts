@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import Database from 'better-sqlite3';
+import { SqliteDbClient } from '@minicoder/persistence-sqlite';
+import type { TxClient } from '@minicoder/core';
 import { EXPECTED_TABLES } from './index.js';
 
 // We test the migration runner by calling the SQLite functions directly
@@ -10,14 +12,14 @@ import { EXPECTED_TABLES } from './index.js';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../migrations');
 
-function migrationName(filename: string): string {
+function upMigrationName(filename: string): string {
   return filename.replace(/\.(sqlite|postgres)\.sql$/, '');
 }
 
 function listMigrationFiles(dialect: 'sqlite' | 'postgres'): string[] {
   return fs
     .readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith(`.${dialect}.sql`))
+    .filter((f) => f.endsWith(`.${dialect}.sql`) && !f.includes('.down.'))
     .sort();
 }
 
@@ -44,7 +46,7 @@ function applyMigrations(db: Database.Database): number {
   let count = 0;
 
   for (const file of files) {
-    const name = migrationName(file);
+    const name = upMigrationName(file);
     if (applied.has(name)) continue;
 
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
@@ -58,6 +60,32 @@ function applyMigrations(db: Database.Database): number {
   }
 
   return count;
+}
+
+function rollbackLast(db: Database.Database): string | null {
+  ensureMigrationsTable(db);
+  const rows = db
+    .prepare('SELECT name FROM _migrations ORDER BY name DESC LIMIT 1')
+    .all() as Array<{ name: string }>;
+  if (rows.length === 0) return null;
+  const last = rows[0]!.name;
+
+  const downFile = `${last}.sqlite.down.sql`;
+  const downPath = path.join(MIGRATIONS_DIR, downFile);
+  if (!fs.existsSync(downPath)) throw new Error(`Down migration not found: ${downPath}`);
+
+  const sql = fs.readFileSync(downPath, 'utf-8');
+  const doRollback = db.transaction(() => {
+    const sqlWithoutPragma = sql.replace(/^\s*PRAGMA\s+foreign_keys\s*=\s*OFF\s*;\s*/im, '');
+    const sqlWithoutFkOn = sqlWithoutPragma.replace(
+      /^\s*PRAGMA\s+foreign_keys\s*=\s*ON\s*;\s*/im,
+      '',
+    );
+    db.exec(sqlWithoutFkOn);
+    db.prepare('DELETE FROM _migrations WHERE name = ?').run(last);
+  });
+  doRollback();
+  return last;
 }
 
 function getExistingTables(db: Database.Database): string[] {
@@ -109,6 +137,28 @@ describe('Migration runner (SQLite)', () => {
     expect(rows[0]?.name).toBe('0001_initial_schema');
   });
 
+  it('rollback removes all tables and the migration record', () => {
+    applyMigrations(db);
+    expect(getExistingTables(db).length).toBe(43);
+
+    const rolled = rollbackLast(db);
+    expect(rolled).toBe('0001_initial_schema');
+
+    const tables = getExistingTables(db);
+    expect(tables.length).toBe(0);
+
+    const records = db.prepare('SELECT name FROM _migrations').all();
+    expect(records.length).toBe(0);
+  });
+
+  it('migrate → rollback → migrate is idempotent', () => {
+    applyMigrations(db);
+    rollbackLast(db);
+    const count = applyMigrations(db);
+    expect(count).toBe(1);
+    expect(getExistingTables(db).length).toBe(43);
+  });
+
   it('enforces foreign keys (projects must exist before repositories can reference them)', () => {
     applyMigrations(db);
     db.pragma('foreign_keys = ON');
@@ -123,9 +173,7 @@ describe('Migration runner (SQLite)', () => {
   it('enforces UNIQUE constraint on (project_id, fr_id) in feature_requests', () => {
     applyMigrations(db);
 
-    db.prepare(
-      "INSERT INTO projects (id, name) VALUES ('proj-1', 'Test Project')",
-    ).run();
+    db.prepare("INSERT INTO projects (id, name) VALUES ('proj-1', 'Test Project')").run();
     db.prepare(
       "INSERT INTO implementation_plans (id, project_id, title) VALUES ('plan-1', 'proj-1', 'Plan')",
     ).run();
@@ -167,10 +215,61 @@ describe('Migration runner (SQLite)', () => {
       | undefined;
     expect(lock?.fence).toBe(5);
 
-    // Simulate stale-fence rejection: held fence (3) < current fence (5)
     const heldFence = 3;
     const currentFence = lock?.fence ?? 0;
-    expect(heldFence).toBeLessThan(currentFence); // application must reject this
+    expect(heldFence).toBeLessThan(currentFence);
+  });
+});
+
+describe('SqliteDbClient.transaction()', () => {
+  let tmpDb: string;
+  let db: Database.Database;
+  let client: SqliteDbClient;
+
+  beforeEach(() => {
+    tmpDb = path.join(os.tmpdir(), `minicoder-tx-test-${Date.now()}.db`);
+    db = new Database(tmpDb);
+    db.pragma('foreign_keys = ON');
+    db.exec('CREATE TABLE test_rows (id TEXT PRIMARY KEY, val TEXT NOT NULL)');
+    client = new SqliteDbClient(db);
+  });
+
+  afterEach(() => {
+    db.close();
+    if (fs.existsSync(tmpDb)) fs.unlinkSync(tmpDb);
+  });
+
+  it('commits rows when the callback succeeds', async () => {
+    await client.transaction(async (tx: TxClient) => {
+      await tx.execute("INSERT INTO test_rows (id, val) VALUES ('r1', 'hello')");
+    });
+
+    const rows = db.prepare('SELECT * FROM test_rows').all();
+    expect(rows).toHaveLength(1);
+  });
+
+  it('rolls back all rows when the callback throws — transaction is atomic', async () => {
+    await expect(
+      client.transaction(async (tx: TxClient) => {
+        await tx.execute("INSERT INTO test_rows (id, val) VALUES ('r2', 'should-disappear')");
+        throw new Error('intentional error');
+      }),
+    ).rejects.toThrow('intentional error');
+
+    const rows = db.prepare('SELECT * FROM test_rows').all();
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rolls back when a constraint violation occurs mid-transaction', async () => {
+    await expect(
+      client.transaction(async (tx: TxClient) => {
+        await tx.execute("INSERT INTO test_rows (id, val) VALUES ('dup', 'first')");
+        await tx.execute("INSERT INTO test_rows (id, val) VALUES ('dup', 'second')"); // duplicate PK
+      }),
+    ).rejects.toThrow();
+
+    const rows = db.prepare('SELECT * FROM test_rows').all();
+    expect(rows).toHaveLength(0);
   });
 });
 

@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.0.0
+> Version: 1.1.0
 > Last-updated: 2026-06-12
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -29,18 +29,22 @@ approval records; and final design document records.
 ## 3. Testability Principles
 
 ### 3.1 No Human Required for Tests
+
 No automated test scenario shall require a human to click a UI button, manually approve a workflow,
 or manually manipulate external systems. Human actions are simulated through deterministic test
 fixtures, API commands, mock adapters, or test-mode approvals.
 
 ### 3.2 Mock Providers by Default
+
 Most tests must run without real Codex, real Claude, real paid LLM calls, real GitHub repository
 mutation, real human approval, or real production Trigger.dev state.
 
 ### 3.3 Deterministic Scenarios
+
 System tests must use deterministic fixtures so failures are reproducible.
 
 ### 3.4 Test Mode Is a First-Class Runtime Mode
+
 MiniCoder provides a formal `system_test` mode:
 
 ```yaml
@@ -52,7 +56,7 @@ agents:
   reviewer: mock-reviewer
   arbiter: mock-arbiter
   documentation: mock-documentation
-  human: human-test          # HumanTestAdapter — deterministic mock of HumanAgentAdapter (§4.2 glossary)
+  human: human-test # HumanTestAdapter — deterministic mock of HumanAgentAdapter (§4.2 glossary)
 
 github:
   provider: mock
@@ -66,12 +70,14 @@ database:
 ```
 
 ### 3.5 Production Safety
+
 Destructive commands must be safe by default. Production reset/purge operations must be blocked or
 require explicit, auditable, strongly guarded overrides.
 
 ## 4. Testing Levels
 
 ### 4.1 Unit Tests
+
 Cover pure/domain logic: state-machine transitions, policy checks, feature selection, dependency
 validation, planning-readiness scoring, clarification gap classification, review-finding
 classification, merge-gate evaluation, budget-gate evaluation, idempotency behavior, disagreement
@@ -79,6 +85,7 @@ detection, and final-design-document eligibility. Unit tests must not require Do
 Trigger.dev, real agents, or network access.
 
 ### 4.2 Integration Tests
+
 Cover subsystem boundaries: database repositories, migrations, command handlers, outbox/inbox
 processing, Workflow Layer task wrappers, GitHub client against a mocked API, agent adapters with mock
 providers, artifact import/export, API endpoints, cost manager, and the design document generator.
@@ -86,6 +93,7 @@ Integration tests run against **both** dialects — disposable SQLite databases 
 containers — as a matrix, not SQLite alone (see §8).
 
 ### 4.3 System Tests
+
 Exercise end-to-end workflows with mock external systems.
 
 Happy-path scenario:
@@ -121,6 +129,7 @@ database says running but Trigger.dev says failed → recovery path
 ```
 
 ### 4.4 Deployment Tests
+
 Non-interactive validation for Docker, Docker Compose, and Kubernetes.
 
 ```text
@@ -137,6 +146,7 @@ CLI tools for state-lifecycle management. The complete command surface lives in 
 section specifies the behaviors each family must support.
 
 ### 5.1 Database Lifecycle
+
 `minicoder db migrate | rollback | reset | seed | snapshot | restore | validate | diff | status`.
 
 - SQLite local mode: create, migrate, reset, seed, snapshot, restore, validate.
@@ -145,6 +155,7 @@ section specifies the behaviors each family must support.
   validate migration status.
 
 ### 5.2 Trigger.dev Lifecycle
+
 `minicoder trigger deploy | list-runs | inspect-run | cancel-run | replay-run | drain-queue |
 reset-dev | validate | reconcile`.
 
@@ -155,6 +166,7 @@ orphaned waitpoints, queue backlog, and retry storms. Database correlation recor
 `triggerdev_runs`, see [`01-system-specification.md`](01-system-specification.md) §8).
 
 ### 5.3 Workflow State Lifecycle
+
 `minicoder state inspect | validate | reconcile | doctor | export-diagnostics | repair --dry-run`.
 
 `doctor` detects database/Trigger.dev mismatch, database/GitHub mismatch, orphaned feature runs,
@@ -162,11 +174,13 @@ orphaned waitpoints, stale locks, stuck `human_required` states, failed outbox e
 inbox events, stale artifact exports, and inconsistent cost records.
 
 ### 5.4 GitHub Simulation (test/dev only)
+
 `minicoder github simulate-pr-opened | simulate-pr-synchronized | simulate-check-passed |
 simulate-check-failed | simulate-review-approved | simulate-review-requested-changes |
 simulate-pr-merged | simulate-pr-closed`.
 
 ### 5.5 Test Scenario Runner
+
 `minicoder test unit | integration | system | scenario <name>`. The scenario runner returns
 non-zero exit codes on failure for CI/CD use.
 
@@ -261,3 +275,101 @@ Required runbooks:
 
 Each runbook must state preconditions, the exact guarded commands, expected diagnostics output, and
 a rollback/abort path.
+
+### Phase 1 — Database Lifecycle Runbook
+
+This runbook covers the `minicoder db` commands shipped in Phase 1. Commands are executed via
+`tsx packages/migrations/src/runner.ts <subcommand>` directly, or through the CLI
+(`minicoder db <subcommand>`) once the CLI package is linked.
+
+**Environment variables:**
+
+| Variable     | SQLite example   | PostgreSQL example                        |
+| ------------ | ---------------- | ----------------------------------------- |
+| `DB_DIALECT` | `sqlite`         | `postgres`                                |
+| `DB_PATH`    | `./minicoder.db` | _(not used)_                              |
+| `DB_URL`     | _(not used)_     | `postgresql://user:pass@host:5432/dbname` |
+
+#### Procedure: Forward migrate
+
+Preconditions: database file/server is reachable; no other writer is mid-migration.
+
+```bash
+# SQLite
+DB_DIALECT=sqlite DB_PATH=./minicoder.db \
+  tsx packages/migrations/src/runner.ts migrate
+
+# PostgreSQL
+DB_DIALECT=postgres DB_URL=postgresql://user:pass@host:5432/dbname \
+  tsx packages/migrations/src/runner.ts migrate
+```
+
+Expected output: `✓ Applied: 0001_initial_schema` (or "No pending migrations" if already up to date).
+
+Rollback/abort: if the migration fails mid-run, the transaction rolls back atomically. Run
+`status` to confirm state. Re-run `migrate` after fixing the root cause.
+
+#### Procedure: Validate schema
+
+Confirms all 43 expected tables are present. Run after every migration and in CI.
+
+```bash
+DB_DIALECT=sqlite DB_PATH=./minicoder.db \
+  tsx packages/migrations/src/runner.ts validate
+```
+
+Expected output: `Validation PASSED. All 43 tables present.`
+Exits non-zero if any table is missing; safe to run at any time.
+
+#### Procedure: Migration status
+
+```bash
+DB_DIALECT=sqlite DB_PATH=./minicoder.db \
+  tsx packages/migrations/src/runner.ts status
+```
+
+Expected output: one line per migration marked `✓ applied` or `○ pending`.
+
+#### Procedure: Rollback last migration
+
+Preconditions: a `*.down.sql` file exists for the last applied migration.
+Only roll back on a quiesced system (no active runs).
+
+```bash
+DB_DIALECT=sqlite DB_PATH=./minicoder.db \
+  tsx packages/migrations/src/runner.ts rollback
+```
+
+Expected output: `Rolled back: 0001_initial_schema`.
+Drops all 43 tables; run `migrate` to re-apply.
+
+#### Procedure: Destructive reset (dev/CI only)
+
+Drops all tables and re-applies all migrations from scratch.
+**Never run against production.** Requires `--yes` guard.
+
+```bash
+DB_DIALECT=sqlite DB_PATH=./minicoder.db \
+  tsx packages/migrations/src/runner.ts reset --yes
+```
+
+#### Procedure: Demo scenario
+
+Verifies the full Phase 1 stack end-to-end on a fresh database.
+
+```bash
+DB_DIALECT=sqlite DB_PATH=/tmp/minicoder-demo.db \
+  tsx packages/migrations/src/demo.ts
+```
+
+Expected output: all steps print `✓`; exits 0.
+
+#### Diagnostics and known failure modes
+
+| Symptom                                      | Likely cause                              | Resolution                                                                |
+| -------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
+| `SQLITE_CANTOPEN`                            | `DB_PATH` directory does not exist        | Create the directory                                                      |
+| `connect ECONNREFUSED`                       | PostgreSQL not running                    | Start Postgres or check `DB_URL`                                          |
+| `Validation FAILED. Missing tables:`         | Migration not applied or partially failed | Run `migrate`, check for errors                                           |
+| `Down migration not found`                   | `*.down.sql` file missing                 | Check `packages/migrations/migrations/` for the file                      |
+| `UNIQUE constraint failed: _migrations.name` | Concurrent migration run                  | Serialise migration runs; only one process should run `migrate` at a time |

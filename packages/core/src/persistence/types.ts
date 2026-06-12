@@ -35,9 +35,7 @@ export class StaleFenceError extends Error {
     public readonly heldFence: number,
     public readonly currentFence: number,
   ) {
-    super(
-      `Stale fence token for lock ${lockId}: held=${heldFence}, current=${currentFence}`,
-    );
+    super(`Stale fence token for lock ${lockId}: held=${heldFence}, current=${currentFence}`);
     this.name = 'StaleFenceError';
   }
 }
