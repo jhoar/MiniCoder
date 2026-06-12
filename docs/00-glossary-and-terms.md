@@ -84,6 +84,19 @@ approved_pending_execution → selected → coding → code_pushed → pr_opened
 → approved_by_policy → merge_ready → merged
 ```
 
+CI outcomes branch explicitly from `ci_running`:
+
+```text
+ci_running → [CI pass] → under_review
+ci_running → [CI fail] → ci_failed → changes_requested → fixing
+ci_failed  → human_required        (when review-cycle / fix-attempt limits are exceeded)
+```
+
+A CI failure never merges and never silently passes. The Execution Orchestrator records an
+automated **blocking** review finding, routes the feature `ci_failed → changes_requested → fixing`
+(re-using the review/fix loop and its limits in `01-system-specification.md` §5.8), and escalates to
+`human_required` once those limits are exceeded.
+
 ### 3.3 Failure / escalation states
 
 ```text

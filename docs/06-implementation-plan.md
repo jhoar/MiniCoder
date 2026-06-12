@@ -54,11 +54,12 @@ validates lint, types, and tests.
 
 Deliver planning/execution/completion lifecycle states, a state-transition validator, a command
 handler framework, transactional command execution, workflow event recording, idempotency keys,
-outbox/inbox tables, workflow locks/leases, and execution lanes.
+outbox/inbox tables, an outbox/inbox dispatcher (scheduled Workflow Layer task or background
+worker), workflow locks/leases, and execution lanes.
 
 Acceptance: invalid transitions are rejected; valid transitions are persisted and evented; commands
-are idempotent and unit-tested; **sequential execution is enforced by policy (locks/lanes), not by a
-schema invariant**.
+are idempotent and unit-tested; outbox/inbox records are drained with at-least-once, idempotent
+dispatch; **sequential execution is enforced by policy (locks/lanes), not by a schema invariant**.
 
 ## Phase 3 — Workflow Layer Harness
 
@@ -73,12 +74,17 @@ Initial tasks:
 ```text
 planning-readiness-assessment
 start-clarification
-generate-plan
-activate-backlog
+generate-implementation-plan
+generate-feature-backlog
+activate-approved-backlog
 start-next-feature
 github-reconciliation
-artifact-export
+export-plan
+export-backlog
 ```
+
+Task names match the canonical planner task family in
+[`02-bootstrap-planner-clarification.md`](02-bootstrap-planner-clarification.md) §6.
 
 Task rule: Workflow Layer tasks call Orchestrator Core commands; they do not contain business rules
 directly.
