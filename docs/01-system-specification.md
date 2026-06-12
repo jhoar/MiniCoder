@@ -240,7 +240,9 @@ review cycle.
 - **Soft vs. hard limits:** crossing a **soft** limit moves automation to
   `waiting_for_budget_approval` (glossary §3.8) and requires a human budget-override approval;
   crossing a **hard** limit moves it to `paused_budget_exceeded` and halts automation.
-- **Resume:** an approved override (or human resume) returns automation to `resumed`/`running`.
+- **Resume:** an approved override (or human resume) returns automation to `running`; the
+  resumption itself is recorded as a `resumed` event / `policy_decision`, not a durable state
+  (glossary §3.8).
 - **Forecast before run:** before an expensive agent run, the Cost Manager estimates the run cost
   and refuses to start (deferring, not stranding the branch) when the forecast would breach a hard
   limit — complementing the capacity pre-flight in §4.3.
@@ -385,12 +387,14 @@ deliverable):
   stable machine-readable error code.
 - **Pagination:** list endpoints use cursor pagination (`?cursor=&limit=`) with a `next_cursor`.
 - **Audit metadata:** every request records actor identity, role, and correlation ID.
-- **Authorization matrix:** each command/query declares the minimum role (`viewer`/`operator`/
-  `approver`/`admin`) enforced by the backend.
+- **Authorization matrix:** each command/query declares the minimum role
+  (`viewer`/`operator`/`approver`/`admin`, glossary §4.4) enforced by the backend.
 
-**Command contract.** Each command is specified (full set authored in implementation Phase 12) with:
-purpose, required role, input schema (Zod), validation rules, transaction boundary, emitted events,
-outbox records, failure modes, and idempotency behavior.
+**Command contract.** Each command is specified with: purpose, required role, input schema (Zod),
+validation rules, transaction boundary, emitted events, outbox records, failure modes, and
+idempotency behavior. Core command contracts are **introduced in implementation Phase 2** (alongside
+the command layer and the state-transition matrix) and **completed and exposed via OpenAPI in Phase
+13**.
 
 ## 10. Agent Adapter Contracts
 

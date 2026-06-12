@@ -108,7 +108,8 @@ completion status.
 ## 10. Command Safety and Roles
 
 The UI calls command endpoints only and does not mutate state directly. Roles are `viewer`,
-`operator`, `approver`, and `admin`. Approver/admin permissions are required for plan activation,
+`operator`, `approver`, and `admin` (canonical in
+[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §4.4). Approver/admin permissions are required for plan activation,
 budget override, disagreement resolution, merge-if-ready, final design document approval, and
 state-lifecycle/destructive admin actions.
 

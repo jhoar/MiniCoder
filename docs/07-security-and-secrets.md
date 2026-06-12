@@ -49,9 +49,10 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 - **Local mode.** Local auth identifies an actor for audit and role enforcement without external
   identity infrastructure.
 - **Hosted mode.** OAuth (or equivalent SSO) issues sessions; sessions are short-lived and revocable.
-- **Roles.** `viewer`, `operator`, `approver`, `admin` (glossary §10 of the UI spec). Approver/admin
-  is required for plan activation, budget override, disagreement resolution, merge-if-ready, final
-  design-document approval, and guarded state-lifecycle/destructive actions.
+- **Roles.** `viewer`, `operator`, `approver`, `admin` (canonical in
+  [`00-glossary-and-terms.md`](00-glossary-and-terms.md) §4.4). Approver/admin is required for plan
+  activation, budget override, disagreement resolution, merge-if-ready, final design-document
+  approval, and guarded state-lifecycle/destructive actions.
 - **Authorization is backend-enforced.** UIs never enforce authorization themselves.
 
 ## 5. Token Rotation and Audit Retention
