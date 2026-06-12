@@ -46,6 +46,8 @@ minicoder costs
 minicoder artifacts
 minicoder adapters
 minicoder design-doc
+minicoder pause          # operator pause → paused_by_operator (glossary §3.8)
+minicoder resume         # resume → running (records a resumed event)
 ```
 
 (State-lifecycle and test commands — `db`, `trigger`, `state`, `github`, `test` — are defined in

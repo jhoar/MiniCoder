@@ -84,6 +84,10 @@ If readiness is `insufficient`, generate clarification questions or a **discover
 reduce uncertainty); it is explicitly not an executable backlog and **cannot activate feature
 requests**. Do not activate an executable backlog while readiness is `insufficient`.
 
+A discovery backlog is **persisted as `feature_requests` rows with `kind = "discovery"` and
+`executable = false`** (reusing existing storage); activation explicitly excludes
+`kind = "discovery"` (see §10). It is not a separate table or state machine.
+
 ## 6. Workflow Layer Tasks
 
 ```text

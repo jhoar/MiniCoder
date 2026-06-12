@@ -71,13 +71,17 @@ tests.
 Deliver planning/execution/completion lifecycle states, the **full state-transition matrix**
 (glossary §3.9 columns), a state-transition validator, a command handler framework, transactional
 command execution, workflow event recording, idempotency keys, outbox/inbox tables, an outbox/inbox
-dispatcher (scheduled Workflow Layer task or background worker), workflow locks/leases, execution
-lanes, and **audit actor identity + local auth + secret-redaction tests** (security foundation,
-continued from Phase 1).
+dispatcher (scheduled Workflow Layer task or background worker), workflow locks/leases **with
+fencing tokens**, execution lanes, **audit actor identity + local auth primitive +
+secret-redaction tests** (security foundation, continued from Phase 1), and **architectural fitness
+tests** (failing tests that encode invariants: no provider-SDK import in core; no domain logic in
+task wrappers beyond the command interface; no `backlog.md` read at runtime; no secret in task
+payloads — RF-12).
 
 Acceptance: invalid transitions are rejected; valid transitions are persisted and evented; the
 implemented transitions match the matrix; commands are idempotent and unit-tested; outbox/inbox
-records are drained with at-least-once, idempotent dispatch; secret redaction is test-covered;
+records are drained with at-least-once, idempotent dispatch; secret redaction is test-covered; the
+fitness tests fail the build on any violated invariant; stale-fence writes are rejected;
 **sequential execution is enforced by policy (locks/lanes), not by a schema invariant**.
 
 ## Phase 3 — Workflow Layer Harness
@@ -143,7 +147,10 @@ Deliver the six role interfaces, an adapter registry, the capability model, the 
 [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md)).
 
 Acceptance: core does not depend on provider SDKs; mock adapters run through Workflow Layer task
-wrappers; `agent_runs` records are created; capability validation works.
+wrappers; `agent_runs` records are created; capability validation works; and the conformance
+framework runs the six mock adapters and `HumanTestAdapter` to green, writing
+`adapter_conformance_results`. (Provider-adapter conformance fixtures for additional adapters are
+Phase 18.)
 
 ## Phase 6 — Bootstrap Planner, Readiness, and Clarification
 
@@ -162,7 +169,7 @@ Deliver a GitHub webhook receiver with signature verification, inbox processing,
 client, branch/PR operations, review/check/mergeability reading, status-check publication, a
 scheduled reconciliation service, pre-flight checks (including the capacity/rate-limit pre-flight),
 GitHub link records, and the **full GitHub integration contract** (webhook events consumed, dedup
-key, GitHub App permissions, branch naming, PR labels, the `agent-orchestrator/review-gate` status
+key, GitHub App permissions, branch naming, PR labels, the `minicoder/review-gate` status
 check, merge method, force-push policy, and the reconciliation algorithm — see
 [`01-system-specification.md`](01-system-specification.md) §5.7).
 
@@ -172,12 +179,16 @@ GitHub operations are evented.
 
 ## Phase 8 — Execution Orchestrator
 
-Deliver the select-next-feature and start-feature commands, active-feature run records, PR/CI
-tracking, the Workflow Layer execution flow, feature-progress events, sequential policy enforcement,
-and pause/resume.
+Deliver the select-next-feature and start-feature commands, active-feature run records
+(`feature_runs`), PR/CI tracking, the Workflow Layer execution flow, feature-progress events,
+sequential policy enforcement, pause/resume, and a **minimal budget-gate primitive**: budget
+thresholds (`budget_policies`, project/feature/review-cycle scopes), soft/hard limit evaluation, and
+the `paused_budget_exceeded` / `waiting_for_budget_approval` transitions (glossary §3.8). Cost
+dashboards, forecasting, and export remain Phase 16.
 
 Acceptance: only one feature is active at a time (by policy); eligible features are selected in
-sequence; dependencies are enforced; mock execution progresses through the happy path.
+sequence; dependencies are enforced; a soft/hard budget breach pauses automation and records a
+`policy_decision`/`cost_record`; mock execution progresses through the happy path.
 
 ## Phase 9 — Reference Coder Adapter
 
@@ -205,10 +216,11 @@ Acceptance: repeated unresolved findings create disagreement records; automation
 
 ## Phase 12 — Merge Gate and Branch Protection
 
-Deliver the merge-policy engine, the `agent-orchestrator/review-gate` status check, the
-merge-if-ready command, branch-protection documentation/checks, and structured
-**`merge_gate_evaluations`** evidence records (CI/review/findings/conversation/branch-protection/
-budget/human-approval inputs + final decision — see [`01-system-specification.md`](01-system-specification.md) §12).
+Deliver the merge-policy engine, the `minicoder/review-gate` status check, the
+merge-if-ready command (approver/admin-initiated; re-gates before the GitHub merge),
+branch-protection documentation/checks, and structured **`merge_gate_evaluations`** evidence records
+(CI/review/findings/conversation/branch-protection/budget/human-approval inputs + final decision —
+see [`01-system-specification.md`](01-system-specification.md) §12).
 
 Acceptance: unsafe PRs cannot be merged by MiniCoder; safe PRs merge through policy; every gate run
 writes an evidence record; the database updates after merge; the next feature starts only after
@@ -217,7 +229,8 @@ merge.
 ## Phase 13 — Orchestrator API
 
 Deliver the Fastify API: read endpoints, command endpoints, **webhook endpoints**, state/diagnostics
-read models, local-mode authentication, a role model, the **full per-command contract**
+read models, **wiring of the Phase-2 local auth + actor identity into the API surface**, a role
+model, the **full per-command contract**
 (completing the contracts introduced in Phase 2; see
 [`01-system-specification.md`](01-system-specification.md) §9), and an
 **OpenAPI-first** description honoring the API conventions (command envelope, idempotency-key header,
@@ -248,8 +261,9 @@ artifact exports are visible as snapshots.
 ## Phase 16 — Observability, Cost, and Recovery
 
 Deliver the workflow timeline, agent-run trace view, Workflow Layer run mapping, cost dashboards,
-budget gates, recovery/reconciliation commands, secret-redaction checks, and optional
-OpenTelemetry-compatible export.
+budget forecasting and reporting (the **budget-gate primitive ships in Phase 8**),
+recovery/reconciliation commands, secret-redaction checks, and optional OpenTelemetry-compatible
+export.
 
 Acceptance: operators can reconstruct workflow history; budgets can pause automation; recovery
 commands are safe and audited; private chain-of-thought is not stored.
@@ -275,9 +289,10 @@ database and GitHub evidence; a human can approve or request revision; the proje
 ## Phase 18 — Future Extensions
 
 Deferred: parallel feature execution, multi-repository orchestration, additional coder/reviewer
-adapters and the adapter conformance suite, additional SCM providers, optional advanced RBAC, and
-optional PDF/DOCX export. (Trigger.dev backend tiers — self-host single-node default, self-host HA
-cluster, Cloud — are a Phase 3 deployment concern, not a deferred extension.)
+adapters and their provider-adapter conformance fixtures (the conformance **framework** and mock
+conformance ship in Phase 5), additional SCM providers, optional advanced RBAC, and optional
+PDF/DOCX export. (Trigger.dev backend tiers — self-host single-node default, self-host HA cluster,
+Cloud — are a Phase 3 deployment concern, not a deferred extension.)
 
 Acceptance: at least one alternative adapter can be added without changing core orchestration; future
 extensions do not change the baseline architecture.
