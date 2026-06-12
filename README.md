@@ -16,14 +16,14 @@ The authoritative specification lives entirely under [`docs/`](docs/). Read in o
 
 | Document | Purpose |
 |---|---|
-| [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md) | Single source of truth for state names, roles, adapter names, deployment profiles, and the CLI surface. |
-| [`docs/01-system-specification.md`](docs/01-system-specification.md) | Canonical architecture: scope, principles, subsystems, data design, API, merge policy, security. |
-| [`docs/02-bootstrap-planner-clarification.md`](docs/02-bootstrap-planner-clarification.md) | Bootstrap Planner, readiness assessment, and the Clarification Workflow. |
-| [`docs/03-agent-adapter-architecture.md`](docs/03-agent-adapter-architecture.md) | Vendor-neutral agent adapter roles, capabilities, conformance, and naming. |
-| [`docs/04-testing-validation-state-lifecycle.md`](docs/04-testing-validation-state-lifecycle.md) | Automated testing, validation, and state-lifecycle management requirements. |
+| [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md) | Single source of truth for the state machines/tokens, agent roles, user/auth roles, adapter names, identifiers, deployment profiles + backend tiers, the CLI surface, and the locked tech stack. |
+| [`docs/01-system-specification.md`](docs/01-system-specification.md) | Canonical architecture: scope, principles, subsystems, data design, API conventions, merge policy + gate evidence, and Project Acceptance Validation. |
+| [`docs/02-bootstrap-planner-clarification.md`](docs/02-bootstrap-planner-clarification.md) | Bootstrap Planner, readiness assessment, the Clarification Workflow, and the discovery backlog. |
+| [`docs/03-agent-adapter-architecture.md`](docs/03-agent-adapter-architecture.md) | Vendor-neutral agent adapter roles, capabilities, conformance, and the Adapter Execution Contract (workspaces, I/O schemas, retries, error taxonomy). |
+| [`docs/04-testing-validation-state-lifecycle.md`](docs/04-testing-validation-state-lifecycle.md) | Automated testing (incl. cross-dialect), validation, state-lifecycle tooling, and operations runbooks. |
 | [`docs/05-ui-specification.md`](docs/05-ui-specification.md) | Ink Text UI and Next.js Web UI, including state-health and admin views. |
-| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md) | The single canonical 18-phase implementation plan with acceptance criteria. |
-| [`docs/07-security-and-secrets.md`](docs/07-security-and-secrets.md) | Security and secrets: secret backend, GitHub App auth, sandboxing, egress, prompt-injection, untrusted code. |
+| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md) | The single canonical 18-phase implementation plan, with per-phase acceptance criteria and a global Definition of Done. |
+| [`docs/07-security-and-secrets.md`](docs/07-security-and-secrets.md) | Security and secrets: secret backend, GitHub App auth, workspace sandboxing/egress, payload hygiene/residency, prompt-injection, untrusted code. |
 
 ## Precedence Rule
 
@@ -43,15 +43,22 @@ history.
 
 ## Architecture at a Glance
 
-- **One architecture, two deployment profiles** — local/single-node (SQLite) and hosted/team
-  (PostgreSQL), behind a persistence abstraction.
-- **Trigger.dev** (Cloud) for durable workflow execution; tasks are thin, idempotent wrappers over
-  Orchestrator Core commands.
+- **Database-authoritative state** behind a persistence abstraction — **one architecture, two state
+  stores**: SQLite (local/single-node) and PostgreSQL (hosted/team).
+- **Workflow Layer** for durable workflow execution (implemented by Trigger.dev); tasks are thin,
+  idempotent wrappers over Orchestrator Core commands. The execution backend is a separate axis with
+  three drop-in tiers — **self-host single-node (default)**, self-host HA cluster, and Trigger.dev
+  Cloud — swappable without architectural change.
 - **GitHub** is repository truth; **webhooks are primary**, scheduled reconciliation is the
   fallback.
-- **Sequential execution is a policy** (locks/lanes), not a schema limitation.
-- **Vendor-neutral agent adapters**; no dependency on any specific provider.
-- **Fully automated testing** and state-lifecycle tooling are foundational.
+- **Sequential execution is a policy** (locks/lanes with fencing tokens), not a schema limitation.
+- **Vendor-neutral agent adapters** run in isolated, sandboxed, default-deny-egress workspaces; no
+  dependency on any specific provider.
+- **Security is first-class** — secret backend, GitHub App auth, payload hygiene/data-residency, and
+  prompt-injection handling, established in the earliest phases.
+- **Cost-aware** — per-scope budgets with soft/hard gates and a review-loop circuit breaker.
+- **Fully automated testing** (including a cross-dialect SQLite/PostgreSQL matrix) and
+  state-lifecycle tooling are foundational.
 
 Technology stack and the full term set are in
 [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md).
