@@ -20,8 +20,9 @@ MiniCoder shall be fully testable in unattended mode across unit tests, integrat
 tests, Docker, Docker Compose, Kubernetes, CI, and staging.
 
 All stateful subsystems must have lifecycle-management tools for development, CI, staging, and
-production-safe maintenance. Stateful subsystems include the MiniCoder database; Trigger.dev tasks,
-runs, queues, schedules, retries, and waitpoints; GitHub webhook/event state; GitHub
+production-safe maintenance. Stateful subsystems include the MiniCoder database; the Workflow
+Layer's tasks, runs, queues, schedules, retries, and waitpoints (Trigger.dev); GitHub
+webhook/event state; GitHub
 PR/check/review simulation; agent-adapter run state; artifact exports/imports; cost records; human
 approval records; and final design document records.
 
@@ -78,7 +79,7 @@ Trigger.dev, real agents, or network access.
 
 ### 4.2 Integration Tests
 Cover subsystem boundaries: database repositories, migrations, command handlers, outbox/inbox
-processing, Trigger.dev task wrappers, GitHub client against a mocked API, agent adapters with mock
+processing, Workflow Layer task wrappers, GitHub client against a mocked API, agent adapters with mock
 providers, artifact import/export, API endpoints, cost manager, and the design document generator.
 May use disposable SQLite databases and PostgreSQL containers.
 

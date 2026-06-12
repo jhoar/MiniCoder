@@ -25,7 +25,7 @@ MiniCoder includes Bootstrap planning, planning readiness assessment, clarificat
 structured implementation plan generation, database-backed feature backlog, sequential feature
 execution, vendor-neutral agent adapters, GitHub branch and pull request workflow (webhook-driven
 with reconciliation fallback), structured review/fix loops, disagreement and human escalation,
-Trigger.dev durable workflow execution, automated testing and state-lifecycle tooling, cost
+durable Workflow Layer execution, automated testing and state-lifecycle tooling, cost
 management, observability and audit records, the Orchestrator API, a Node.js + Ink Text UI, a
 React / Next.js Web UI, Markdown artifact import/export, and final System Design Document
 generation.
@@ -46,8 +46,8 @@ system." The implementation is phased, but the architecture is fixed.
 ```text
 MiniCoder database = authoritative planning, backlog, workflow, testing, review, event,
                      agent-run, cost, artifact, and design-document state.
-Trigger.dev        = durable workflow execution engine (tasks, retries, queues, schedules,
-                     waitpoints, resumability).
+Workflow Layer     = durable workflow execution (tasks, retries, queues, schedules,
+                     waitpoints, resumability); implemented by Trigger.dev.
 GitHub             = authoritative repository, branch, commit, PR, review, CI/check,
                      conversation, mergeability, and merge state.
 GitHub webhooks    = primary source for external GitHub changes.
@@ -63,7 +63,7 @@ Sequential execution = policy setting, not schema limitation.
 Private chain-of-thought = not stored.
 Testing            = fully automated by default across unit, integration, system, Docker Compose,
                      and Kubernetes deployments.
-State lifecycle tooling = required for database, Trigger.dev, GitHub simulation, agent runs,
+State lifecycle tooling = required for database, Workflow Layer, GitHub simulation, agent runs,
                      artifacts, and diagnostics.
 ```
 
@@ -98,12 +98,12 @@ The MiniCoder database is authoritative for system state from the beginning, acc
 **persistence abstraction** that supports SQLite (local/single-node) and PostgreSQL (hosted/team).
 No runtime orchestration logic shall depend on parsing `backlog.md`.
 
-### 4.2 Trigger.dev From the Start
+### 4.2 Workflow Layer From the Start
 
-MiniCoder uses Trigger.dev as its durable workflow execution engine from the early implementation
-phases. Trigger.dev owns durable task execution, retries, queues, schedules, waitpoints, and
-resumable long-running workflows. Trigger.dev does **not** own domain state, state-machine rules,
-merge policy, agent contracts, business logic, or GitHub truth. Trigger.dev tasks are thin,
+MiniCoder uses a durable Workflow Layer (implemented by Trigger.dev) from the early implementation
+phases. The Workflow Layer owns durable task execution, retries, queues, schedules, waitpoints, and
+resumable long-running workflows. It does **not** own domain state, state-machine rules,
+merge policy, agent contracts, business logic, or GitHub truth. Workflow Layer tasks are thin,
 idempotent wrappers that call Orchestrator Core commands. Because of this, the execution backend
 (self-hosted single-node by default, self-hosted HA cluster, or Cloud) is a deployment choice;
 switching between backends requires no architectural change (see §14).
@@ -175,12 +175,13 @@ feature selection, state-transition validation, GitHub reconciliation, agent-inv
 coordination, review/fix loop control, merge-gate evaluation, human escalation, and
 implementation-complete detection.
 
-### 5.5 Trigger.dev Workflow Layer
-Executes durable workflows and idempotent tasks. Task families include planning readiness
-assessment, clarification, plan generation, backlog activation, start next feature, coder run,
-reviewer run, review/fix loop, disagreement resolution, merge gate, GitHub reconciliation, webhook
-inbox processing, artifact export, cost recalculation, and final design document generation.
-Trigger.dev task IDs and run metadata are correlated to database workflow events and agent runs.
+### 5.5 Workflow Layer
+The Workflow Layer (implemented by Trigger.dev) executes durable workflows and idempotent tasks.
+Task families include planning readiness assessment, clarification, plan generation, backlog
+activation, start next feature, coder run, reviewer run, review/fix loop, disagreement resolution,
+merge gate, GitHub reconciliation, webhook inbox processing, artifact export, cost recalculation,
+and final design document generation. Workflow Layer run IDs and run metadata (Trigger.dev run
+metadata) are correlated to database workflow events and agent runs.
 
 ### 5.6 Agent Adapter Architecture
 Role-based adapters: `PlannerAgentAdapter`, `CoderAgentAdapter`, `ReviewerAgentAdapter`,
@@ -214,7 +215,7 @@ review cycle. Budget overruns can pause automation or require human approval.
 ### 5.12 Observability and Event System
 Records workflow events, agent runs, tool operations, GitHub operations, review findings, coder
 responses, disagreements, policy decisions, cost records, human approvals, outbox/inbox events, and
-Trigger.dev run references.
+Workflow Layer run references.
 
 ### 5.13 Orchestrator API
 Exposes read models and commands. Only supported access path for TUI and Web UI.

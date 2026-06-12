@@ -24,7 +24,7 @@ Subsystem names:
 - MiniCoder Clarification Workflow
 - MiniCoder Execution Orchestrator
 - MiniCoder Agent Adapter Architecture
-- MiniCoder Trigger.dev Workflow Layer
+- MiniCoder Workflow Layer (implemented by Trigger.dev)
 - MiniCoder GitHub Integration
 - MiniCoder Orchestrator API
 - MiniCoder Text UI
@@ -43,7 +43,9 @@ GitHub             = authoritative repository, branch, commit, PR, review, CI/ch
                      conversation, mergeability, and merge state.
 GitHub webhooks    = PRIMARY source for external GitHub changes.
 Scheduled reconciliation = fallback/repair mechanism.
-Trigger.dev        = authoritative ONLY for durable task-execution metadata (correlated via run IDs).
+Workflow Layer     = durable workflow execution (tasks, retries, queues, schedules, waitpoints,
+                     resumability); implemented by Trigger.dev, which is authoritative only for
+                     task-execution run metadata (correlated via run IDs).
 Orchestrator Core  = state machine, command handlers, policy checks, merge gates, database writes,
                      idempotency, and reconciliation.
 Orchestrator API   = the only supported access path for the UIs.

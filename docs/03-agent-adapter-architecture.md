@@ -47,10 +47,10 @@ can_report_run_status
 
 The orchestrator validates capabilities before invocation.
 
-## 4. Trigger.dev Invocation
+## 4. Workflow Layer Invocation
 
-Agent adapter invocations may run inside Trigger.dev tasks. Trigger.dev owns durable execution,
-retries, queues, schedules, and waitpoints. Adapters own provider invocation and output
+Agent adapter invocations may run inside Workflow Layer tasks. The Workflow Layer owns durable
+execution, retries, queues, schedules, and waitpoints. Adapters own provider invocation and output
 normalization. Orchestrator Core owns state transitions and policy. Task retries must be idempotent,
 and task definitions must not embed provider-specific behavior directly.
 
@@ -107,6 +107,6 @@ Adapters must support deterministic test scenarios.
 ## 10. Acceptance
 
 - Core does not depend on provider SDKs.
-- Mock adapters run through Trigger.dev task wrappers and in `system_test` mode.
+- Mock adapters run through Workflow Layer task wrappers and in `system_test` mode.
 - AgentRun records are created and capabilities are validated before invocation.
 - Adapters normalize outputs and redact secrets.

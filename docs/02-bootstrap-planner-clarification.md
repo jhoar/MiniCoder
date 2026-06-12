@@ -20,7 +20,8 @@ export/import.
 
 ```text
 MiniCoder database (SQLite local / PostgreSQL hosted) = authoritative planning and backlog state.
-Trigger.dev          = durable execution of planning and clarification workflows.
+Workflow Layer       = durable execution of planning and clarification workflows
+                       (implemented by Trigger.dev).
 plan.md / backlog.md = optional generated/importable artifacts, never runtime state.
 Execution Orchestrator = reads approved feature requests from the database.
 ```
@@ -68,7 +69,7 @@ activate backlog
 If readiness is `insufficient`, generate clarification questions or a discovery backlog. Do not
 activate an executable backlog.
 
-## 6. Trigger.dev Tasks
+## 6. Workflow Layer Tasks
 
 ```text
 ingest-specification
@@ -86,7 +87,7 @@ export-backlog
 import-backlog
 ```
 
-Trigger.dev manages retries, waitpoints, and long-running planner calls. Tasks are idempotent and
+The Workflow Layer manages retries, waitpoints, and long-running planner calls. Tasks are idempotent and
 call Orchestrator Core commands. The database remains authoritative.
 
 ## 7. Planner Agent Adapter

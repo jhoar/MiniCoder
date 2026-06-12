@@ -23,7 +23,7 @@ afterthought.
 |---|---|---|
 | 1 | Repository and Persistence Foundation | Monorepo; persistence abstraction; SQLite + PostgreSQL; migrations; core domain model |
 | 2 | State Machine, Idempotency, and Command Layer | Valid lifecycle transitions; transactional, idempotent commands; outbox/inbox; locks/lanes |
-| 3 | Trigger.dev Workflow Harness | Durable workflow execution from the start |
+| 3 | Workflow Layer Harness | Durable workflow execution from the start |
 | 4 | Test Harness and State Lifecycle Tooling | Automated test modes and lifecycle CLI commands |
 | 5 | Agent Adapter Foundation | Vendor-neutral adapters, mock/human adapters, conformance tests |
 | 6 | Bootstrap Planner, Readiness, and Clarification | Specification input becomes an approved database backlog |
@@ -60,7 +60,7 @@ Acceptance: invalid transitions are rejected; valid transitions are persisted an
 are idempotent and unit-tested; **sequential execution is enforced by policy (locks/lanes), not by a
 schema invariant**.
 
-## Phase 3 — Trigger.dev Workflow Harness
+## Phase 3 — Workflow Layer Harness
 
 Deliver Trigger.dev project setup with **self-hosted single-node as the default backend** (Docker
 Compose: webapp + Postgres + Redis + worker), a GitHub Actions deployment workflow for Trigger.dev
@@ -80,7 +80,7 @@ github-reconciliation
 artifact-export
 ```
 
-Task rule: Trigger.dev tasks call Orchestrator Core commands; they do not contain business rules
+Task rule: Workflow Layer tasks call Orchestrator Core commands; they do not contain business rules
 directly.
 
 Acceptance: tasks deploy and run on the default self-hosted single-node backend; a mock task updates
@@ -106,7 +106,7 @@ Deliver the six role interfaces, an adapter registry, the capability model, the 
 `HumanTestAdapter`, adapter run records, and adapter conformance tests (see
 [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md)).
 
-Acceptance: core does not depend on provider SDKs; mock adapters run through Trigger.dev task
+Acceptance: core does not depend on provider SDKs; mock adapters run through Workflow Layer task
 wrappers; `agent_runs` records are created; capability validation works.
 
 ## Phase 6 — Bootstrap Planner, Readiness, and Clarification
@@ -133,7 +133,7 @@ GitHub operations are evented.
 ## Phase 8 — Execution Orchestrator
 
 Deliver the select-next-feature and start-feature commands, active-feature run records, PR/CI
-tracking, the Trigger.dev execution flow, feature-progress events, sequential policy enforcement,
+tracking, the Workflow Layer execution flow, feature-progress events, sequential policy enforcement,
 and pause/resume.
 
 Acceptance: only one feature is active at a time (by policy); eligible features are selected in
@@ -185,7 +185,7 @@ UI can be built on the API.
 Deliver dashboard, feature queue, active feature, planning/clarification, review findings, agent
 runs, cost, human-required, artifact, adapter, and state-health views.
 
-Acceptance: the TUI uses the API only; triggers allowed commands; and shows Trigger.dev
+Acceptance: the TUI uses the API only; triggers allowed commands; and shows Workflow Layer
 task/waitpoint and state-health status via the API.
 
 ## Phase 15 — Next.js Web UI
@@ -199,7 +199,7 @@ artifact exports are visible as snapshots.
 
 ## Phase 16 — Observability, Cost, and Recovery
 
-Deliver the workflow timeline, agent-run trace view, Trigger.dev run mapping, cost dashboards,
+Deliver the workflow timeline, agent-run trace view, Workflow Layer run mapping, cost dashboards,
 budget gates, recovery/reconciliation commands, secret-redaction checks, and optional
 OpenTelemetry-compatible export.
 
@@ -209,7 +209,7 @@ commands are safe and audited; private chain-of-thought is not stored.
 ## Phase 17 — Final Design Document Generator
 
 Deliver design-document tables, design-decision records, the `DocumentationAgentAdapter`, the Design
-Document Generator, the Trigger.dev design-document task, the final-document review workflow, and
+Document Generator, the Workflow Layer design-document task, the final-document review workflow, and
 `final-design-document.md` export.
 
 Required sections (13): Purpose and Scope; Goals and Constraints; System Context; Architecture
