@@ -168,17 +168,14 @@ export interface WorkflowLock extends Entity {
   expiresAt: string | null;
 }
 
-export interface IdempotencyKey {
-  id: string;
+export interface IdempotencyKey extends Entity {
   key: string;
   scope: string;
   result: string | null;
   expiresAt: string;
-  createdAt: string;
 }
 
-export interface OutboxEvent {
-  id: string;
+export interface OutboxEvent extends Entity {
   eventType: string;
   payload: string;
   payloadSchemaVersion: string;
@@ -187,12 +184,9 @@ export interface OutboxEvent {
   lastAttemptedAt: string | null;
   deliveredAt: string | null;
   error: string | null;
-  createdAt: string;
-  updatedAt: string;
 }
 
-export interface InboxEvent {
-  id: string;
+export interface InboxEvent extends Entity {
   dedupKey: string;
   source: string;
   eventType: string;
@@ -203,8 +197,6 @@ export interface InboxEvent {
   lastAttemptedAt: string | null;
   processedAt: string | null;
   error: string | null;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface HumanApproval extends Entity {

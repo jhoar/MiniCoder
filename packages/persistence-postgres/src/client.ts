@@ -35,11 +35,14 @@ export class PostgresDbClient implements DbClient {
 
   async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
     if (this.inTransaction) throw new Error('Nested transactions are not supported.');
+    // Flag is set BEFORE awaiting BEGIN so no concurrent outer operation can
+    // slip through the async window between BEGIN completing and the flag update.
+    // The finally block always resets it, even if BEGIN itself throws.
+    this.inTransaction = true;
     let rollbackRequired = false;
     try {
-      await this.client.query('BEGIN'); // flag stays false if this throws — client remains usable
+      await this.client.query('BEGIN');
       rollbackRequired = true;
-      this.inTransaction = true;
       const tx = new PostgresTxClient(this.client);
       const result = await fn(tx);
       await this.client.query('COMMIT');

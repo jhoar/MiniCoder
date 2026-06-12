@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (none — new in Phase 1)
-> Version: 1.0.0
+> Version: 1.2.0
 > Last-updated: 2026-06-12
 
 This document is the authoritative ERD for the MiniCoder database schema introduced in Phase 1.
@@ -909,6 +909,32 @@ Every merge-gate run writes one evidence record. Unsafe PRs cannot be merged by 
 | Default timestamp  | `strftime('%Y-%m-%dT%H:%M:%SZ', 'now')` | `NOW()`              |
 | FK enforcement     | `PRAGMA foreign_keys = ON` required     | Enforced by default  |
 | Network filesystem | **Forbidden**                           | N/A (always TCP)     |
+
+---
+
+## Retention Policies
+
+The spec requires every high-volume table to declare a retention policy. Policies are enforced by a
+scheduled sweep task (deterministic polling, not WAL-tailing), which is portable across SQLite and
+PostgreSQL.
+
+| Table                   | Default retention                               | Sweep column                | Notes                                                                          |
+| ----------------------- | ----------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------ |
+| `workflow_events`       | 90 days                                         | `created_at`                | State-transition audit log; keep long enough for diagnostics                   |
+| `inbox_events`          | 30 days after processing                        | `processed_at`              | Pending rows are never swept (processing not yet complete)                     |
+| `outbox_events`         | 30 days after delivery                          | `delivered_at`              | Pending/failed rows are never swept (may need retry)                           |
+| `idempotency_keys`      | Per `expires_at` (app-configured, default 24 h) | `expires_at`                | TTL set at insert time; sweep deletes rows where `expires_at < NOW()`          |
+| `agent_runs`            | 90 days                                         | `created_at`                | Cascade-deletes `agent_errors`, `agent_tool_operations`, `agent_context_packs` |
+| `agent_errors`          | With parent `agent_run`                         | —                           | ON DELETE CASCADE from `agent_runs`; no independent sweep needed               |
+| `agent_tool_operations` | With parent `agent_run`                         | —                           | ON DELETE CASCADE from `agent_runs`; no independent sweep needed               |
+| `cost_records`          | Per `expires_at` if set; otherwise 365 days     | `expires_at` / `created_at` | `expires_at` is nullable; rows without it fall back to the 365-day wall        |
+
+**Sweep invariant:** the sweep task must never delete rows that are still actionable (pending
+outbox/inbox events, unexpired idempotency keys, in-progress agent runs). The sweep predicate for
+each table must check the appropriate status/state column in addition to the timestamp threshold.
+
+**Configuration:** retention durations are configurable per deployment via `budget_policies`-style
+config or environment variables; the values above are defaults, not hard-coded limits.
 
 ---
 
