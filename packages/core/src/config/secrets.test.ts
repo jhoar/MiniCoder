@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { EnvSecretBackend, FileSecretBackend, MissingSecretError } from './secrets.js';
+import { EnvSecretBackend, MissingSecretError } from './secrets.js';
 
 describe('EnvSecretBackend', () => {
   const backend = new EnvSecretBackend();
@@ -39,34 +36,5 @@ describe('EnvSecretBackend', () => {
     expect(keys).toContain('TEST_BETA');
     delete process.env['TEST_ALPHA'];
     delete process.env['TEST_BETA'];
-  });
-});
-
-describe('FileSecretBackend', () => {
-  let tmpFile: string;
-
-  beforeEach(() => {
-    tmpFile = path.join(os.tmpdir(), `minicoder-test-secrets-${Date.now()}.json`);
-    fs.writeFileSync(tmpFile, JSON.stringify({ MY_TOKEN: 'file-secret-value' }));
-  });
-
-  afterEach(() => {
-    if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-  });
-
-  it('returns the value from the file', async () => {
-    const backend = new FileSecretBackend(tmpFile);
-    const value = await backend.get('MY_TOKEN');
-    expect(value).toBe('file-secret-value');
-  });
-
-  it('throws MissingSecretError for missing key', async () => {
-    const backend = new FileSecretBackend(tmpFile);
-    await expect(backend.get('NONEXISTENT_KEY')).rejects.toBeInstanceOf(MissingSecretError);
-  });
-
-  it('throws when file does not exist', async () => {
-    const backend = new FileSecretBackend('/nonexistent/path/secrets.json');
-    await expect(backend.get('ANY_KEY')).rejects.toThrow();
   });
 });

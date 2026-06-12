@@ -23,9 +23,12 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 
 ## 2. Secrets Management
 
-- **Secret backend abstraction.** Secrets are resolved through a backend interface: environment/file
-  for local/single-node; a managed secret manager (e.g., cloud KMS/secret manager) for hosted/team.
-  Code never hard-codes secrets.
+- **Secret backend abstraction.** Secrets are resolved through a backend interface:
+  `EnvSecretBackend` (environment variables) for local/single-node; `ManagedSecretBackend`
+  (cloud KMS/secret manager) for hosted/team. Code never hard-codes secrets. A plaintext
+  `FileSecretBackend` was considered and rejected: reading unencrypted JSON from disk violates
+  the "encrypted at rest" invariant below. Local developers use OS keychain, a secrets manager
+  CLI exporting env vars, or Docker/CI secrets injection — never a committed plaintext file.
 - **No plaintext at rest in MiniCoder state.** Secrets are never stored in the database, never
   written to Markdown artifacts, and never placed in `agent_context_packs` or logs.
 - **Per-adapter scoping.** Each adapter receives only the credentials it needs; the orchestrator is
