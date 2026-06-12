@@ -217,7 +217,9 @@ merge.
 ## Phase 13 — Orchestrator API
 
 Deliver the Fastify API: read endpoints, command endpoints, **webhook endpoints**, state/diagnostics
-read models, local-mode authentication, a role model, the **full per-command contract** (§9), and an
+read models, local-mode authentication, a role model, the **full per-command contract**
+(completing the contracts introduced in Phase 2; see
+[`01-system-specification.md`](01-system-specification.md) §9), and an
 **OpenAPI-first** description honoring the API conventions (command envelope, idempotency-key header,
 problem-details errors, cursor pagination, audit metadata), plus API tests.
 

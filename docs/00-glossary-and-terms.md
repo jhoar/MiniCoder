@@ -91,6 +91,13 @@ active → implementation_complete → design_document_generating
 → design_document_ready_for_review → design_document_approved → project_complete
 ```
 
+Revision loop:
+
+```text
+design_document_ready_for_review → design_document_revision_requested
+→ design_document_generating → design_document_ready_for_review
+```
+
 Preconditions: `active → implementation_complete` requires all approved features `merged` and
 **Project Acceptance Validation** to pass (`01-system-specification.md` §13.1); the
 design-document states are in §3.4; `project_complete` requires human approval of the final design
@@ -116,6 +123,15 @@ ci_running → [CI fail] → ci_failed → changes_requested → fixing
 ci_failed  → human_required        (when review-cycle / fix-attempt limits are exceeded)
 ```
 
+Merge can also fail **after** `merge_ready` (GitHub-side merge rejection, a late conflict, changed
+branch protection, or stale mergeability):
+
+```text
+merge_ready → [merge attempt fails] → merge_failed → reconcile
+merge_failed → under_review     (when a re-push/re-check can clear it automatically)
+merge_failed → human_required   (when it cannot be cleared automatically)
+```
+
 A CI failure never merges and never silently passes. The Execution Orchestrator records an
 automated **blocking** review finding, routes the feature `ci_failed → changes_requested → fixing`
 (re-using the review/fix loop and its limits in `01-system-specification.md` §5.8), and escalates to
@@ -131,11 +147,21 @@ expiry/reconciliation (`state doctor`).
 ### 3.3 Failure / escalation states
 
 ```text
-blocked
-failed
-system_failed     (infrastructure/sandbox/timeout failure beyond retry thresholds; escalates to human_required)
-human_required
+blocked           (non-terminal: a dependency/precondition is unmet — e.g. an unmet feature
+                   dependency or unresolved blocking gap; clears automatically when the precondition
+                   is satisfied, no human needed)
+failed             (terminal for the current run/attempt: an operation exhausted its retries; the
+                   feature does not advance and is escalated — failed always routes to human_required
+                   for a human disposition: retry, skip, or block)
+system_failed     (infrastructure/sandbox/timeout failure beyond retry thresholds; releases
+                   locks/leases and escalates to human_required)
+merge_failed       (a merge attempt failed after merge_ready; see §3.2 — auto-clears to under_review
+                   or escalates to human_required)
+human_required    (automation is intentionally stopped pending a human decision: resolve, retry,
+                   skip, block, or resume; distinct from blocked, which needs no human)
 ```
+
+`ci_failed` (§3.2) is a feature-execution state, not a generic failure state.
 
 ### 3.4 Completion and design-document states
 
@@ -187,12 +213,12 @@ running                      (automation advancing normally)
 paused_by_operator           (a human paused via the pause command)
 paused_budget_exceeded       (a hard budget limit halted automation)
 waiting_for_budget_approval  (a soft limit reached; awaiting a budget-override approval)
-resumed                      (automation re-enabled after a pause/approval)
 ```
 
 A budget breach moves the project/feature to `paused_budget_exceeded` or
 `waiting_for_budget_approval`; an approved budget override (or a human resume) returns it to
-`resumed`/`running`. See `01-system-specification.md` §5.11.
+`running`. Resumption is recorded as a **`resumed` event / policy decision**, not a durable state.
+See `01-system-specification.md` §5.11.
 
 ### 3.9 State-transition matrix (required form)
 
@@ -203,6 +229,23 @@ matrix (authored in implementation Phase 2). Each row has exactly these columns:
 from_state | to_state | triggering command/event | actor | guard condition
            | side effects | emitted events | idempotency key | recovery path
 ```
+
+### 3.10 Subsystem record states
+
+These belong to subsystem records, not the feature/project lifecycle, and are canonical tokens for
+those records:
+
+```text
+agent_run_state       : queued | running | succeeded | failed | cancelled
+workflow_run_state    : queued | running | waiting | succeeded | failed | cancelled
+                        (correlated to Trigger.dev run status; see triggerdev_runs)
+pr_review_state       : none | pending | commented | changes_requested | approved | dismissed
+                        (mirrors GitHub review status; GitHub remains authoritative)
+artifact_export_state : pending | generating | exported | stale | failed
+```
+
+The feature execution machine (§3.2) references but does not duplicate these; e.g., a feature in
+`under_review` has an associated `pr_review_state`.
 
 ---
 
@@ -230,6 +273,18 @@ from_state | to_state | triggering command/event | actor | guard condition
 
 `GenericLLMPlannerAdapter`, `CodexCoderAdapter`, `ClaudeReviewerAdapter`,
 `GenericLLMDocumentationAdapter`. Reference implementations only — never architectural dependencies.
+
+### 4.4 User / Auth roles (canonical)
+
+Distinct from the agent roles above; these are the human/API authorization roles, authoritative
+here and referenced by the UI and security specs:
+
+```text
+viewer    | operator | approver | admin
+```
+
+`approver`/`admin` are required for plan activation, budget override, disagreement resolution,
+merge-if-ready, final design-document approval, and guarded state-lifecycle/destructive actions.
 
 ---
 
@@ -267,7 +322,8 @@ minicoder state validate
 minicoder state reconcile
 minicoder state doctor
 minicoder state export-diagnostics
-minicoder state repair --dry-run
+minicoder state repair --dry-run                       # preview only (default; non-destructive)
+minicoder state repair --apply --confirmation <token>  # guarded destructive apply
 
 # GitHub simulation (test/dev only)
 minicoder github simulate-pr-opened
@@ -293,7 +349,7 @@ minicoder test scenario github-race
 minicoder test scenario final-design-document
 ```
 
-Destructive commands (`db reset`, `trigger reset-dev`, `state repair`) require an
+Destructive commands (`db reset`, `trigger reset-dev`, `state repair --apply`) require an
 environment check, role/permission check, dry-run where possible, explicit confirmation flag, and
 an audit event. Production destructive operations are disallowed unless implemented as guarded
 safe-maintenance workflows.

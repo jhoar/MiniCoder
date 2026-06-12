@@ -79,8 +79,10 @@ human approval
 activate backlog
 ```
 
-If readiness is `insufficient`, generate clarification questions or a discovery backlog. Do not
-activate an executable backlog.
+If readiness is `insufficient`, generate clarification questions or a **discovery backlog**. A
+`discovery_backlog` is a **non-executable** planning output (a list of investigation/spike items to
+reduce uncertainty); it is explicitly not an executable backlog and **cannot activate feature
+requests**. Do not activate an executable backlog while readiness is `insufficient`.
 
 ## 6. Workflow Layer Tasks
 
