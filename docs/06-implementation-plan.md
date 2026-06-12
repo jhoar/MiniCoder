@@ -19,26 +19,26 @@ afterthought.
 
 ## 2. Phase Overview
 
-| Phase | Name | Outcome |
-|---|---|---|
-| 1 | Repository and Persistence Foundation | Monorepo; persistence abstraction; SQLite + PostgreSQL; migrations; core domain model |
-| 2 | State Machine, Idempotency, and Command Layer | Valid lifecycle transitions; transactional, idempotent commands; outbox/inbox; locks/lanes |
-| 3 | Workflow Layer Harness | Durable workflow execution from the start |
-| 4 | Test Harness and State Lifecycle Tooling | Automated test modes and lifecycle CLI commands |
-| 5 | Agent Adapter Foundation | Vendor-neutral adapters, mock/human adapters, conformance tests |
-| 6 | Bootstrap Planner, Readiness, and Clarification | Specification input becomes an approved database backlog |
-| 7 | GitHub Webhooks, Integration, and Reconciliation | Event-driven GitHub sync with reconciliation fallback |
-| 8 | Execution Orchestrator | Sequential, policy-driven feature execution |
-| 9 | Reference Coder Adapter | First replaceable Coder implementation |
-| 10 | Reference Reviewer Adapter and Review/Fix Loop | Structured review loop |
-| 11 | Disagreement, Arbiter, and Human Escalation | Bounded disagreement resolution |
-| 12 | Merge Gate and Branch Protection | Safe, policy-based merge |
-| 13 | Orchestrator API | Stable command/query/webhook API |
-| 14 | Ink Text UI | Developer/operator terminal UI |
-| 15 | Next.js Web UI | Team-facing UI |
-| 16 | Observability, Cost, and Recovery | Operational hardening |
-| 17 | Final Design Document Generator | Final system design document after completion |
-| 18 | Future Extensions | Parallel execution, multi-repo, additional adapters/SCM, PDF/DOCX |
+| Phase | Name                                             | Outcome                                                                                    |
+| ----- | ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| 1     | Repository and Persistence Foundation            | Monorepo; persistence abstraction; SQLite + PostgreSQL; migrations; core domain model      |
+| 2     | State Machine, Idempotency, and Command Layer    | Valid lifecycle transitions; transactional, idempotent commands; outbox/inbox; locks/lanes |
+| 3     | Workflow Layer Harness                           | Durable workflow execution from the start                                                  |
+| 4     | Test Harness and State Lifecycle Tooling         | Automated test modes and lifecycle CLI commands                                            |
+| 5     | Agent Adapter Foundation                         | Vendor-neutral adapters, mock/human adapters, conformance tests                            |
+| 6     | Bootstrap Planner, Readiness, and Clarification  | Specification input becomes an approved database backlog                                   |
+| 7     | GitHub Webhooks, Integration, and Reconciliation | Event-driven GitHub sync with reconciliation fallback                                      |
+| 8     | Execution Orchestrator                           | Sequential, policy-driven feature execution                                                |
+| 9     | Reference Coder Adapter                          | First replaceable Coder implementation                                                     |
+| 10    | Reference Reviewer Adapter and Review/Fix Loop   | Structured review loop                                                                     |
+| 11    | Disagreement, Arbiter, and Human Escalation      | Bounded disagreement resolution                                                            |
+| 12    | Merge Gate and Branch Protection                 | Safe, policy-based merge                                                                   |
+| 13    | Orchestrator API                                 | Stable command/query/webhook API                                                           |
+| 14    | Ink Text UI                                      | Developer/operator terminal UI                                                             |
+| 15    | Next.js Web UI                                   | Team-facing UI                                                                             |
+| 16    | Observability, Cost, and Recovery                | Operational hardening                                                                      |
+| 17    | Final Design Document Generator                  | Final system design document after completion                                              |
+| 18    | Future Extensions                                | Parallel execution, multi-repo, additional adapters/SCM, PDF/DOCX                          |
 
 > **Phases 1–8 are the platform kernel** (persistence, state machine, Workflow Layer, test harness,
 > adapters, planner, GitHub integration, execution). Phases 9–17 are incremental capability layers

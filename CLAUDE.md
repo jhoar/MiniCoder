@@ -81,58 +81,72 @@ State names, role names, and identifier formats are canonical in `docs/00-glossa
 Use them verbatim:
 
 ### Feature execution states (§3.2)
+
 ```
 approved_pending_execution → selected → coding → code_pushed → pr_opened → ci_running
 → under_review → changes_requested → fixing → code_pushed → ci_running → under_review
 → approved_by_policy → merge_ready → merged
 ```
+
 Also: `ci_failed`, `merge_failed`, `human_required`, `blocked`, `failed`, `system_failed`
 
 ### Automation control states (§3.8)
+
 ```
 running | paused_by_operator | paused_budget_exceeded | waiting_for_budget_approval
 ```
+
 `resumed` is an **event**, not a state.
 
 ### Planning states (§3.1)
+
 ```
 draft → pending_approval → approved → activated_for_execution
 ```
 
 ### Project lifecycle (§3.1)
+
 ```
 active → implementation_complete → design_document_generating
 → design_document_ready_for_review → design_document_approved → project_complete
 ```
+
 Revision loop: `design_document_ready_for_review → design_document_revision_requested
 → design_document_generating → design_document_ready_for_review`
 
 ### Agent adapter role names (§4.1)
+
 ```
 PlannerAgentAdapter | CoderAgentAdapter | ReviewerAgentAdapter
 ArbiterAgentAdapter | DocumentationAgentAdapter | HumanAgentAdapter
 ```
 
 ### Test mock names (§4.2)
+
 ```
 MockPlannerAdapter | MockCoderAdapter | MockReviewerAdapter
 MockArbiterAdapter | MockDocumentationAdapter | HumanTestAdapter
 ```
+
 `HumanTestAdapter` is the deterministic test mock of `HumanAgentAdapter` — not the same thing.
 
 ### User/auth roles (§4.4)
+
 ```
 viewer | operator | approver | admin
 ```
+
 `approver`/`admin` is required for: plan activation, budget override, disagreement resolution,
 merge-if-ready, final design-document approval, and guarded/destructive lifecycle actions.
 
 ### Identifiers (§3.11)
+
 - Feature-request IDs: `FR-<zero-padded-int>` (e.g., `FR-002`)
 - Feature branches: `minicoder/FR-<n>` (e.g., `minicoder/FR-002`)
 - GitHub review-gate status check: `minicoder/review-gate`
 
 ### Workflow Layer task IDs (exact strings, no drift)
+
 ```
 planning-readiness-assessment | start-clarification | generate-implementation-plan
 generate-feature-backlog | activate-approved-backlog | start-next-feature
@@ -140,17 +154,21 @@ github-reconciliation | export-plan | export-backlog
 ```
 
 ### Review finding severities (§3.7)
+
 ```
 blocking | non_blocking | question | nit | out_of_scope | requires_human_decision
 ```
+
 `requires_human_decision` prevents merge and routes via `human_required`.
 
 ## CI Loop Rule
 
 **Every new push re-enters CI.** A fix always flows:
+
 ```
 fixing → code_pushed → ci_running
 ```
+
 before returning to `under_review`. Review and merge never act on un-tested code.
 
 ## Outbox / Inbox Rules
@@ -163,7 +181,8 @@ before returning to `under_review`. Review and merge never act on un-tested code
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
 as a matrix. This is a CI requirement, not optional. The security scan (pnpm audit/OSV + gitleaks
-+ semgrep) also runs in CI.
+
+- semgrep) also runs in CI.
 
 ## Budget Gate
 
@@ -171,6 +190,7 @@ The budget-gate primitive ships in **Phase 8** (not Phase 16). Phase 16 adds das
 forecasting only.
 
 Key tables: `budget_policies` (thresholds/config). Key transitions:
+
 - Hard limit breach → `paused_budget_exceeded`
 - Soft limit breach → `waiting_for_budget_approval`
 
@@ -190,6 +210,7 @@ breaker and escalates to human.
 ## State Repair CLI
 
 `state repair` requires two steps:
+
 1. `minicoder state repair --dry-run` — previews changes, prints a single-use confirmation token.
 2. `minicoder state repair --apply --confirmation <token>` — executes; token is time-boxed and
    single-use.
@@ -199,6 +220,7 @@ breaker and escalates to human.
 ## What Multiple State Machines Look Like
 
 There are several distinct state machines — not one:
+
 - **Project**: `active → implementation_complete → ... → project_complete`
 - **Plan**: `draft → pending_approval → approved → activated_for_execution`
 - **Feature (execution)**: §3.2 above
@@ -211,21 +233,21 @@ There are several distinct state machines — not one:
 
 ## Technology Stack (Locked)
 
-| Concern | Choice |
-|---|---|
-| Language | TypeScript |
-| Runtime | Node.js |
-| Package manager | pnpm |
-| Local/single-node DB | SQLite |
-| Hosted/team DB | PostgreSQL |
-| Validation | Zod |
-| Testing | Vitest |
-| GitHub API | Octokit |
-| Workflow execution | Trigger.dev |
-| API framework | Fastify |
-| Text UI | Ink |
-| Web UI | React / Next.js |
-| Security scanning | pnpm audit/OSV + gitleaks + semgrep |
+| Concern              | Choice                              |
+| -------------------- | ----------------------------------- |
+| Language             | TypeScript                          |
+| Runtime              | Node.js                             |
+| Package manager      | pnpm                                |
+| Local/single-node DB | SQLite                              |
+| Hosted/team DB       | PostgreSQL                          |
+| Validation           | Zod                                 |
+| Testing              | Vitest                              |
+| GitHub API           | Octokit                             |
+| Workflow execution   | Trigger.dev                         |
+| API framework        | Fastify                             |
+| Text UI              | Ink                                 |
+| Web UI               | React / Next.js                     |
+| Security scanning    | pnpm audit/OSV + gitleaks + semgrep |
 
 ## Editing Guidelines for Documentation
 

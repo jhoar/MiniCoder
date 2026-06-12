@@ -154,11 +154,13 @@ actions (see [`04-testing-validation-state-lifecycle.md`](04-testing-validation-
 ## 5. Major Subsystems
 
 ### 5.1 Bootstrap Planner
+
 Converts user input or specifications into a structured implementation plan and feature requests,
 writing structured records to the database. It does not produce the executable backlog by writing
 `backlog.md`. Detailed in [`02-bootstrap-planner-clarification.md`](02-bootstrap-planner-clarification.md).
 
 ### 5.2 Planning Readiness Assessment
+
 Before generating an executable backlog, the planner performs a readiness assessment with statuses
 `sufficient`, `sufficient_with_assumptions`, `insufficient`. It identifies blocking gaps,
 non-blocking gaps, assumptions, clarification questions, readiness score, and backlog-generation
@@ -166,6 +168,7 @@ eligibility. Blocking gaps prevent backlog activation unless resolved or explici
 authorized human.
 
 ### 5.3 Clarification Workflow
+
 The structured dialogue that resolves missing, ambiguous, or risky requirements before backlog
 generation or activation. Includes sessions, questions, answers, gaps, assumptions, decisions, and
 score. Statuses are defined in the glossary §3.6. If blocking gaps remain after clarification,
@@ -173,12 +176,14 @@ MiniCoder must not activate an executable backlog unless an authorized human exp
 risk.
 
 ### 5.4 Execution Orchestrator
+
 Selects approved feature requests and moves them through the controlled execution lifecycle. Owns
 feature selection, state-transition validation, GitHub reconciliation, agent-invocation
 coordination, review/fix loop control, merge-gate evaluation, human escalation, and
 implementation-complete detection.
 
 ### 5.5 Workflow Layer
+
 The Workflow Layer (implemented by Trigger.dev) executes durable workflows and idempotent tasks.
 Task families include planning readiness assessment, clarification, plan generation, backlog
 activation, start next feature, coder run, reviewer run, review/fix loop, disagreement resolution,
@@ -187,12 +192,14 @@ and final design document generation. Workflow Layer run IDs and run metadata (T
 metadata) are correlated to database workflow events and agent runs.
 
 ### 5.6 Agent Adapter Architecture
+
 Role-based adapters: `PlannerAgentAdapter`, `CoderAgentAdapter`, `ReviewerAgentAdapter`,
 `ArbiterAgentAdapter`, `DocumentationAgentAdapter`, `HumanAgentAdapter`. Adapters declare
 capabilities, normalize outputs, normalize errors, and record agent runs. Detailed in
 [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md).
 
 ### 5.7 GitHub Integration
+
 Owns all GitHub API operations and the webhook receiver: repository inspection, branch
 lookup/creation, PR lookup/creation, PR state reading, review reading, check/status reading,
 mergeability reading, status check publication, webhook ingestion into the inbox, and the merge
@@ -218,19 +225,23 @@ operation when policy permits.
   mark it `human_required` on irreconcilable divergence, or no-op when already consistent.
 
 ### 5.8 Review/Fix Loop Controller
+
 Manages structured review cycles between Coder and Reviewer agents. Loops are bounded. Default
 limits: five review cycles per feature, two fix attempts per finding, one reopening of the same
 finding.
 
 ### 5.9 Disagreement Manager
+
 Detects unresolved or circular coder/reviewer conflicts and routes them to the Arbiter or Human
 Agent.
 
 ### 5.10 Merge Gate
+
 Evaluates whether a PR may be merged and publishes `minicoder/review-gate`. Merge is
 allowed only when all policy and GitHub conditions pass (see §12).
 
 ### 5.11 Cost Manager
+
 Tracks and enforces budgets by project, feature, agent run, role, adapter, provider, model, and
 review cycle.
 
@@ -256,26 +267,32 @@ review cycle.
 - Every enforcement decision is recorded as a `policy_decision` and a `cost_record`.
 
 ### 5.12 Observability and Event System
+
 Records workflow events, agent runs, tool operations, GitHub operations, review findings, coder
 responses, disagreements, policy decisions, cost records, human approvals, outbox/inbox events, and
 Workflow Layer run references.
 
 ### 5.13 Orchestrator API
+
 Exposes read models and commands. Only supported access path for TUI and Web UI.
 
 ### 5.14 Text UI
+
 Node.js + Ink. Supports developer/operator workflows. Detailed in
 [`05-ui-specification.md`](05-ui-specification.md).
 
 ### 5.15 Web UI
+
 React / Next.js. Supports team visibility, approvals, cost dashboards, artifact management,
 state-health/admin views, and human-required workflows.
 
 ### 5.16 Artifact Generator
+
 Exports `plan.md`, `backlog.md`, `final-design-document.md` (and optional future PDF/DOCX).
 Artifacts are generated from database and source repository state.
 
 ### 5.17 Design Document Generator
+
 Produces the final System Design Document after implementation completion. Triggered by the
 Execution Orchestrator once all approved features are merged and final validation passes. May use a
 `DocumentationAgentAdapter` to draft content. A human must approve the final document before
@@ -323,7 +340,7 @@ The canonical state lists (planning, execution, failure/escalation, completion/d
 readiness, clarification) are defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §3. Subsystems must use those names.
 
-**Where current state lives.** Each machine's *current* state is a column on its own entity table
+**Where current state lives.** Each machine's _current_ state is a column on its own entity table
 (e.g., `feature_requests`/`feature_runs` for execution, `implementation_plans` for the plan,
 `clarification_sessions` for clarification, `projects` for the project machine, `agent_runs`,
 `triggerdev_runs`, `artifact_exports`). `workflow_states` holds cross-cutting workflow status and
@@ -399,7 +416,7 @@ the inbox for durable processing (reconciliation remains the fallback path).
 deliverable):
 
 - **Command envelope:** commands accept a typed payload and return `{ command_id, accepted,
-  resulting_state, emitted_event_ids }`; state changes happen only through commands (§4.5).
+resulting_state, emitted_event_ids }`; state changes happen only through commands (§4.5).
 - **Idempotency:** mutating requests carry an `Idempotency-Key` header mapped to the
   `idempotency_keys` table; replays return the original result.
 - **Errors:** RFC 9457 **problem-details** (`type`, `title`, `status`, `detail`, `instance`) with a
@@ -457,14 +474,14 @@ These records make every merge decision auditable and replayable.
 **Gate-input traceability** (each input, the subsystem that produces it, and the phase that delivers
 it):
 
-| Merge-gate input | Produced by | Phase |
-|---|---|---|
-| CI result | GitHub Actions → GitHub Integration | 7 |
-| Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop | 10 |
-| Conversation resolution | GitHub Integration | 7 |
-| Branch protection / mergeability | GitHub Integration | 7 |
-| Budget status | Budget-gate primitive (Cost Manager) | 8 |
-| Human approvals | Human-required workflow / `human_approvals` | 11 |
+| Merge-gate input                                     | Produced by                                 | Phase |
+| ---------------------------------------------------- | ------------------------------------------- | ----- |
+| CI result                                            | GitHub Actions → GitHub Integration         | 7     |
+| Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop          | 10    |
+| Conversation resolution                              | GitHub Integration                          | 7     |
+| Branch protection / mergeability                     | GitHub Integration                          | 7     |
+| Budget status                                        | Budget-gate primitive (Cost Manager)        | 8     |
+| Human approvals                                      | Human-required workflow / `human_approvals` | 11    |
 
 ## 13. Final System Design Document
 
