@@ -112,7 +112,7 @@ Additional scenarios:
 insufficient input → clarification questions
 blocking gap unresolved → no backlog activation
 review loop exceeded → human_required
-budget exceeded → paused or budget_override_required
+budget exceeded → paused_budget_exceeded or waiting_for_budget_approval (glossary §3.8)
 GitHub event race → workflow invalidated and reconciled
 Trigger.dev task retry → idempotent completion
 Trigger.dev waitpoint lost → reconciliation detects issue
@@ -183,9 +183,11 @@ finding; arbiter resolves / escalates; documentation generator succeeds / requir
 
 ## 7. Production Safety Requirements
 
-Destructive commands (`minicoder db reset`, `minicoder trigger reset-dev`, `minicoder state purge`)
+Destructive commands (`minicoder db reset`, `minicoder trigger reset-dev`, `minicoder state repair`)
 must require an environment check, role/permission check, dry-run where possible, backup check where
 applicable, explicit confirmation flag, and an audit event. Production reset is normally disallowed.
+There is no unguarded bulk `purge`; irreversible maintenance is performed only through these guarded
+workflows.
 
 ```bash
 minicoder db reset --env development
@@ -210,3 +212,32 @@ databases and mocked providers; system tests run without real LLM calls or manua
 Compose and Kubernetes system tests run non-interactively; database, Trigger.dev, and state
 lifecycle/doctor commands exist; GitHub simulation commands exist; production-destructive operations
 are guarded; and CI can execute meaningful MiniCoder workflows automatically.
+
+---
+
+## 11. Operations and Runbooks
+
+MiniCoder must ship operational runbooks (not only test harnesses). Each runbook is a documented,
+rehearsable procedure backed by the lifecycle CLI (§5) and validated by a test scenario where
+possible.
+
+Required runbooks:
+
+- **Backup and restore** — database snapshot/restore (`db snapshot`/`db restore`); PostgreSQL
+  backup and point-in-time restore; restore drills.
+- **Database migrations** — forward migrate and safe rollback (`db migrate`/`db rollback`),
+  including the dual SQLite/PostgreSQL paths and migration-status validation.
+- **Trigger.dev (self-host) operations** — resource sizing for webapp/Postgres/Redis/worker;
+  version upgrades of the self-hosted stack; backup of its Postgres/Redis; queue draining
+  (`trigger drain-queue`) and run replay (`trigger replay-run`).
+- **Stuck-workflow recovery** — detect via `state doctor`; reconcile (`state reconcile`);
+  cancel/replay orphaned runs; clear stale locks/leases and orphaned waitpoints.
+- **GitHub webhook replay** — reprocess missed or failed inbox events; fall back to scheduled
+  reconciliation; verify dedup keys prevent double-processing.
+- **Secret rotation** — rotate GitHub App/PAT, provider tokens, and webhook signing secrets with
+  zero stored plaintext; see `07-security-and-secrets.md`.
+- **Disaster recovery** — full rebuild from backups + reconciliation against GitHub truth, with a
+  documented RPO/RTO target.
+
+Each runbook must state preconditions, the exact guarded commands, expected diagnostics output, and
+a rollback/abort path.

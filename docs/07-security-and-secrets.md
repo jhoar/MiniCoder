@@ -1,0 +1,96 @@
+# MiniCoder — Security and Secrets Specification
+
+> Status: Canonical
+> Supersedes: (new — extracts and expands `01-system-specification.md` §15)
+> Version: 1.0.0
+> Last-updated: 2026-06-12
+
+This document is the authoritative security and secrets specification. It expands the principles in
+[`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
+Contract in [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md) §11. Terms and
+roles are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md).
+
+MiniCoder lets agents modify repositories, run tests, push branches, and inspect project context.
+Security is therefore a **design property, not a convention**: secrets are isolated, workspaces are
+sandboxed, and untrusted input is treated as hostile.
+
+## 1. Security Foundation Is Early
+
+The security foundation is established in implementation **Phases 1–3**, not deferred to the API
+phase: the config/secrets abstraction, environment modes, audit actor identity, local
+authentication, webhook-secret management, and secret-redaction tests all exist before GitHub
+webhooks (Phase 7) or real coder adapters (Phase 9) run.
+
+## 2. Secrets Management
+
+- **Secret backend abstraction.** Secrets are resolved through a backend interface: environment/file
+  for local/single-node; a managed secret manager (e.g., cloud KMS/secret manager) for hosted/team.
+  Code never hard-codes secrets.
+- **No plaintext at rest in MiniCoder state.** Secrets are never stored in the database, never
+  written to Markdown artifacts, and never placed in `agent_context_packs` or logs.
+- **Per-adapter scoping.** Each adapter receives only the credentials it needs; the orchestrator is
+  not given every provider token.
+- **Redaction.** A redaction layer scrubs secrets from logs, structured outputs, error summaries,
+  and observability records; redaction is covered by tests (conformance + integration).
+- **Encryption.** Secrets are encrypted at rest in the chosen backend and in transit (TLS); any
+  encryption keys live in the secret backend, not the application database.
+
+## 3. GitHub Authentication Model
+
+- **GitHub App preferred over PAT.** Production deployments use a **GitHub App** with installation
+  tokens (short-lived, least-privilege); a PAT is acceptable only for local/single-node development.
+- **Least-privilege permissions:** contents (read/write), pull requests (read/write), checks
+  (read/write), statuses (read/write), metadata (read), and webhooks — nothing broader.
+- **Webhook signatures.** All inbound webhook deliveries are signature-verified (HMAC) before inbox
+  persistence; unsigned/invalid deliveries are rejected and audited.
+
+## 4. Authentication, Sessions, and Authorization
+
+- **Local mode.** Local auth identifies an actor for audit and role enforcement without external
+  identity infrastructure.
+- **Hosted mode.** OAuth (or equivalent SSO) issues sessions; sessions are short-lived and revocable.
+- **Roles.** `viewer`, `operator`, `approver`, `admin` (glossary §10 of the UI spec). Approver/admin
+  is required for plan activation, budget override, disagreement resolution, merge-if-ready, final
+  design-document approval, and guarded state-lifecycle/destructive actions.
+- **Authorization is backend-enforced.** UIs never enforce authorization themselves.
+
+## 5. Token Rotation and Audit Retention
+
+- **Rotation.** GitHub App keys/installation tokens, provider tokens, and webhook signing secrets
+  are rotatable with zero stored plaintext and no downtime; rotation is a documented runbook
+  ([`04-testing-validation-state-lifecycle.md`](04-testing-validation-state-lifecycle.md) §11).
+- **Audit.** Human approvals, destructive commands, budget overrides, and security-relevant actions
+  are recorded with actor identity, role, and correlation ID, and retained per a defined retention
+  policy.
+
+## 6. Workspace Sandboxing and Egress
+
+- **Isolated, ephemeral workspaces** per agent run (Adapter Execution Contract §11.1): fresh
+  checkout, one branch per run, torn down afterward.
+- **Default-deny egress.** Workspace network access is denied by default and allow-listed only for
+  required endpoints (the assigned provider, GitHub). This contains exfiltration and
+  prompt-injection-driven callbacks.
+- **Bounded changes.** File changes are confined to the workspace, under a maximum diff size, and
+  rejected on disallowed paths.
+- **No secret-bearing workflows on untrusted code.** CI/agent workflows that hold secrets must not
+  run against untrusted fork code.
+
+## 7. Prompt-Injection and Untrusted Content
+
+MiniCoder treats repository content, PR descriptions, review comments, issue bodies, CI logs, and
+specification inputs as **untrusted**:
+
+- Untrusted content is never allowed to escalate adapter tool permissions, alter policy, or expand
+  secret exposure.
+- Instructions embedded in untrusted content do not change orchestration behavior; only signed
+  commands through the API and human approvals do.
+- Outputs derived from untrusted content remain subject to the merge gate, review findings, and
+  human approval — there is no automated bypass.
+
+## 8. Acceptance Criteria
+
+Satisfied when: secrets resolve only through the backend abstraction with no plaintext in
+database/artifacts/logs; redaction is test-covered; GitHub uses a least-privilege App with verified
+webhook signatures; roles are backend-enforced; token rotation and audit retention are documented
+runbooks; agent runs execute in sandboxed, default-deny-egress, ephemeral workspaces with bounded
+diffs; and untrusted content cannot escalate permissions or bypass the merge gate.
