@@ -198,6 +198,25 @@ lookup/creation, PR lookup/creation, PR state reading, review reading, check/sta
 mergeability reading, status check publication, webhook ingestion into the inbox, and the merge
 operation when policy permits.
 
+**GitHub integration contract** (full specification authored in implementation Phase 7):
+
+- **Webhook events consumed:** `pull_request`, `pull_request_review`,
+  `pull_request_review_comment`, `check_suite`, `check_run`, `status`, `push`. Each delivery is
+  persisted to `inbox_events` keyed by a **dedup key** = GitHub delivery GUID (`X-GitHub-Delivery`),
+  with idempotent processing.
+- **Auth model:** a **GitHub App** (installation token, least-privilege) is preferred over a PAT;
+  required permissions: contents (read/write), pull requests (read/write), checks (read/write),
+  statuses (read/write), metadata (read), webhooks. See `07-security-and-secrets.md`.
+- **Branch naming:** `minicoder/<feature-request-id>` (e.g., `minicoder/FR-002`); one branch per
+  feature, owned by the active Coder run.
+- **PR labels / status check:** MiniCoder publishes the status check `agent-orchestrator/review-gate`;
+  blocking labels prevent merge (see §12).
+- **Merge method:** squash by default (configurable); **force-push to MiniCoder branches is
+  disallowed** once a PR is open.
+- **Reconciliation algorithm:** on each relevant webhook (or on the scheduled fallback), fetch
+  authoritative GitHub state, compare against the database record, and either advance the workflow,
+  mark it `human_required` on irreconcilable divergence, or no-op when already consistent.
+
 ### 5.8 Review/Fix Loop Controller
 Manages structured review cycles between Coder and Reviewer agents. Loops are bounded. Default
 limits: five review cycles per feature, two fix attempts per finding, one reopening of the same
@@ -213,7 +232,19 @@ allowed only when all policy and GitHub conditions pass (see §12).
 
 ### 5.11 Cost Manager
 Tracks and enforces budgets by project, feature, agent run, role, adapter, provider, model, and
-review cycle. Budget overruns can pause automation or require human approval.
+review cycle.
+
+**Cost/budget policy:**
+
+- **Scopes:** budgets may be set per project, per feature, and per review cycle.
+- **Soft vs. hard limits:** crossing a **soft** limit moves automation to
+  `waiting_for_budget_approval` (glossary §3.8) and requires a human budget-override approval;
+  crossing a **hard** limit moves it to `paused_budget_exceeded` and halts automation.
+- **Resume:** an approved override (or human resume) returns automation to `resumed`/`running`.
+- **Forecast before run:** before an expensive agent run, the Cost Manager estimates the run cost
+  and refuses to start (deferring, not stranding the branch) when the forecast would breach a hard
+  limit — complementing the capacity pre-flight in §4.3.
+- Every enforcement decision is recorded as a `policy_decision` and a `cost_record`.
 
 ### 5.12 Observability and Event System
 Records workflow events, agent runs, tool operations, GitHub operations, review findings, coder
@@ -280,7 +311,11 @@ groups:
   `planning_questions`, `planning_assumptions`, `clarification_sessions`, `clarification_questions`,
   `clarification_answers`, `clarification_decisions`, `implementation_plans`, `plan_sections`,
   `feature_requests`, `feature_dependencies`, `acceptance_criteria`, `test_expectations`
-- **Workflow:** `workflow_states`, `workflow_events`, `human_approvals`, `policy_decisions`
+  (gaps and assumptions raised during clarification reuse `planning_gaps` / `planning_assumptions`
+  with a nullable `clarification_session_id`; there are no separate `clarification_gaps` /
+  `clarification_assumptions` tables)
+- **Workflow:** `workflow_states`, `workflow_events`, `human_approvals`, `policy_decisions`,
+  `merge_gate_evaluations` (one structured evidence record per merge-gate run — see §12)
 - **Consistency / durability:** `idempotency_keys`, `outbox_events`, `inbox_events`
   (GitHub webhook events), `workflow_locks` (locks/leases for sequential execution),
   `triggerdev_runs` (correlation: `triggerdev_run_id`, `triggerdev_task_id`, `triggerdev_status`,
@@ -291,6 +326,16 @@ groups:
 - **Cost and observability:** `cost_records`
 - **Artifacts and design documents:** `artifact_exports`, `design_documents`,
   `design_document_sections`, `design_decisions`, `glossary_terms`
+
+**Data design conventions** (a full ERD — primary keys, foreign keys, cardinalities, uniqueness
+constraints, and indexes — is authored as an implementation Phase 1 deliverable). Every table:
+
+- has a stable primary key and explicit foreign keys with referential integrity;
+- carries an optimistic-concurrency `version` column and `created_at` / `updated_at` timestamps
+  (UTC), portable across SQLite and PostgreSQL;
+- declares uniqueness and index expectations for its query/lookup paths (e.g., dedup keys,
+  idempotency keys, correlation IDs);
+- states a retention policy for high-volume rows (events, agent runs, cost records).
 
 ## 9. API Design
 
@@ -313,6 +358,24 @@ authorization.
 
 **Webhook endpoints:** receive GitHub webhook deliveries, verify signatures, and persist them to
 the inbox for durable processing (reconciliation remains the fallback path).
+
+**API conventions** (defined now; the full OpenAPI-first contract is an implementation Phase 13
+deliverable):
+
+- **Command envelope:** commands accept a typed payload and return `{ command_id, accepted,
+  resulting_state, emitted_event_ids }`; state changes happen only through commands (§4.5).
+- **Idempotency:** mutating requests carry an `Idempotency-Key` header mapped to the
+  `idempotency_keys` table; replays return the original result.
+- **Errors:** RFC 9457 **problem-details** (`type`, `title`, `status`, `detail`, `instance`) with a
+  stable machine-readable error code.
+- **Pagination:** list endpoints use cursor pagination (`?cursor=&limit=`) with a `next_cursor`.
+- **Audit metadata:** every request records actor identity, role, and correlation ID.
+- **Authorization matrix:** each command/query declares the minimum role (`viewer`/`operator`/
+  `approver`/`admin`) enforced by the backend.
+
+**Command contract.** Each command is specified (full set authored in implementation Phase 12) with:
+purpose, required role, input schema (Zod), validation rules, transaction boundary, emitted events,
+outbox records, failure modes, and idempotency behavior.
 
 ## 10. Agent Adapter Contracts
 
@@ -341,10 +404,27 @@ required conversations are resolved, review-cycle limits are not exceeded, the P
 blocking labels exist, budget gates pass, required human approvals exist, and GitHub branch
 protection permits merge.
 
+**Merge-gate evidence.** Every merge-gate run writes a structured `merge_gate_evaluations` record
+capturing the inputs and outcome: CI result, review result, unresolved blocking-findings count,
+conversation-resolution status, branch-protection status, budget status, human-approval status, and
+the final decision (allow / block, with reason). These records make every merge decision auditable
+and replayable.
+
 ## 13. Final System Design Document
 
-After all approved features are merged and final validation passes, MiniCoder generates a final
-System Design Document with exactly these top-level sections:
+### 13.1 Project Acceptance Validation
+
+"Final validation" before design-document generation is an explicit, automated **Project Acceptance
+Validation** suite. The project may advance to `implementation_complete` only when all of the
+following pass: the full test suite (unit/integration/system), migration validation, build,
+lint/typecheck, a security scan, documentation-completeness check, a `state doctor` / reconciliation
+pass with no outstanding divergence, and a clean artifact-export pass. Failure holds the project and
+records the failing gate.
+
+### 13.2 Document Sections
+
+After all approved features are merged and Project Acceptance Validation passes, MiniCoder generates
+a final System Design Document with exactly these top-level sections:
 
 1. Purpose and Scope
 2. Goals and Constraints
@@ -389,11 +469,16 @@ switching backends is a deployment/configuration decision, not an architecture c
 
 ## 15. Security
 
+Core principles (full specification in [`07-security-and-secrets.md`](07-security-and-secrets.md)):
 MiniCoder must scope provider credentials by adapter, avoid exposing all provider tokens to the
 orchestrator where not required, redact secrets, avoid storing secrets in the database, avoid
 writing secrets to Markdown artifacts, avoid storing private chain-of-thought, verify GitHub
 webhook signatures, use least-privilege GitHub tokens, and avoid secret-bearing workflows on
-untrusted fork code.
+untrusted fork code. The security foundation (config/secrets abstraction, audit actor identity,
+local auth, webhook-secret management, redaction tests) is established early — implementation Phases
+1–3 — not deferred to the API phase. Workspace sandboxing, egress control, and prompt-injection
+defenses for untrusted PR code are specified in `07-security-and-secrets.md` and the Adapter
+Execution Contract ([`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md)).
 
 ## 16. Technology Stack and Future Extensions
 

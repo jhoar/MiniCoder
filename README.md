@@ -23,6 +23,7 @@ The authoritative specification lives entirely under [`docs/`](docs/). Read in o
 | [`docs/04-testing-validation-state-lifecycle.md`](docs/04-testing-validation-state-lifecycle.md) | Automated testing, validation, and state-lifecycle management requirements. |
 | [`docs/05-ui-specification.md`](docs/05-ui-specification.md) | Ink Text UI and Next.js Web UI, including state-health and admin views. |
 | [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md) | The single canonical 18-phase implementation plan with acceptance criteria. |
+| [`docs/07-security-and-secrets.md`](docs/07-security-and-secrets.md) | Security and secrets: secret backend, GitHub App auth, sandboxing, egress, prompt-injection, untrusted code. |
 
 ## Precedence Rule
 

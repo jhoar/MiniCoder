@@ -41,7 +41,10 @@ Clarification resolves missing, ambiguous, or risky requirements before backlog 
 activation. Statuses are defined in glossary §3.6.
 
 Clarification records: `clarification_sessions`, `clarification_questions`, `clarification_answers`,
-`clarification_gaps`, `clarification_assumptions`, `clarification_decisions`.
+`clarification_decisions`. Gaps and assumptions are **not** stored in clarification-specific tables;
+they use the shared `planning_gaps` and `planning_assumptions` tables with a nullable
+`clarification_session_id` linking those raised or resolved during clarification (see
+[`01-system-specification.md`](01-system-specification.md) §8).
 
 Clarification questions should be prioritized and limited. Recommended limit: 3–7 questions per
 clarification round.

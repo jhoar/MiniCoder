@@ -65,6 +65,12 @@ Foundational rules:
 
 ## 3. Lifecycle States (canonical, single list)
 
+MiniCoder is modeled as **several distinct state machines**, not one: project, plan, feature
+(execution), PR/review, agent run, workflow run, clarification session, artifact export, and budget
+gate. The lists below are the canonical state tokens for each; the **state-transition matrix**
+(§3.9) defines the allowed transitions, and feature-level execution (§3.2) is the primary
+orchestration machine.
+
 ### 3.1 Planning lifecycle
 
 ```text
@@ -80,9 +86,12 @@ draft → pending_approval → approved → activated_for_execution
 
 ```text
 approved_pending_execution → selected → coding → code_pushed → pr_opened → ci_running
-→ under_review → changes_requested → fixing → code_pushed → under_review
+→ under_review → changes_requested → fixing → code_pushed → ci_running → under_review
 → approved_by_policy → merge_ready → merged
 ```
+
+**Every new push re-enters CI.** A fix always flows `fixing → code_pushed → ci_running` before
+returning to `under_review`; review and merge never act on un-tested code.
 
 CI outcomes branch explicitly from `ci_running`:
 
@@ -143,6 +152,33 @@ question
 nit
 out_of_scope
 requires_human_decision
+```
+
+### 3.8 Automation control states (budget / pause gate)
+
+These describe whether automation is permitted to advance; they are orthogonal to a feature's
+execution state (a feature can sit at any execution state while automation is paused).
+
+```text
+running                      (automation advancing normally)
+paused_by_operator           (a human paused via the pause command)
+paused_budget_exceeded       (a hard budget limit halted automation)
+waiting_for_budget_approval  (a soft limit reached; awaiting a budget-override approval)
+resumed                      (automation re-enabled after a pause/approval)
+```
+
+A budget breach moves the project/feature to `paused_budget_exceeded` or
+`waiting_for_budget_approval`; an approved budget override (or a human resume) returns it to
+`resumed`/`running`. See `01-system-specification.md` §5.11.
+
+### 3.9 State-transition matrix (required form)
+
+The lifecycle lists above enumerate *states*; the authoritative *transitions* are specified as a
+matrix (authored in implementation Phase 2). Each row has exactly these columns:
+
+```text
+from_state | to_state | triggering command/event | actor | guard condition
+           | side effects | emitted events | idempotency key | recovery path
 ```
 
 ---
@@ -234,7 +270,7 @@ minicoder test scenario github-race
 minicoder test scenario final-design-document
 ```
 
-Destructive commands (`db reset`, `trigger reset-dev`, `state purge`/`state repair`) require an
+Destructive commands (`db reset`, `trigger reset-dev`, `state repair`) require an
 environment check, role/permission check, dry-run where possible, explicit confirmation flag, and
 an audit event. Production destructive operations are disallowed unless implemented as guarded
 safe-maintenance workflows.
