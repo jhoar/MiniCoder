@@ -14,19 +14,28 @@ class PostgresTxClient implements TxClient {
   }
 }
 
+const TX_ACTIVE_MSG =
+  'Cannot call DbClient.%s() while a transaction is active; use the tx client passed to the transaction callback.';
+
 export class PostgresDbClient implements DbClient {
+  private inTransaction = false;
+
   constructor(private readonly client: PoolClient) {}
 
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'query'));
     const result = await this.client.query(sql, params);
     return result.rows as T[];
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
+    if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'execute'));
     await this.client.query(sql, params);
   }
 
   async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+    if (this.inTransaction) throw new Error('Nested transactions are not supported.');
+    this.inTransaction = true;
     await this.client.query('BEGIN');
     const tx = new PostgresTxClient(this.client);
     try {
@@ -36,6 +45,8 @@ export class PostgresDbClient implements DbClient {
     } catch (err) {
       await this.client.query('ROLLBACK');
       throw err;
+    } finally {
+      this.inTransaction = false;
     }
   }
 

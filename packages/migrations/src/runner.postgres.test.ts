@@ -4,10 +4,15 @@ import * as path from 'path';
 import { Pool } from 'pg';
 import { EXPECTED_TABLES } from './index.js';
 
-// Skip this entire suite when DB_URL is not set (SQLite-only runs).
-// Set DB_DIALECT=postgres and DB_URL=postgresql://... to enable.
-const DB_URL = process.env['DB_URL'];
-const RUN_PG = !!DB_URL && process.env['DB_DIALECT'] === 'postgres';
+// Requires MINICODER_TEST_PG_URL — a dedicated test-only env var, deliberately
+// distinct from DB_URL (used by the runner CLI) so production URLs are never
+// passed accidentally. Tests run in an isolated schema that is dropped on exit.
+const TEST_PG_URL = process.env['MINICODER_TEST_PG_URL'];
+const RUN_PG = !!TEST_PG_URL;
+
+// Fixed schema name: DROP + CREATE in beforeAll ensures a clean slate, and a
+// fixed name avoids accumulating stale schemas from crashed runs.
+const TEST_SCHEMA = 'minicoder_test';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../migrations');
 
@@ -89,42 +94,36 @@ async function rollbackLast(pool: Pool): Promise<string | null> {
 
 async function getExistingTables(pool: Pool): Promise<string[]> {
   const result = await pool.query<{ tablename: string }>(
-    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != '_migrations'",
+    `SELECT tablename FROM pg_tables WHERE schemaname = $1 AND tablename != '_migrations'`,
+    [TEST_SCHEMA],
   );
   return result.rows.map((r) => r.tablename);
-}
-
-async function resetDb(pool: Pool): Promise<void> {
-  const result = await pool.query<{ tablename: string }>(
-    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
-  );
-  if (result.rows.length === 0) return;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    for (const { tablename } of result.rows) {
-      await client.query(`DROP TABLE IF EXISTS "${tablename}" CASCADE`);
-    }
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
 }
 
 describe.skipIf(!RUN_PG)('Migration runner (PostgreSQL)', () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: DB_URL! });
-    await resetDb(pool);
+    // Create the isolated test schema (drop first to clean up any stale state
+    // from a previous crashed run). All tables live inside this schema.
+    const adminPool = new Pool({ connectionString: TEST_PG_URL! });
+    await adminPool.query(`DROP SCHEMA IF EXISTS "${TEST_SCHEMA}" CASCADE`);
+    await adminPool.query(`CREATE SCHEMA "${TEST_SCHEMA}"`);
+    await adminPool.end();
+
+    // Pin search_path for every connection in the pool via startup parameter.
+    // This ensures all queries land in the isolated schema without any
+    // schema-prefix boilerplate in SQL strings.
+    const url = new URL(TEST_PG_URL!);
+    url.searchParams.set('options', `-c search_path="${TEST_SCHEMA}"`);
+    pool = new Pool({ connectionString: url.toString() });
   });
 
   afterAll(async () => {
-    await resetDb(pool);
     await pool.end();
+    const adminPool = new Pool({ connectionString: TEST_PG_URL! });
+    await adminPool.query(`DROP SCHEMA IF EXISTS "${TEST_SCHEMA}" CASCADE`);
+    await adminPool.end();
   });
 
   it('applies 0001_initial_schema cleanly on a fresh database', async () => {
@@ -184,7 +183,6 @@ describe.skipIf(!RUN_PG)('Migration runner (PostgreSQL)', () => {
   });
 
   it('migrate → rollback → migrate is idempotent', async () => {
-    // DB was just rolled back in the previous test
     const count = await applyMigrations(pool);
     expect(count).toBe(1);
     expect((await getExistingTables(pool)).length).toBe(43);

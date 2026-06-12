@@ -60,8 +60,7 @@ jobs:
     name: Tests (PostgreSQL)
     runs-on: ubuntu-latest
     env:
-      DB_DIALECT: postgres
-      DB_URL: postgresql://postgres:postgres@localhost:5432/minicoder_test
+      MINICODER_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/minicoder_test
     services:
       postgres:
         image: postgres:16

@@ -15,15 +15,22 @@ class SqliteTxClient implements TxClient {
   }
 }
 
+const TX_ACTIVE_MSG =
+  'Cannot call DbClient.%s() while a transaction is active; use the tx client passed to the transaction callback.';
+
 export class SqliteDbClient implements DbClient {
+  private inTransaction = false;
+
   constructor(private readonly db: Database.Database) {}
 
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'query'));
     const stmt = this.db.prepare(sql);
     return stmt.all(...params) as T[];
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
+    if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'execute'));
     const stmt = this.db.prepare(sql);
     stmt.run(...params);
   }
@@ -33,6 +40,8 @@ export class SqliteDbClient implements DbClient {
   // its synchronous wrapper returns — before any awaited work completes — so
   // that pattern is not safe for async callbacks.
   async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+    if (this.inTransaction) throw new Error('Nested transactions are not supported.');
+    this.inTransaction = true;
     this.db.exec('BEGIN');
     const tx = new SqliteTxClient(this.db);
     try {
@@ -42,6 +51,8 @@ export class SqliteDbClient implements DbClient {
     } catch (err) {
       this.db.exec('ROLLBACK');
       throw err;
+    } finally {
+      this.inTransaction = false;
     }
   }
 

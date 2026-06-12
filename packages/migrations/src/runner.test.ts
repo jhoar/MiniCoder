@@ -271,6 +271,40 @@ describe('SqliteDbClient.transaction()', () => {
     const rows = db.prepare('SELECT * FROM test_rows').all();
     expect(rows).toHaveLength(0);
   });
+
+  it('rejects client.execute() called on the outer DbClient while a transaction is active', async () => {
+    await expect(
+      client.transaction(async (_tx: TxClient) => {
+        // Calling client (outer) instead of _tx inside the transaction must throw
+        await client.execute("INSERT INTO test_rows (id, val) VALUES ('interleaved', 'bad')");
+      }),
+    ).rejects.toThrow(/transaction/i);
+
+    // The transaction was rolled back; no rows should have been committed
+    const rows = db.prepare('SELECT * FROM test_rows').all();
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rejects client.query() called on the outer DbClient while a transaction is active', async () => {
+    await expect(
+      client.transaction(async (_tx: TxClient) => {
+        await client.query('SELECT 1');
+      }),
+    ).rejects.toThrow(/transaction/i);
+  });
+
+  it('rejects nested client.transaction() calls', async () => {
+    await expect(
+      client.transaction(async (_tx: TxClient) => {
+        await client.transaction(async (_tx2: TxClient) => {
+          await _tx2.execute("INSERT INTO test_rows (id, val) VALUES ('nested', 'bad')");
+        });
+      }),
+    ).rejects.toThrow(/nested/i);
+
+    const rows = db.prepare('SELECT * FROM test_rows').all();
+    expect(rows).toHaveLength(0);
+  });
 });
 
 describe('EXPECTED_TABLES list', () => {
