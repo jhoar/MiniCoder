@@ -1,0 +1,103 @@
+name: Deploy Trigger.dev Tasks
+
+on:
+  push:
+    branches:
+      - claude/sleepy-gauss-p1y6c0
+      - main
+    paths:
+      - "packages/triggerdev/**"
+      - "packages/core/**"
+      - ".github/workflows/trigger-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+concurrency:
+  group: trigger-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-tasks:
+    name: Validate Task Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck triggerdev package
+        run: pnpm --filter @minicoder/triggerdev typecheck
+
+      - name: Build triggerdev package
+        run: pnpm --filter @minicoder/triggerdev build
+
+      - name: Verify task IDs
+        run: |
+          node -e "
+          const { ALL_TASK_IDS } = require('./packages/triggerdev/dist/task-ids.js');
+          const expected = [
+            'planning-readiness-assessment',
+            'start-clarification',
+            'generate-implementation-plan',
+            'generate-feature-backlog',
+            'activate-approved-backlog',
+            'start-next-feature',
+            'github-reconciliation',
+            'export-plan',
+            'export-backlog',
+          ];
+          const missing = expected.filter(id => !ALL_TASK_IDS.includes(id));
+          if (missing.length > 0) {
+            console.error('Missing task IDs:', missing);
+            process.exit(1);
+          }
+          console.log('All', ALL_TASK_IDS.length, 'task IDs verified:', ALL_TASK_IDS.join(', '));
+          "
+
+  deploy-tasks:
+    name: Deploy to Trigger.dev
+    runs-on: ubuntu-latest
+    needs: validate-tasks
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    env:
+      TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+      TRIGGER_API_URL: ${{ vars.TRIGGER_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Deploy tasks to Trigger.dev
+        working-directory: packages/triggerdev
+        run: npx trigger deploy --config trigger.config.ts

@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.1.0
-> Last-updated: 2026-06-12
+> Version: 1.2.0
+> Last-updated: 2026-06-13
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -415,3 +415,150 @@ Expected output: all steps print `✓`; exits 0.
 | `Validation FAILED. Missing tables:`         | Migration not applied or partially failed | Run `migrate`, check for errors                                           |
 | `Down migration not found`                   | `*.down.sql` file missing                 | Check `packages/migrations/migrations/` for the file                      |
 | `UNIQUE constraint failed: _migrations.name` | Concurrent migration run                  | Serialise migration runs; only one process should run `migrate` at a time |
+
+---
+
+### Phase 3 — Trigger.dev (Self-Host) Operations Runbook
+
+This runbook covers the `minicoder trigger` commands and the self-hosted single-node Trigger.dev
+stack delivered in Phase 3. The stack definition is `infra/docker-compose.triggerdev.yml`.
+
+#### Resource sizing
+
+| Service             | CPU  | RAM   | Storage              |
+| ------------------- | ---- | ----- | -------------------- |
+| triggerdev-webapp   | 1.0  | 1 GB  | —                    |
+| triggerdev-postgres | 1.0  | 512 MB| persistent volume    |
+| triggerdev-redis    | 0.5  | 256 MB| AOF persistent volume|
+| triggerdev-worker   | 1.0  | 512 MB| —                    |
+
+Scale `triggerdev-worker` to 2 replicas for higher throughput; queue concurrency limits enforce
+task-level parallelism independently.
+
+#### Required environment variables
+
+| Variable                  | Description                                      |
+| ------------------------- | ------------------------------------------------ |
+| `TRIGGER_MAGIC_LINK_SECRET` | Random secret for magic-link auth              |
+| `TRIGGER_SESSION_SECRET`    | Random secret for session cookies              |
+| `TRIGGER_ENCRYPTION_KEY`    | 32-byte hex key for payload encryption         |
+| `TRIGGERDEV_API_KEY`        | Project API key (created in the webapp)        |
+| `TRIGGERDEV_API_URL`        | Self-host URL, e.g. `http://localhost:3040`    |
+| `TRIGGERDEV_WEBHOOK_SECRET` | Webhook signing secret — rotate per §7 docs   |
+
+#### Procedure: Start the self-hosted stack
+
+Preconditions: Docker and Docker Compose are installed; env vars are set.
+
+```bash
+docker compose -f infra/docker-compose.triggerdev.yml up -d
+
+# Wait for health checks
+docker compose -f infra/docker-compose.triggerdev.yml ps
+```
+
+Expected: all four services `Up (healthy)` or `Up`. Open `http://localhost:3040` for the webapp.
+
+#### Procedure: Deploy tasks
+
+```bash
+pnpm --filter @minicoder/triggerdev build
+minicoder trigger validate        # confirm all 9 task IDs present
+minicoder trigger deploy --env staging
+```
+
+Or via CI: the `.github/workflows/trigger-deploy.yml` workflow runs on push to the development
+branch.
+
+#### Procedure: Queue drain (CI / pre-deploy)
+
+```bash
+minicoder trigger drain-queue --timeout-ms 120000
+```
+
+Wait for queue to empty before running destructive operations or schema migrations.
+
+#### Procedure: Inspect and replay a failed run
+
+```bash
+minicoder trigger list-runs --task github-reconciliation
+minicoder trigger inspect-run <runId>
+minicoder trigger replay-run <runId>
+```
+
+#### Procedure: Cancel a stuck run
+
+```bash
+minicoder trigger cancel-run <runId>
+# Then re-enqueue via the API or replay if the payload was valid
+```
+
+#### Procedure: Reconcile DB vs live runs
+
+Detects `triggerdev_runs` rows with status `running` that no longer have a live Trigger.dev run:
+
+```bash
+minicoder trigger reconcile --project <projectId>
+# optional: write report to file
+minicoder trigger reconcile --output /tmp/reconcile-report.json
+```
+
+Mismatches are marked for operator review; recovery uses `cancel-run` + `replay-run` or
+`state reconcile` for upstream workflow state.
+
+#### Procedure: Dev reset (dev/CI only)
+
+```bash
+minicoder trigger reset-dev --yes --env development
+```
+
+**Never run against staging or production.** The command is blocked when `APP_ENV`/`NODE_ENV` is
+not `development`, `test`, or `ci`.
+
+#### Procedure: Version upgrade of the self-hosted stack
+
+1. `minicoder trigger drain-queue` — wait for queue to empty
+2. Update the image tag in `infra/docker-compose.triggerdev.yml`
+3. `docker compose -f infra/docker-compose.triggerdev.yml pull`
+4. `docker compose -f infra/docker-compose.triggerdev.yml up -d`
+5. `minicoder trigger validate` — confirm tasks still report correctly
+6. Monitor `docker compose logs -f triggerdev-worker` for errors
+
+#### Procedure: Backup and restore Trigger.dev Postgres
+
+```bash
+# Backup
+docker compose -f infra/docker-compose.triggerdev.yml exec triggerdev-postgres \
+  pg_dump -U trigger trigger > /tmp/triggerdev-$(date +%Y%m%d).sql
+
+# Restore (stop webapp + worker first)
+docker compose -f infra/docker-compose.triggerdev.yml stop triggerdev-webapp triggerdev-worker
+docker compose -f infra/docker-compose.triggerdev.yml exec -T triggerdev-postgres \
+  psql -U trigger trigger < /tmp/triggerdev-backup.sql
+docker compose -f infra/docker-compose.triggerdev.yml start triggerdev-webapp triggerdev-worker
+```
+
+Redis AOF is persisted via Docker volume (`triggerdev-redis-data`). Back up by snapshotting the
+volume or copying the AOF file.
+
+#### Procedure: Webhook-secret rotation
+
+See `docs/07-security-and-secrets.md` for the full procedure. In brief:
+
+1. Generate a new secret: `openssl rand -hex 32`
+2. Set `TRIGGERDEV_WEBHOOK_SECRET` in the deployment environment
+3. Restart `triggerdev-webapp` with the new value
+4. Update `TRIGGERDEV_WEBHOOK_SECRET` in the MiniCoder config/secrets backend
+
+Zero downtime rotation requires a brief overlap window where both old and new secrets are accepted;
+see `07-security-and-secrets.md` for the overlap procedure.
+
+#### Diagnostics and known failure modes
+
+| Symptom                               | Likely cause                          | Resolution                                         |
+| ------------------------------------- | ------------------------------------- | -------------------------------------------------- |
+| Tasks not appearing after deploy      | Build or deploy step failed           | Run `minicoder trigger validate`; check CI logs    |
+| Run stuck in `running`                | Worker crashed mid-run                | `trigger cancel-run <id>` then `replay-run`        |
+| DB row status `running` but no live run | Orphaned row from crash              | `trigger reconcile`, then manual row update         |
+| `TRIGGER_SECRET_KEY not set`          | Env var missing                       | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv` |
+| Webhook signature mismatch            | `TRIGGERDEV_WEBHOOK_SECRET` rotated   | Update secret in all services simultaneously        |

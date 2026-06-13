@@ -15,6 +15,7 @@ export default defineConfig({
       ),
       '@minicoder/migrations': path.resolve(__dirname, 'packages/migrations/src/index.ts'),
       '@minicoder/workflow': path.resolve(__dirname, 'packages/workflow/src/index.ts'),
+      '@minicoder/triggerdev': path.resolve(__dirname, 'packages/triggerdev/src/index.ts'),
     },
   },
   test: {

@@ -1,0 +1,113 @@
+version: "3.8"
+
+# MiniCoder — Trigger.dev self-hosted single-node stack (default backend)
+#
+# Sizing (see docs/04-testing-validation-state-lifecycle.md §11):
+#   webapp:  1 CPU / 1 GB RAM
+#   postgres: 1 CPU / 512 MB RAM
+#   redis:   0.5 CPU / 256 MB RAM
+#   worker:  1 CPU / 512 MB RAM (scale to 2 for HA)
+#
+# Usage:
+#   docker compose -f infra/docker-compose.triggerdev.yml up -d
+#
+# Required env vars (set in .env or via shell):
+#   TRIGGER_MAGIC_LINK_SECRET — random secret for magic-link auth
+#   TRIGGER_ENCRYPTION_KEY    — 32-byte hex key for payload encryption
+#   TRIGGER_SESSION_SECRET    — random secret for session cookies
+#   TRIGGER_API_KEY           — your project API key (created via webapp after first run)
+
+services:
+  triggerdev-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trigger
+      POSTGRES_PASSWORD: trigger
+      POSTGRES_DB: trigger
+    volumes:
+      - triggerdev-postgres-data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trigger"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - triggerdev-redis-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-webapp:
+    image: ghcr.io/triggerdotdev/trigger.dev:latest
+    restart: unless-stopped
+    depends_on:
+      triggerdev-postgres:
+        condition: service_healthy
+      triggerdev-redis:
+        condition: service_healthy
+    ports:
+      - "3040:3000"
+    environment:
+      DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
+      REDIS_TLS_DISABLED: "true"
+      REDIS_HOST: triggerdev-redis
+      REDIS_PORT: "6379"
+      MAGIC_LINK_SECRET: "${TRIGGER_MAGIC_LINK_SECRET}"
+      SESSION_SECRET: "${TRIGGER_SESSION_SECRET}"
+      ENCRYPTION_KEY: "${TRIGGER_ENCRYPTION_KEY}"
+      # Webhook-secret management: TRIGGERDEV_WEBHOOK_SECRET is used by MiniCoder
+      # to verify payloads; rotate via docs/07-security-and-secrets.md procedure.
+      TRIGGER_WEBHOOK_SECRET: "${TRIGGERDEV_WEBHOOK_SECRET:-}"
+      LOGIN_ORIGIN: "http://localhost:3040"
+      APP_ORIGIN: "http://localhost:3040"
+      DEV_OTEL_EXPORTER_OTLP_ENDPOINT: "http://triggerdev-webapp:4318"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  triggerdev-worker:
+    image: ghcr.io/triggerdotdev/trigger.dev:latest
+    restart: unless-stopped
+    depends_on:
+      triggerdev-webapp:
+        condition: service_started
+    command: ["node", "worker.js"]
+    environment:
+      DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
+      REDIS_TLS_DISABLED: "true"
+      REDIS_HOST: triggerdev-redis
+      REDIS_PORT: "6379"
+      ENCRYPTION_KEY: "${TRIGGER_ENCRYPTION_KEY}"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+volumes:
+  triggerdev-postgres-data:
+  triggerdev-redis-data:
+
+networks:
+  default:
+    name: minicoder-triggerdev

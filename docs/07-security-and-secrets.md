@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.1
+> Version: 1.0.2
 > Last-updated: 2026-06-13
 
 This document is the authoritative security and secrets specification. It expands the principles in
@@ -109,6 +109,30 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
   event payload Zod schemas contain no secret-bearing field names, and that `SecretRedactor` is
   applied via `defaultRedactor.redactObject()` before every outbox payload is serialized
   (`packages/core/src/commands/helpers.ts`).
+
+## 6b. Trigger.dev Webhook-Secret Management (Phase 3)
+
+MiniCoder uses `TRIGGERDEV_WEBHOOK_SECRET` to verify that inbound payloads from the self-hosted
+Trigger.dev server have not been tampered with. This secret must be:
+
+- **Stored only in the secret backend** (`EnvSecretBackend` or `ManagedSecretBackend`), never
+  committed to source control or included in task payloads.
+- **Set in both the Trigger.dev webapp** (`TRIGGER_WEBHOOK_SECRET` env var in
+  `infra/docker-compose.triggerdev.yml`) and the **MiniCoder application** (`TRIGGERDEV_WEBHOOK_SECRET`
+  env var, accessed via `ConfigBackend`).
+- **At least 32 bytes of cryptographic randomness**: `openssl rand -hex 32`
+
+**Rotation procedure** (zero-downtime):
+
+1. Generate a new secret: `openssl rand -hex 32`
+2. Configure MiniCoder to accept both current and new secrets simultaneously (brief overlap window).
+3. Update `TRIGGER_WEBHOOK_SECRET` in the Trigger.dev webapp and restart `triggerdev-webapp`.
+4. Update `TRIGGERDEV_WEBHOOK_SECRET` in the MiniCoder secret backend.
+5. Remove the previous secret from the MiniCoder overlap window after the next successful delivery.
+6. Record the rotation in the audit log.
+
+See `04-testing-validation-state-lifecycle.md` §11 (Phase 3 runbook) for the full step-by-step
+procedure including pre-conditions and rollback path.
 
 ## 7. Prompt-Injection and Untrusted Content
 

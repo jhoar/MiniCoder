@@ -3,16 +3,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Architectural fitness test: packages/workflow must not contain domain logic.
- * Workflow Layer tasks are thin wrappers; all business rules live in packages/core.
+ * Architectural fitness test: packages/workflow and packages/triggerdev must not
+ * contain domain logic. Workflow Layer tasks are thin wrappers; all business rules
+ * live in packages/core.
  *
- * Banned patterns in packages/workflow/src/:
+ * Banned patterns:
  * - Direct imports of state machine validators
  * - Direct state enum comparisons (e.g., FeatureExecutionState.CODING)
  * - Domain entity mutations outside the command interface
  */
 
 const WORKFLOW_SRC = path.resolve(__dirname, '../../../../workflow/src');
+const TRIGGERDEV_TASKS_SRC = path.resolve(__dirname, '../../../../triggerdev/src/tasks');
+const TRIGGERDEV_WRAPPER_SRC = path.resolve(__dirname, '../../../../triggerdev/src/triggerdev-tasks.ts');
 
 const BANNED_PATTERNS = [
   { pattern: 'StateTransitionValidator', description: 'StateTransitionValidator import' },
@@ -51,6 +54,32 @@ describe('Architectural fitness: packages/workflow has no domain logic', () => {
         const content = fs.readFileSync(file, 'utf-8');
         if (content.includes(pattern)) {
           violations.push(path.relative(WORKFLOW_SRC, file));
+        }
+      }
+      expect(
+        violations,
+        `Files with banned pattern '${pattern}': ${violations.join(', ')}`,
+      ).toEqual([]);
+    });
+  }
+});
+
+describe('Architectural fitness: packages/triggerdev task files have no domain logic', () => {
+  const taskFiles = collectTsFiles(TRIGGERDEV_TASKS_SRC);
+  const wrapperFiles = fs.existsSync(TRIGGERDEV_WRAPPER_SRC) ? [TRIGGERDEV_WRAPPER_SRC] : [];
+  const files = [...taskFiles, ...wrapperFiles];
+
+  it('triggerdev tasks directory is scannable', () => {
+    expect(Array.isArray(files)).toBe(true);
+  });
+
+  for (const { pattern, description } of BANNED_PATTERNS) {
+    it(`no triggerdev task file uses '${description}'`, () => {
+      const violations: string[] = [];
+      for (const file of files) {
+        const content = fs.readFileSync(file, 'utf-8');
+        if (content.includes(pattern)) {
+          violations.push(path.relative(TRIGGERDEV_TASKS_SRC, file));
         }
       }
       expect(

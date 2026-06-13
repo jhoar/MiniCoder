@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.1
+> Version: 1.0.2
 > Last-updated: 2026-06-13
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -107,7 +107,9 @@ fitness tests fail the build on any violated invariant; stale-fence writes are r
 - `packages/cli/src/commands/state.ts` — `minicoder state` command group (inspect, validate,
   doctor, reconcile, export-diagnostics, repair)
 
-## Phase 3 — Workflow Layer Harness
+## Phase 3 — Workflow Layer Harness ✓
+
+> **Status: Complete** (2026-06-13)
 
 Deliver Trigger.dev project setup with **self-hosted single-node as the default backend** (Docker
 Compose: webapp + Postgres + Redis + worker), a GitHub Actions deployment workflow for Trigger.dev
@@ -148,6 +150,28 @@ Acceptance: tasks deploy and run on the default self-hosted single-node backend;
 the database through a core command; retry behavior is configured and idempotent; the waitpoint
 pattern is proven with a simulated human approval; and the same tasks run unchanged against an
 alternative backend (HA cluster or Cloud) selected by configuration only.
+
+**Delivered modules:**
+
+- `packages/triggerdev/` — new package: `TriggerConfig` + `loadTriggerConfig()` + `applyTriggerEnv()`
+  (config abstraction for three backends), `linkRunToDb()` + `updateRunStatus()` + `getRunByTriggerdevId()`
+  (metadata against the existing `triggerdev_runs` table), `MockTriggerRunner` (canonical test seam),
+  `ALL_TASK_IDS` constant (9 canonical task ID strings), and 9 task run implementations
+  (`runPlanningReadinessAssessment`, `runStartClarification`, `runGenerateImplementationPlan`,
+  `runGenerateFeatureBacklog`, `runActivateApprovedBacklog`, `runStartNextFeature`,
+  `runGithubReconciliation`, `runExportPlan`, `runExportBacklog`)
+- `packages/triggerdev/src/triggerdev-tasks.ts` — Trigger.dev task registration entry point; all 9
+  tasks registered using `task()` from `@trigger.dev/sdk/v3`; `makeTaskRunner` wrapper handles DB
+  lifecycle (linkRunToDb / updateRunStatus / close) around each pure `runImpl`
+- `packages/triggerdev/trigger.config.ts` — Trigger.dev deployment configuration
+- `infra/docker-compose.triggerdev.yml` — self-hosted single-node stack (webapp + Postgres + Redis +
+  worker) with resource sizing and volume mounts; swap to HA cluster or Cloud by env var only
+- `.github/workflows/trigger-deploy.yml` — CI/CD workflow: typecheck → build → verify task IDs →
+  deploy to configured backend; `validate-tasks` job can run without a live Trigger.dev server
+- `packages/cli/src/commands/trigger.ts` — `minicoder trigger` command group: deploy, list-runs,
+  inspect-run, cancel-run, replay-run, drain-queue, reset-dev (guarded), validate, reconcile
+- `packages/core/src/fitness/no-domain-logic-in-task-wrappers.test.ts` — extended to scan
+  `packages/triggerdev/src/tasks/` and `triggerdev-tasks.ts` for banned domain-logic patterns
 
 ## Phase 4 — Test Harness and State Lifecycle Tooling
 

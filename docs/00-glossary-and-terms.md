@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.1
+> Version: 1.0.2
 > Last-updated: 2026-06-13
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -328,6 +328,37 @@ The feature execution machine (§3.2) references but does not duplicate these; e
 
 Feature-request IDs are `FR-<zero-padded-int>` (e.g., `FR-002`), stable per project, and form the
 feature branch suffix `minicoder/FR-<n>` (see `01-system-specification.md` §5.7).
+
+### 3.12 Workflow Layer task IDs (exact strings — no drift permitted)
+
+These are the canonical Trigger.dev task identifiers registered in `packages/triggerdev/src/triggerdev-tasks.ts`
+and exported via `ALL_TASK_IDS`. They are used verbatim as both the task `id` field and in
+`triggerdev_runs.triggerdev_task_id`. No renaming, abbreviation, or alternative spelling is permitted.
+
+**Phase 3 initial subset** (shipped with Phase 3):
+
+```text
+planning-readiness-assessment
+start-clarification
+generate-implementation-plan
+generate-feature-backlog
+activate-approved-backlog
+start-next-feature
+github-reconciliation
+export-plan
+export-backlog
+```
+
+**Phase 6 additions** (Bootstrap Planner tasks — arrive with Phase 6):
+
+```text
+ingest
+record-answer
+complete-clarification
+validate-backlog
+request-approval
+import-backlog
+```
 
 ---
 
