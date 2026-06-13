@@ -38,16 +38,6 @@ import {
   ExportBacklogPayload as ExportBacklogSchema,
 } from './tasks/types.js';
 
-import type { PlanningReadinessPayload } from './tasks/planning-readiness-assessment.js';
-import type { StartClarificationPayload } from './tasks/start-clarification.js';
-import type { GenerateImplementationPlanPayload } from './tasks/generate-implementation-plan.js';
-import type { GenerateFeatureBacklogPayload } from './tasks/generate-feature-backlog.js';
-import type { ActivateApprovedBacklogPayload } from './tasks/activate-approved-backlog.js';
-import type { StartNextFeaturePayload } from './tasks/start-next-feature.js';
-import type { GithubReconciliationPayload } from './tasks/github-reconciliation.js';
-import type { ExportPlanPayload } from './tasks/export-plan.js';
-import type { ExportBacklogPayload } from './tasks/export-backlog.js';
-
 const RETRY_CONFIG = {
   maxAttempts: 3,
   factor: 2,
@@ -91,7 +81,11 @@ export const planningReadinessAssessmentTask = task({
   id: 'planning-readiness-assessment',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: makeTaskRunner('planning-readiness-assessment', PlanningReadinessSchema, runPlanningReadiness),
+  run: makeTaskRunner(
+    'planning-readiness-assessment',
+    PlanningReadinessSchema,
+    runPlanningReadiness,
+  ),
 });
 
 export const startClarificationTask = task({
@@ -105,7 +99,11 @@ export const generateImplementationPlanTask = task({
   id: 'generate-implementation-plan',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: makeTaskRunner('generate-implementation-plan', GenerateImplementationPlanSchema, runGeneratePlan),
+  run: makeTaskRunner(
+    'generate-implementation-plan',
+    GenerateImplementationPlanSchema,
+    runGeneratePlan,
+  ),
 });
 
 export const generateFeatureBacklogTask = task({
@@ -119,7 +117,11 @@ export const activateApprovedBacklogTask = task({
   id: 'activate-approved-backlog',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: makeTaskRunner('activate-approved-backlog', ActivateApprovedBacklogSchema, runActivateBacklog),
+  run: makeTaskRunner(
+    'activate-approved-backlog',
+    ActivateApprovedBacklogSchema,
+    runActivateBacklog,
+  ),
 });
 
 export const startNextFeatureTask = task({

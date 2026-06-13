@@ -6,19 +6,19 @@ on:
       - claude/sleepy-gauss-p1y6c0
       - main
     paths:
-      - "packages/triggerdev/**"
-      - "packages/core/**"
-      - ".github/workflows/trigger-deploy.yml"
+      - 'packages/triggerdev/**'
+      - 'packages/core/**'
+      - '.github/workflows/trigger-deploy.yml'
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment"
+        description: 'Target environment'
         required: true
-        default: "staging"
+        default: 'staging'
         type: choice
         options:
           - staging
-          - production
+          - prod
 
 concurrency:
   group: trigger-deploy-${{ github.ref }}
@@ -37,8 +37,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "pnpm"
+          node-version: '20'
+          cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -89,8 +89,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "pnpm"
+          node-version: '20'
+          cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

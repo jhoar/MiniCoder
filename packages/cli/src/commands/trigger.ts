@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { ALL_TASK_IDS } from '@minicoder/triggerdev';
 
 function isoNow(): string {
   return new Date().toISOString();
@@ -35,7 +36,9 @@ function infoStub(command: string, fields: Record<string, unknown> = {}): string
 }
 
 export function createTriggerCommand(): Command {
-  const trigger = new Command('trigger').description('Trigger.dev Workflow Layer lifecycle commands');
+  const trigger = new Command('trigger').description(
+    'Trigger.dev Workflow Layer lifecycle commands',
+  );
 
   trigger
     .command('deploy')
@@ -51,7 +54,12 @@ export function createTriggerCommand(): Command {
     .option('--task <id>', 'Filter by task ID')
     .option('--limit <n>', 'Maximum rows to return', '20')
     .action((opts: { task?: string; limit: string }) => {
-      console.log(infoStub('trigger list-runs', { taskId: opts.task ?? null, limit: parseInt(opts.limit, 10) }));
+      console.log(
+        infoStub('trigger list-runs', {
+          taskId: opts.task ?? null,
+          limit: parseInt(opts.limit, 10),
+        }),
+      );
     });
 
   trigger
@@ -84,7 +92,10 @@ export function createTriggerCommand(): Command {
     .option('--task <id>', 'Drain only the named task queue')
     .option('--timeout-ms <ms>', 'Maximum wait in milliseconds', '60000')
     .action((opts: { task?: string; timeoutMs: string }) => {
-      notImplemented('trigger drain-queue', { taskId: opts.task ?? null, timeoutMs: parseInt(opts.timeoutMs, 10) });
+      notImplemented('trigger drain-queue', {
+        taskId: opts.task ?? null,
+        timeoutMs: parseInt(opts.timeoutMs, 10),
+      });
     });
 
   trigger
@@ -94,7 +105,9 @@ export function createTriggerCommand(): Command {
     .option('--env <environment>', 'Target environment — must be development, test, or ci')
     .action((opts: { yes?: boolean; env?: string }) => {
       if (!opts.yes || !opts.env) {
-        console.error('Error: --yes and --env <environment> flags are required.\nExample: minicoder trigger reset-dev --yes --env development');
+        console.error(
+          'Error: --yes and --env <environment> flags are required.\nExample: minicoder trigger reset-dev --yes --env development',
+        );
         process.exit(1);
       }
       const permitted = ['development', 'test', 'ci'];
@@ -104,7 +117,9 @@ export function createTriggerCommand(): Command {
       }
       const systemEnv = process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? '';
       if (!permitted.includes(systemEnv) && systemEnv !== '') {
-        console.error(`Error: system env APP_ENV/NODE_ENV is '${systemEnv}' which is not safe. Reset blocked.`);
+        console.error(
+          `Error: system env APP_ENV/NODE_ENV is '${systemEnv}' which is not safe. Reset blocked.`,
+        );
         process.exit(1);
       }
       notImplemented('trigger reset-dev', { environment: opts.env, systemEnv });
@@ -114,27 +129,19 @@ export function createTriggerCommand(): Command {
     .command('validate')
     .description('Check that the task bundle builds cleanly and reports all task IDs')
     .action(() => {
-      try {
-        const { ALL_TASK_IDS } = require('@minicoder/triggerdev') as {
-          ALL_TASK_IDS: readonly string[];
-        };
-        console.log(
-          JSON.stringify(
-            {
-              command: 'trigger validate',
-              taskIds: ALL_TASK_IDS,
-              taskCount: ALL_TASK_IDS.length,
-              status: 'ok',
-              timestamp: isoNow(),
-            },
-            null,
-            2,
-          ),
-        );
-      } catch (err) {
-        console.error('Error loading triggerdev package:', err instanceof Error ? err.message : String(err));
-        process.exit(1);
-      }
+      console.log(
+        JSON.stringify(
+          {
+            command: 'trigger validate',
+            taskIds: ALL_TASK_IDS,
+            taskCount: ALL_TASK_IDS.length,
+            status: 'ok',
+            timestamp: isoNow(),
+          },
+          null,
+          2,
+        ),
+      );
     });
 
   trigger

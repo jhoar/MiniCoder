@@ -471,72 +471,92 @@ docker compose -f infra/docker-compose.triggerdev.yml up -d
 docker compose -f infra/docker-compose.triggerdev.yml ps
 ```
 
-Expected: all four services `Up (healthy)` or `Up`. Open `http://localhost:3040` for the webapp.
+Expected: all services `Up (healthy)` or `Up`. Open `http://localhost:3040` for the webapp.
+
+> **CLI command status note:** Operational `minicoder trigger` commands (`deploy`, `drain-queue`,
+> `cancel-run`, `replay-run`, `reset-dev`, `reconcile`) exit 1 with "not implemented" until the
+> Orchestrator API layer is wired in Phase 13. Use the direct Trigger.dev CLI and Docker Compose
+> commands shown in each procedure below until then. `minicoder trigger validate`,
+> `list-runs`, and `inspect-run` are functional.
 
 #### Procedure: Deploy tasks
 
 ```bash
 pnpm --filter @minicoder/triggerdev build
 minicoder trigger validate        # confirm all 9 task IDs present
-minicoder trigger deploy --env staging
+
+# Direct CLI (until Phase 13 wires minicoder trigger deploy):
+cd packages/triggerdev && npx trigger.dev@latest deploy --env staging
 ```
 
 Or via CI: the `.github/workflows/trigger-deploy.yml` workflow runs on push to the development
-branch.
+branch and deploys to `staging` by default; `prod` requires a manual workflow dispatch.
 
 #### Procedure: Queue drain (CI / pre-deploy)
 
+> `minicoder trigger drain-queue` is not yet implemented (Phase 13). Monitor via the Trigger.dev
+> webapp at `http://localhost:3040` or use the `list-runs` command to confirm the queue is empty.
+
 ```bash
-minicoder trigger drain-queue --timeout-ms 120000
+minicoder trigger list-runs --limit 50   # informational — check for 'running' entries
 ```
 
-Wait for queue to empty before running destructive operations or schema migrations.
+Wait for all runs to reach a terminal state before running destructive operations or schema
+migrations.
 
 #### Procedure: Inspect and replay a failed run
 
 ```bash
 minicoder trigger list-runs --task github-reconciliation
-minicoder trigger inspect-run <runId>
-minicoder trigger replay-run <runId>
+minicoder trigger inspect-run <runId>    # reads from triggerdev_runs DB table
+
+# Replay via Trigger.dev webapp or direct CLI (until Phase 13 wires minicoder trigger replay-run):
+cd packages/triggerdev && npx trigger.dev@latest replay <runId>
 ```
 
 #### Procedure: Cancel a stuck run
 
+> `minicoder trigger cancel-run` is not yet implemented (Phase 13). Use the Trigger.dev webapp
+> or direct CLI:
+
 ```bash
-minicoder trigger cancel-run <runId>
+cd packages/triggerdev && npx trigger.dev@latest cancel <runId>
 # Then re-enqueue via the API or replay if the payload was valid
 ```
 
 #### Procedure: Reconcile DB vs live runs
 
-Detects `triggerdev_runs` rows with status `running` that no longer have a live Trigger.dev run:
+> `minicoder trigger reconcile` is not yet implemented (Phase 13). In the interim, compare the
+> `triggerdev_runs` table (via `minicoder state doctor`) with the Trigger.dev webapp run list.
 
 ```bash
-minicoder trigger reconcile --project <projectId>
-# optional: write report to file
-minicoder trigger reconcile --output /tmp/reconcile-report.json
+minicoder state doctor   # detects DB/Trigger.dev mismatches and stale runs
 ```
 
-Mismatches are marked for operator review; recovery uses `cancel-run` + `replay-run` or
-`state reconcile` for upstream workflow state.
+Mismatches are surfaced by `state doctor` for operator review; recovery uses the Trigger.dev
+webapp cancel/replay and `state reconcile` for upstream workflow state.
 
 #### Procedure: Dev reset (dev/CI only)
 
+> `minicoder trigger reset-dev` is not yet implemented (Phase 13). In the interim, use Docker
+> Compose to restart the stack with a fresh database:
+
 ```bash
-minicoder trigger reset-dev --yes --env development
+docker compose -f infra/docker-compose.triggerdev.yml down -v
+docker compose -f infra/docker-compose.triggerdev.yml up -d
 ```
 
-**Never run against staging or production.** The command is blocked when `APP_ENV`/`NODE_ENV` is
-not `development`, `test`, or `ci`.
+**Never run against staging or production.**
 
 #### Procedure: Version upgrade of the self-hosted stack
 
-1. `minicoder trigger drain-queue` — wait for queue to empty
-2. Update the image tag in `infra/docker-compose.triggerdev.yml`
-3. `docker compose -f infra/docker-compose.triggerdev.yml pull`
-4. `docker compose -f infra/docker-compose.triggerdev.yml up -d`
-5. `minicoder trigger validate` — confirm tasks still report correctly
-6. Monitor `docker compose logs -f triggerdev-worker` for errors
+1. Check for active runs: `minicoder trigger list-runs --limit 50`
+2. Wait for all runs to complete (monitor via Trigger.dev webapp)
+3. Update the image tag in `infra/docker-compose.triggerdev.yml`
+4. `docker compose -f infra/docker-compose.triggerdev.yml pull`
+5. `docker compose -f infra/docker-compose.triggerdev.yml up -d`
+6. `minicoder trigger validate` — confirm tasks still report correctly
+7. Monitor `docker compose logs -f triggerdev-webapp` for errors
 
 #### Procedure: Backup and restore Trigger.dev Postgres
 
@@ -545,11 +565,11 @@ not `development`, `test`, or `ci`.
 docker compose -f infra/docker-compose.triggerdev.yml exec triggerdev-postgres \
   pg_dump -U trigger trigger > /tmp/triggerdev-$(date +%Y%m%d).sql
 
-# Restore (stop webapp + worker first)
-docker compose -f infra/docker-compose.triggerdev.yml stop triggerdev-webapp triggerdev-worker
+# Restore (stop webapp first)
+docker compose -f infra/docker-compose.triggerdev.yml stop triggerdev-webapp
 docker compose -f infra/docker-compose.triggerdev.yml exec -T triggerdev-postgres \
   psql -U trigger trigger < /tmp/triggerdev-backup.sql
-docker compose -f infra/docker-compose.triggerdev.yml start triggerdev-webapp triggerdev-worker
+docker compose -f infra/docker-compose.triggerdev.yml start triggerdev-webapp
 ```
 
 Redis AOF is persisted via Docker volume (`triggerdev-redis-data`). Back up by snapshotting the

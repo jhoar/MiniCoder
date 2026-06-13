@@ -1,23 +1,23 @@
-version: "3.8"
+version: '3.8'
 
-# MiniCoder — Trigger.dev v4 self-hosted single-node stack (default backend)
+# MiniCoder — Trigger.dev self-hosted local-development stack
 #
-# Trigger.dev v4 requires more services than v3:
-#   - Electric SQL (realtime subscriptions)
-#   - supervisor (separate worker coordinator)
-#   - socket-proxy (WebSocket routing between webapp and workers)
-#   - registry (Docker registry for deploying task bundles as images)
-#   - minio (S3-compatible object storage for run logs and artifacts)
+# This is a minimal development configuration using verified Trigger.dev v3 images.
 #
-# Minimum resource sizing for v4 single-node (see docs/04-testing-validation-state-lifecycle.md §11):
-#   postgres:      2 CPU / 1 GB RAM
-#   redis:         1 CPU / 512 MB RAM
-#   electric:      1 CPU / 512 MB RAM
-#   webapp:        2 CPU / 2 GB RAM
-#   supervisor:    2 CPU / 2 GB RAM
-#   socket-proxy:  0.5 CPU / 256 MB RAM
-#   registry:      0.5 CPU / 256 MB RAM
-#   minio:         1 CPU / 1 GB RAM
+# IMPORTANT — Trigger.dev v4 self-hosting requires a materially different architecture
+# (dedicated supervisor image, Docker socket proxy, task registry, object storage).
+# Before upgrading to v4 or deploying to production, follow the official self-hosting
+# guide: https://trigger.dev/docs/self-hosting/docker
+#
+# Services:
+#   triggerdev-postgres — Trigger.dev state store
+#   triggerdev-redis    — Queue / cache (AOF persistence enabled)
+#   triggerdev-webapp   — Trigger.dev application (available at http://localhost:3040)
+#
+# Resource sizing (single-node development minimum):
+#   postgres: 2 CPU / 1 GB RAM
+#   redis:    1 CPU / 512 MB RAM
+#   webapp:   2 CPU / 2 GB RAM
 #
 # Usage:
 #   docker compose -f infra/docker-compose.triggerdev.yml up -d
@@ -26,14 +26,7 @@ version: "3.8"
 #   TRIGGER_MAGIC_LINK_SECRET  — random secret for magic-link auth
 #   TRIGGER_ENCRYPTION_KEY     — 32-byte hex key for payload encryption
 #   TRIGGER_SESSION_SECRET     — random secret for session cookies
-#   TRIGGER_PROJECT_REF        — project reference ID from Trigger.dev dashboard
-#   TRIGGERDEV_WEBHOOK_SECRET  — MiniCoder verifies inbound Trigger.dev webhook payloads
-#   MINIO_ROOT_USER            — MinIO admin username
-#   MINIO_ROOT_PASSWORD        — MinIO admin password
-#
-# NOTE: Verify exact image tags and configuration keys against the official
-# Trigger.dev v4 self-hosted documentation before running in production:
-# https://trigger.dev/docs/open-source-self-hosting
+#   TRIGGERDEV_WEBHOOK_SECRET  — MiniCoder verifies inbound webhook payloads with this
 
 services:
   triggerdev-postgres:
@@ -48,10 +41,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
+          cpus: '2.0'
           memory: 1G
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trigger"]
+      test: ['CMD-SHELL', 'pg_isready -U trigger']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -65,146 +58,46 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
+          cpus: '1.0'
           memory: 512M
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
 
-  triggerdev-electric:
-    image: electricsql/electric:latest
-    restart: unless-stopped
-    depends_on:
-      triggerdev-postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
-      ELECTRIC_INSECURE: "true"
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512M
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  triggerdev-minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
-    volumes:
-      - triggerdev-minio-data:/data
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  triggerdev-registry:
-    image: registry:2
-    restart: unless-stopped
-    volumes:
-      - triggerdev-registry-data:/var/lib/registry
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-
   triggerdev-webapp:
-    image: ghcr.io/triggerdotdev/trigger.dev:v4-latest
+    image: ghcr.io/triggerdotdev/trigger.dev:latest
     restart: unless-stopped
     depends_on:
       triggerdev-postgres:
         condition: service_healthy
       triggerdev-redis:
         condition: service_healthy
-      triggerdev-electric:
-        condition: service_healthy
-      triggerdev-minio:
-        condition: service_healthy
     ports:
-      - "3040:3000"
+      - '3040:3000'
     environment:
       DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
-      REDIS_TLS_DISABLED: "true"
+      REDIS_TLS_DISABLED: 'true'
       REDIS_HOST: triggerdev-redis
-      REDIS_PORT: "6379"
-      ELECTRIC_ORIGIN: "http://triggerdev-electric:3000"
-      MAGIC_LINK_SECRET: "${TRIGGER_MAGIC_LINK_SECRET}"
-      SESSION_SECRET: "${TRIGGER_SESSION_SECRET}"
-      ENCRYPTION_KEY: "${TRIGGER_ENCRYPTION_KEY}"
-      OBJECT_STORE_BASE_URL: "http://triggerdev-minio:9000"
-      OBJECT_STORE_ACCESS_KEY_ID: "${MINIO_ROOT_USER}"
-      OBJECT_STORE_SECRET_ACCESS_KEY: "${MINIO_ROOT_PASSWORD}"
-      DOCKER_REGISTRY_HOST: "triggerdev-registry:5000"
+      REDIS_PORT: '6379'
+      MAGIC_LINK_SECRET: '${TRIGGER_MAGIC_LINK_SECRET}'
+      SESSION_SECRET: '${TRIGGER_SESSION_SECRET}'
+      ENCRYPTION_KEY: '${TRIGGER_ENCRYPTION_KEY}'
       # Webhook-secret management: rotate via docs/07-security-and-secrets.md procedure.
-      TRIGGER_WEBHOOK_SECRET: "${TRIGGERDEV_WEBHOOK_SECRET:-}"
-      LOGIN_ORIGIN: "http://localhost:3040"
-      APP_ORIGIN: "http://localhost:3040"
+      TRIGGER_WEBHOOK_SECRET: '${TRIGGERDEV_WEBHOOK_SECRET:-}'
+      LOGIN_ORIGIN: 'http://localhost:3040'
+      APP_ORIGIN: 'http://localhost:3040'
+      DEV_OTEL_EXPORTER_OTLP_ENDPOINT: 'http://triggerdev-webapp:4318'
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 2G
-
-  triggerdev-socket-proxy:
-    image: ghcr.io/triggerdotdev/trigger.dev:v4-latest
-    restart: unless-stopped
-    depends_on:
-      triggerdev-webapp:
-        condition: service_started
-    command: ["node", "dist/socket-proxy.js"]
-    environment:
-      TRIGGER_API_URL: "http://triggerdev-webapp:3000"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-
-  triggerdev-supervisor:
-    image: ghcr.io/triggerdotdev/trigger.dev:v4-latest
-    restart: unless-stopped
-    depends_on:
-      triggerdev-webapp:
-        condition: service_started
-      triggerdev-socket-proxy:
-        condition: service_started
-    command: ["node", "dist/supervisor.js"]
-    environment:
-      DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
-      REDIS_TLS_DISABLED: "true"
-      REDIS_HOST: triggerdev-redis
-      REDIS_PORT: "6379"
-      ENCRYPTION_KEY: "${TRIGGER_ENCRYPTION_KEY}"
-      TRIGGER_API_URL: "http://triggerdev-webapp:3000"
-      SOCKET_PROXY_URL: "http://triggerdev-socket-proxy"
-      DOCKER_REGISTRY_HOST: "triggerdev-registry:5000"
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
+          cpus: '2.0'
           memory: 2G
 
 volumes:
   triggerdev-postgres-data:
   triggerdev-redis-data:
-  triggerdev-minio-data:
-  triggerdev-registry-data:
 
 networks:
   default:

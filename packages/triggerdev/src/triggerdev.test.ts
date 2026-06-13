@@ -75,9 +75,9 @@ describe('MockTriggerRunner', () => {
     };
 
     const runId = 'mock-run-fail-001';
-    await expect(
-      runner.run('github-reconciliation', BASE_PAYLOAD, boom, runId),
-    ).rejects.toThrow('simulated failure');
+    await expect(runner.run('github-reconciliation', BASE_PAYLOAD, boom, runId)).rejects.toThrow(
+      'simulated failure',
+    );
 
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_status).toBe('failed');
@@ -111,12 +111,14 @@ describe('MockTriggerRunner', () => {
     // The task signals the test when it has reached the waitpoint so we can
     // assert it is genuinely blocked before sending the approval.
     let notifyWaiting!: () => void;
-    const atWaitpoint = new Promise<void>((resolve) => { notifyWaiting = resolve; });
+    const atWaitpoint = new Promise<void>((resolve) => {
+      notifyWaiting = resolve;
+    });
     let resumed = false;
 
     const waitpointTask = async (_payload: typeof BASE_PAYLOAD) => {
-      notifyWaiting();                       // signal: task is now at the waitpoint
-      const approved = await approvalToken;  // blocks until externally resolved
+      notifyWaiting(); // signal: task is now at the waitpoint
+      const approved = await approvalToken; // blocks until externally resolved
       resumed = true;
       return { approved };
     };
@@ -211,7 +213,11 @@ describe('all 9 tasks write triggerdev_runs rows via MockTriggerRunner', () => {
   const cases: Array<[string, () => Promise<void>]> = [];
 
   it('planning-readiness-assessment', async () => {
-    const { runId } = await runner.run('planning-readiness-assessment', BASE_PAYLOAD, runPlanningReadiness);
+    const { runId } = await runner.run(
+      'planning-readiness-assessment',
+      BASE_PAYLOAD,
+      runPlanningReadiness,
+    );
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('planning-readiness-assessment');
     expect(row?.triggerdev_status).toBe('succeeded');
@@ -225,21 +231,33 @@ describe('all 9 tasks write triggerdev_runs rows via MockTriggerRunner', () => {
   });
 
   it('generate-implementation-plan', async () => {
-    const { runId } = await runner.run('generate-implementation-plan', BASE_PAYLOAD, runGeneratePlan);
+    const { runId } = await runner.run(
+      'generate-implementation-plan',
+      BASE_PAYLOAD,
+      runGeneratePlan,
+    );
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('generate-implementation-plan');
     expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('generate-feature-backlog', async () => {
-    const { runId } = await runner.run('generate-feature-backlog', BASE_PAYLOAD, runGenerateBacklog);
+    const { runId } = await runner.run(
+      'generate-feature-backlog',
+      BASE_PAYLOAD,
+      runGenerateBacklog,
+    );
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('generate-feature-backlog');
     expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('activate-approved-backlog', async () => {
-    const { runId } = await runner.run('activate-approved-backlog', { ...BASE_PAYLOAD, planId: 'plan-001' }, runActivateBacklog);
+    const { runId } = await runner.run(
+      'activate-approved-backlog',
+      { ...BASE_PAYLOAD, planId: 'plan-001' },
+      runActivateBacklog,
+    );
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('activate-approved-backlog');
     expect(row?.triggerdev_status).toBe('succeeded');
@@ -253,14 +271,22 @@ describe('all 9 tasks write triggerdev_runs rows via MockTriggerRunner', () => {
   });
 
   it('github-reconciliation', async () => {
-    const { runId } = await runner.run('github-reconciliation', BASE_PAYLOAD, runGithubReconciliation);
+    const { runId } = await runner.run(
+      'github-reconciliation',
+      BASE_PAYLOAD,
+      runGithubReconciliation,
+    );
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('github-reconciliation');
     expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('export-plan', async () => {
-    const { runId } = await runner.run('export-plan', { ...BASE_PAYLOAD, planId: 'plan-001' }, runExportPlan);
+    const { runId } = await runner.run(
+      'export-plan',
+      { ...BASE_PAYLOAD, planId: 'plan-001' },
+      runExportPlan,
+    );
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('export-plan');
     expect(row?.triggerdev_status).toBe('succeeded');
