@@ -12,8 +12,8 @@ import {
   generateId,
   writeWorkflowEvent,
   writeOutboxEvent,
-  writeIdempotencyKey,
-  readIdempotencyFromTx,
+  claimIdempotencyKey,
+  fulfillIdempotencyKey,
 } from '../../helpers.js';
 
 export const ApprovePlanPayloadSchema = z.object({
@@ -36,6 +36,7 @@ interface PlanRow {
 export class ApprovePlanHandler implements CommandHandler<ApprovePlanPayload, PlanState> {
   readonly commandName = 'ApprovePlanCommand';
   readonly requiredRole = UserRole.APPROVER;
+  readonly requiredActorKind = 'human' as const;
   readonly idempotencyScope = 'approve-plan';
 
   async execute(
@@ -44,8 +45,10 @@ export class ApprovePlanHandler implements CommandHandler<ApprovePlanPayload, Pl
   ): Promise<CommandResult<PlanState>> {
     const { planId, projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
-      const cached = await readIdempotencyFromTx<PlanState>(tx, envelope.idempotencyKey, this.idempotencyScope);
-      if (cached !== null) return cached;
+      const claim = await claimIdempotencyKey<PlanState>(
+        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+      );
+      if (!claim.owned) return claim.result;
 
       const rows = await tx.query<PlanRow>(
         `SELECT id, state, version FROM implementation_plans WHERE id = ? AND project_id = ?`,
@@ -91,12 +94,7 @@ export class ApprovePlanHandler implements CommandHandler<ApprovePlanPayload, Pl
         resultingState: PlanState.APPROVED,
         emittedEventIds: [eventId],
       };
-      await writeIdempotencyKey(tx, {
-        key: envelope.idempotencyKey,
-        scope: this.idempotencyScope,
-        result,
-        ttlMs: IDEMPOTENCY_TTL_MS,
-      });
+      await fulfillIdempotencyKey(tx, claim.claimId, result);
       return result;
     });
   }

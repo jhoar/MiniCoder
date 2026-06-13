@@ -10,8 +10,8 @@ import {
   isoNow,
   writeWorkflowEvent,
   writeOutboxEvent,
-  writeIdempotencyKey,
-  readIdempotencyFromTx,
+  claimIdempotencyKey,
+  fulfillIdempotencyKey,
 } from '../../helpers.js';
 
 export const PauseAutomationPayloadSchema = z.object({
@@ -35,6 +35,7 @@ export class PauseAutomationHandler implements CommandHandler<
 > {
   readonly commandName = 'PauseAutomationCommand';
   readonly requiredRole = UserRole.OPERATOR;
+  readonly requiredActorKind = 'human' as const;
   readonly idempotencyScope = 'pause-automation';
 
   async execute(
@@ -43,8 +44,10 @@ export class PauseAutomationHandler implements CommandHandler<
   ): Promise<CommandResult<AutomationState>> {
     const { projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
-      const cached = await readIdempotencyFromTx<AutomationState>(tx, envelope.idempotencyKey, this.idempotencyScope);
-      if (cached !== null) return cached;
+      const claim = await claimIdempotencyKey<AutomationState>(
+        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+      );
+      if (!claim.owned) return claim.result;
 
       const rows = await tx.query<WorkflowStateRow>(
         `SELECT id, automation_state, version FROM workflow_states WHERE project_id = ?`,
@@ -82,12 +85,7 @@ export class PauseAutomationHandler implements CommandHandler<
         resultingState: AutomationState.PAUSED_BY_OPERATOR,
         emittedEventIds: [eventId],
       };
-      await writeIdempotencyKey(tx, {
-        key: envelope.idempotencyKey,
-        scope: this.idempotencyScope,
-        result,
-        ttlMs: IDEMPOTENCY_TTL_MS,
-      });
+      await fulfillIdempotencyKey(tx, claim.claimId, result);
       return result;
     });
   }

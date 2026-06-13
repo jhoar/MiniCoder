@@ -11,8 +11,8 @@ import {
   isoNow,
   writeWorkflowEvent,
   writeOutboxEvent,
-  writeIdempotencyKey,
-  readIdempotencyFromTx,
+  claimIdempotencyKey,
+  fulfillIdempotencyKey,
 } from '../../helpers.js';
 
 export const EscalateToHumanPayloadSchema = z.object({
@@ -47,8 +47,10 @@ export class EscalateToHumanHandler implements CommandHandler<
   ): Promise<CommandResult<FeatureExecutionState>> {
     const { featureRunId, projectId, expectedVersion, reason } = envelope.payload;
     return db.transaction(async (tx) => {
-      const cached = await readIdempotencyFromTx<FeatureExecutionState>(tx, envelope.idempotencyKey, this.idempotencyScope);
-      if (cached !== null) return cached;
+      const claim = await claimIdempotencyKey<FeatureExecutionState>(
+        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+      );
+      if (!claim.owned) return claim.result;
 
       // Join through feature_requests to enforce project_id (feature_runs has no project_id column)
       const rows = await tx.query<FeatureRunRow>(
@@ -98,12 +100,7 @@ export class EscalateToHumanHandler implements CommandHandler<
         resultingState: FeatureExecutionState.HUMAN_REQUIRED,
         emittedEventIds: [eventId],
       };
-      await writeIdempotencyKey(tx, {
-        key: envelope.idempotencyKey,
-        scope: this.idempotencyScope,
-        result,
-        ttlMs: IDEMPOTENCY_TTL_MS,
-      });
+      await fulfillIdempotencyKey(tx, claim.claimId, result);
       return result;
     });
   }

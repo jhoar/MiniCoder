@@ -20,10 +20,11 @@ function ttlIso(ms: number): string {
  * 1. Check idempotency key (plain read, outside transaction — optimization only)
  * 2-5. Delegate to handler which runs within db.transaction()
  *
- * Handlers own steps 2-5: load entity, validate transition, UPDATE entity state
- * (with executeAffected verification for CAS), write workflow_event + outbox_event
- * + idempotency_keys. The outer check is an optimization; the inner INSERT ON
- * CONFLICT DO NOTHING provides the authoritative idempotency guarantee.
+ * Handlers own steps 2-5: claim idempotency slot (INSERT NULL sentinel), load
+ * entity, validate transition, UPDATE entity state (CAS), write workflow_event
+ * + outbox_event, then fulfill idempotency slot (UPDATE with final result).
+ * The claim-first pattern ensures atomicity: the slot INSERT serializes concurrent
+ * requests at the DB level; only the claiming transaction proceeds with side effects.
  */
 export class TransactionalCommandExecutor {
   constructor(
@@ -54,8 +55,9 @@ export class TransactionalCommandExecutor {
   }
 
   private async checkIdempotencyKey(key: string, scope: string): Promise<CommandResult | null> {
+    // Exclude NULL-result rows (in-progress claims) from the outer cache hit
     const rows = await this.db.query<IdempotencyRow>(
-      `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ?`,
+      `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ? AND result IS NOT NULL`,
       [key, scope, isoNow()],
     );
     if (rows.length > 0 && rows[0]) {

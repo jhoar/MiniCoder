@@ -11,8 +11,8 @@ import {
   isoNow,
   writeWorkflowEvent,
   writeOutboxEvent,
-  writeIdempotencyKey,
-  readIdempotencyFromTx,
+  claimIdempotencyKey,
+  fulfillIdempotencyKey,
 } from '../../helpers.js';
 
 export const SelectFeaturePayloadSchema = z.object({
@@ -38,6 +38,7 @@ export class SelectFeatureHandler implements CommandHandler<
 > {
   readonly commandName = 'SelectFeatureCommand';
   readonly requiredRole = UserRole.OPERATOR;
+  readonly requiredActorKind = 'human' as const;
   readonly idempotencyScope = 'select-feature';
 
   async execute(
@@ -47,8 +48,10 @@ export class SelectFeatureHandler implements CommandHandler<
     const { featureRunId, projectId, expectedVersion } = envelope.payload;
 
     return db.transaction(async (tx) => {
-      const cached = await readIdempotencyFromTx<FeatureExecutionState>(tx, envelope.idempotencyKey, this.idempotencyScope);
-      if (cached !== null) return cached;
+      const claim = await claimIdempotencyKey<FeatureExecutionState>(
+        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+      );
+      if (!claim.owned) return claim.result;
 
       // Join through feature_requests to enforce project_id (feature_runs has no project_id column)
       const runs = await tx.query<FeatureRunRow>(
@@ -96,7 +99,6 @@ export class SelectFeatureHandler implements CommandHandler<
       const newVersion = nextVersion(run.version);
       const now = isoNow();
 
-      // Finding 2: use executeAffected for CAS verification
       const featureAffected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
         [FeatureExecutionState.SELECTED, newVersion, now, featureRunId, expectedVersion],
@@ -105,14 +107,13 @@ export class SelectFeatureHandler implements CommandHandler<
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
 
-      // Finding 3: atomic conditional UPDATE on workflow_states to prevent race
+      // Atomic conditional UPDATE on workflow_states to prevent concurrent selection race
       const wsAffected = await tx.executeAffected(
         `UPDATE workflow_states SET active_feature_run_id = ?, version = version + 1, updated_at = ?
          WHERE project_id = ? AND automation_state = 'running' AND active_feature_run_id IS NULL`,
         [featureRunId, now, projectId],
       );
       if (wsAffected === 0) {
-        // Read to give a precise error
         const wsList = await tx.query<{
           automation_state: string;
           active_feature_run_id: string | null;
@@ -166,13 +167,7 @@ export class SelectFeatureHandler implements CommandHandler<
         emittedEventIds: [eventId],
       };
 
-      await writeIdempotencyKey(tx, {
-        key: envelope.idempotencyKey,
-        scope: this.idempotencyScope,
-        result,
-        ttlMs: IDEMPOTENCY_TTL_MS,
-      });
-
+      await fulfillIdempotencyKey(tx, claim.claimId, result);
       return result;
     });
   }

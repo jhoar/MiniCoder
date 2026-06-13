@@ -72,12 +72,11 @@ export class OutboxDispatcher {
     let failed = 0;
 
     for (const row of rows) {
-      // Atomic claim: only proceed if we successfully mark as 'processing'.
-      // If another worker already claimed this row, skip it in this poll cycle.
+      // Atomic claim: include version = ? so claimedVersion = row.version + 1 is always accurate.
       const claimed = await this.db.executeAffected(
         `UPDATE outbox_events SET status = 'processing', version = version + 1, updated_at = ?
-         WHERE id = ? AND status IN ('pending', 'failed')`,
-        [isoNow(), row.id],
+         WHERE id = ? AND status IN ('pending', 'failed') AND version = ?`,
+        [isoNow(), row.id, row.version],
       );
       if (claimed === 0) continue;
 

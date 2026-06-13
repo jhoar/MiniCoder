@@ -168,6 +168,11 @@ export function createStateCommand(): Command {
             console.error('Error: confirmation token has expired. Run --dry-run again to get a new token.');
             process.exit(1);
           }
+          // Project binding: token must have been issued for the same project
+          if (pendingToken.projectId !== null && opts.project !== pendingToken.projectId) {
+            console.error(`Error: token was issued for project "${pendingToken.projectId}" but --project is "${opts.project ?? '(none)'}"`);
+            process.exit(1);
+          }
           // Single-use: delete the pending token file before executing
           fs.unlinkSync(REPAIR_PENDING_FILE);
           console.log(
@@ -191,7 +196,11 @@ export function createStateCommand(): Command {
         const token = crypto.randomUUID();
         const expiresAt = ttlIso(CONFIRMATION_TOKEN_TTL_MS);
         fs.mkdirSync(REPAIR_PENDING_DIR, { recursive: true });
-        fs.writeFileSync(REPAIR_PENDING_FILE, JSON.stringify({ token, expiresAt, projectId: opts.project ?? null }), 'utf-8');
+        fs.writeFileSync(
+          REPAIR_PENDING_FILE,
+          JSON.stringify({ token, expiresAt, projectId: opts.project ?? null }),
+          { encoding: 'utf-8', mode: 0o600 },
+        );
 
         console.log(
           JSON.stringify(

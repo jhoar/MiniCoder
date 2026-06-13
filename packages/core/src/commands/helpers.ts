@@ -1,6 +1,7 @@
 import type { TxClient } from '../persistence/types.js';
 import { StaleFenceError } from '../persistence/types.js';
 import type { CommandResult } from './types.js';
+import { CommandError } from './types.js';
 import { SCHEMA_VERSION } from '../events/schemas.js';
 import { defaultRedactor } from '../auth/redaction.js';
 
@@ -13,27 +14,68 @@ export function isoNow(): string {
   return new Date().toISOString();
 }
 
-export async function readIdempotencyFromTx<S extends string>(
-  tx: TxClient,
-  key: string,
-  scope: string,
-): Promise<CommandResult<S> | null> {
-  const rows = await tx.query<{ result: string }>(
-    `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ?`,
-    [key, scope, isoNow()],
-  );
-  if (rows.length > 0 && rows[0]) {
-    return parseJsonField<CommandResult<S>>(rows[0].result);
-  }
-  return null;
-}
-
 export function ttlIso(ms: number): string {
   return new Date(Date.now() + ms).toISOString();
 }
 
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Claim-first idempotency: INSERT a NULL-result sentinel at the start of the transaction.
+ * Only one concurrent transaction can claim the slot; others either get the cached result
+ * (if the winner committed) or a 409 (if it is still in progress).
+ */
+export async function claimIdempotencyKey<S extends string>(
+  tx: TxClient,
+  key: string,
+  scope: string,
+  ttlMs: number,
+): Promise<{ owned: true; claimId: string } | { owned: false; result: CommandResult<S> }> {
+  const claimId = generateId();
+  const now = isoNow();
+  const expiresAt = ttlIso(ttlMs);
+
+  const inserted = await tx.executeAffected(
+    `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
+     VALUES (?, ?, ?, NULL, ?, 1, ?, ?)
+     ON CONFLICT (key, scope) DO NOTHING`,
+    [claimId, key, scope, expiresAt, now, now],
+  );
+
+  if (inserted === 1) {
+    return { owned: true, claimId };
+  }
+
+  // Conflict: read the existing slot
+  const rows = await tx.query<{ id: string; result: string | null }>(
+    `SELECT id, result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ?`,
+    [key, scope, now],
+  );
+  const existing = rows[0];
+  if (existing?.result !== null && existing?.result !== undefined) {
+    return { owned: false, result: parseJsonField<CommandResult<S>>(existing.result) };
+  }
+  // Another transaction is in-progress with the same key
+  throw new CommandError({
+    type: 'concurrent-command',
+    title: 'Concurrent command in progress',
+    status: 409,
+    detail: `A concurrent request with idempotency key "${key}" is already in progress`,
+  });
+}
+
+/** Write the final result into the claimed idempotency slot. */
+export async function fulfillIdempotencyKey(
+  tx: TxClient,
+  claimId: string,
+  result: CommandResult,
+): Promise<void> {
+  await tx.execute(
+    `UPDATE idempotency_keys SET result = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+    [JSON.stringify(result), isoNow(), claimId],
+  );
 }
 
 export async function writeWorkflowEvent(
@@ -88,33 +130,13 @@ export async function writeOutboxEvent(
   return id;
 }
 
-export async function writeIdempotencyKey(
-  tx: TxClient,
-  opts: {
-    key: string;
-    scope: string;
-    result: CommandResult;
-    ttlMs: number;
-  },
-): Promise<void> {
-  const id = generateId();
-  const now = isoNow();
-  const expiresAt = ttlIso(opts.ttlMs);
-  await tx.execute(
-    `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-     ON CONFLICT (key, scope) DO NOTHING`,
-    [id, opts.key, opts.scope, JSON.stringify(opts.result), expiresAt, now, now],
-  );
-}
-
 export async function assertLockFence(
   tx: TxClient,
-  lockContext: { lockId: string; fence: number },
+  lockContext: { lockId: string; fence: number; holderId: string },
 ): Promise<void> {
   const now = isoNow();
-  const rows = await tx.query<{ fence: number; expires_at: string | Date | null }>(
-    `SELECT fence, expires_at FROM workflow_locks WHERE id = ?`,
+  const rows = await tx.query<{ fence: number; expires_at: string | Date | null; holder_id: string }>(
+    `SELECT fence, expires_at, holder_id FROM workflow_locks WHERE id = ?`,
     [lockContext.lockId],
   );
   const current = rows[0];
@@ -125,6 +147,9 @@ export async function assertLockFence(
     throw new StaleFenceError(lockContext.lockId, lockContext.fence, current?.fence ?? -1);
   }
   if (current.fence !== lockContext.fence) {
+    throw new StaleFenceError(lockContext.lockId, lockContext.fence, current.fence);
+  }
+  if (current.holder_id !== lockContext.holderId) {
     throw new StaleFenceError(lockContext.lockId, lockContext.fence, current.fence);
   }
 }

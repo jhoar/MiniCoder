@@ -4,15 +4,16 @@ import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { FEATURE_EXECUTION_MATRIX } from '../../../statemachine/machines/feature-execution.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
 import { OptimisticLockError } from '../../../persistence/types.js';
+import { CommandError } from '../../types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
 import {
   isoNow,
   writeWorkflowEvent,
   writeOutboxEvent,
-  writeIdempotencyKey,
+  claimIdempotencyKey,
+  fulfillIdempotencyKey,
   assertLockFence,
-  readIdempotencyFromTx,
 } from '../../helpers.js';
 
 export const RecordCodePushedPayloadSchema = z.object({
@@ -47,12 +48,21 @@ export class RecordCodePushedHandler implements CommandHandler<
   ): Promise<CommandResult<FeatureExecutionState>> {
     const { featureRunId, projectId, expectedVersion, commitSha } = envelope.payload;
     return db.transaction(async (tx) => {
-      const cached = await readIdempotencyFromTx<FeatureExecutionState>(tx, envelope.idempotencyKey, this.idempotencyScope);
-      if (cached !== null) return cached;
+      const claim = await claimIdempotencyKey<FeatureExecutionState>(
+        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+      );
+      if (!claim.owned) return claim.result;
 
-      if (envelope.lockContext) {
-        await assertLockFence(tx, envelope.lockContext);
+      if (!envelope.lockContext) {
+        throw new CommandError({
+          type: 'missing-lock',
+          title: 'Execution lock required',
+          status: 400,
+          detail: `${this.commandName} requires a workflow lock context`,
+        });
       }
+      await assertLockFence(tx, envelope.lockContext);
+
       const rows = await tx.query<FeatureRunRow>(
         `SELECT fr.id, fr.current_execution_state, fr.version
          FROM feature_runs fr
@@ -67,13 +77,7 @@ export class RecordCodePushedHandler implements CommandHandler<
       const now = isoNow();
       const codePushedAffected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [
-          FeatureExecutionState.CODE_PUSHED,
-          nextVersion(run.version),
-          now,
-          featureRunId,
-          expectedVersion,
-        ],
+        [FeatureExecutionState.CODE_PUSHED, nextVersion(run.version), now, featureRunId, expectedVersion],
       );
       if (codePushedAffected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
@@ -97,12 +101,7 @@ export class RecordCodePushedHandler implements CommandHandler<
         resultingState: FeatureExecutionState.CODE_PUSHED,
         emittedEventIds: [eventId],
       };
-      await writeIdempotencyKey(tx, {
-        key: envelope.idempotencyKey,
-        scope: this.idempotencyScope,
-        result,
-        ttlMs: IDEMPOTENCY_TTL_MS,
-      });
+      await fulfillIdempotencyKey(tx, claim.claimId, result);
       return result;
     });
   }

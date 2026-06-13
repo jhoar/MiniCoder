@@ -8,7 +8,7 @@ const DEFAULT_REPLACEMENT = '[REDACTED]';
 const DEFAULT_RULES: RedactionRule[] = [
   {
     pattern:
-      /("(?:token|apiKey|api_key|password|secret|credential|privateKey|private_key|accessKey|access_key|accessToken|access_token|refreshToken|refresh_token|clientSecret|client_secret|webhookSecret|webhook_secret|signingSecret|signing_secret)":\s*)"[^"]*"/gi,
+      /("(?:token|apiKey|api_key|password|secret|credential|privateKey|private_key|accessKey|access_key|accessToken|access_token|refreshToken|refresh_token|clientSecret|client_secret|webhookSecret|webhook_secret|signingSecret|signing_secret|authorization)":\s*)"[^"]*"/gi,
     replacement: `$1"${DEFAULT_REPLACEMENT}"`,
   },
   { pattern: /\b(gh[ps]_[A-Za-z0-9]{36,})\b/g, replacement: DEFAULT_REPLACEMENT },
