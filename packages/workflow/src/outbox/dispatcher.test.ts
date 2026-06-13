@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SqliteDbClient } from '@minicoder/persistence-sqlite';
 import { OutboxDispatcher } from './dispatcher.js';
@@ -13,6 +13,11 @@ beforeEach(() => {
   db = createTestDb();
   raw = (db as unknown as { db: Database.Database }).db;
   insertTestProject(raw);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  raw.close();
 });
 
 function insertOutboxEvent(
@@ -202,4 +207,50 @@ describe('OutboxDispatcher', () => {
     };
     expect(row.status).toBe('delivered');
   }, 2_000);
+
+  it('does not count dispatch when heartbeat detects ownership loss (reclaim regression)', async () => {
+    // Simulate stale-claim recovery reclaiming the row while the handler is running:
+    // the heartbeat executeAffected returns 0 (row no longer matches processing+version).
+    insertOutboxEvent('evt-lost');
+    const original = db.executeAffected.bind(db);
+    vi.spyOn(db, 'executeAffected').mockImplementation(async (sql, params) => {
+      // Heartbeat UPDATE: SET updated_at WHERE status = 'processing' AND version = ?
+      if (/SET updated_at.*status = 'processing'/s.test(sql)) {
+        return 0; // Simulate row reclaimed by another worker
+      }
+      return original(sql, params as unknown[]);
+    });
+
+    let handlerRan = false;
+    const handleFn = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      handlerRan = true;
+    });
+    const dispatcher = new OutboxDispatcher(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+      { staleClaimMs: 100 }, // heartbeatMs = 50ms — fires before handler completes
+    );
+
+    const result = await dispatcher.pollAndDispatch();
+
+    expect(handlerRan).toBe(true); // handler still runs to completion
+    expect(result.dispatched).toBe(0); // NOT counted — ownership was lost
+    expect(result.failed).toBe(0);
+
+    // markDelivered must NOT have been called — row stays in 'processing'
+    const row = raw.prepare(`SELECT status FROM outbox_events WHERE id = 'evt-lost'`).get() as {
+      status: string;
+    };
+    expect(row.status).toBe('processing');
+  }, 2_000);
+
+  it('throws when constructed with staleClaimMs < 2', () => {
+    expect(
+      () => new OutboxDispatcher(db, new Map(), { staleClaimMs: 0 }),
+    ).toThrow('staleClaimMs must be >= 2');
+    expect(
+      () => new OutboxDispatcher(db, new Map(), { staleClaimMs: 1 }),
+    ).toThrow('staleClaimMs must be >= 2');
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SqliteDbClient } from '@minicoder/persistence-sqlite';
 import { InboxProcessor } from './processor.js';
@@ -12,6 +12,11 @@ beforeEach(() => {
   db = createTestDb();
   raw = (db as unknown as { db: Database.Database }).db;
   insertTestProject(raw);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  raw.close();
 });
 
 function insertInboxEvent(
@@ -166,6 +171,50 @@ describe('InboxProcessor', () => {
     expect(result.processed).toBe(0);
     // Handler must not be called with an invalid payload
     expect(handleFn).not.toHaveBeenCalled();
+  });
+
+  it('does not count processing when heartbeat detects ownership loss (reclaim regression)', async () => {
+    insertInboxEvent('evt-lost');
+    const original = db.executeAffected.bind(db);
+    vi.spyOn(db, 'executeAffected').mockImplementation(async (sql, params) => {
+      // Heartbeat UPDATE: SET updated_at WHERE status = 'processing' AND version = ?
+      if (/SET updated_at.*status = 'processing'/s.test(sql)) {
+        return 0; // Simulate row reclaimed by stale-claim recovery
+      }
+      return original(sql, params as unknown[]);
+    });
+
+    let handlerRan = false;
+    const handleFn = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      handlerRan = true;
+    });
+    const processor = new InboxProcessor(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+      { staleClaimMs: 100 }, // heartbeatMs = 50ms — fires before handler completes
+    );
+
+    const result = await processor.pollAndProcess();
+
+    expect(handlerRan).toBe(true); // handler still runs to completion
+    expect(result.processed).toBe(0); // NOT counted — ownership was lost
+    expect(result.failed).toBe(0);
+
+    // markProcessed must NOT have been called — row stays in 'processing'
+    const row = raw.prepare(`SELECT status FROM inbox_events WHERE id = 'evt-lost'`).get() as {
+      status: string;
+    };
+    expect(row.status).toBe('processing');
+  }, 2_000);
+
+  it('throws when constructed with staleClaimMs < 2', () => {
+    expect(
+      () => new InboxProcessor(db, new Map(), { staleClaimMs: 0 }),
+    ).toThrow('staleClaimMs must be >= 2');
+    expect(
+      () => new InboxProcessor(db, new Map(), { staleClaimMs: 1 }),
+    ).toThrow('staleClaimMs must be >= 2');
   });
 
   it('fails the event when payload_schema_version does not match SCHEMA_VERSION', async () => {

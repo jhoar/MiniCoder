@@ -45,6 +45,13 @@ export class OutboxDispatcher {
     options: Partial<DispatcherOptions> = {},
   ) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    if (this.options.staleClaimMs < 2) {
+      throw new Error(
+        `staleClaimMs must be >= 2 (got ${this.options.staleClaimMs}). ` +
+          `Values below 2 produce a zero-delay heartbeat loop AND make the stale-claim ` +
+          `threshold fire immediately, reclaiming active claims.`,
+      );
+    }
   }
 
   async pollAndDispatch(): Promise<{ dispatched: number; failed: number }> {
