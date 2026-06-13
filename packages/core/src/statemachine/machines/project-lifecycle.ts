@@ -7,7 +7,8 @@ export const PROJECT_LIFECYCLE_MATRIX: StateMatrix<ProjectState> = [
     toState: ProjectState.IMPLEMENTATION_COMPLETE,
     triggeringCommand: 'MarkImplementationCompleteCommand',
     actor: 'system',
-    guardDescription: 'all approved feature requests in merged state; Project Acceptance Validation passes (01-system-specification.md §13.1)',
+    guardDescription:
+      'all approved feature requests in merged state; Project Acceptance Validation passes (01-system-specification.md §13.1)',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['project.implementation_complete'],
     idempotencyKeyTemplate: 'implementation-complete:{projectId}',

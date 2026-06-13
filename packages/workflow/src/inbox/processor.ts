@@ -61,14 +61,33 @@ export class InboxProcessor {
     let failed = 0;
 
     for (const row of rows) {
+      // Atomic claim: only proceed if we successfully mark as 'processing'.
+      // If another worker already claimed this row, skip it in this poll cycle.
+      const claimed = await this.db.executeAffected(
+        `UPDATE inbox_events SET status = 'processing', version = version + 1, updated_at = ?
+         WHERE id = ? AND status IN ('pending', 'failed')`,
+        [isoNow(), row.id],
+      );
+      if (claimed === 0) continue;
+
       const handler = this.handlers.get(row.event_type);
       if (!handler) {
-        await this.markSkipped(row.id);
+        // No handler registered yet — requeue as pending so it retries when a
+        // handler is registered, rather than permanently skipping it.
+        await this.db.execute(
+          `UPDATE inbox_events SET status = 'pending', version = version + 1, updated_at = ? WHERE id = ?`,
+          [isoNow(), row.id],
+        );
         continue;
       }
 
       try {
-        const payload = JSON.parse(row.payload) as unknown;
+        let payload: unknown;
+        try {
+          payload = JSON.parse(row.payload) as unknown;
+        } catch {
+          throw new Error(`Invalid JSON payload for inbox event ${row.id}`);
+        }
         await handler.handle(payload, row.payload_schema_version);
         await this.markProcessed(row.id);
         processed++;
@@ -99,13 +118,6 @@ export class InboxProcessor {
     await this.db.execute(
       `UPDATE inbox_events SET status = 'failed', attempts = ?, next_retry_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
       [attempts, nextRetryAt, isoNow(), id],
-    );
-  }
-
-  private async markSkipped(id: string): Promise<void> {
-    await this.db.execute(
-      `UPDATE inbox_events SET status = 'skipped', version = version + 1, updated_at = ? WHERE id = ?`,
-      [isoNow(), id],
     );
   }
 }

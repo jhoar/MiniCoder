@@ -24,7 +24,9 @@ export function createTestDb(): SqliteDbClient {
   `);
 
   const applied = new Set(
-    (raw.prepare('SELECT name FROM _migrations').all() as Array<{ name: string }>).map((r) => r.name),
+    (raw.prepare('SELECT name FROM _migrations').all() as Array<{ name: string }>).map(
+      (r) => r.name,
+    ),
   );
 
   for (const file of listMigrationFiles()) {

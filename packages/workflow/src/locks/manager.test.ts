@@ -43,10 +43,12 @@ describe('WorkflowLockManager.acquire', () => {
 
   it('allows re-acquisition by new holder after expiry', async () => {
     // Insert an expired lock directly
-    raw.prepare(
-      `INSERT INTO workflow_locks (id, project_id, resource_key, holder_id, fence, expires_at, version, created_at, updated_at)
+    raw
+      .prepare(
+        `INSERT INTO workflow_locks (id, project_id, resource_key, holder_id, fence, expires_at, version, created_at, updated_at)
        VALUES ('lock-old', ?, ?, 'h1', 5, datetime('now', '-1 second'), 1, datetime('now'), datetime('now'))`,
-    ).run(PROJECT, RESOURCE);
+      )
+      .run(PROJECT, RESOURCE);
 
     const lock = await manager.acquire(PROJECT, RESOURCE, { holderId: 'h2', ttlMs: 60_000 });
     expect(lock.fence).toBe(6);
@@ -57,21 +59,17 @@ describe('WorkflowLockManager.acquire', () => {
 describe('WorkflowLockManager.assertFence', () => {
   it('passes when fence matches', async () => {
     const lock = await manager.acquire(PROJECT, RESOURCE, { holderId: 'h1', ttlMs: 60_000 });
-    await expect(
-      db.transaction((tx) => manager.assertFence(lock, tx)),
-    ).resolves.not.toThrow();
+    await expect(db.transaction((tx) => manager.assertFence(lock, tx))).resolves.not.toThrow();
   });
 
   it('throws StaleFenceError when fence has advanced', async () => {
     const lock = await manager.acquire(PROJECT, RESOURCE, { holderId: 'h1', ttlMs: 60_000 });
     // Simulate another acquisition advancing the fence
-    raw.prepare(
-      `UPDATE workflow_locks SET fence = fence + 1 WHERE id = ?`,
-    ).run(lock.lockId);
+    raw.prepare(`UPDATE workflow_locks SET fence = fence + 1 WHERE id = ?`).run(lock.lockId);
 
-    await expect(
-      db.transaction((tx) => manager.assertFence(lock, tx)),
-    ).rejects.toThrow(StaleFenceError);
+    await expect(db.transaction((tx) => manager.assertFence(lock, tx))).rejects.toThrow(
+      StaleFenceError,
+    );
   });
 });
 

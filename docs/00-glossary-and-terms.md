@@ -239,61 +239,61 @@ The canonical TypeScript source for all 8 machines lives in
 
 #### Feature execution matrix (primary orchestration machine)
 
-| from_state | to_state | command | actor | guard |
-|---|---|---|---|---|
-| `approved_pending_execution` | `selected` | `SelectFeatureCommand` | operator | automation=running; no active run; dependencies merged |
-| `selected` | `coding` | `StartCodingCommand` | system | lock held; valid fence |
-| `coding` | `code_pushed` | `RecordCodePushedCommand` | system | lock held; commitSha provided |
-| `fixing` | `code_pushed` | `RecordCodePushedCommand` | system | lock held; commitSha provided |
-| `code_pushed` | `pr_opened` | `RecordPrOpenedCommand` | system | lock held; prNumber provided |
-| `pr_opened` | `ci_running` | `RecordCiRunningCommand` | system | lock held; checkRunId provided |
-| `ci_running` | `under_review` | `RecordCiPassedCommand` | system | CI success |
-| `ci_running` | `ci_failed` | `RecordCiFailedCommand` | system | CI failure |
-| `ci_failed` | `changes_requested` | `RequestChangesAfterCiFailCommand` | system | fix-attempt < threshold |
-| `ci_failed` | `human_required` | `EscalateToHumanCommand` | system | fix-attempt >= threshold |
-| `under_review` | `changes_requested` | `RecordChangesRequestedCommand` | system | blocking findings; fix-attempt < threshold |
-| `under_review` | `human_required` | `EscalateToHumanCommand` | system | requires_human_decision finding or limit exceeded |
-| `under_review` | `approved_by_policy` | `RecordApprovedByPolicyCommand` | system | merge gate passes |
-| `changes_requested` | `fixing` | `StartFixingCommand` | system | lock held; valid fence |
-| `approved_by_policy` | `merge_ready` | `MergeIfReadyCommand` | approver | merge gate re-evaluated and passes |
-| `merge_ready` | `merged` | `RecordMergedCommand` | system | GitHub merge confirmed |
-| `merge_ready` | `merge_failed` | `RecordMergeFailedCommand` | system | GitHub merge rejected |
-| `merge_failed` | `under_review` | `ReconcileMergeFailedCommand` | system | auto-clearable failure |
-| `merge_failed` | `human_required` | `EscalateToHumanCommand` | system | cannot auto-clear |
-| `failed` | `human_required` | `EscalateToHumanCommand` | system | retries exhausted |
-| `system_failed` | `human_required` | `EscalateToHumanCommand` | system | infra failure; locks released |
-| `blocked` | `approved_pending_execution` | `UnblockFeatureCommand` | system | all dependencies merged |
+| from_state                   | to_state                     | command                            | actor    | guard                                                  |
+| ---------------------------- | ---------------------------- | ---------------------------------- | -------- | ------------------------------------------------------ |
+| `approved_pending_execution` | `selected`                   | `SelectFeatureCommand`             | operator | automation=running; no active run; dependencies merged |
+| `selected`                   | `coding`                     | `StartCodingCommand`               | system   | lock held; valid fence                                 |
+| `coding`                     | `code_pushed`                | `RecordCodePushedCommand`          | system   | lock held; commitSha provided                          |
+| `fixing`                     | `code_pushed`                | `RecordCodePushedCommand`          | system   | lock held; commitSha provided                          |
+| `code_pushed`                | `pr_opened`                  | `RecordPrOpenedCommand`            | system   | lock held; prNumber provided                           |
+| `pr_opened`                  | `ci_running`                 | `RecordCiRunningCommand`           | system   | lock held; checkRunId provided                         |
+| `ci_running`                 | `under_review`               | `RecordCiPassedCommand`            | system   | CI success                                             |
+| `ci_running`                 | `ci_failed`                  | `RecordCiFailedCommand`            | system   | CI failure                                             |
+| `ci_failed`                  | `changes_requested`          | `RequestChangesAfterCiFailCommand` | system   | fix-attempt < threshold                                |
+| `ci_failed`                  | `human_required`             | `EscalateToHumanCommand`           | system   | fix-attempt >= threshold                               |
+| `under_review`               | `changes_requested`          | `RecordChangesRequestedCommand`    | system   | blocking findings; fix-attempt < threshold             |
+| `under_review`               | `human_required`             | `EscalateToHumanCommand`           | system   | requires_human_decision finding or limit exceeded      |
+| `under_review`               | `approved_by_policy`         | `RecordApprovedByPolicyCommand`    | system   | merge gate passes                                      |
+| `changes_requested`          | `fixing`                     | `StartFixingCommand`               | system   | lock held; valid fence                                 |
+| `approved_by_policy`         | `merge_ready`                | `MergeIfReadyCommand`              | approver | merge gate re-evaluated and passes                     |
+| `merge_ready`                | `merged`                     | `RecordMergedCommand`              | system   | GitHub merge confirmed                                 |
+| `merge_ready`                | `merge_failed`               | `RecordMergeFailedCommand`         | system   | GitHub merge rejected                                  |
+| `merge_failed`               | `under_review`               | `ReconcileMergeFailedCommand`      | system   | auto-clearable failure                                 |
+| `merge_failed`               | `human_required`             | `EscalateToHumanCommand`           | system   | cannot auto-clear                                      |
+| `failed`                     | `human_required`             | `EscalateToHumanCommand`           | system   | retries exhausted                                      |
+| `system_failed`              | `human_required`             | `EscalateToHumanCommand`           | system   | infra failure; locks released                          |
+| `blocked`                    | `approved_pending_execution` | `UnblockFeatureCommand`            | system   | all dependencies merged                                |
 
 #### Plan lifecycle matrix
 
-| from_state | to_state | command | actor | guard |
-|---|---|---|---|---|
-| `draft` | `pending_approval` | `SubmitPlanForApprovalCommand` | operator | plan generated; gaps resolved |
-| `pending_approval` | `approved` | `ApprovePlanCommand` | approver | no unaccepted blocking gaps |
-| `approved` | `activated_for_execution` | `ActivatePlanCommand` | approver | all features executable |
+| from_state         | to_state                  | command                        | actor    | guard                         |
+| ------------------ | ------------------------- | ------------------------------ | -------- | ----------------------------- |
+| `draft`            | `pending_approval`        | `SubmitPlanForApprovalCommand` | operator | plan generated; gaps resolved |
+| `pending_approval` | `approved`                | `ApprovePlanCommand`           | approver | no unaccepted blocking gaps   |
+| `approved`         | `activated_for_execution` | `ActivatePlanCommand`          | approver | all features executable       |
 
 #### Project lifecycle matrix
 
-| from_state | to_state | command | actor | guard |
-|---|---|---|---|---|
-| `active` | `implementation_complete` | `MarkImplementationCompleteCommand` | system | all features merged; PAV passes |
-| `implementation_complete` | `design_document_generating` | `GenerateDesignDocumentCommand` | operator | — |
-| `design_document_generating` | `design_document_ready_for_review` | `RecordDesignDocumentReadyCommand` | system | artifact exported |
-| `design_document_ready_for_review` | `design_document_revision_requested` | `RequestDesignDocumentRevisionCommand` | approver | — |
-| `design_document_revision_requested` | `design_document_generating` | `RegenerateDesignDocumentCommand` | operator | — |
-| `design_document_ready_for_review` | `design_document_approved` | `ApproveDesignDocumentCommand` | approver | — |
-| `design_document_approved` | `project_complete` | `CompleteProjectCommand` | system | — |
+| from_state                           | to_state                             | command                                | actor    | guard                           |
+| ------------------------------------ | ------------------------------------ | -------------------------------------- | -------- | ------------------------------- |
+| `active`                             | `implementation_complete`            | `MarkImplementationCompleteCommand`    | system   | all features merged; PAV passes |
+| `implementation_complete`            | `design_document_generating`         | `GenerateDesignDocumentCommand`        | operator | —                               |
+| `design_document_generating`         | `design_document_ready_for_review`   | `RecordDesignDocumentReadyCommand`     | system   | artifact exported               |
+| `design_document_ready_for_review`   | `design_document_revision_requested` | `RequestDesignDocumentRevisionCommand` | approver | —                               |
+| `design_document_revision_requested` | `design_document_generating`         | `RegenerateDesignDocumentCommand`      | operator | —                               |
+| `design_document_ready_for_review`   | `design_document_approved`           | `ApproveDesignDocumentCommand`         | approver | —                               |
+| `design_document_approved`           | `project_complete`                   | `CompleteProjectCommand`               | system   | —                               |
 
 #### Automation control matrix
 
-| from_state | to_state | command | actor |
-|---|---|---|---|
-| `running` | `paused_by_operator` | `PauseAutomationCommand` | operator |
-| `paused_by_operator` | `running` | `ResumeAutomationCommand` | operator |
-| `running` | `paused_budget_exceeded` | `RecordBudgetExceededCommand` | system |
-| `paused_budget_exceeded` | `running` | `ApproveBudgetOverrideCommand` | approver |
-| `running` | `waiting_for_budget_approval` | `RecordBudgetApprovalWaitingCommand` | system |
-| `waiting_for_budget_approval` | `running` | `ApproveBudgetOverrideCommand` | approver |
+| from_state                    | to_state                      | command                              | actor    |
+| ----------------------------- | ----------------------------- | ------------------------------------ | -------- |
+| `running`                     | `paused_by_operator`          | `PauseAutomationCommand`             | operator |
+| `paused_by_operator`          | `running`                     | `ResumeAutomationCommand`            | operator |
+| `running`                     | `paused_budget_exceeded`      | `RecordBudgetExceededCommand`        | system   |
+| `paused_budget_exceeded`      | `running`                     | `ApproveBudgetOverrideCommand`       | approver |
+| `running`                     | `waiting_for_budget_approval` | `RecordBudgetApprovalWaitingCommand` | system   |
+| `waiting_for_budget_approval` | `running`                     | `ApproveBudgetOverrideCommand`       | approver |
 
 #### Agent run, workflow run, clarification, and artifact export matrices
 

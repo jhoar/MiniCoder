@@ -13,10 +13,12 @@ beforeEach(() => {
 });
 
 function insertKey(id: string, expiresAt: string): void {
-  raw.prepare(
-    `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
+  raw
+    .prepare(
+      `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
      VALUES (?, ?, 'test', '{}', ?, 1, datetime('now'), datetime('now'))`,
-  ).run(id, id, expiresAt);
+    )
+    .run(id, id, expiresAt);
 }
 
 describe('IdempotencySweeper', () => {

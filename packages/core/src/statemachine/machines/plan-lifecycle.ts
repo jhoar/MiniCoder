@@ -29,10 +29,16 @@ export const PLAN_LIFECYCLE_MATRIX: StateMatrix<PlanState> = [
     toState: PlanState.ACTIVATED_FOR_EXECUTION,
     triggeringCommand: 'ActivatePlanCommand',
     actor: UserRole.APPROVER,
-    guardDescription: 'all feature requests are executable (kind!=discovery); no unresolved blocking gaps',
-    sideEffects: ['set_feature_requests_to_approved_pending_execution', 'write_workflow_event', 'write_outbox_event'],
+    guardDescription:
+      'all feature requests are executable (kind!=discovery); no unresolved blocking gaps',
+    sideEffects: [
+      'set_feature_requests_to_approved_pending_execution',
+      'write_workflow_event',
+      'write_outbox_event',
+    ],
     emittedEvents: ['plan.activated'],
     idempotencyKeyTemplate: 'activate-plan:{planId}',
-    recoveryPath: 'Idempotent: returns cached result if already activated; feature requests are idempotently set',
+    recoveryPath:
+      'Idempotent: returns cached result if already activated; feature requests are idempotently set',
   },
 ] as const;

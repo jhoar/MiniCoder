@@ -8,7 +8,9 @@ import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types
 import type { DbClient } from '../../../persistence/types.js';
 import {
   isoNow,
-  writeWorkflowEvent, writeOutboxEvent, writeIdempotencyKey,
+  writeWorkflowEvent,
+  writeOutboxEvent,
+  writeIdempotencyKey,
 } from '../../helpers.js';
 
 export const SelectFeaturePayloadSchema = z.object({
@@ -21,12 +23,22 @@ export type SelectFeaturePayload = z.infer<typeof SelectFeaturePayloadSchema>;
 const validator = new StateTransitionValidator(FEATURE_EXECUTION_MATRIX, 'feature-execution');
 const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-interface FeatureRunRow { id: string; current_execution_state: string; version: number; }
-interface WorkflowStateRow { id: string; automation_state: string; version: number; }
+interface FeatureRunRow {
+  id: string;
+  current_execution_state: string;
+  version: number;
+}
+interface WorkflowStateRow {
+  id: string;
+  automation_state: string;
+  active_feature_run_id: string | null;
+  version: number;
+}
 
-export class SelectFeatureHandler
-  implements CommandHandler<SelectFeaturePayload, FeatureExecutionState>
-{
+export class SelectFeatureHandler implements CommandHandler<
+  SelectFeaturePayload,
+  FeatureExecutionState
+> {
   readonly commandName = 'SelectFeatureCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly idempotencyScope = 'select-feature';
@@ -51,7 +63,7 @@ export class SelectFeatureHandler
       );
 
       const wsList = await tx.query<WorkflowStateRow>(
-        `SELECT id, automation_state, version FROM workflow_states WHERE project_id = ?`,
+        `SELECT id, automation_state, active_feature_run_id, version FROM workflow_states WHERE project_id = ?`,
         [projectId],
       );
       const ws = wsList[0];
@@ -61,6 +73,15 @@ export class SelectFeatureHandler
           title: 'Automation is paused',
           status: 409,
           detail: `Cannot select feature: automation is ${ws?.automation_state ?? 'unknown'}`,
+          instance: envelope.correlationId,
+        });
+      }
+      if (ws.active_feature_run_id !== null && ws.active_feature_run_id !== undefined) {
+        throw new CommandError({
+          type: 'feature-already-active',
+          title: 'A feature run is already active',
+          status: 409,
+          detail: `Cannot select feature: active_feature_run_id is already ${ws.active_feature_run_id}`,
           instance: envelope.correlationId,
         });
       }
@@ -89,7 +110,12 @@ export class SelectFeatureHandler
 
       await writeOutboxEvent(tx, {
         eventType: 'feature.selected',
-        payload: { featureRunId, projectId, fromState: 'approved_pending_execution', toState: 'selected' },
+        payload: {
+          featureRunId,
+          projectId,
+          fromState: 'approved_pending_execution',
+          toState: 'selected',
+        },
       });
 
       const result: CommandResult<FeatureExecutionState> = {

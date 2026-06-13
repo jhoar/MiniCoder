@@ -16,11 +16,13 @@ function ttlIso(ms: number): string {
 
 /**
  * TransactionalCommandExecutor implements the 5-step idempotent command pattern:
- * 1. Check idempotency key (plain read, outside transaction)
+ * 1. Check idempotency key (plain read, outside transaction — optimization only)
  * 2-5. Delegate to handler which runs within db.transaction()
  *
- * Handlers own steps 2-5 (load entity, validate transition, write state +
- * workflow_event + outbox_event + idempotency_keys) inside their transaction.
+ * Handlers own steps 2-5: load entity, validate transition, UPDATE entity state
+ * (with executeAffected verification for CAS), write workflow_event + outbox_event
+ * + idempotency_keys. The outer check is an optimization; the inner INSERT ON
+ * CONFLICT DO NOTHING provides the authoritative idempotency guarantee.
  */
 export class TransactionalCommandExecutor {
   constructor(
@@ -45,10 +47,7 @@ export class TransactionalCommandExecutor {
     return handler.execute(envelope, this.db);
   }
 
-  private async checkIdempotencyKey(
-    key: string,
-    scope: string,
-  ): Promise<CommandResult | null> {
+  private async checkIdempotencyKey(key: string, scope: string): Promise<CommandResult | null> {
     const rows = await this.db.query<IdempotencyRow>(
       `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ?`,
       [key, scope, isoNow()],

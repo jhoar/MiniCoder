@@ -17,10 +17,7 @@ export class IdempotencySweeper {
       `SELECT COUNT(*) as count FROM idempotency_keys WHERE expires_at <= ?`,
       [now],
     );
-    await this.db.execute(
-      `DELETE FROM idempotency_keys WHERE expires_at <= ?`,
-      [now],
-    );
+    await this.db.execute(`DELETE FROM idempotency_keys WHERE expires_at <= ?`, [now]);
     return { removed: before[0]?.count ?? 0 };
   }
 }

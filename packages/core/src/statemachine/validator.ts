@@ -18,9 +18,7 @@ export class StateTransitionValidator<S extends string> {
     private readonly matrix: StateMatrix<S>,
     private readonly machineName: string,
   ) {
-    this.lookup = new Map(
-      matrix.map((row) => [`${row.fromState}→${row.toState}`, row]),
-    );
+    this.lookup = new Map(matrix.map((row) => [`${row.fromState}→${row.toState}`, row]));
   }
 
   assertValid(from: S, to: S): TransitionRow<S, S> {

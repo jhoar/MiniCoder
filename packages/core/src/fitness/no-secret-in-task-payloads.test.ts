@@ -15,10 +15,22 @@ import { z } from 'zod';
  */
 
 const SECRET_FIELD_NAMES = [
-  'token', 'apikey', 'api_key', 'password', 'secret',
-  'privatekey', 'private_key', 'accesskey', 'access_key',
-  'clientsecret', 'client_secret', 'webhooksecret', 'webhook_secret',
-  'signingsecret', 'signing_secret', 'credential',
+  'token',
+  'apikey',
+  'api_key',
+  'password',
+  'secret',
+  'privatekey',
+  'private_key',
+  'accesskey',
+  'access_key',
+  'clientsecret',
+  'client_secret',
+  'webhooksecret',
+  'webhook_secret',
+  'signingsecret',
+  'signing_secret',
+  'credential',
 ];
 
 describe('RF-12: no secret fields in event payload schemas', () => {

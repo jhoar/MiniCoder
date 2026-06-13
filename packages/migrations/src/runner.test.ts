@@ -134,7 +134,9 @@ describe('Migration runner (SQLite)', () => {
 
   it('creates the _migrations tracking table with applied migration records', () => {
     const count = applyMigrations(db);
-    const rows = db.prepare('SELECT name FROM _migrations ORDER BY name ASC').all() as Array<{ name: string }>;
+    const rows = db.prepare('SELECT name FROM _migrations ORDER BY name ASC').all() as Array<{
+      name: string;
+    }>;
     expect(rows.length).toBe(count);
     expect(rows[0]?.name).toBe('0001_initial_schema');
   });

@@ -41,6 +41,29 @@ describe('SecretRedactor', () => {
     expect(result.tokens[1]?.token).toBe('[REDACTED]');
   });
 
+  it('redacts accessToken and refreshToken fields in JSON strings', () => {
+    const json = '{"accessToken": "eyJhbGciOiJSUzI1NiJ9.payload", "refreshToken": "rt-secret"}';
+    const result = redactor.redact(json);
+    expect(result).not.toContain('eyJhbGciOiJSUzI1NiJ9');
+    expect(result).not.toContain('rt-secret');
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it('redactObject redacts accessToken and refreshToken fields', () => {
+    const obj = { accessToken: 'bearer-token', refreshToken: 'refresh-xyz', userId: '123' };
+    const result = redactor.redactObject(obj);
+    expect(result.accessToken).toBe('[REDACTED]');
+    expect(result.refreshToken).toBe('[REDACTED]');
+    expect(result.userId).toBe('123');
+  });
+
+  it('redacts Authorization Bearer header values', () => {
+    const input = 'Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig';
+    const result = redactor.redact(input);
+    expect(result).not.toContain('eyJhbGciOiJSUzI1NiJ9');
+    expect(result).toContain('[REDACTED]');
+  });
+
   it('leaves clean strings unchanged', () => {
     const clean = 'Hello, world! featureRunId: abc-123';
     expect(redactor.redact(clean)).toBe(clean);

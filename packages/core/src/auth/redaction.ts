@@ -6,10 +6,15 @@ export interface RedactionRule {
 const DEFAULT_REPLACEMENT = '[REDACTED]';
 
 const DEFAULT_RULES: RedactionRule[] = [
-  { pattern: /("(?:token|apiKey|api_key|password|secret|credential|privateKey|private_key|accessKey|access_key|clientSecret|client_secret|webhookSecret|webhook_secret|signingSecret|signing_secret)":\s*)"[^"]*"/gi, replacement: `$1"${DEFAULT_REPLACEMENT}"` },
+  {
+    pattern:
+      /("(?:token|apiKey|api_key|password|secret|credential|privateKey|private_key|accessKey|access_key|accessToken|access_token|refreshToken|refresh_token|clientSecret|client_secret|webhookSecret|webhook_secret|signingSecret|signing_secret)":\s*)"[^"]*"/gi,
+    replacement: `$1"${DEFAULT_REPLACEMENT}"`,
+  },
   { pattern: /\b(gh[ps]_[A-Za-z0-9]{36,})\b/g, replacement: DEFAULT_REPLACEMENT },
   { pattern: /\b(sk-[A-Za-z0-9]{32,})\b/g, replacement: DEFAULT_REPLACEMENT },
   { pattern: /\b(glpat-[A-Za-z0-9\-_]{20,})\b/g, replacement: DEFAULT_REPLACEMENT },
+  { pattern: /(Authorization:\s*Bearer\s+)\S+/gi, replacement: `$1${DEFAULT_REPLACEMENT}` },
 ];
 
 export class SecretRedactor {
@@ -22,7 +27,10 @@ export class SecretRedactor {
   redact(input: string): string {
     let result = input;
     for (const rule of this.rules) {
-      const re = new RegExp(rule.pattern.source, rule.pattern.flags.includes('g') ? rule.pattern.flags : rule.pattern.flags + 'g');
+      const re = new RegExp(
+        rule.pattern.source,
+        rule.pattern.flags.includes('g') ? rule.pattern.flags : rule.pattern.flags + 'g',
+      );
       result = result.replace(re, rule.replacement);
     }
     return result;
@@ -51,10 +59,26 @@ export class SecretRedactor {
 }
 
 const SECRET_FIELD_NAMES = new Set([
-  'token', 'apikey', 'api_key', 'password', 'secret', 'credential',
-  'privatekey', 'private_key', 'accesskey', 'access_key',
-  'clientsecret', 'client_secret', 'webhooksecret', 'webhook_secret',
-  'signingsecret', 'signing_secret',
+  'token',
+  'apikey',
+  'api_key',
+  'password',
+  'secret',
+  'credential',
+  'privatekey',
+  'private_key',
+  'accesskey',
+  'access_key',
+  'accesstoken',
+  'access_token',
+  'refreshtoken',
+  'refresh_token',
+  'clientsecret',
+  'client_secret',
+  'webhooksecret',
+  'webhook_secret',
+  'signingsecret',
+  'signing_secret',
 ]);
 
 export const defaultRedactor = new SecretRedactor();

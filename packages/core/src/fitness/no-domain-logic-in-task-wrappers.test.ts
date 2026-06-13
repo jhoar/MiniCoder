@@ -53,7 +53,10 @@ describe('Architectural fitness: packages/workflow has no domain logic', () => {
           violations.push(path.relative(WORKFLOW_SRC, file));
         }
       }
-      expect(violations, `Files with banned pattern '${pattern}': ${violations.join(', ')}`).toEqual([]);
+      expect(
+        violations,
+        `Files with banned pattern '${pattern}': ${violations.join(', ')}`,
+      ).toEqual([]);
     });
   }
 });

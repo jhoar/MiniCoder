@@ -5,7 +5,12 @@ import { AUTOMATION_CONTROL_MATRIX } from '../../../statemachine/machines/automa
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
-import { isoNow, writeWorkflowEvent, writeOutboxEvent, writeIdempotencyKey } from '../../helpers.js';
+import {
+  isoNow,
+  writeWorkflowEvent,
+  writeOutboxEvent,
+  writeIdempotencyKey,
+} from '../../helpers.js';
 
 export const PauseAutomationPayloadSchema = z.object({
   projectId: z.string(),
@@ -16,26 +21,65 @@ export type PauseAutomationPayload = z.infer<typeof PauseAutomationPayloadSchema
 const validator = new StateTransitionValidator(AUTOMATION_CONTROL_MATRIX, 'automation-control');
 const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-interface WorkflowStateRow { id: string; automation_state: string; version: number; }
+interface WorkflowStateRow {
+  id: string;
+  automation_state: string;
+  version: number;
+}
 
-export class PauseAutomationHandler implements CommandHandler<PauseAutomationPayload, AutomationState> {
+export class PauseAutomationHandler implements CommandHandler<
+  PauseAutomationPayload,
+  AutomationState
+> {
   readonly commandName = 'PauseAutomationCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly idempotencyScope = 'pause-automation';
 
-  async execute(envelope: CommandEnvelope<PauseAutomationPayload>, db: DbClient): Promise<CommandResult<AutomationState>> {
+  async execute(
+    envelope: CommandEnvelope<PauseAutomationPayload>,
+    db: DbClient,
+  ): Promise<CommandResult<AutomationState>> {
     const { projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
-      const rows = await tx.query<WorkflowStateRow>(`SELECT id, automation_state, version FROM workflow_states WHERE project_id = ?`, [projectId]);
+      const rows = await tx.query<WorkflowStateRow>(
+        `SELECT id, automation_state, version FROM workflow_states WHERE project_id = ?`,
+        [projectId],
+      );
       const ws = rows[0];
       assertVersion('workflow_states', projectId, ws, expectedVersion);
-      validator.assertValid(ws.automation_state as AutomationState, AutomationState.PAUSED_BY_OPERATOR);
+      validator.assertValid(
+        ws.automation_state as AutomationState,
+        AutomationState.PAUSED_BY_OPERATOR,
+      );
       const now = isoNow();
-      await tx.execute(`UPDATE workflow_states SET automation_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`, [AutomationState.PAUSED_BY_OPERATOR, nextVersion(ws.version), now, ws.id, expectedVersion]);
-      const eventId = await writeWorkflowEvent(tx, { projectId, eventType: 'automation.paused_by_operator', fromState: AutomationState.RUNNING, toState: AutomationState.PAUSED_BY_OPERATOR, actorId: envelope.actor.id, correlationId: envelope.correlationId });
-      await writeOutboxEvent(tx, { eventType: 'automation.paused_by_operator', payload: { projectId, reason: 'operator' } });
-      const result: CommandResult<AutomationState> = { commandId: envelope.commandId, accepted: true, resultingState: AutomationState.PAUSED_BY_OPERATOR, emittedEventIds: [eventId] };
-      await writeIdempotencyKey(tx, { key: envelope.idempotencyKey, scope: this.idempotencyScope, result, ttlMs: IDEMPOTENCY_TTL_MS });
+      await tx.execute(
+        `UPDATE workflow_states SET automation_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
+        [AutomationState.PAUSED_BY_OPERATOR, nextVersion(ws.version), now, ws.id, expectedVersion],
+      );
+      const eventId = await writeWorkflowEvent(tx, {
+        projectId,
+        eventType: 'automation.paused_by_operator',
+        fromState: AutomationState.RUNNING,
+        toState: AutomationState.PAUSED_BY_OPERATOR,
+        actorId: envelope.actor.id,
+        correlationId: envelope.correlationId,
+      });
+      await writeOutboxEvent(tx, {
+        eventType: 'automation.paused_by_operator',
+        payload: { projectId, reason: 'operator' },
+      });
+      const result: CommandResult<AutomationState> = {
+        commandId: envelope.commandId,
+        accepted: true,
+        resultingState: AutomationState.PAUSED_BY_OPERATOR,
+        emittedEventIds: [eventId],
+      };
+      await writeIdempotencyKey(tx, {
+        key: envelope.idempotencyKey,
+        scope: this.idempotencyScope,
+        result,
+        ttlMs: IDEMPOTENCY_TTL_MS,
+      });
       return result;
     });
   }

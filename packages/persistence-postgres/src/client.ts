@@ -4,6 +4,12 @@ import { RollbackFailedError } from '@minicoder/core';
 
 const TX_EXPIRED_MSG = 'TxClient has expired: the transaction has already ended.';
 
+// Convert SQLite-style ? placeholders to PostgreSQL-style $1, $2, ... positional params.
+function convertPlaceholders(sql: string): string {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
+
 class PostgresTxClient implements TxClient {
   private invalidated = false;
 
@@ -15,13 +21,19 @@ class PostgresTxClient implements TxClient {
 
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
-    const result = await this.client.query(sql, params);
+    const result = await this.client.query(convertPlaceholders(sql), params);
     return result.rows as T[];
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
     if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
-    await this.client.query(sql, params);
+    await this.client.query(convertPlaceholders(sql), params);
+  }
+
+  async executeAffected(sql: string, params: unknown[] = []): Promise<number> {
+    if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
+    const result = await this.client.query(convertPlaceholders(sql), params);
+    return result.rowCount ?? 0;
   }
 }
 
@@ -38,14 +50,21 @@ export class PostgresDbClient implements DbClient {
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'query'));
-    const result = await this.client.query(sql, params);
+    const result = await this.client.query(convertPlaceholders(sql), params);
     return result.rows as T[];
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
     if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'execute'));
-    await this.client.query(sql, params);
+    await this.client.query(convertPlaceholders(sql), params);
+  }
+
+  async executeAffected(sql: string, params: unknown[] = []): Promise<number> {
+    if (this.dead) throw new Error(DEAD_MSG);
+    if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'executeAffected'));
+    const result = await this.client.query(convertPlaceholders(sql), params);
+    return result.rowCount ?? 0;
   }
 
   async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {

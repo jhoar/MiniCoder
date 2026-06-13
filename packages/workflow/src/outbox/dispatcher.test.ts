@@ -15,11 +15,18 @@ beforeEach(() => {
   insertTestProject(raw);
 });
 
-function insertOutboxEvent(id: string, eventType = 'feature.selected', status = 'pending', attempts = 0): void {
-  raw.prepare(
-    `INSERT INTO outbox_events (id, event_type, payload, payload_schema_version, status, attempts, version, created_at, updated_at)
+function insertOutboxEvent(
+  id: string,
+  eventType = 'feature.selected',
+  status = 'pending',
+  attempts = 0,
+): void {
+  raw
+    .prepare(
+      `INSERT INTO outbox_events (id, event_type, payload, payload_schema_version, status, attempts, version, created_at, updated_at)
      VALUES (?, ?, '{"test":true}', '1.0.0', ?, ?, 1, datetime('now'), datetime('now'))`,
-  ).run(id, eventType, status, attempts);
+    )
+    .run(id, eventType, status, attempts);
 }
 
 describe('deterministicBackoff', () => {
@@ -50,7 +57,9 @@ describe('OutboxDispatcher', () => {
     expect(result.failed).toBe(0);
     expect(handleFn).toHaveBeenCalledOnce();
 
-    const row = raw.prepare('SELECT status FROM outbox_events WHERE id = ?').get('evt-1') as { status: string };
+    const row = raw.prepare('SELECT status FROM outbox_events WHERE id = ?').get('evt-1') as {
+      status: string;
+    };
     expect(row.status).toBe('delivered');
   });
 
@@ -60,18 +69,22 @@ describe('OutboxDispatcher', () => {
       eventType: 'feature.selected',
       handle: vi.fn().mockRejectedValue(new Error('handler error')),
     };
-    const dispatcher = new OutboxDispatcher(db, new Map([['feature.selected', handler]]), { baseBackoffMs: 1000 });
+    const dispatcher = new OutboxDispatcher(db, new Map([['feature.selected', handler]]), {
+      baseBackoffMs: 1000,
+    });
 
     const result = await dispatcher.pollAndDispatch();
     expect(result.failed).toBe(1);
 
-    const row = raw.prepare('SELECT status, attempts, next_retry_at FROM outbox_events WHERE id = ?').get('evt-2') as { status: string; attempts: number; next_retry_at: string };
+    const row = raw
+      .prepare('SELECT status, attempts, next_retry_at FROM outbox_events WHERE id = ?')
+      .get('evt-2') as { status: string; attempts: number; next_retry_at: string };
     expect(row.status).toBe('failed');
     expect(row.attempts).toBe(1);
     expect(row.next_retry_at).toBeTruthy();
   });
 
-  it('skips events with no registered handler', async () => {
+  it('requeues events with no registered handler for later retry', async () => {
     insertOutboxEvent('evt-3', 'unknown.event');
     const dispatcher = new OutboxDispatcher(db, new Map());
 
@@ -79,14 +92,22 @@ describe('OutboxDispatcher', () => {
     expect(result.dispatched).toBe(0);
     expect(result.failed).toBe(0);
 
-    const row = raw.prepare('SELECT status FROM outbox_events WHERE id = ?').get('evt-3') as { status: string };
-    expect(row.status).toBe('skipped');
+    // Event must not be permanently skipped — it stays 'pending' for retry once
+    // a handler is registered.
+    const row = raw.prepare('SELECT status FROM outbox_events WHERE id = ?').get('evt-3') as {
+      status: string;
+    };
+    expect(row.status).toBe('pending');
   });
 
   it('does not re-dispatch events that have reached maxAttempts', async () => {
     insertOutboxEvent('evt-4', 'feature.selected', 'failed', 5);
     const handleFn = vi.fn().mockResolvedValue(undefined);
-    const dispatcher = new OutboxDispatcher(db, new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]), { maxAttempts: 5 });
+    const dispatcher = new OutboxDispatcher(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+      { maxAttempts: 5 },
+    );
 
     await dispatcher.pollAndDispatch();
     expect(handleFn).not.toHaveBeenCalled();

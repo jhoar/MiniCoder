@@ -28,13 +28,19 @@ export function createStateCommand(): Command {
       }
       // Full implementation wires to DbClient in Phase 13 (API layer).
       // In Phase 2 this command is scaffolded; actual DB queries added in Phase 4+.
-      console.log(JSON.stringify({
-        command: 'state inspect',
-        projectId: opts.project ?? null,
-        featureRunId: opts.featureRun ?? null,
-        note: 'DB wire-up in Phase 4',
-        timestamp: isoNow(),
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            command: 'state inspect',
+            projectId: opts.project ?? null,
+            featureRunId: opts.featureRun ?? null,
+            note: 'DB wire-up in Phase 4',
+            timestamp: isoNow(),
+          },
+          null,
+          2,
+        ),
+      );
     });
 
   state
@@ -42,12 +48,18 @@ export function createStateCommand(): Command {
     .description('Validate all active state machines against the transition matrix')
     .option('--project <id>', 'Project ID')
     .action((opts: { project?: string }) => {
-      console.log(JSON.stringify({
-        command: 'state validate',
-        projectId: opts.project ?? null,
-        note: 'Transition matrix loaded; DB-backed validation in Phase 4',
-        timestamp: isoNow(),
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            command: 'state validate',
+            projectId: opts.project ?? null,
+            note: 'Transition matrix loaded; DB-backed validation in Phase 4',
+            timestamp: isoNow(),
+          },
+          null,
+          2,
+        ),
+      );
     });
 
   state
@@ -55,13 +67,19 @@ export function createStateCommand(): Command {
     .description('Detect stale locks, stuck outbox/inbox events, and orphaned runs')
     .option('--project <id>', 'Project ID')
     .action((opts: { project?: string }) => {
-      console.log(JSON.stringify({
-        command: 'state doctor',
-        projectId: opts.project ?? null,
-        checks: ['stale_locks', 'stuck_outbox', 'stuck_inbox', 'orphaned_runs'],
-        note: 'DB-backed diagnostics in Phase 4',
-        timestamp: isoNow(),
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            command: 'state doctor',
+            projectId: opts.project ?? null,
+            checks: ['stale_locks', 'stuck_outbox', 'stuck_inbox', 'orphaned_runs'],
+            note: 'DB-backed diagnostics in Phase 4',
+            timestamp: isoNow(),
+          },
+          null,
+          2,
+        ),
+      );
     });
 
   state
@@ -69,12 +87,18 @@ export function createStateCommand(): Command {
     .description('Re-apply transition matrix validation and clear auto-clearable anomalies')
     .option('--project <id>', 'Project ID')
     .action((opts: { project?: string }) => {
-      console.log(JSON.stringify({
-        command: 'state reconcile',
-        projectId: opts.project ?? null,
-        note: 'DB-backed reconciliation in Phase 4',
-        timestamp: isoNow(),
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            command: 'state reconcile',
+            projectId: opts.project ?? null,
+            note: 'DB-backed reconciliation in Phase 4',
+            timestamp: isoNow(),
+          },
+          null,
+          2,
+        ),
+      );
     });
 
   state
@@ -83,12 +107,16 @@ export function createStateCommand(): Command {
     .option('--project <id>', 'Project ID')
     .option('--output <path>', 'Output file path (default: stdout)')
     .action((opts: { project?: string; output?: string }) => {
-      const diagnostics = JSON.stringify({
-        command: 'state export-diagnostics',
-        projectId: opts.project ?? null,
-        note: 'DB-backed diagnostics in Phase 4',
-        timestamp: isoNow(),
-      }, null, 2);
+      const diagnostics = JSON.stringify(
+        {
+          command: 'state export-diagnostics',
+          projectId: opts.project ?? null,
+          note: 'DB-backed diagnostics in Phase 4',
+          timestamp: isoNow(),
+        },
+        null,
+        2,
+      );
       if (opts.output) {
         fs.writeFileSync(opts.output, diagnostics, 'utf-8');
         console.log(`Diagnostics written to ${opts.output}`);
@@ -103,50 +131,70 @@ export function createStateCommand(): Command {
     .option('--project <id>', 'Project ID')
     .option('--dry-run', 'Preview repairs and emit a single-use confirmation token')
     .option('--apply', 'Apply repairs (requires --confirmation)')
-    .option('--confirmation <token>', 'Confirmation token issued by --dry-run (time-boxed, single-use)')
-    .action((opts: { project?: string; dryRun?: boolean; apply?: boolean; confirmation?: string }) => {
-      if (opts.apply && !opts.dryRun) {
-        if (!opts.confirmation) {
-          console.error('Error: --apply requires --confirmation <token> (run --dry-run first)');
-          process.exit(1);
+    .option(
+      '--confirmation <token>',
+      'Confirmation token issued by --dry-run (time-boxed, single-use)',
+    )
+    .action(
+      (opts: { project?: string; dryRun?: boolean; apply?: boolean; confirmation?: string }) => {
+        if (opts.apply && !opts.dryRun) {
+          if (!opts.confirmation) {
+            console.error('Error: --apply requires --confirmation <token> (run --dry-run first)');
+            process.exit(1);
+          }
+          // Validate token format (UUID|ISO-timestamp). Full DB-backed validation in Phase 4.
+          // The separator is '|' so ISO timestamps (which contain ':') parse correctly.
+          const separatorIdx = opts.confirmation.indexOf('|');
+          if (separatorIdx === -1) {
+            console.error('Error: invalid confirmation token format');
+            process.exit(1);
+          }
+          const expiresAt = opts.confirmation.slice(separatorIdx + 1);
+          if (!expiresAt || new Date(expiresAt) <= new Date()) {
+            console.error(
+              'Error: confirmation token has expired. Run --dry-run again to get a new token.',
+            );
+            process.exit(1);
+          }
+          console.log(
+            JSON.stringify(
+              {
+                command: 'state repair --apply',
+                projectId: opts.project ?? null,
+                token: opts.confirmation,
+                result: 'accepted',
+                note: 'DB-backed repair execution in Phase 4',
+                timestamp: isoNow(),
+              },
+              null,
+              2,
+            ),
+          );
+          return;
         }
-        // Validate token format (UUID) and TTL. Full DB-backed validation in Phase 4.
-        const tokenParts = opts.confirmation.split(':');
-        if (tokenParts.length !== 2) {
-          console.error('Error: invalid confirmation token format');
-          process.exit(1);
-        }
-        const [, expiresAt] = tokenParts;
-        if (!expiresAt || new Date(expiresAt) <= new Date()) {
-          console.error('Error: confirmation token has expired. Run --dry-run again to get a new token.');
-          process.exit(1);
-        }
-        console.log(JSON.stringify({
-          command: 'state repair --apply',
-          projectId: opts.project ?? null,
-          token: opts.confirmation,
-          result: 'accepted',
-          note: 'DB-backed repair execution in Phase 4',
-          timestamp: isoNow(),
-        }, null, 2));
-        return;
-      }
 
-      // --dry-run (default behavior): emit confirmation token
-      const token = crypto.randomUUID();
-      const expiresAt = ttlIso(CONFIRMATION_TOKEN_TTL_MS);
-      const confirmationToken = `${token}:${expiresAt}`;
+        // --dry-run (default behavior): emit confirmation token
+        const token = crypto.randomUUID();
+        const expiresAt = ttlIso(CONFIRMATION_TOKEN_TTL_MS);
+        const confirmationToken = `${token}|${expiresAt}`;
 
-      console.log(JSON.stringify({
-        command: 'state repair --dry-run',
-        projectId: opts.project ?? null,
-        previewChanges: [],
-        confirmationToken,
-        tokenExpiresAt: expiresAt,
-        note: 'To apply: minicoder state repair --apply --confirmation <token>',
-        timestamp: isoNow(),
-      }, null, 2));
-    });
+        console.log(
+          JSON.stringify(
+            {
+              command: 'state repair --dry-run',
+              projectId: opts.project ?? null,
+              previewChanges: [],
+              confirmationToken,
+              tokenExpiresAt: expiresAt,
+              note: 'To apply: minicoder state repair --apply --confirmation <token>',
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
+      },
+    );
 
   return state;
 }

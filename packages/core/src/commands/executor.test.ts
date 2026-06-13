@@ -28,15 +28,22 @@ function makeDb(idempotencyRows: { result: string }[] = []): DbClient {
   return {
     query: vi.fn().mockResolvedValue(idempotencyRows),
     execute: vi.fn().mockResolvedValue(undefined),
-    transaction: vi.fn().mockImplementation(async (fn: (tx: TxClient) => Promise<unknown>) => fn({
-      query: vi.fn().mockResolvedValue([]),
-      execute: vi.fn().mockResolvedValue(undefined),
-    })),
+    executeAffected: vi.fn().mockResolvedValue(1),
+    transaction: vi.fn().mockImplementation(async (fn: (tx: TxClient) => Promise<unknown>) =>
+      fn({
+        query: vi.fn().mockResolvedValue([]),
+        execute: vi.fn().mockResolvedValue(undefined),
+        executeAffected: vi.fn().mockResolvedValue(1),
+      }),
+    ),
     close: vi.fn(),
   } as unknown as DbClient;
 }
 
-function makeHandler(requiredRole: UserRole, result: CommandResult): CommandHandler<unknown, string> {
+function makeHandler(
+  requiredRole: UserRole,
+  result: CommandResult,
+): CommandHandler<unknown, string> {
   return {
     commandName: 'TestCommand',
     requiredRole,

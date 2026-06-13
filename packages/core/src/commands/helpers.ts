@@ -80,8 +80,9 @@ export async function writeIdempotencyKey(
   const now = isoNow();
   const expiresAt = ttlIso(opts.ttlMs);
   await tx.execute(
-    `INSERT OR IGNORE INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+    `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+     ON CONFLICT (key, scope) DO NOTHING`,
     [id, opts.key, opts.scope, JSON.stringify(opts.result), expiresAt, now, now],
   );
 }

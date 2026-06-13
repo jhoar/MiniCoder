@@ -17,11 +17,8 @@ function generateId(): string {
 
 interface LockRow {
   id: string;
-  resource_key: string;
-  holder_id: string;
   fence: number;
   expires_at: string;
-  version: number;
 }
 
 export class WorkflowLockManager {
@@ -34,67 +31,61 @@ export class WorkflowLockManager {
   ): Promise<AcquiredLock> {
     const now = isoNow();
     const expiresAt = isoExpiry(options.ttlMs);
+    const lockId = generateId();
 
     return this.db.transaction(async (tx) => {
+      // Atomic UPDATE: claim if lock is expired or we already hold it.
+      // fence = fence + 1 ensures every acquire produces a unique monotonic token.
+      const updated = await tx.executeAffected(
+        `UPDATE workflow_locks
+         SET holder_id = ?, fence = fence + 1, expires_at = ?, version = version + 1, updated_at = ?
+         WHERE project_id = ? AND resource_key = ?
+           AND (expires_at <= ? OR holder_id = ?)`,
+        [options.holderId, expiresAt, now, projectId, resourceKey, now, options.holderId],
+      );
+
+      if (updated === 0) {
+        // No existing row to claim — try INSERT for a brand-new lock.
+        const inserted = await tx.executeAffected(
+          `INSERT INTO workflow_locks
+             (id, project_id, resource_key, holder_id, fence, expires_at, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 1, ?, 1, ?, ?)
+           ON CONFLICT (project_id, resource_key) DO NOTHING`,
+          [lockId, projectId, resourceKey, options.holderId, expiresAt, now, now],
+        );
+
+        if (inserted === 0) {
+          // Row exists and is not expired/same-holder — another holder owns the lock.
+          throw new LockConflictError(resourceKey, options.holderId);
+        }
+      }
+
+      // Read back the current fence (set atomically by UPDATE or 1 for fresh INSERT).
       const rows = await tx.query<LockRow>(
-        `SELECT id, resource_key, holder_id, fence, expires_at, version
+        `SELECT id, fence, expires_at
          FROM workflow_locks
          WHERE project_id = ? AND resource_key = ?`,
         [projectId, resourceKey],
       );
-
-      const existing = rows[0];
-
-      if (existing) {
-        const isExpired = existing.expires_at <= now;
-        const isSameHolder = existing.holder_id === options.holderId;
-
-        if (!isExpired && !isSameHolder) {
-          throw new LockConflictError(resourceKey, existing.holder_id);
-        }
-
-        const newFence = existing.fence + 1;
-        await tx.execute(
-          `UPDATE workflow_locks
-           SET holder_id = ?, fence = ?, expires_at = ?, version = version + 1, updated_at = ?
-           WHERE id = ?`,
-          [options.holderId, newFence, expiresAt, now, existing.id],
-        );
-
-        return {
-          lockId: existing.id,
-          resourceKey,
-          fence: newFence,
-          expiresAt,
-          holderId: options.holderId,
-        };
-      }
-
-      const lockId = generateId();
-      await tx.execute(
-        `INSERT INTO workflow_locks (id, project_id, resource_key, holder_id, fence, expires_at, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 1, ?, 1, ?, ?)`,
-        [lockId, projectId, resourceKey, options.holderId, expiresAt, now, now],
-      );
+      const lock = rows[0];
+      if (!lock) throw new Error(`Lock row missing after acquire for ${projectId}/${resourceKey}`);
 
       return {
-        lockId,
+        lockId: lock.id,
         resourceKey,
-        fence: 1,
-        expiresAt,
+        fence: lock.fence,
+        expiresAt: lock.expires_at,
         holderId: options.holderId,
       };
     });
   }
 
   async release(lock: AcquiredLock): Promise<void> {
-    const now = isoNow();
     await this.db.execute(
       `DELETE FROM workflow_locks
        WHERE id = ? AND holder_id = ? AND fence = ?`,
       [lock.lockId, lock.holderId, lock.fence],
     );
-    void now;
   }
 
   async heartbeat(lock: AcquiredLock, ttlMs: number): Promise<void> {

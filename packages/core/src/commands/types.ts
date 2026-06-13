@@ -41,8 +41,5 @@ export interface CommandHandler<P, S extends string = string> {
   readonly requiredRole: UserRole;
   readonly idempotencyScope: string;
 
-  execute(
-    envelope: CommandEnvelope<P>,
-    db: DbClient,
-  ): Promise<CommandResult<S>>;
+  execute(envelope: CommandEnvelope<P>, db: DbClient): Promise<CommandResult<S>>;
 }

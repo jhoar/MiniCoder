@@ -24,6 +24,12 @@ class SqliteTxClient implements TxClient {
     const stmt = this.db.prepare(sql);
     stmt.run(...params);
   }
+
+  async executeAffected(sql: string, params: unknown[] = []): Promise<number> {
+    if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
+    const stmt = this.db.prepare(sql);
+    return stmt.run(...params).changes;
+  }
 }
 
 const TX_ACTIVE_MSG =
@@ -48,6 +54,13 @@ export class SqliteDbClient implements DbClient {
     if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'execute'));
     const stmt = this.db.prepare(sql);
     stmt.run(...params);
+  }
+
+  async executeAffected(sql: string, params: unknown[] = []): Promise<number> {
+    if (this.dead) throw new Error(DEAD_MSG);
+    if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'executeAffected'));
+    const stmt = this.db.prepare(sql);
+    return stmt.run(...params).changes;
   }
 
   // Uses explicit BEGIN/COMMIT/ROLLBACK so the transaction remains open while

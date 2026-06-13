@@ -8,18 +8,21 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     toState: FeatureExecutionState.SELECTED,
     triggeringCommand: 'SelectFeatureCommand',
     actor: UserRole.OPERATOR,
-    guardDescription: 'automationState=running; no other active feature run for project; all feature dependencies merged',
+    guardDescription:
+      'automationState=running; no other active feature run for project; all feature dependencies merged',
     sideEffects: ['set_active_feature_run', 'write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.selected'],
     idempotencyKeyTemplate: 'select-feature:{featureRunId}',
-    recoveryPath: 'Lock expires; reconciliation clears active_feature_run_id; feature returns to approved_pending_execution',
+    recoveryPath:
+      'Lock expires; reconciliation clears active_feature_run_id; feature returns to approved_pending_execution',
   },
   {
     fromState: FeatureExecutionState.SELECTED,
     toState: FeatureExecutionState.CODING,
     triggeringCommand: 'StartCodingCommand',
     actor: 'system',
-    guardDescription: 'workflow lock held with valid fence; feature run id matches active_feature_run_id',
+    guardDescription:
+      'workflow lock held with valid fence; feature run id matches active_feature_run_id',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.coding_started'],
     idempotencyKeyTemplate: 'start-coding:{featureRunId}',
@@ -177,7 +180,12 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     triggeringCommand: 'RecordMergedCommand',
     actor: 'system',
     guardDescription: 'GitHub merge confirmed; merge commit sha provided',
-    sideEffects: ['clear_active_feature_run', 'record_merge_sha', 'write_workflow_event', 'write_outbox_event'],
+    sideEffects: [
+      'clear_active_feature_run',
+      'record_merge_sha',
+      'write_workflow_event',
+      'write_outbox_event',
+    ],
     emittedEvents: ['feature.merged'],
     idempotencyKeyTemplate: 'record-merged:{featureRunId}:{mergeSha}',
     recoveryPath: 'Idempotent: same mergeSha returns cached result',
@@ -232,7 +240,8 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     toState: FeatureExecutionState.HUMAN_REQUIRED,
     triggeringCommand: 'EscalateToHumanCommand',
     actor: 'system',
-    guardDescription: 'infrastructure/sandbox/timeout failure beyond retry thresholds; locks already released',
+    guardDescription:
+      'infrastructure/sandbox/timeout failure beyond retry thresholds; locks already released',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.human_required'],
     idempotencyKeyTemplate: 'escalate-human-system-failed:{featureRunId}',

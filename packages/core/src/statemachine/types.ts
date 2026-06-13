@@ -9,10 +9,7 @@ export interface TransitionGuardContext {
   readonly actor: ActorIdentity;
 }
 
-export interface TransitionRow<
-  FromState extends string,
-  ToState extends string,
-> {
+export interface TransitionRow<FromState extends string, ToState extends string> {
   readonly fromState: FromState;
   readonly toState: ToState;
   readonly triggeringCommand: string;

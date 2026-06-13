@@ -126,9 +126,9 @@ describe.skipIf(!RUN_PG)('Migration runner (PostgreSQL)', () => {
     await adminPool.end();
   });
 
-  it('applies 0001_initial_schema cleanly on a fresh database', async () => {
+  it('applies all migrations cleanly on a fresh database', async () => {
     const count = await applyMigrations(pool);
-    expect(count).toBe(1);
+    expect(count).toBeGreaterThanOrEqual(1);
   });
 
   it('is idempotent — re-applying makes no changes', async () => {
@@ -143,9 +143,12 @@ describe.skipIf(!RUN_PG)('Migration runner (PostgreSQL)', () => {
     expect(missing, `Missing tables: ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('records the migration in _migrations', async () => {
-    const result = await pool.query<{ name: string }>('SELECT name FROM _migrations');
-    expect(result.rows.length).toBe(1);
+  it('records all migrations in _migrations', async () => {
+    const result = await pool.query<{ name: string }>(
+      'SELECT name FROM _migrations ORDER BY name ASC',
+    );
+    const migrationCount = listPgMigrationFiles().length;
+    expect(result.rows.length).toBe(migrationCount);
     expect(result.rows[0]?.name).toBe('0001_initial_schema');
   });
 
@@ -168,23 +171,24 @@ describe.skipIf(!RUN_PG)('Migration runner (PostgreSQL)', () => {
     ).rejects.toThrow();
   });
 
-  it('rollback removes all tables and the migration record', async () => {
-    const before = await getExistingTables(pool);
-    expect(before.length).toBe(43);
+  it('rollback removes the last migration and its record', async () => {
+    const countBefore = (await pool.query<{ name: string }>('SELECT name FROM _migrations')).rows
+      .length;
+    expect(countBefore).toBeGreaterThanOrEqual(1);
 
     const rolled = await rollbackLast(pool);
-    expect(rolled).toBe('0001_initial_schema');
+    expect(rolled).not.toBeNull();
 
-    const after = await getExistingTables(pool);
-    expect(after.length).toBe(0);
-
-    const records = await pool.query('SELECT name FROM _migrations');
-    expect(records.rows.length).toBe(0);
+    const recordsAfter = await pool.query<{ name: string }>('SELECT name FROM _migrations');
+    expect(recordsAfter.rows.length).toBe(countBefore - 1);
   });
 
   it('migrate → rollback → migrate is idempotent', async () => {
     const count = await applyMigrations(pool);
     expect(count).toBe(1);
-    expect((await getExistingTables(pool)).length).toBe(43);
+    const tables = await getExistingTables(pool);
+    const tableSet = new Set(tables);
+    const missing = EXPECTED_TABLES.filter((t) => !tableSet.has(t));
+    expect(missing, `Missing tables after re-migration: ${missing.join(', ')}`).toEqual([]);
   });
 });
