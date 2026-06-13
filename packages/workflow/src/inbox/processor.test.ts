@@ -16,7 +16,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  raw.close();
 });
 
 function insertInboxEvent(
