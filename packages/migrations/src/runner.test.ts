@@ -99,21 +99,12 @@ function getExistingTables(db: Database.Database): string[] {
 }
 
 describe('Migration runner (SQLite)', () => {
-  let tmpDb: string;
   let db: Database.Database;
 
   beforeEach(() => {
-    tmpDb = path.join(os.tmpdir(), `minicoder-test-${Date.now()}.db`);
-    db = new Database(tmpDb);
-  });
-
-  afterEach(() => {
-    // Do NOT call db.close() here. Calling close() finalises all Statement objects
-    // via sqlite3_finalize(); when V8's GC later runs Statement finalizers it calls
-    // sqlite3_finalize() a second time, causing a double-free SIGSEGV.
-    // GC manages teardown in the correct order when the Database is released naturally.
-    // On Linux the unlink below succeeds while the file descriptor remains open.
-    if (fs.existsSync(tmpDb)) fs.unlinkSync(tmpDb);
+    // Use :memory: to avoid file-descriptor / WAL-cleanup interactions during
+    // Vitest worker teardown that caused SIGSEGV with file-based databases.
+    db = new Database(':memory:');
   });
 
   it('applies all migrations cleanly on a fresh database', () => {
@@ -231,21 +222,14 @@ describe('Migration runner (SQLite)', () => {
 });
 
 describe('SqliteDbClient.transaction()', () => {
-  let tmpDb: string;
   let db: Database.Database;
   let client: SqliteDbClient;
 
   beforeEach(() => {
-    tmpDb = path.join(os.tmpdir(), `minicoder-tx-test-${Date.now()}.db`);
-    db = new Database(tmpDb);
+    db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     db.exec('CREATE TABLE test_rows (id TEXT PRIMARY KEY, val TEXT NOT NULL)');
     client = new SqliteDbClient(db);
-  });
-
-  afterEach(() => {
-    // Same reason as above: do NOT call db.close() — see Migration runner (SQLite) afterEach.
-    if (fs.existsSync(tmpDb)) fs.unlinkSync(tmpDb);
   });
 
   it('commits rows when the callback succeeds', async () => {
