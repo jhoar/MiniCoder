@@ -130,17 +130,32 @@ export class OutboxDispatcher {
         continue;
       }
 
-      // Heartbeat: refresh updated_at every staleClaimMs/2 so the stale-claim
-      // recovery never reclaims a row whose handler is still running.
-      const heartbeat = setInterval(
-        () => {
-          void this.db.execute(
-            `UPDATE outbox_events SET updated_at = ? WHERE id = ? AND status = 'processing' AND version = ?`,
-            [isoNow(), row.id, claimedVersion],
-          );
-        },
-        Math.floor(this.options.staleClaimMs / 2),
-      );
+      // Awaited heartbeat loop: every staleClaimMs/2 ms, refresh updated_at so
+      // stale-claim recovery never reclaims a row whose handler is still running.
+      // cancelHeartbeat is assigned synchronously in the first Promise executor so
+      // it is always defined by the time the try-block begins.
+      let cancelHeartbeat!: () => void;
+      const heartbeatDone = (async () => {
+        const intervalMs = Math.floor(this.options.staleClaimMs / 2);
+        while (true) {
+          const timedOut = await new Promise<boolean>((resolve) => {
+            const id = setTimeout(() => resolve(true), intervalMs);
+            cancelHeartbeat = () => {
+              clearTimeout(id);
+              resolve(false);
+            };
+          });
+          if (!timedOut) break;
+          try {
+            await this.db.execute(
+              `UPDATE outbox_events SET updated_at = ? WHERE id = ? AND status = 'processing' AND version = ?`,
+              [isoNow(), row.id, claimedVersion],
+            );
+          } catch {
+            break; // DB failure: stop heartbeating; stale-claim recovery resets the row
+          }
+        }
+      })();
       try {
         const payload = parseJsonField<unknown>(row.payload);
         await handler.handle(payload, row.payload_schema_version);
@@ -162,7 +177,8 @@ export class OutboxDispatcher {
         );
         if (failedCount > 0) failed++;
       } finally {
-        clearInterval(heartbeat);
+        cancelHeartbeat();
+        await heartbeatDone;
       }
     }
 

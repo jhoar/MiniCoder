@@ -181,26 +181,14 @@ export function createStateCommand(): Command {
             );
             process.exit(1);
           }
-          // Execute repairs (Phase 2 scaffold: no DB connection, nothing to repair yet).
-          // Token is consumed AFTER the repair attempt so a failure does not silently
-          // discard the token without doing any work.
-          console.log(
-            JSON.stringify(
-              {
-                command: 'state repair --apply',
-                projectId: opts.project ?? null,
-                token: opts.confirmation,
-                result: 'accepted',
-                repairedCount: 0,
-                note: 'DB-backed repair execution in Phase 4',
-                timestamp: isoNow(),
-              },
-              null,
-              2,
-            ),
+          // Execute repairs (Phase 2 scaffold: DB-backed repair not yet implemented).
+          // Exit with a clear error so the caller knows nothing was repaired.
+          // The token file is NOT consumed — the user can retry once Phase 4 ships.
+          console.error(
+            'Error: state repair --apply is not yet implemented (DB-backed repairs arrive in Phase 4). ' +
+              'Your confirmation token is still valid; re-run --apply once the Phase 4 build is deployed.',
           );
-          // Single-use: consume token after repair completes
-          fs.unlinkSync(REPAIR_PENDING_FILE);
+          process.exit(1);
           return;
         }
 

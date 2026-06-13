@@ -83,7 +83,8 @@ describe('WorkflowLockManager.release', () => {
       .prepare('SELECT fence, expires_at FROM workflow_locks WHERE id = ?')
       .all(lock.lockId) as Array<{ fence: number; expires_at: string }>;
     expect(rows).toHaveLength(1);
-    expect(rows[0].fence).toBe(lock.fence + 1); // fence incremented on release
+    const lockRow = rows[0]!; // length asserted above
+    expect(lockRow.fence).toBe(lock.fence + 1); // fence incremented on release
 
     // Re-acquire must return a fence strictly greater than the released fence
     const lock2 = await manager.acquire(PROJECT, RESOURCE, { holderId: 'h2', ttlMs: 60_000 });
