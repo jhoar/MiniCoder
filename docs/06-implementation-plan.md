@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.0
-> Last-updated: 2026-06-12
+> Version: 1.0.1
+> Last-updated: 2026-06-13
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -66,7 +66,9 @@ schema; the ERD matches the migrations; secrets resolve only through the backend
 plaintext at rest); no SQLite network-storage assumption exists; CI validates lint, types, and
 tests.
 
-## Phase 2 — State Machine, Idempotency, and Command Layer
+## Phase 2 — State Machine, Idempotency, and Command Layer ✓
+
+> **Status: Complete** (2026-06-13)
 
 Deliver planning/execution/completion lifecycle states, the **full state-transition matrix**
 (glossary §3.9 columns), a state-transition validator, a command handler framework, transactional
@@ -83,6 +85,27 @@ implemented transitions match the matrix; commands are idempotent and unit-teste
 records are drained with at-least-once, idempotent dispatch; secret redaction is test-covered; the
 fitness tests fail the build on any violated invariant; stale-fence writes are rejected;
 **sequential execution is enforced by policy (locks/lanes), not by a schema invariant**.
+
+**Delivered modules:**
+
+- `packages/core/src/auth/` — `ActorIdentity`, `AuthContext`, `LocalAuthProvider`, `assertRole()`,
+  `SecretRedactor` (RF-12)
+- `packages/core/src/statemachine/` — `StateTransitionValidator`, `TransitionError`, and 8 machine
+  matrices (feature-execution, plan-lifecycle, project-lifecycle, automation-control, agent-run,
+  workflow-run, clarification, artifact-export)
+- `packages/core/src/commands/` — `CommandEnvelope<P>`, `CommandResult<S>`, `CommandError` (RFC
+  9457), `CommandHandler` interface, `CommandRegistry`, `TransactionalCommandExecutor`, and
+  representative handlers for feature, plan, project, and automation commands
+- `packages/core/src/events/schemas.ts` — per-event Zod schemas with `SCHEMA_VERSION`
+- `packages/core/src/fitness/` — 3 new architectural fitness tests (`no-domain-logic-in-task-wrappers`,
+  `no-backlog-md-at-runtime`, `no-secret-in-task-payloads`)
+- `packages/workflow/` — new package: `WorkflowLockManager` (acquire/release/assertFence with
+  fencing tokens), `ExecutionLane`, `OutboxDispatcher` (deterministic backoff), `InboxProcessor`,
+  `IdempotencySweeper`
+- `packages/migrations/migrations/0002_add_next_retry_at.*` — adds `next_retry_at` column to
+  `outbox_events` and `inbox_events` for backoff scheduling
+- `packages/cli/src/commands/state.ts` — `minicoder state` command group (inspect, validate,
+  doctor, reconcile, export-diagnostics, repair)
 
 ## Phase 3 — Workflow Layer Harness
 

@@ -7,10 +7,12 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1 implementation**: monorepo skeleton, persistence abstraction
-(SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets backends,
-database lifecycle CLI (`minicoder db`), and CI. Canonical specification documents live under
-`docs/`.
+This repository contains the **Phase 1–2 implementation**: monorepo skeleton, persistence
+abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
+backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); and full state-machine / command
+layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
+workflow locks with fencing tokens, execution lanes, local auth, secret-redaction tests, and the
+`minicoder state` CLI (Phase 2). Canonical specification documents live under `docs/`.
 
 ## Repository Structure
 
@@ -34,10 +36,10 @@ disagree, the `docs/` file wins. Within `docs/`, shared vocabulary is defined on
 
 ## Development Branch
 
-All work goes on branch `claude/wizardly-bell-s7sucy`. Always push with:
+All work goes on branch `claude/sleepy-gauss-p1y6c0`. Always push with:
 
 ```bash
-git push -u origin claude/wizardly-bell-s7sucy
+git push -u origin claude/sleepy-gauss-p1y6c0
 ```
 
 ## Key Architectural Decisions (Do Not Change Without Explicit Instruction)
@@ -178,6 +180,16 @@ before returning to `under_review`. Review and merge never act on un-tested code
 - Draining is **deterministic backoff polling**, NOT WAL-tailing (portability across SQLite/PostgreSQL).
 - Each `outbox_events`/`inbox_events` row stores `payload` + `payload_schema_version` (the Zod schema version string).
 - Task payloads carry **references and IDs, never secrets** and never raw secret-bearing material.
+- `InboxProcessor` validates `payload_schema_version === SCHEMA_VERSION` and runs `validateEventPayload()` before calling any handler; mismatches are marked `failed` without invoking the handler.
+- Batch SELECT uses a two-pass strategy: known event types fill the batch first (`IN (...)`), then unknown types fill the remainder (`NOT IN (...)`). Unknown events are never allowed to starve registered handlers.
+- Events with no registered handler are requeued with `next_retry_at = now + maxBackoffMs` (attempts not incremented) so they become eligible once a handler is registered.
+
+## Workflow Package Operational Constraints (`packages/workflow/`)
+
+- **`staleClaimMs` must be a finite integer ≥ 2.** Both `OutboxDispatcher` and `InboxProcessor` throw in the constructor for values below 2, `NaN`, `Infinity`, or non-integers. Values below 2 produce a zero-delay heartbeat spin loop AND make the stale-claim threshold fire immediately (reclaiming active claims on the very next poll).
+- **Heartbeat ownership loss.** The heartbeat UPDATE uses `executeAffected`; if 0 rows are returned (stale-claim recovery reclaimed the row) or the UPDATE throws (transient DB failure), `lostOwnership` is set and the handler result is **not** counted — `markDelivered`/`markProcessed`/`markFailed` is skipped. The handler still runs to completion.
+- **Lock fencing — release is an UPDATE, not a DELETE.** `WorkflowLockManager.release()` updates `expires_at = now` and increments `fence`, preserving the row. The monotonically increasing fence counter must survive across acquire/release cycles so re-acquisition always returns a strictly higher fence. Deleting the row would reset the fence to 1.
+- **`assertFence` must run inside the same transaction as the guarded write** to prevent TOCTOU races between the fence check and the protected state mutation.
 
 ## Cross-Dialect Testing (Mandatory)
 

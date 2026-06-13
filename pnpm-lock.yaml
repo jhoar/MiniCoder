@@ -108,6 +108,25 @@ importers:
         specifier: ^7.6.11
         version: 7.6.13
 
+  packages/workflow:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      '@minicoder/migrations':
+        specifier: workspace:*
+        version: link:../migrations
+      '@minicoder/persistence-sqlite':
+        specifier: workspace:*
+        version: link:../persistence-sqlite
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: '*'
+        version: 7.6.13
+      better-sqlite3:
+        specifier: '*'
+        version: 9.6.0
+
 packages:
 
   '@ampproject/remapping@2.3.0':

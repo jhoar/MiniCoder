@@ -1,0 +1,21 @@
+{
+  "name": "@minicoder/workflow",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@minicoder/core": "workspace:*",
+    "@minicoder/migrations": "workspace:*",
+    "@minicoder/persistence-sqlite": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "*",
+    "better-sqlite3": "*"
+  }
+}
