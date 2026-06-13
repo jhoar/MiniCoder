@@ -101,12 +101,15 @@ export class WorkflowLockManager {
 
   async assertFence(lock: AcquiredLock, tx: TxClient): Promise<void> {
     const now = isoNow();
-    const rows = await tx.query<{ fence: number; expires_at: string | null }>(
+    const rows = await tx.query<{ fence: number; expires_at: string | Date | null }>(
       `SELECT fence, expires_at FROM workflow_locks WHERE id = ?`,
       [lock.lockId],
     );
     const current = rows[0];
-    if (!current || (current.expires_at !== null && current.expires_at < now)) {
+    const expiresAtStr = current?.expires_at instanceof Date
+      ? current.expires_at.toISOString()
+      : (current?.expires_at ?? null);
+    if (!current || (expiresAtStr !== null && expiresAtStr < now)) {
       throw new StaleFenceError(lock.lockId, lock.fence, current?.fence ?? -1);
     }
     if (current.fence !== lock.fence) {

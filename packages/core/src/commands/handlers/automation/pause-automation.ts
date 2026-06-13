@@ -3,6 +3,7 @@ import { AutomationState, UserRole } from '../../../domain/states.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { AUTOMATION_CONTROL_MATRIX } from '../../../statemachine/machines/automation-control.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
+import { OptimisticLockError } from '../../../persistence/types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
 import {
@@ -10,6 +11,7 @@ import {
   writeWorkflowEvent,
   writeOutboxEvent,
   writeIdempotencyKey,
+  readIdempotencyFromTx,
 } from '../../helpers.js';
 
 export const PauseAutomationPayloadSchema = z.object({
@@ -41,6 +43,9 @@ export class PauseAutomationHandler implements CommandHandler<
   ): Promise<CommandResult<AutomationState>> {
     const { projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
+      const cached = await readIdempotencyFromTx<AutomationState>(tx, envelope.idempotencyKey, this.idempotencyScope);
+      if (cached !== null) return cached;
+
       const rows = await tx.query<WorkflowStateRow>(
         `SELECT id, automation_state, version FROM workflow_states WHERE project_id = ?`,
         [projectId],
@@ -52,10 +57,13 @@ export class PauseAutomationHandler implements CommandHandler<
         AutomationState.PAUSED_BY_OPERATOR,
       );
       const now = isoNow();
-      await tx.execute(
+      const pauseAffected = await tx.executeAffected(
         `UPDATE workflow_states SET automation_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
         [AutomationState.PAUSED_BY_OPERATOR, nextVersion(ws.version), now, ws.id, expectedVersion],
       );
+      if (pauseAffected === 0) {
+        throw new OptimisticLockError('workflow_states', projectId, expectedVersion, -1);
+      }
       const eventId = await writeWorkflowEvent(tx, {
         projectId,
         eventType: 'automation.paused_by_operator',

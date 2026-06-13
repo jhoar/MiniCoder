@@ -1,6 +1,8 @@
 import { Command } from 'commander';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 function isoNow(): string {
   return new Date().toISOString();
@@ -13,12 +15,8 @@ function ttlIso(ms: number): string {
 // Confirmation token TTL: 5 minutes
 const CONFIRMATION_TOKEN_TTL_MS = 5 * 60 * 1000;
 
-// Session-ephemeral signing secret; tokens are invalidated on process restart.
-const REPAIR_TOKEN_SECRET = crypto.randomBytes(32).toString('hex');
-
-function signRepairToken(data: string): string {
-  return crypto.createHmac('sha256', REPAIR_TOKEN_SECRET).update(data).digest('hex');
-}
+const REPAIR_PENDING_DIR = path.join(os.homedir(), '.minicoder');
+const REPAIR_PENDING_FILE = path.join(REPAIR_PENDING_DIR, 'pending-repair-token.json');
 
 export function createStateCommand(): Command {
   const state = new Command('state').description('Workflow state lifecycle commands');
@@ -149,30 +147,29 @@ export function createStateCommand(): Command {
             console.error('Error: --apply requires --confirmation <token> (run --dry-run first)');
             process.exit(1);
           }
-          // Validate token format (uuid|isodate|hmac). Full DB-backed validation in Phase 4.
-          const lastPipe = opts.confirmation.lastIndexOf('|');
-          if (lastPipe === -1) {
-            console.error('Error: invalid confirmation token format');
+          let pendingToken: { token: string; expiresAt: string; projectId: string | null };
+          try {
+            const raw = fs.readFileSync(REPAIR_PENDING_FILE, 'utf-8');
+            pendingToken = JSON.parse(raw) as { token: string; expiresAt: string; projectId: string | null };
+          } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code;
+            if (code === 'ENOENT') {
+              console.error('Error: no pending repair token found (run --dry-run first)');
+            } else {
+              console.error('Error: failed to read pending repair token');
+            }
             process.exit(1);
           }
-          const data = opts.confirmation.slice(0, lastPipe);
-          const sig = opts.confirmation.slice(lastPipe + 1);
-          if (signRepairToken(data) !== sig) {
-            console.error('Error: confirmation token has invalid signature');
+          if (opts.confirmation !== pendingToken.token) {
+            console.error('Error: confirmation token does not match the issued token');
             process.exit(1);
           }
-          const firstPipe = data.indexOf('|');
-          if (firstPipe === -1) {
-            console.error('Error: invalid confirmation token format');
+          if (new Date(pendingToken.expiresAt) <= new Date()) {
+            console.error('Error: confirmation token has expired. Run --dry-run again to get a new token.');
             process.exit(1);
           }
-          const expiresAt = data.slice(firstPipe + 1);
-          if (!expiresAt || new Date(expiresAt) <= new Date()) {
-            console.error(
-              'Error: confirmation token has expired. Run --dry-run again to get a new token.',
-            );
-            process.exit(1);
-          }
+          // Single-use: delete the pending token file before executing
+          fs.unlinkSync(REPAIR_PENDING_FILE);
           console.log(
             JSON.stringify(
               {
@@ -190,12 +187,11 @@ export function createStateCommand(): Command {
           return;
         }
 
-        // --dry-run (default behavior): emit HMAC-signed confirmation token
+        // --dry-run (default behavior): emit file-based confirmation token
         const token = crypto.randomUUID();
         const expiresAt = ttlIso(CONFIRMATION_TOKEN_TTL_MS);
-        const tokenData = `${token}|${expiresAt}`;
-        const sig = signRepairToken(tokenData);
-        const confirmationToken = `${tokenData}|${sig}`;
+        fs.mkdirSync(REPAIR_PENDING_DIR, { recursive: true });
+        fs.writeFileSync(REPAIR_PENDING_FILE, JSON.stringify({ token, expiresAt, projectId: opts.project ?? null }), 'utf-8');
 
         console.log(
           JSON.stringify(
@@ -203,7 +199,7 @@ export function createStateCommand(): Command {
               command: 'state repair --dry-run',
               projectId: opts.project ?? null,
               previewChanges: [],
-              confirmationToken,
+              confirmationToken: token,
               tokenExpiresAt: expiresAt,
               note: 'To apply: minicoder state repair --apply --confirmation <token>',
               timestamp: isoNow(),

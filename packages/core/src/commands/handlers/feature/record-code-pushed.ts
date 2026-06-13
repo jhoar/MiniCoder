@@ -12,6 +12,7 @@ import {
   writeOutboxEvent,
   writeIdempotencyKey,
   assertLockFence,
+  readIdempotencyFromTx,
 } from '../../helpers.js';
 
 export const RecordCodePushedPayloadSchema = z.object({
@@ -46,11 +47,17 @@ export class RecordCodePushedHandler implements CommandHandler<
   ): Promise<CommandResult<FeatureExecutionState>> {
     const { featureRunId, projectId, expectedVersion, commitSha } = envelope.payload;
     return db.transaction(async (tx) => {
+      const cached = await readIdempotencyFromTx<FeatureExecutionState>(tx, envelope.idempotencyKey, this.idempotencyScope);
+      if (cached !== null) return cached;
+
       if (envelope.lockContext) {
         await assertLockFence(tx, envelope.lockContext);
       }
       const rows = await tx.query<FeatureRunRow>(
-        `SELECT id, current_execution_state, version FROM feature_runs WHERE id = ? AND project_id = ?`,
+        `SELECT fr.id, fr.current_execution_state, fr.version
+         FROM feature_runs fr
+         JOIN feature_requests freq ON fr.feature_request_id = freq.id
+         WHERE fr.id = ? AND freq.project_id = ?`,
         [featureRunId, projectId],
       );
       const run = rows[0];

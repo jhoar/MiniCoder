@@ -13,6 +13,21 @@ export function isoNow(): string {
   return new Date().toISOString();
 }
 
+export async function readIdempotencyFromTx<S extends string>(
+  tx: TxClient,
+  key: string,
+  scope: string,
+): Promise<CommandResult<S> | null> {
+  const rows = await tx.query<{ result: string }>(
+    `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ?`,
+    [key, scope, isoNow()],
+  );
+  if (rows.length > 0 && rows[0]) {
+    return parseJsonField<CommandResult<S>>(rows[0].result);
+  }
+  return null;
+}
+
 export function ttlIso(ms: number): string {
   return new Date(Date.now() + ms).toISOString();
 }
@@ -98,12 +113,15 @@ export async function assertLockFence(
   lockContext: { lockId: string; fence: number },
 ): Promise<void> {
   const now = isoNow();
-  const rows = await tx.query<{ fence: number; expires_at: string | null }>(
+  const rows = await tx.query<{ fence: number; expires_at: string | Date | null }>(
     `SELECT fence, expires_at FROM workflow_locks WHERE id = ?`,
     [lockContext.lockId],
   );
   const current = rows[0];
-  if (!current || (current.expires_at !== null && current.expires_at < now)) {
+  const expiresAtStr = current?.expires_at instanceof Date
+    ? current.expires_at.toISOString()
+    : (current?.expires_at ?? null);
+  if (!current || (expiresAtStr !== null && expiresAtStr < now)) {
     throw new StaleFenceError(lockContext.lockId, lockContext.fence, current?.fence ?? -1);
   }
   if (current.fence !== lockContext.fence) {

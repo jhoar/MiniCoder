@@ -12,6 +12,7 @@ import {
   writeWorkflowEvent,
   writeOutboxEvent,
   writeIdempotencyKey,
+  readIdempotencyFromTx,
 } from '../../helpers.js';
 
 export const SelectFeaturePayloadSchema = z.object({
@@ -28,12 +29,7 @@ interface FeatureRunRow {
   id: string;
   current_execution_state: string;
   version: number;
-}
-interface WorkflowStateRow {
-  id: string;
-  automation_state: string;
-  active_feature_run_id: string | null;
-  version: number;
+  feature_request_id: string;
 }
 
 export class SelectFeatureHandler implements CommandHandler<
@@ -51,9 +47,15 @@ export class SelectFeatureHandler implements CommandHandler<
     const { featureRunId, projectId, expectedVersion } = envelope.payload;
 
     return db.transaction(async (tx) => {
-      // Finding 5: include project_id in the query to prevent cross-project access
+      const cached = await readIdempotencyFromTx<FeatureExecutionState>(tx, envelope.idempotencyKey, this.idempotencyScope);
+      if (cached !== null) return cached;
+
+      // Join through feature_requests to enforce project_id (feature_runs has no project_id column)
       const runs = await tx.query<FeatureRunRow>(
-        `SELECT id, current_execution_state, version FROM feature_runs WHERE id = ? AND project_id = ?`,
+        `SELECT fr.id, fr.current_execution_state, fr.version, freq.id as feature_request_id
+         FROM feature_runs fr
+         JOIN feature_requests freq ON fr.feature_request_id = freq.id
+         WHERE fr.id = ? AND freq.project_id = ?`,
         [featureRunId, projectId],
       );
       const run = runs[0];
@@ -72,6 +74,24 @@ export class SelectFeatureHandler implements CommandHandler<
         run.current_execution_state as FeatureExecutionState,
         FeatureExecutionState.SELECTED,
       );
+
+      // Dependency guard: all dependencies must be merged before selection
+      const unmetDeps = await tx.query<{ id: string }>(
+        `SELECT fd.id
+         FROM feature_dependencies fd
+         JOIN feature_requests dep ON fd.target_fr_id = dep.id
+         WHERE fd.source_fr_id = ? AND dep.state != 'merged'`,
+        [run.feature_request_id],
+      );
+      if (unmetDeps.length > 0) {
+        throw new CommandError({
+          type: 'unmet-dependencies',
+          title: 'Feature has unmet dependencies',
+          status: 409,
+          detail: `Cannot select feature: ${unmetDeps.length} dependency(ies) not yet merged`,
+          instance: envelope.correlationId,
+        });
+      }
 
       const newVersion = nextVersion(run.version);
       const now = isoNow();

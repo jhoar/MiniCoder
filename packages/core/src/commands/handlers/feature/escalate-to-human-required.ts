@@ -3,6 +3,8 @@ import { FeatureExecutionState, UserRole } from '../../../domain/states.js';
 import { FEATURE_EXECUTION_MATRIX } from '../../../statemachine/machines/feature-execution.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
+import { OptimisticLockError } from '../../../persistence/types.js';
+import { CommandError } from '../../types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
 import {
@@ -10,6 +12,7 @@ import {
   writeWorkflowEvent,
   writeOutboxEvent,
   writeIdempotencyKey,
+  readIdempotencyFromTx,
 } from '../../helpers.js';
 
 export const EscalateToHumanPayloadSchema = z.object({
@@ -35,6 +38,7 @@ export class EscalateToHumanHandler implements CommandHandler<
 > {
   readonly commandName = 'EscalateToHumanCommand';
   readonly requiredRole = UserRole.OPERATOR;
+  readonly requiredActorKind = 'system' as const;
   readonly idempotencyScope = 'escalate-to-human';
 
   async execute(
@@ -43,25 +47,38 @@ export class EscalateToHumanHandler implements CommandHandler<
   ): Promise<CommandResult<FeatureExecutionState>> {
     const { featureRunId, projectId, expectedVersion, reason } = envelope.payload;
     return db.transaction(async (tx) => {
+      const cached = await readIdempotencyFromTx<FeatureExecutionState>(tx, envelope.idempotencyKey, this.idempotencyScope);
+      if (cached !== null) return cached;
+
+      // Join through feature_requests to enforce project_id (feature_runs has no project_id column)
       const rows = await tx.query<FeatureRunRow>(
-        `SELECT id, current_execution_state, version FROM feature_runs WHERE id = ?`,
-        [featureRunId],
+        `SELECT fr.id, fr.current_execution_state, fr.version
+         FROM feature_runs fr
+         JOIN feature_requests freq ON fr.feature_request_id = freq.id
+         WHERE fr.id = ? AND freq.project_id = ?`,
+        [featureRunId, projectId],
       );
       const run = rows[0];
+      if (!run) {
+        throw new CommandError({
+          type: 'not-found',
+          title: 'Feature run not found',
+          status: 404,
+          detail: `Feature run ${featureRunId} not found in project ${projectId}`,
+          instance: envelope.correlationId,
+        });
+      }
       assertVersion('feature_runs', featureRunId, run, expectedVersion);
       const fromState = run.current_execution_state as FeatureExecutionState;
       validator.assertValid(fromState, FeatureExecutionState.HUMAN_REQUIRED);
       const now = isoNow();
-      await tx.execute(
+      const escalateAffected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [
-          FeatureExecutionState.HUMAN_REQUIRED,
-          nextVersion(run.version),
-          now,
-          featureRunId,
-          expectedVersion,
-        ],
+        [FeatureExecutionState.HUMAN_REQUIRED, nextVersion(run.version), now, featureRunId, expectedVersion],
       );
+      if (escalateAffected === 0) {
+        throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
+      }
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,
         projectId,

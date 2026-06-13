@@ -13,6 +13,7 @@ import {
   writeWorkflowEvent,
   writeOutboxEvent,
   writeIdempotencyKey,
+  readIdempotencyFromTx,
 } from '../../helpers.js';
 
 export const ApprovePlanPayloadSchema = z.object({
@@ -43,6 +44,9 @@ export class ApprovePlanHandler implements CommandHandler<ApprovePlanPayload, Pl
   ): Promise<CommandResult<PlanState>> {
     const { planId, projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
+      const cached = await readIdempotencyFromTx<PlanState>(tx, envelope.idempotencyKey, this.idempotencyScope);
+      if (cached !== null) return cached;
+
       const rows = await tx.query<PlanRow>(
         `SELECT id, state, version FROM implementation_plans WHERE id = ? AND project_id = ?`,
         [planId, projectId],
