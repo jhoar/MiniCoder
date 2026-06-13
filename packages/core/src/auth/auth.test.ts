@@ -53,12 +53,22 @@ describe('meetsRole', () => {
 
 describe('assertRole', () => {
   it('throws AuthorizationError when role is insufficient', () => {
-    const actor = { id: 'u1', role: UserRole.VIEWER, correlationId: 'c1' };
+    const actor = {
+      id: 'u1',
+      role: UserRole.VIEWER,
+      actorKind: 'human' as const,
+      correlationId: 'c1',
+    };
     expect(() => assertRole(actor, UserRole.OPERATOR, 'SomeCommand')).toThrow(AuthorizationError);
   });
 
   it('does not throw when role is sufficient', () => {
-    const actor = { id: 'u1', role: UserRole.APPROVER, correlationId: 'c1' };
+    const actor = {
+      id: 'u1',
+      role: UserRole.APPROVER,
+      actorKind: 'human' as const,
+      correlationId: 'c1',
+    };
     expect(() => assertRole(actor, UserRole.OPERATOR, 'SomeCommand')).not.toThrow();
   });
 });

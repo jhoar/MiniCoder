@@ -13,6 +13,13 @@ function ttlIso(ms: number): string {
 // Confirmation token TTL: 5 minutes
 const CONFIRMATION_TOKEN_TTL_MS = 5 * 60 * 1000;
 
+// Session-ephemeral signing secret; tokens are invalidated on process restart.
+const REPAIR_TOKEN_SECRET = crypto.randomBytes(32).toString('hex');
+
+function signRepairToken(data: string): string {
+  return crypto.createHmac('sha256', REPAIR_TOKEN_SECRET).update(data).digest('hex');
+}
+
 export function createStateCommand(): Command {
   const state = new Command('state').description('Workflow state lifecycle commands');
 
@@ -142,14 +149,24 @@ export function createStateCommand(): Command {
             console.error('Error: --apply requires --confirmation <token> (run --dry-run first)');
             process.exit(1);
           }
-          // Validate token format (UUID|ISO-timestamp). Full DB-backed validation in Phase 4.
-          // The separator is '|' so ISO timestamps (which contain ':') parse correctly.
-          const separatorIdx = opts.confirmation.indexOf('|');
-          if (separatorIdx === -1) {
+          // Validate token format (uuid|isodate|hmac). Full DB-backed validation in Phase 4.
+          const lastPipe = opts.confirmation.lastIndexOf('|');
+          if (lastPipe === -1) {
             console.error('Error: invalid confirmation token format');
             process.exit(1);
           }
-          const expiresAt = opts.confirmation.slice(separatorIdx + 1);
+          const data = opts.confirmation.slice(0, lastPipe);
+          const sig = opts.confirmation.slice(lastPipe + 1);
+          if (signRepairToken(data) !== sig) {
+            console.error('Error: confirmation token has invalid signature');
+            process.exit(1);
+          }
+          const firstPipe = data.indexOf('|');
+          if (firstPipe === -1) {
+            console.error('Error: invalid confirmation token format');
+            process.exit(1);
+          }
+          const expiresAt = data.slice(firstPipe + 1);
           if (!expiresAt || new Date(expiresAt) <= new Date()) {
             console.error(
               'Error: confirmation token has expired. Run --dry-run again to get a new token.',
@@ -173,10 +190,12 @@ export function createStateCommand(): Command {
           return;
         }
 
-        // --dry-run (default behavior): emit confirmation token
+        // --dry-run (default behavior): emit HMAC-signed confirmation token
         const token = crypto.randomUUID();
         const expiresAt = ttlIso(CONFIRMATION_TOKEN_TTL_MS);
-        const confirmationToken = `${token}|${expiresAt}`;
+        const tokenData = `${token}|${expiresAt}`;
+        const sig = signRepairToken(tokenData);
+        const confirmationToken = `${tokenData}|${sig}`;
 
         console.log(
           JSON.stringify(

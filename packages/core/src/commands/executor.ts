@@ -1,6 +1,7 @@
 import type { DbClient } from '../persistence/types.js';
 import type { CommandEnvelope, CommandHandler, CommandResult } from './types.js';
 import { assertRole } from '../auth/guards.js';
+import { parseJsonField } from './helpers.js';
 
 interface IdempotencyRow {
   result: string;
@@ -34,7 +35,12 @@ export class TransactionalCommandExecutor {
     handler: CommandHandler<P, S>,
     envelope: CommandEnvelope<P>,
   ): Promise<CommandResult<S>> {
-    assertRole(envelope.actor, handler.requiredRole, handler.commandName);
+    assertRole(
+      envelope.actor,
+      handler.requiredRole,
+      handler.commandName,
+      handler.requiredActorKind,
+    );
 
     const cached = await this.checkIdempotencyKey(
       envelope.idempotencyKey,
@@ -53,7 +59,7 @@ export class TransactionalCommandExecutor {
       [key, scope, isoNow()],
     );
     if (rows.length > 0 && rows[0]) {
-      return JSON.parse(rows[0].result) as CommandResult;
+      return parseJsonField<CommandResult>(rows[0].result);
     }
     return null;
   }

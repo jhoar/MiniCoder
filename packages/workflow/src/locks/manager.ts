@@ -100,13 +100,17 @@ export class WorkflowLockManager {
   }
 
   async assertFence(lock: AcquiredLock, tx: TxClient): Promise<void> {
-    const rows = await tx.query<{ fence: number }>(
-      `SELECT fence FROM workflow_locks WHERE id = ?`,
+    const now = isoNow();
+    const rows = await tx.query<{ fence: number; expires_at: string | null }>(
+      `SELECT fence, expires_at FROM workflow_locks WHERE id = ?`,
       [lock.lockId],
     );
     const current = rows[0];
-    if (!current || current.fence !== lock.fence) {
+    if (!current || (current.expires_at !== null && current.expires_at < now)) {
       throw new StaleFenceError(lock.lockId, lock.fence, current?.fence ?? -1);
+    }
+    if (current.fence !== lock.fence) {
+      throw new StaleFenceError(lock.lockId, lock.fence, current.fence);
     }
   }
 }

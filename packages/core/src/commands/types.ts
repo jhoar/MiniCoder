@@ -27,6 +27,7 @@ export interface CommandEnvelope<P> {
   readonly payload: P;
   readonly actor: ActorIdentity;
   readonly correlationId: string;
+  readonly lockContext?: { readonly lockId: string; readonly fence: number };
 }
 
 export interface CommandResult<S extends string = string> {
@@ -39,6 +40,7 @@ export interface CommandResult<S extends string = string> {
 export interface CommandHandler<P, S extends string = string> {
   readonly commandName: string;
   readonly requiredRole: UserRole;
+  readonly requiredActorKind?: 'human' | 'system';
   readonly idempotencyScope: string;
 
   execute(envelope: CommandEnvelope<P>, db: DbClient): Promise<CommandResult<S>>;

@@ -3,8 +3,10 @@ import { PlanState, UserRole } from '../../../domain/states.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { PLAN_LIFECYCLE_MATRIX } from '../../../statemachine/machines/plan-lifecycle.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
+import { OptimisticLockError } from '../../../persistence/types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
+import { CommandError } from '../../types.js';
 import {
   isoNow,
   generateId,
@@ -42,17 +44,29 @@ export class ApprovePlanHandler implements CommandHandler<ApprovePlanPayload, Pl
     const { planId, projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
       const rows = await tx.query<PlanRow>(
-        `SELECT id, state, version FROM implementation_plans WHERE id = ?`,
-        [planId],
+        `SELECT id, state, version FROM implementation_plans WHERE id = ? AND project_id = ?`,
+        [planId, projectId],
       );
       const plan = rows[0];
+      if (!plan) {
+        throw new CommandError({
+          type: 'not-found',
+          title: 'Plan not found',
+          status: 404,
+          detail: `Plan ${planId} not found in project ${projectId}`,
+          instance: envelope.correlationId,
+        });
+      }
       assertVersion('implementation_plans', planId, plan, expectedVersion);
       validator.assertValid(plan.state as PlanState, PlanState.APPROVED);
       const now = isoNow();
-      await tx.execute(
+      const planAffected = await tx.executeAffected(
         `UPDATE implementation_plans SET state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
         [PlanState.APPROVED, nextVersion(plan.version), now, planId, expectedVersion],
       );
+      if (planAffected === 0) {
+        throw new OptimisticLockError('implementation_plans', planId, expectedVersion, -1);
+      }
       // human_approvals columns: context_type (not approval_type), actor + actor_role (not actor_id)
       await tx.execute(
         `INSERT INTO human_approvals (id, project_id, context_type, context_id, actor, actor_role, version, created_at, updated_at) VALUES (?, ?, 'plan_approval', ?, ?, ?, 1, ?, ?)`,

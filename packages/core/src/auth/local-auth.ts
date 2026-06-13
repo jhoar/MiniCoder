@@ -27,6 +27,7 @@ export class LocalAuthProvider {
     const actor: ActorIdentity = {
       id: this.config.actorId,
       role: this.config.role,
+      actorKind: 'human',
       correlationId: generateCorrelationId(),
       displayName: this.config.displayName,
     };
@@ -43,6 +44,7 @@ export class LocalAuthProvider {
     const actor: ActorIdentity = {
       id: 'system',
       role: UserRole.ADMIN,
+      actorKind: 'system',
       correlationId: generateCorrelationId(),
       displayName: 'MiniCoder System',
     };

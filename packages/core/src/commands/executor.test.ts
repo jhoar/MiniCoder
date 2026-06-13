@@ -7,7 +7,7 @@ import { AuthorizationError } from '../auth/guards.js';
 import type { DbClient, TxClient } from '../persistence/types.js';
 
 function makeActor(role: UserRole) {
-  return { id: 'test-actor', role, correlationId: 'corr-1' };
+  return { id: 'test-actor', role, actorKind: 'human' as const, correlationId: 'corr-1' };
 }
 
 function makeEnvelope<P>(payload: P, idempotencyKey: string, role: UserRole): CommandEnvelope<P> {

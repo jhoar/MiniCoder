@@ -1,4 +1,5 @@
 import type { DbClient } from '@minicoder/core';
+import { parseJsonField } from '@minicoder/core';
 import { deterministicBackoff } from '../outbox/backoff.js';
 
 export interface InboxHandler {
@@ -11,6 +12,7 @@ export interface ProcessorOptions {
   readonly maxAttempts: number;
   readonly baseBackoffMs: number;
   readonly maxBackoffMs: number;
+  readonly staleClaimMs: number;
 }
 
 const DEFAULT_OPTIONS: ProcessorOptions = {
@@ -18,6 +20,7 @@ const DEFAULT_OPTIONS: ProcessorOptions = {
   maxAttempts: 5,
   baseBackoffMs: 1000,
   maxBackoffMs: 60_000,
+  staleClaimMs: 300_000,
 };
 
 interface InboxRow {
@@ -45,6 +48,14 @@ export class InboxProcessor {
   }
 
   async pollAndProcess(): Promise<{ processed: number; failed: number }> {
+    // Stale claim recovery: reset any rows stuck in 'processing' for too long
+    const staleThreshold = new Date(Date.now() - this.options.staleClaimMs).toISOString();
+    await this.db.execute(
+      `UPDATE inbox_events SET status = 'pending', version = version + 1, updated_at = ?
+       WHERE status = 'processing' AND updated_at <= ?`,
+      [isoNow(), staleThreshold],
+    );
+
     const now = isoNow();
     const rows = await this.db.query<InboxRow>(
       `SELECT id, event_type, payload, payload_schema_version, attempts, version
@@ -82,12 +93,7 @@ export class InboxProcessor {
       }
 
       try {
-        let payload: unknown;
-        try {
-          payload = JSON.parse(row.payload) as unknown;
-        } catch {
-          throw new Error(`Invalid JSON payload for inbox event ${row.id}`);
-        }
+        const payload = parseJsonField<unknown>(row.payload);
         await handler.handle(payload, row.payload_schema_version);
         await this.markProcessed(row.id);
         processed++;

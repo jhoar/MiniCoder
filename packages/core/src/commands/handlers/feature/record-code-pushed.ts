@@ -3,6 +3,7 @@ import { FeatureExecutionState, UserRole } from '../../../domain/states.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { FEATURE_EXECUTION_MATRIX } from '../../../statemachine/machines/feature-execution.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
+import { OptimisticLockError } from '../../../persistence/types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
 import {
@@ -10,6 +11,7 @@ import {
   writeWorkflowEvent,
   writeOutboxEvent,
   writeIdempotencyKey,
+  assertLockFence,
 } from '../../helpers.js';
 
 export const RecordCodePushedPayloadSchema = z.object({
@@ -35,6 +37,7 @@ export class RecordCodePushedHandler implements CommandHandler<
 > {
   readonly commandName = 'RecordCodePushedCommand';
   readonly requiredRole = UserRole.ADMIN;
+  readonly requiredActorKind = 'system' as const;
   readonly idempotencyScope = 'record-code-pushed';
 
   async execute(
@@ -43,16 +46,19 @@ export class RecordCodePushedHandler implements CommandHandler<
   ): Promise<CommandResult<FeatureExecutionState>> {
     const { featureRunId, projectId, expectedVersion, commitSha } = envelope.payload;
     return db.transaction(async (tx) => {
+      if (envelope.lockContext) {
+        await assertLockFence(tx, envelope.lockContext);
+      }
       const rows = await tx.query<FeatureRunRow>(
-        `SELECT id, current_execution_state, version FROM feature_runs WHERE id = ?`,
-        [featureRunId],
+        `SELECT id, current_execution_state, version FROM feature_runs WHERE id = ? AND project_id = ?`,
+        [featureRunId, projectId],
       );
       const run = rows[0];
       assertVersion('feature_runs', featureRunId, run, expectedVersion);
       const fromState = run.current_execution_state as FeatureExecutionState;
       validator.assertValid(fromState, FeatureExecutionState.CODE_PUSHED);
       const now = isoNow();
-      await tx.execute(
+      const codePushedAffected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
         [
           FeatureExecutionState.CODE_PUSHED,
@@ -62,6 +68,9 @@ export class RecordCodePushedHandler implements CommandHandler<
           expectedVersion,
         ],
       );
+      if (codePushedAffected === 0) {
+        throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
+      }
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,
         projectId,

@@ -1,7 +1,13 @@
 import type { TxClient } from '../persistence/types.js';
+import { StaleFenceError } from '../persistence/types.js';
 import type { CommandResult } from './types.js';
 import { SCHEMA_VERSION } from '../events/schemas.js';
 import { defaultRedactor } from '../auth/redaction.js';
+
+export function parseJsonField<T>(value: unknown): T {
+  if (typeof value === 'string') return JSON.parse(value) as T;
+  return value as T;
+}
 
 export function isoNow(): string {
   return new Date().toISOString();
@@ -85,4 +91,22 @@ export async function writeIdempotencyKey(
      ON CONFLICT (key, scope) DO NOTHING`,
     [id, opts.key, opts.scope, JSON.stringify(opts.result), expiresAt, now, now],
   );
+}
+
+export async function assertLockFence(
+  tx: TxClient,
+  lockContext: { lockId: string; fence: number },
+): Promise<void> {
+  const now = isoNow();
+  const rows = await tx.query<{ fence: number; expires_at: string | null }>(
+    `SELECT fence, expires_at FROM workflow_locks WHERE id = ?`,
+    [lockContext.lockId],
+  );
+  const current = rows[0];
+  if (!current || (current.expires_at !== null && current.expires_at < now)) {
+    throw new StaleFenceError(lockContext.lockId, lockContext.fence, current?.fence ?? -1);
+  }
+  if (current.fence !== lockContext.fence) {
+    throw new StaleFenceError(lockContext.lockId, lockContext.fence, current.fence);
+  }
 }

@@ -26,7 +26,15 @@ export function meetsRole(actorRole: UserRole, requiredRole: UserRole): boolean 
   return ROLE_RANK[actorRole] >= ROLE_RANK[requiredRole];
 }
 
-export function assertRole(actor: ActorIdentity, requiredRole: UserRole, command: string): void {
+export function assertRole(
+  actor: ActorIdentity,
+  requiredRole: UserRole,
+  command: string,
+  requiredKind?: 'human' | 'system',
+): void {
+  if (requiredKind !== undefined && actor.actorKind !== requiredKind) {
+    throw new AuthorizationError(actor.id, actor.role, requiredRole, command);
+  }
   if (!meetsRole(actor.role, requiredRole)) {
     throw new AuthorizationError(actor.id, actor.role, requiredRole, command);
   }

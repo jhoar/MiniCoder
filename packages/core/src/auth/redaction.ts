@@ -79,6 +79,7 @@ const SECRET_FIELD_NAMES = new Set([
   'webhook_secret',
   'signingsecret',
   'signing_secret',
+  'authorization',
 ]);
 
 export const defaultRedactor = new SecretRedactor();
