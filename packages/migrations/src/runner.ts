@@ -61,21 +61,67 @@ const EXPECTED_TABLES = [
 ];
 
 // Tables owned by MiniCoder — reset only drops these, never foreign tables.
-const OWNED_TABLES = [...EXPECTED_TABLES, '_migrations'];
+// Order matters: EXPECTED_TABLES is in parent-first creation order; reversing
+// gives children-first, allowing drops without CASCADE.
+const OWNED_TABLES_DROP_ORDER = [...EXPECTED_TABLES].reverse();
 
 // Environments where destructive operations are permitted.
 const SAFE_ENVS = new Set(['development', 'test', 'ci']);
 
-function assertResetAllowed(): void {
-  const env = (process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? '').toLowerCase();
-  if (!SAFE_ENVS.has(env)) {
+function parseFlag(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  if (idx === -1 || idx + 1 >= args.length) return undefined;
+  const val = args[idx + 1];
+  // A value starting with '--' is the next flag, not a value
+  return val?.startsWith('--') ? undefined : val;
+}
+
+interface ResetContext {
+  env: string;
+  dialect: Dialect;
+  dbIdentifier: string;
+}
+
+function auditAndGuardReset(args: string[], ctx: ResetContext): void {
+  // 1. Explicit --env flag required (env var alone is not sufficient)
+  const envFlag = parseFlag(args, '--env');
+  if (!envFlag) {
     console.error(
-      `  reset is not permitted in environment "${env || '(unset)'}".` +
-        ' Set APP_ENV=development (or test/ci) to enable it.',
+      '  reset requires --env <environment> (e.g. --env development).\n' +
+        '  Permitted values: development, test, ci.',
     );
     process.exit(1);
   }
-  console.log(`  Environment check passed: APP_ENV=${env}`);
+  const env = envFlag.toLowerCase();
+  if (!SAFE_ENVS.has(env)) {
+    console.error(
+      `  reset is not permitted in environment "${env}".\n` +
+        '  Permitted values: development, test, ci.',
+    );
+    process.exit(1);
+  }
+
+  // 2. Audit log — printed before any mutation so it is visible even if reset fails
+  const ts = new Date().toISOString();
+  console.log('  ┌─ RESET AUDIT ──────────────────────────────────────────────');
+  console.log(`  │  timestamp : ${ts}`);
+  console.log(`  │  env (flag): ${env}`);
+  console.log(`  │  dialect   : ${ctx.dialect}`);
+  console.log(`  │  database  : ${ctx.dbIdentifier}`);
+  console.log(
+    `  │  tables    : ${OWNED_TABLES_DROP_ORDER.length + 1} owned tables will be dropped`,
+  );
+  console.log('  │  roles     : no role system active in Phase 1 CLI mode');
+  console.log('  │  backup    : WARNING — no backup has been verified');
+  console.log('  └────────────────────────────────────────────────────────────');
+
+  // 3. Dry-run summary so the operator can see what will be dropped
+  console.log('\n  Tables to be dropped (reverse-dependency order):');
+  for (const t of OWNED_TABLES_DROP_ORDER) {
+    console.log(`    - ${t}`);
+  }
+  console.log('    - _migrations');
+  console.log();
 }
 
 function getDialect(): Dialect {
@@ -219,13 +265,16 @@ function sqliteValidate(db: Database.Database): boolean {
 }
 
 function sqliteReset(db: Database.Database): void {
+  // FK enforcement is temporarily disabled so tables can be dropped in
+  // reverse-dependency order without needing CASCADE (which would silently
+  // remove FK constraints on external tables sharing this file).
   db.pragma('foreign_keys = OFF');
-  // Drop only owned tables — never any foreign tables that may share this file.
-  for (const table of OWNED_TABLES) {
+  for (const table of OWNED_TABLES_DROP_ORDER) {
     db.exec(`DROP TABLE IF EXISTS "${table}"`);
   }
+  db.exec('DROP TABLE IF EXISTS "_migrations"');
   db.pragma('foreign_keys = ON');
-  console.log(`  Dropped ${OWNED_TABLES.length} owned tables.`);
+  console.log(`  Dropped ${OWNED_TABLES_DROP_ORDER.length + 1} owned tables.`);
 }
 
 // ============================================================
@@ -348,10 +397,13 @@ async function pgReset(pool: Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Drop only owned tables — never foreign tables that may share this schema.
-    for (const table of OWNED_TABLES) {
-      await client.query(`DROP TABLE IF EXISTS "${table}" CASCADE`);
+    // Drop in children-first (reverse-dependency) order WITHOUT CASCADE so that
+    // foreign-key constraints on external tables referencing owned tables are
+    // never silently removed.
+    for (const table of OWNED_TABLES_DROP_ORDER) {
+      await client.query(`DROP TABLE IF EXISTS "${table}"`);
     }
+    await client.query('DROP TABLE IF EXISTS "_migrations"');
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -359,7 +411,7 @@ async function pgReset(pool: Pool): Promise<void> {
   } finally {
     client.release();
   }
-  console.log(`  Dropped ${OWNED_TABLES.length} owned tables.`);
+  console.log(`  Dropped ${OWNED_TABLES_DROP_ORDER.length + 1} owned tables.`);
 }
 
 // ============================================================
@@ -372,7 +424,9 @@ async function main(): Promise<void> {
   const dialect = getDialect();
 
   if (!command) {
-    console.error('Usage: runner.ts <migrate|rollback|status|validate|reset|seed> [--yes]');
+    console.error(
+      'Usage: runner.ts <migrate|rollback|status|validate|reset|seed> [--yes] [--env <environment>]',
+    );
     process.exit(1);
   }
 
@@ -397,10 +451,14 @@ async function main(): Promise<void> {
         break;
       case 'reset':
         if (!args.includes('--yes')) {
-          console.error('  reset requires --yes flag to confirm destructive operation.');
+          console.error('  reset requires --yes and --env <environment> flags.');
           process.exit(1);
         }
-        assertResetAllowed();
+        auditAndGuardReset(args, {
+          env: parseFlag(args, '--env') ?? '',
+          dialect,
+          dbIdentifier: dbPath,
+        });
         sqliteReset(db);
         sqliteMigrate(db);
         break;
@@ -433,10 +491,14 @@ async function main(): Promise<void> {
           break;
         case 'reset':
           if (!args.includes('--yes')) {
-            console.error('  reset requires --yes flag to confirm destructive operation.');
+            console.error('  reset requires --yes and --env <environment> flags.');
             process.exit(1);
           }
-          assertResetAllowed();
+          auditAndGuardReset(args, {
+            env: parseFlag(args, '--env') ?? '',
+            dialect,
+            dbIdentifier: dbUrl,
+          });
           await pgReset(pool);
           await pgMigrate(pool);
           break;
