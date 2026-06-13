@@ -63,7 +63,11 @@ export class StartCodingHandler implements CommandHandler<
           detail: `${this.commandName} requires a workflow lock context`,
         });
       }
-      await assertLockFence(tx, envelope.lockContext);
+      await assertLockFence(tx, {
+        ...envelope.lockContext,
+        projectId,
+        resourceKey: `execution-lane:${projectId}`,
+      });
 
       // Transition guard: featureRunId must be the project's active feature run
       const wsRows = await tx.query<{ active_feature_run_id: string | null }>(

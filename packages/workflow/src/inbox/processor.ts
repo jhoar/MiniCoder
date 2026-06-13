@@ -84,15 +84,10 @@ export class InboxProcessor {
 
       const handler = this.handlers.get(row.event_type);
       if (!handler) {
-        // No handler registered — requeue with backoff so the event doesn't
-        // monopolize every batch. Attempts are NOT incremented so the row remains
-        // eligible once a handler is registered.
-        const noHandlerDelayMs = deterministicBackoff(
-          1,
-          this.options.baseBackoffMs,
-          this.options.maxBackoffMs,
-        );
-        const nextRetryAt = new Date(Date.now() + noHandlerDelayMs).toISOString();
+        // No handler registered — push back by maxBackoffMs so unknown event types
+        // cannot starve known events by filling every batch. Attempts are NOT
+        // incremented so the row remains eligible once a handler is registered.
+        const nextRetryAt = new Date(Date.now() + this.options.maxBackoffMs).toISOString();
         await this.db.execute(
           `UPDATE inbox_events SET status = 'pending', next_retry_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
           [nextRetryAt, isoNow(), row.id, claimedVersion],

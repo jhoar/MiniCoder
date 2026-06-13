@@ -81,12 +81,17 @@ export class SelectFeatureHandler implements CommandHandler<
         FeatureExecutionState.SELECTED,
       );
 
-      // Dependency guard: all dependencies must be merged before selection
+      // Dependency guard: a dependency is met only when a feature_run for it has reached 'merged'.
+      // feature_requests.state is never updated by transitions — only feature_runs.current_execution_state is.
       const unmetDeps = await tx.query<{ id: string }>(
         `SELECT fd.id
          FROM feature_dependencies fd
-         JOIN feature_requests dep ON fd.target_fr_id = dep.id
-         WHERE fd.source_fr_id = ? AND dep.state != 'merged'`,
+         WHERE fd.source_fr_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM feature_runs fr
+             WHERE fr.feature_request_id = fd.target_fr_id
+               AND fr.current_execution_state = 'merged'
+           )`,
         [run.feature_request_id],
       );
       if (unmetDeps.length > 0) {

@@ -64,7 +64,11 @@ export class RecordCodePushedHandler implements CommandHandler<
           detail: `${this.commandName} requires a workflow lock context`,
         });
       }
-      await assertLockFence(tx, envelope.lockContext);
+      await assertLockFence(tx, {
+        ...envelope.lockContext,
+        projectId,
+        resourceKey: `execution-lane:${projectId}`,
+      });
 
       const rows = await tx.query<FeatureRunRow>(
         `SELECT fr.id, fr.current_execution_state, fr.version
