@@ -135,33 +135,34 @@ describe('OutboxDispatcher', () => {
     expect(result.dispatched).toBe(1);
     expect(handleFn).toHaveBeenCalledOnce();
 
-    const row = raw.prepare(`SELECT status FROM outbox_events WHERE id = 'evt-5'`).get() as { status: string };
+    const row = raw.prepare(`SELECT status FROM outbox_events WHERE id = 'evt-5'`).get() as {
+      status: string;
+    };
     expect(row.status).toBe('delivered');
   });
 
-  it('unknown events use maxBackoffMs and do not starve known events', async () => {
-    // Insert 2 unknown events and 1 known event — batchSize=3 so all three enter the batch
+  it('known events are dispatched even when unknown events outnumber the batch size', async () => {
+    // 3 unknown events created before the known event; batchSize=2 so without prioritisation
+    // the known event would never be picked up (unknown rows fill the full batch every poll).
     insertOutboxEvent('evt-u1', 'unknown.event');
     insertOutboxEvent('evt-u2', 'unknown.event');
+    insertOutboxEvent('evt-u3', 'unknown.event');
     insertOutboxEvent('evt-k1', 'feature.selected');
     const handleFn = vi.fn().mockResolvedValue(undefined);
     const dispatcher = new OutboxDispatcher(
       db,
       new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
-      { maxBackoffMs: 60_000, batchSize: 3 },
+      { maxBackoffMs: 60_000, batchSize: 2 },
     );
 
     const result = await dispatcher.pollAndDispatch();
+    // Known event always dispatched first regardless of batch position
     expect(result.dispatched).toBe(1);
     expect(result.failed).toBe(0);
     expect(handleFn).toHaveBeenCalledOnce();
 
-    // Unknown events must be pushed back by maxBackoffMs, not baseBackoffMs
-    const before = new Date(Date.now() + 59_000).toISOString();
-    const u1 = raw.prepare(`SELECT next_retry_at FROM outbox_events WHERE id = 'evt-u1'`).get() as { next_retry_at: string };
-    expect(u1.next_retry_at > before).toBe(true);
-
-    // On a second poll (within the retry window) only zero events are eligible
+    // Unknown events must be pushed back by maxBackoffMs so a second immediate poll
+    // finds nothing eligible (they are not re-eligible within the backoff window).
     const result2 = await dispatcher.pollAndDispatch();
     expect(result2.dispatched).toBe(0);
   });

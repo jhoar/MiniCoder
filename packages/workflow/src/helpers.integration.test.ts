@@ -111,11 +111,26 @@ describe('assertLockFence — lock boundary validation', () => {
         `INSERT INTO workflow_locks (id, project_id, resource_key, holder_id, fence, expires_at, version, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
-      .run(opts.id, opts.projectId, opts.resourceKey, opts.holderId, opts.fence, expiresAt, now, now);
+      .run(
+        opts.id,
+        opts.projectId,
+        opts.resourceKey,
+        opts.holderId,
+        opts.fence,
+        expiresAt,
+        now,
+        now,
+      );
   }
 
   it('succeeds when projectId and resourceKey match', async () => {
-    insertLock({ id: 'lock-1', projectId: 'proj-1', resourceKey: 'execution-lane:proj-1', holderId: 'holder-1', fence: 1 });
+    insertLock({
+      id: 'lock-1',
+      projectId: 'proj-1',
+      resourceKey: 'execution-lane:proj-1',
+      holderId: 'holder-1',
+      fence: 1,
+    });
 
     await expect(
       db.transaction(async (tx) =>
@@ -131,7 +146,13 @@ describe('assertLockFence — lock boundary validation', () => {
   });
 
   it('throws StaleFenceError when projectId does not match', async () => {
-    insertLock({ id: 'lock-2', projectId: 'proj-1', resourceKey: 'execution-lane:proj-1', holderId: 'holder-1', fence: 1 });
+    insertLock({
+      id: 'lock-2',
+      projectId: 'proj-1',
+      resourceKey: 'execution-lane:proj-1',
+      holderId: 'holder-1',
+      fence: 1,
+    });
 
     await expect(
       db.transaction(async (tx) =>
@@ -147,7 +168,13 @@ describe('assertLockFence — lock boundary validation', () => {
   });
 
   it('throws StaleFenceError when resourceKey does not match', async () => {
-    insertLock({ id: 'lock-3', projectId: 'proj-1', resourceKey: 'execution-lane:proj-1', holderId: 'holder-1', fence: 1 });
+    insertLock({
+      id: 'lock-3',
+      projectId: 'proj-1',
+      resourceKey: 'execution-lane:proj-1',
+      holderId: 'holder-1',
+      fence: 1,
+    });
 
     await expect(
       db.transaction(async (tx) =>
@@ -163,7 +190,14 @@ describe('assertLockFence — lock boundary validation', () => {
   });
 
   it('throws StaleFenceError when lock has expired', async () => {
-    insertLock({ id: 'lock-4', projectId: 'proj-1', resourceKey: 'execution-lane:proj-1', holderId: 'holder-1', fence: 1, expiresOffsetSeconds: -1 });
+    insertLock({
+      id: 'lock-4',
+      projectId: 'proj-1',
+      resourceKey: 'execution-lane:proj-1',
+      holderId: 'holder-1',
+      fence: 1,
+      expiresOffsetSeconds: -1,
+    });
 
     await expect(
       db.transaction(async (tx) =>
@@ -179,7 +213,13 @@ describe('assertLockFence — lock boundary validation', () => {
   });
 
   it('throws StaleFenceError when fence value is stale', async () => {
-    insertLock({ id: 'lock-5', projectId: 'proj-1', resourceKey: 'execution-lane:proj-1', holderId: 'holder-1', fence: 3 });
+    insertLock({
+      id: 'lock-5',
+      projectId: 'proj-1',
+      resourceKey: 'execution-lane:proj-1',
+      holderId: 'holder-1',
+      fence: 3,
+    });
 
     await expect(
       db.transaction(async (tx) =>

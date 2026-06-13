@@ -57,16 +57,51 @@ export class InboxProcessor {
     );
 
     const now = isoNow();
-    const rows = await this.db.query<InboxRow>(
-      `SELECT id, event_type, payload, payload_schema_version, attempts, version
-       FROM inbox_events
-       WHERE status IN ('pending', 'failed')
-         AND attempts < ?
-         AND (next_retry_at IS NULL OR next_retry_at <= ?)
-       ORDER BY created_at ASC
-       LIMIT ?`,
-      [this.options.maxAttempts, now, this.options.batchSize],
-    );
+    // Two-pass SELECT: known event types fill the batch first so unknown event types
+    // can never starve supported events, even when more unknown rows exist than batchSize.
+    const knownTypes = [...this.handlers.keys()];
+    let rows: InboxRow[];
+    if (knownTypes.length === 0) {
+      rows = await this.db.query<InboxRow>(
+        `SELECT id, event_type, payload, payload_schema_version, attempts, version
+         FROM inbox_events
+         WHERE status IN ('pending', 'failed')
+           AND attempts < ?
+           AND (next_retry_at IS NULL OR next_retry_at <= ?)
+         ORDER BY created_at ASC
+         LIMIT ?`,
+        [this.options.maxAttempts, now, this.options.batchSize],
+      );
+    } else {
+      const placeholders = knownTypes.map(() => '?').join(', ');
+      const knownRows = await this.db.query<InboxRow>(
+        `SELECT id, event_type, payload, payload_schema_version, attempts, version
+         FROM inbox_events
+         WHERE status IN ('pending', 'failed')
+           AND attempts < ?
+           AND (next_retry_at IS NULL OR next_retry_at <= ?)
+           AND event_type IN (${placeholders})
+         ORDER BY created_at ASC
+         LIMIT ?`,
+        [this.options.maxAttempts, now, ...knownTypes, this.options.batchSize],
+      );
+      const remaining = this.options.batchSize - knownRows.length;
+      const unknownRows =
+        remaining > 0
+          ? await this.db.query<InboxRow>(
+              `SELECT id, event_type, payload, payload_schema_version, attempts, version
+               FROM inbox_events
+               WHERE status IN ('pending', 'failed')
+                 AND attempts < ?
+                 AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                 AND event_type NOT IN (${placeholders})
+               ORDER BY created_at ASC
+               LIMIT ?`,
+              [this.options.maxAttempts, now, ...knownTypes, remaining],
+            )
+          : [];
+      rows = [...knownRows, ...unknownRows];
+    }
 
     let processed = 0;
     let failed = 0;
