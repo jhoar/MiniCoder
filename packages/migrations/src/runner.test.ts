@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import Database from 'better-sqlite3';
 import { SqliteDbClient } from '@minicoder/persistence-sqlite';
 import type { TxClient } from '@minicoder/core';
+import { RollbackFailedError } from '@minicoder/core';
 import { EXPECTED_TABLES } from './index.js';
 
 // We test the migration runner by calling the SQLite functions directly
@@ -304,6 +305,35 @@ describe('SqliteDbClient.transaction()', () => {
 
     const rows = db.prepare('SELECT * FROM test_rows').all();
     expect(rows).toHaveLength(0);
+  });
+
+  it('marks client dead and wraps both errors when ROLLBACK fails', async () => {
+    const callbackError = new Error('callback failed');
+    const rollbackError = new Error('ROLLBACK rejected');
+
+    // Spy on db.exec to make ROLLBACK throw while allowing BEGIN through
+    const execSpy = vi.spyOn(db, 'exec').mockImplementation((sql: string) => {
+      if (sql === 'ROLLBACK') throw rollbackError;
+      return db as unknown as Database.Database;
+    });
+
+    try {
+      const err = await client
+        .transaction(async (_tx: TxClient) => {
+          throw callbackError;
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(RollbackFailedError);
+      expect((err as RollbackFailedError).originalError).toBe(callbackError);
+      expect((err as RollbackFailedError).rollbackError).toBe(rollbackError);
+
+      // Client must be dead — subsequent operations must throw
+      await expect(client.execute('SELECT 1')).rejects.toThrow(/unusable/i);
+      await expect(client.query('SELECT 1')).rejects.toThrow(/unusable/i);
+    } finally {
+      execSpy.mockRestore();
+    }
   });
 });
 

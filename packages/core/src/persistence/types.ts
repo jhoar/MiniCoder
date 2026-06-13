@@ -39,3 +39,16 @@ export class StaleFenceError extends Error {
     this.name = 'StaleFenceError';
   }
 }
+
+export class RollbackFailedError extends Error {
+  constructor(
+    public readonly originalError: unknown,
+    public readonly rollbackError: unknown,
+  ) {
+    const orig = originalError instanceof Error ? originalError.message : String(originalError);
+    super(
+      `ROLLBACK failed after a transaction error; connection is no longer usable. Original error: ${orig}`,
+    );
+    this.name = 'RollbackFailedError';
+  }
+}

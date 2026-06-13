@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import type { DbClient, TxClient } from '@minicoder/core';
+import { RollbackFailedError } from '@minicoder/core';
 
 class SqliteTxClient implements TxClient {
   constructor(private readonly db: Database.Database) {}
@@ -17,19 +18,23 @@ class SqliteTxClient implements TxClient {
 
 const TX_ACTIVE_MSG =
   'Cannot call DbClient.%s() while a transaction is active; use the tx client passed to the transaction callback.';
+const DEAD_MSG = 'This DbClient is unusable: ROLLBACK failed on a previous transaction.';
 
 export class SqliteDbClient implements DbClient {
   private inTransaction = false;
+  private dead = false;
 
   constructor(private readonly db: Database.Database) {}
 
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'query'));
     const stmt = this.db.prepare(sql);
     return stmt.all(...params) as T[];
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
+    if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error(TX_ACTIVE_MSG.replace('%s', 'execute'));
     const stmt = this.db.prepare(sql);
     stmt.run(...params);
@@ -40,6 +45,7 @@ export class SqliteDbClient implements DbClient {
   // its synchronous wrapper returns — before any awaited work completes — so
   // that pattern is not safe for async callbacks.
   async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+    if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error('Nested transactions are not supported.');
     let rollbackRequired = false;
     try {
@@ -55,8 +61,11 @@ export class SqliteDbClient implements DbClient {
       if (rollbackRequired) {
         try {
           this.db.exec('ROLLBACK');
-        } catch {
-          // ignore — connection may be dead; flag resets in finally
+        } catch (rollbackErr) {
+          // ROLLBACK failed — connection is in unknown state; mark dead so no
+          // further operations are allowed, and surface both errors.
+          this.dead = true;
+          throw new RollbackFailedError(err, rollbackErr);
         }
       }
       throw err;
