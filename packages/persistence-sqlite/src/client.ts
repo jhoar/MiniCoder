@@ -2,15 +2,25 @@ import Database from 'better-sqlite3';
 import type { DbClient, TxClient } from '@minicoder/core';
 import { RollbackFailedError } from '@minicoder/core';
 
+const TX_EXPIRED_MSG = 'TxClient has expired: the transaction has already ended.';
+
 class SqliteTxClient implements TxClient {
+  private invalidated = false;
+
   constructor(private readonly db: Database.Database) {}
 
+  invalidate(): void {
+    this.invalidated = true;
+  }
+
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
     const stmt = this.db.prepare(sql);
     return stmt.all(...params) as T[];
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
+    if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
     const stmt = this.db.prepare(sql);
     stmt.run(...params);
   }
@@ -48,11 +58,11 @@ export class SqliteDbClient implements DbClient {
     if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error('Nested transactions are not supported.');
     let rollbackRequired = false;
+    const tx = new SqliteTxClient(this.db);
     try {
       this.db.exec('BEGIN'); // flag stays false if this throws — client remains usable
       rollbackRequired = true;
       this.inTransaction = true;
-      const tx = new SqliteTxClient(this.db);
       const result = await fn(tx);
       this.db.exec('COMMIT');
       rollbackRequired = false;
@@ -71,6 +81,7 @@ export class SqliteDbClient implements DbClient {
       throw err;
     } finally {
       this.inTransaction = false;
+      tx.invalidate();
     }
   }
 

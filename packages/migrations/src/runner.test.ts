@@ -335,6 +335,43 @@ describe('SqliteDbClient.transaction()', () => {
       execSpy.mockRestore();
     }
   });
+
+  it('SqliteTxClient rejects query() after the transaction ends', async () => {
+    let capturedTx!: TxClient;
+
+    await client.transaction(async (tx: TxClient) => {
+      capturedTx = tx;
+    });
+
+    await expect(capturedTx.query('SELECT 1')).rejects.toThrow(/expired/i);
+  });
+
+  it('SqliteTxClient rejects execute() after the transaction ends', async () => {
+    let capturedTx!: TxClient;
+
+    await client.transaction(async (tx: TxClient) => {
+      capturedTx = tx;
+    });
+
+    await expect(
+      capturedTx.execute("INSERT INTO test_rows (id, val) VALUES ('x', 'y')"),
+    ).rejects.toThrow(/expired/i);
+  });
+
+  it('SqliteTxClient rejects operations after a rolled-back transaction', async () => {
+    let capturedTx!: TxClient;
+
+    await client
+      .transaction(async (tx: TxClient) => {
+        capturedTx = tx;
+        throw new Error('intentional');
+      })
+      .catch(() => {});
+
+    await expect(
+      capturedTx.execute("INSERT INTO test_rows (id, val) VALUES ('x', 'y')"),
+    ).rejects.toThrow(/expired/i);
+  });
 });
 
 describe('EXPECTED_TABLES list', () => {

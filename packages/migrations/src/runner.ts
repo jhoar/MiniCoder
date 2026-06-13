@@ -60,6 +60,24 @@ const EXPECTED_TABLES = [
   'merge_gate_evaluations',
 ];
 
+// Tables owned by MiniCoder — reset only drops these, never foreign tables.
+const OWNED_TABLES = [...EXPECTED_TABLES, '_migrations'];
+
+// Environments where destructive operations are permitted.
+const SAFE_ENVS = new Set(['development', 'test', 'ci']);
+
+function assertResetAllowed(): void {
+  const env = (process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? '').toLowerCase();
+  if (!SAFE_ENVS.has(env)) {
+    console.error(
+      `  reset is not permitted in environment "${env || '(unset)'}".` +
+        ' Set APP_ENV=development (or test/ci) to enable it.',
+    );
+    process.exit(1);
+  }
+  console.log(`  Environment check passed: APP_ENV=${env}`);
+}
+
 function getDialect(): Dialect {
   const env = process.env['DB_DIALECT'];
   if (env === 'postgres' || env === 'sqlite') return env;
@@ -202,15 +220,12 @@ function sqliteValidate(db: Database.Database): boolean {
 
 function sqliteReset(db: Database.Database): void {
   db.pragma('foreign_keys = OFF');
-  // Drop all user tables and the migrations table
-  const tables = (
-    db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
-  ).map((r) => r.name);
-  for (const table of tables) {
+  // Drop only owned tables — never any foreign tables that may share this file.
+  for (const table of OWNED_TABLES) {
     db.exec(`DROP TABLE IF EXISTS "${table}"`);
   }
   db.pragma('foreign_keys = ON');
-  console.log('  Database reset complete.');
+  console.log(`  Dropped ${OWNED_TABLES.length} owned tables.`);
 }
 
 // ============================================================
@@ -333,12 +348,9 @@ async function pgReset(pool: Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Drop all tables in the public schema
-    const result = await client.query<{ tablename: string }>(
-      "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
-    );
-    for (const row of result.rows) {
-      await client.query(`DROP TABLE IF EXISTS "${row.tablename}" CASCADE`);
+    // Drop only owned tables — never foreign tables that may share this schema.
+    for (const table of OWNED_TABLES) {
+      await client.query(`DROP TABLE IF EXISTS "${table}" CASCADE`);
     }
     await client.query('COMMIT');
   } catch (err) {
@@ -347,7 +359,7 @@ async function pgReset(pool: Pool): Promise<void> {
   } finally {
     client.release();
   }
-  console.log('  Database reset complete.');
+  console.log(`  Dropped ${OWNED_TABLES.length} owned tables.`);
 }
 
 // ============================================================
@@ -388,6 +400,7 @@ async function main(): Promise<void> {
           console.error('  reset requires --yes flag to confirm destructive operation.');
           process.exit(1);
         }
+        assertResetAllowed();
         sqliteReset(db);
         sqliteMigrate(db);
         break;
@@ -423,6 +436,7 @@ async function main(): Promise<void> {
             console.error('  reset requires --yes flag to confirm destructive operation.');
             process.exit(1);
           }
+          assertResetAllowed();
           await pgReset(pool);
           await pgMigrate(pool);
           break;

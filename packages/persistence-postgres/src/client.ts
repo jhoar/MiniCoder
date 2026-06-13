@@ -2,22 +2,32 @@ import type { PoolClient } from 'pg';
 import type { DbClient, TxClient } from '@minicoder/core';
 import { RollbackFailedError } from '@minicoder/core';
 
+const TX_EXPIRED_MSG = 'TxClient has expired: the transaction has already ended.';
+
 class PostgresTxClient implements TxClient {
+  private invalidated = false;
+
   constructor(private readonly client: PoolClient) {}
 
+  invalidate(): void {
+    this.invalidated = true;
+  }
+
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
     const result = await this.client.query(sql, params);
     return result.rows as T[];
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
+    if (this.invalidated) throw new Error(TX_EXPIRED_MSG);
     await this.client.query(sql, params);
   }
 }
 
 const TX_ACTIVE_MSG =
   'Cannot call DbClient.%s() while a transaction is active; use the tx client passed to the transaction callback.';
-const DEAD_MSG = 'This DbClient is unusable: ROLLBACK failed on a previous transaction.';
+const DEAD_MSG = 'This DbClient is unusable: connection is in an unknown state.';
 
 export class PostgresDbClient implements DbClient {
   private inTransaction = false;
@@ -43,13 +53,12 @@ export class PostgresDbClient implements DbClient {
     if (this.inTransaction) throw new Error('Nested transactions are not supported.');
     // Flag is set BEFORE awaiting BEGIN so no concurrent outer operation can
     // slip through the async window between BEGIN completing and the flag update.
-    // The finally block always resets it, even if BEGIN itself throws.
     this.inTransaction = true;
     let rollbackRequired = false;
+    const tx = new PostgresTxClient(this.client);
     try {
       await this.client.query('BEGIN');
       rollbackRequired = true;
-      const tx = new PostgresTxClient(this.client);
       const result = await fn(tx);
       await this.client.query('COMMIT');
       rollbackRequired = false;
@@ -70,15 +79,25 @@ export class PostgresDbClient implements DbClient {
           }
           throw new RollbackFailedError(err, rollbackErr);
         }
+      } else {
+        // BEGIN itself failed — transport may have left connection state unknown.
+        // Discard the connection so the pool doesn't hand it to another caller.
+        this.dead = true;
+        try {
+          this.client.release(err as Error);
+        } catch {
+          // ignore
+        }
       }
       throw err;
     } finally {
       this.inTransaction = false;
+      tx.invalidate();
     }
   }
 
   async close(): Promise<void> {
-    // If dead, release(error) was already called during ROLLBACK failure — don't release again.
+    // If dead, release(error) was already called — don't release again.
     if (!this.dead) {
       this.client.release();
     }
