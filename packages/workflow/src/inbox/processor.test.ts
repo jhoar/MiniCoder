@@ -167,4 +167,29 @@ describe('InboxProcessor', () => {
     // Handler must not be called with an invalid payload
     expect(handleFn).not.toHaveBeenCalled();
   });
+
+  it('fails the event when payload_schema_version does not match SCHEMA_VERSION', async () => {
+    // Insert an event with a stale schema version — even with a valid payload shape
+    raw
+      .prepare(
+        `INSERT INTO inbox_events (id, dedup_key, event_type, payload, payload_schema_version, status, attempts, version, created_at, updated_at)
+         VALUES ('evt-6', 'evt-6', 'feature.selected', '{"featureRunId":"00000000-0000-0000-0000-000000000001","projectId":"00000000-0000-0000-0000-000000000002","fromState":"approved_pending_execution","toState":"selected"}', '0.9.0', 'pending', 0, 1, datetime('now'), datetime('now'))`,
+      )
+      .run();
+    const handleFn = vi.fn().mockResolvedValue(undefined);
+    const processor = new InboxProcessor(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+    );
+
+    const result = await processor.pollAndProcess();
+    expect(result.failed).toBe(1);
+    expect(result.processed).toBe(0);
+    expect(handleFn).not.toHaveBeenCalled();
+
+    const row = raw.prepare('SELECT status FROM inbox_events WHERE id = ?').get('evt-6') as {
+      status: string;
+    };
+    expect(row.status).toBe('failed');
+  });
 });

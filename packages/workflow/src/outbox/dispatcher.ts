@@ -133,10 +133,13 @@ export class OutboxDispatcher {
       // Awaited heartbeat loop with persistent cancellation flag.
       // stopped=true + cancelTimer() terminate the loop even if a timer has already
       // fired and the loop has moved into a new iteration (fixes stale-cancel bug).
+      // lostOwnership=true means stale-claim recovery reclaimed the row mid-handler;
+      // the result must NOT be counted as dispatched even if the handler succeeded.
       let stopped = false;
+      let lostOwnership = false;
       let cancelTimer: () => void = () => {};
       const heartbeatDone = (async () => {
-        const intervalMs = Math.floor(this.options.staleClaimMs / 2);
+        const intervalMs = Math.max(1, Math.floor(this.options.staleClaimMs / 2));
         while (!stopped) {
           const timedOut = await new Promise<boolean>((resolve) => {
             const id = setTimeout(() => resolve(true), intervalMs);
@@ -147,10 +150,14 @@ export class OutboxDispatcher {
           });
           if (!timedOut || stopped) break;
           try {
-            await this.db.execute(
+            const renewed = await this.db.executeAffected(
               `UPDATE outbox_events SET updated_at = ? WHERE id = ? AND status = 'processing' AND version = ?`,
               [isoNow(), row.id, claimedVersion],
             );
+            if (renewed === 0) {
+              lostOwnership = true;
+              break; // Row reclaimed by stale-claim recovery — stop heartbeating
+            }
           } catch {
             break; // DB failure: stop heartbeating; stale-claim recovery resets the row
           }
@@ -159,8 +166,13 @@ export class OutboxDispatcher {
       try {
         const payload = parseJsonField<unknown>(row.payload);
         await handler.handle(payload, row.payload_schema_version);
-        const deliveredCount = await this.markDelivered(row.id, claimedVersion);
-        if (deliveredCount > 0) dispatched++;
+        stopped = true;
+        cancelTimer();
+        await heartbeatDone;
+        if (!lostOwnership) {
+          const deliveredCount = await this.markDelivered(row.id, claimedVersion);
+          if (deliveredCount > 0) dispatched++;
+        }
       } catch {
         const nextAttempts = row.attempts + 1;
         const nextRetryMs = deterministicBackoff(
@@ -169,13 +181,18 @@ export class OutboxDispatcher {
           this.options.maxBackoffMs,
         );
         const nextRetryAt = new Date(Date.now() + nextRetryMs).toISOString();
-        const failedCount = await this.markFailed(
-          row.id,
-          nextAttempts,
-          nextRetryAt,
-          claimedVersion,
-        );
-        if (failedCount > 0) failed++;
+        stopped = true;
+        cancelTimer();
+        await heartbeatDone;
+        if (!lostOwnership) {
+          const failedCount = await this.markFailed(
+            row.id,
+            nextAttempts,
+            nextRetryAt,
+            claimedVersion,
+          );
+          if (failedCount > 0) failed++;
+        }
       } finally {
         stopped = true;
         cancelTimer();
