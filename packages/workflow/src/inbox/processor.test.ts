@@ -208,13 +208,46 @@ describe('InboxProcessor', () => {
     expect(row.status).toBe('processing');
   }, 2_000);
 
-  it('throws when constructed with staleClaimMs < 2', () => {
-    expect(
-      () => new InboxProcessor(db, new Map(), { staleClaimMs: 0 }),
-    ).toThrow('staleClaimMs must be >= 2');
-    expect(
-      () => new InboxProcessor(db, new Map(), { staleClaimMs: 1 }),
-    ).toThrow('staleClaimMs must be >= 2');
+  it('does not count processing when heartbeat DB error sets lostOwnership (DB-error regression)', async () => {
+    insertInboxEvent('evt-dberr');
+    const original = db.executeAffected.bind(db);
+    vi.spyOn(db, 'executeAffected').mockImplementation(async (sql, params) => {
+      if (/SET updated_at.*status = 'processing'/s.test(sql)) {
+        throw new Error('simulated DB connection error');
+      }
+      return original(sql, params as unknown[]);
+    });
+
+    let handlerRan = false;
+    const handleFn = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      handlerRan = true;
+    });
+    const processor = new InboxProcessor(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+      { staleClaimMs: 100 },
+    );
+
+    const result = await processor.pollAndProcess();
+
+    expect(handlerRan).toBe(true);
+    expect(result.processed).toBe(0); // DB error → lostOwnership → not counted
+    expect(result.failed).toBe(0);
+
+    const row = raw.prepare(`SELECT status FROM inbox_events WHERE id = 'evt-dberr'`).get() as {
+      status: string;
+    };
+    expect(row.status).toBe('processing'); // markProcessed skipped
+  }, 2_000);
+
+  it('throws when constructed with invalid staleClaimMs', () => {
+    const msg = 'staleClaimMs must be a finite integer >= 2';
+    expect(() => new InboxProcessor(db, new Map(), { staleClaimMs: 0 })).toThrow(msg);
+    expect(() => new InboxProcessor(db, new Map(), { staleClaimMs: 1 })).toThrow(msg);
+    expect(() => new InboxProcessor(db, new Map(), { staleClaimMs: NaN })).toThrow(msg);
+    expect(() => new InboxProcessor(db, new Map(), { staleClaimMs: Infinity })).toThrow(msg);
+    expect(() => new InboxProcessor(db, new Map(), { staleClaimMs: 100.5 })).toThrow(msg);
   });
 
   it('fails the event when payload_schema_version does not match SCHEMA_VERSION', async () => {

@@ -45,9 +45,10 @@ export class OutboxDispatcher {
     options: Partial<DispatcherOptions> = {},
   ) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
-    if (this.options.staleClaimMs < 2) {
+    const sc = this.options.staleClaimMs;
+    if (!Number.isFinite(sc) || !Number.isInteger(sc) || sc < 2) {
       throw new Error(
-        `staleClaimMs must be >= 2 (got ${this.options.staleClaimMs}). ` +
+        `staleClaimMs must be a finite integer >= 2 (got ${sc}). ` +
           `Values below 2 produce a zero-delay heartbeat loop AND make the stale-claim ` +
           `threshold fire immediately, reclaiming active claims.`,
       );
@@ -166,7 +167,8 @@ export class OutboxDispatcher {
               break; // Row reclaimed by stale-claim recovery — stop heartbeating
             }
           } catch {
-            break; // DB failure: stop heartbeating; stale-claim recovery resets the row
+            lostOwnership = true; // DB failure: treat as ownership loss; stale-claim recovery will reset the row
+            break;
           }
         }
       })();

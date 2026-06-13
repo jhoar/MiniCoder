@@ -245,12 +245,45 @@ describe('OutboxDispatcher', () => {
     expect(row.status).toBe('processing');
   }, 2_000);
 
-  it('throws when constructed with staleClaimMs < 2', () => {
-    expect(
-      () => new OutboxDispatcher(db, new Map(), { staleClaimMs: 0 }),
-    ).toThrow('staleClaimMs must be >= 2');
-    expect(
-      () => new OutboxDispatcher(db, new Map(), { staleClaimMs: 1 }),
-    ).toThrow('staleClaimMs must be >= 2');
+  it('does not count dispatch when heartbeat DB error sets lostOwnership (DB-error regression)', async () => {
+    insertOutboxEvent('evt-dberr');
+    const original = db.executeAffected.bind(db);
+    vi.spyOn(db, 'executeAffected').mockImplementation(async (sql, params) => {
+      if (/SET updated_at.*status = 'processing'/s.test(sql)) {
+        throw new Error('simulated DB connection error');
+      }
+      return original(sql, params as unknown[]);
+    });
+
+    let handlerRan = false;
+    const handleFn = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      handlerRan = true;
+    });
+    const dispatcher = new OutboxDispatcher(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+      { staleClaimMs: 100 },
+    );
+
+    const result = await dispatcher.pollAndDispatch();
+
+    expect(handlerRan).toBe(true);
+    expect(result.dispatched).toBe(0); // DB error → lostOwnership → not counted
+    expect(result.failed).toBe(0);
+
+    const row = raw.prepare(`SELECT status FROM outbox_events WHERE id = 'evt-dberr'`).get() as {
+      status: string;
+    };
+    expect(row.status).toBe('processing'); // markDelivered skipped
+  }, 2_000);
+
+  it('throws when constructed with invalid staleClaimMs', () => {
+    const msg = 'staleClaimMs must be a finite integer >= 2';
+    expect(() => new OutboxDispatcher(db, new Map(), { staleClaimMs: 0 })).toThrow(msg);
+    expect(() => new OutboxDispatcher(db, new Map(), { staleClaimMs: 1 })).toThrow(msg);
+    expect(() => new OutboxDispatcher(db, new Map(), { staleClaimMs: NaN })).toThrow(msg);
+    expect(() => new OutboxDispatcher(db, new Map(), { staleClaimMs: Infinity })).toThrow(msg);
+    expect(() => new OutboxDispatcher(db, new Map(), { staleClaimMs: 100.5 })).toThrow(msg);
   });
 });
