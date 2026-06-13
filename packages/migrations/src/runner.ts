@@ -76,14 +76,38 @@ function parseFlag(args: string[], flag: string): string | undefined {
   return val?.startsWith('--') ? undefined : val;
 }
 
+// Remove username and password from a PostgreSQL URL before logging.
+function sanitizeDbIdentifier(identifier: string, dialect: Dialect): string {
+  if (dialect !== 'postgres') return identifier;
+  try {
+    const u = new URL(identifier);
+    u.username = '';
+    u.password = '';
+    return u.toString();
+  } catch {
+    return '(unparseable URL)';
+  }
+}
+
 interface ResetContext {
-  env: string;
   dialect: Dialect;
   dbIdentifier: string;
 }
 
 function auditAndGuardReset(args: string[], ctx: ResetContext): void {
-  // 1. Explicit --env flag required (env var alone is not sufficient)
+  // 1a. System environment guard — deployment-level env vars cannot be overridden
+  //     by the --env flag. If the process knows it is running in a non-safe
+  //     environment, refuse regardless of what the caller supplies.
+  const sysEnv = (process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? '').toLowerCase();
+  if (sysEnv && !SAFE_ENVS.has(sysEnv)) {
+    console.error(
+      `  reset is blocked: deployment environment is "${sysEnv}" (APP_ENV/NODE_ENV).\n` +
+        '  Reset is only permitted when APP_ENV/NODE_ENV is development, test, or ci.',
+    );
+    process.exit(1);
+  }
+
+  // 1b. Explicit --env flag required as a second, caller-supplied confirmation
   const envFlag = parseFlag(args, '--env');
   if (!envFlag) {
     console.error(
@@ -103,16 +127,18 @@ function auditAndGuardReset(args: string[], ctx: ResetContext): void {
 
   // 2. Audit log — printed before any mutation so it is visible even if reset fails
   const ts = new Date().toISOString();
+  const safeDb = sanitizeDbIdentifier(ctx.dbIdentifier, ctx.dialect);
   console.log('  ┌─ RESET AUDIT ──────────────────────────────────────────────');
-  console.log(`  │  timestamp : ${ts}`);
-  console.log(`  │  env (flag): ${env}`);
-  console.log(`  │  dialect   : ${ctx.dialect}`);
-  console.log(`  │  database  : ${ctx.dbIdentifier}`);
+  console.log(`  │  timestamp  : ${ts}`);
+  console.log(`  │  env (flag) : ${env}`);
+  console.log(`  │  env (sys)  : ${sysEnv || '(unset)'}`);
+  console.log(`  │  dialect    : ${ctx.dialect}`);
+  console.log(`  │  database   : ${safeDb}`);
   console.log(
-    `  │  tables    : ${OWNED_TABLES_DROP_ORDER.length + 1} owned tables will be dropped`,
+    `  │  tables     : ${OWNED_TABLES_DROP_ORDER.length + 1} owned tables will be dropped`,
   );
-  console.log('  │  roles     : no role system active in Phase 1 CLI mode');
-  console.log('  │  backup    : WARNING — no backup has been verified');
+  console.log('  │  roles      : no role system active in Phase 1 CLI mode');
+  console.log('  │  backup     : WARNING — no backup has been verified');
   console.log('  └────────────────────────────────────────────────────────────');
 
   // 3. Dry-run summary so the operator can see what will be dropped
@@ -454,11 +480,7 @@ async function main(): Promise<void> {
           console.error('  reset requires --yes and --env <environment> flags.');
           process.exit(1);
         }
-        auditAndGuardReset(args, {
-          env: parseFlag(args, '--env') ?? '',
-          dialect,
-          dbIdentifier: dbPath,
-        });
+        auditAndGuardReset(args, { dialect, dbIdentifier: dbPath });
         sqliteReset(db);
         sqliteMigrate(db);
         break;
@@ -494,11 +516,7 @@ async function main(): Promise<void> {
             console.error('  reset requires --yes and --env <environment> flags.');
             process.exit(1);
           }
-          auditAndGuardReset(args, {
-            env: parseFlag(args, '--env') ?? '',
-            dialect,
-            dbIdentifier: dbUrl,
-          });
+          auditAndGuardReset(args, { dialect, dbIdentifier: dbUrl });
           await pgReset(pool);
           await pgMigrate(pool);
           break;

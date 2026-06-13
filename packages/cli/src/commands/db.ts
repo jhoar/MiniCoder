@@ -34,16 +34,26 @@ export function createDbCommand(): Command {
     .action(() => runMigrationCommand('validate'));
 
   db.command('reset')
-    .description('Drop all tables and re-apply migrations (destructive)')
+    .description('Drop all owned tables and re-apply migrations (destructive, dev/CI only)')
     .option('--yes', 'Confirm the destructive reset operation')
-    .action((opts: { yes?: boolean }) => {
+    .option('--env <environment>', 'Target environment — must be development, test, or ci')
+    .action((opts: { yes?: boolean; env?: string }) => {
       if (!opts.yes) {
         console.error(
-          'Error: --yes flag required to confirm destructive reset. Run: minicoder db reset --yes',
+          'Error: --yes and --env <environment> flags are required.\n' +
+            'Example: minicoder db reset --yes --env development',
         );
         process.exit(1);
       }
-      runMigrationCommand('reset', ['--yes']);
+      if (!opts.env) {
+        console.error(
+          'Error: --env <environment> is required.\n' +
+            'Example: minicoder db reset --yes --env development\n' +
+            'Permitted values: development, test, ci',
+        );
+        process.exit(1);
+      }
+      runMigrationCommand('reset', ['--yes', '--env', opts.env]);
     });
 
   db.command('seed')

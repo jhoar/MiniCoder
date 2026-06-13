@@ -210,15 +210,17 @@ workflows.
 
 **Phase 1 implementation of `minicoder db reset`:**
 
-| Requirement               | Phase 1 status                                  |
-| ------------------------- | ----------------------------------------------- |
-| Environment check         | ✓ `--env <development\|test\|ci>` flag required |
-| Explicit confirmation     | ✓ `--yes` flag required                         |
-| Dry-run / pre-run summary | ✓ table list printed before any mutation        |
-| Audit event               | ✓ timestamped block printed before mutation     |
-| Backup check              | ⚠ operator warned; no automated backup          |
-| Permission / role check   | ⚠ noted in audit log; enforced from Phase 2     |
-| Scope restriction         | ✓ only owned tables dropped, no CASCADE         |
+| Requirement                   | Phase 1 status                                                                           |
+| ----------------------------- | ---------------------------------------------------------------------------------------- |
+| Explicit `--env` flag         | ✓ required; must be `development`, `test`, or `ci`                                       |
+| Explicit `--yes` confirmation | ✓ required                                                                               |
+| System env cross-check        | ✓ `APP_ENV`/`NODE_ENV` checked; non-safe system value blocks reset even with `--env dev` |
+| Credential safety             | ✓ PostgreSQL URL logged with credentials stripped                                        |
+| Dry-run / pre-run summary     | ✓ table list printed before any mutation                                                 |
+| Audit event                   | ✓ timestamped block (env flag, system env, dialect, sanitized db, table count)           |
+| Backup check                  | ⚠ operator warned; no automated backup                                                   |
+| Permission / role check       | ⚠ noted in audit log; enforced from Phase 2                                              |
+| Scope restriction             | ✓ only owned tables dropped, no `CASCADE`                                                |
 
 ```bash
 minicoder db reset --yes --env development
@@ -363,15 +365,16 @@ are dropped (never foreign tables); drops proceed in reverse FK-dependency order
 
 **Safety contract** — the runner enforces all of the following before any mutation:
 
-| Check                 | Enforcement                                                                  |
-| --------------------- | ---------------------------------------------------------------------------- |
-| Explicit `--env` flag | Required; value must be `development`, `test`, or `ci`                       |
-| `--yes` confirmation  | Required                                                                     |
-| Environment guard     | Rejects any unlisted environment string                                      |
-| Audit event           | Printed to stdout before mutation: timestamp, env, dialect, database, tables |
-| Dry-run summary       | Tables to be dropped listed before execution                                 |
-| Backup warning        | Operator warned that no backup has been verified                             |
-| Permission check      | Phase 1: noted in audit log; enforced by role system in Phase 2+             |
+| Check                  | Enforcement                                                                                                                |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `--yes` confirmation   | Required                                                                                                                   |
+| Explicit `--env` flag  | Required; value must be `development`, `test`, or `ci`                                                                     |
+| System env cross-check | `APP_ENV`/`NODE_ENV` checked independently; a non-safe system value blocks reset even when `--env development` is supplied |
+| Credential safety      | PostgreSQL connection URL logged with credentials stripped (host/database only)                                            |
+| Audit event            | Printed to stdout before mutation: timestamp, env flag, system env, dialect, sanitized database identifier, table count    |
+| Dry-run summary        | Tables to be dropped listed before execution                                                                               |
+| Backup warning         | Operator warned that no backup has been verified                                                                           |
+| Permission check       | Phase 1: noted in audit log; enforced by role system in Phase 2+                                                           |
 
 **Never run against production.** PostgreSQL: use a dedicated development/CI database or a
 separate schema. SQLite: use a throw-away file (`/tmp/dev.db`).
