@@ -1,5 +1,5 @@
 import type { DbClient } from '@minicoder/core';
-import { parseJsonField, validateEventPayload } from '@minicoder/core';
+import { parseJsonField, validateEventPayload, SCHEMA_VERSION } from '@minicoder/core';
 import { deterministicBackoff } from '../outbox/backoff.js';
 
 export interface InboxHandler {
@@ -130,22 +130,22 @@ export class InboxProcessor {
         continue;
       }
 
-      // Awaited heartbeat loop: every staleClaimMs/2 ms, refresh updated_at so
-      // stale-claim recovery never reclaims a row whose handler is still running.
-      // cancelHeartbeat is assigned synchronously in the first Promise executor so
-      // it is always defined by the time the try-block begins.
-      let cancelHeartbeat!: () => void;
+      // Awaited heartbeat loop with persistent cancellation flag.
+      // stopped=true + cancelTimer() terminate the loop even if a timer has already
+      // fired and the loop has moved into a new iteration (fixes stale-cancel bug).
+      let stopped = false;
+      let cancelTimer: () => void = () => {};
       const heartbeatDone = (async () => {
         const intervalMs = Math.floor(this.options.staleClaimMs / 2);
-        while (true) {
+        while (!stopped) {
           const timedOut = await new Promise<boolean>((resolve) => {
             const id = setTimeout(() => resolve(true), intervalMs);
-            cancelHeartbeat = () => {
+            cancelTimer = () => {
               clearTimeout(id);
               resolve(false);
             };
           });
-          if (!timedOut) break;
+          if (!timedOut || stopped) break;
           try {
             await this.db.execute(
               `UPDATE inbox_events SET updated_at = ? WHERE id = ? AND status = 'processing' AND version = ?`,
@@ -158,6 +158,11 @@ export class InboxProcessor {
       })();
       try {
         const payload = parseJsonField<unknown>(row.payload);
+        if (row.payload_schema_version !== SCHEMA_VERSION) {
+          throw new Error(
+            `Unsupported payload schema version "${row.payload_schema_version}" (current: "${SCHEMA_VERSION}")`,
+          );
+        }
         validateEventPayload(row.event_type, payload);
         await handler.handle(payload, row.payload_schema_version);
         const processedCount = await this.markProcessed(row.id, claimedVersion);
@@ -178,7 +183,8 @@ export class InboxProcessor {
         );
         if (failedCount > 0) failed++;
       } finally {
-        cancelHeartbeat();
+        stopped = true;
+        cancelTimer();
         await heartbeatDone;
       }
     }

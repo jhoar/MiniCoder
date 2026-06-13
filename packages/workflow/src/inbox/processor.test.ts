@@ -96,8 +96,8 @@ describe('InboxProcessor', () => {
   });
 
   it('known events are processed even when unknown events outnumber the batch size', async () => {
-    // 3 unknown events before the known event; batchSize=2 so without prioritisation
-    // the known event would never be picked up.
+    // 3 unknown events before the known event; batchSize=4 so all 3 unknowns fit in
+    // the second pass (remaining=3 after 1 known), making the second poll truly empty.
     insertInboxEvent('evt-u1', 'unknown.event', 'pending', 0, '{"test":true}');
     insertInboxEvent('evt-u2', 'unknown.event', 'pending', 0, '{"test":true}');
     insertInboxEvent('evt-u3', 'unknown.event', 'pending', 0, '{"test":true}');
@@ -106,7 +106,7 @@ describe('InboxProcessor', () => {
     const processor = new InboxProcessor(
       db,
       new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
-      { maxBackoffMs: 60_000, batchSize: 2 },
+      { maxBackoffMs: 60_000, batchSize: 4 },
     );
 
     const result = await processor.pollAndProcess();
@@ -115,17 +115,42 @@ describe('InboxProcessor', () => {
     expect(result.failed).toBe(0);
     expect(handleFn).toHaveBeenCalledOnce();
 
-    // Unknown events must NOT have been processed (attempts still 0, pushed back by maxBackoffMs)
-    const u1 = raw
-      .prepare(`SELECT attempts, next_retry_at FROM inbox_events WHERE id = 'evt-u1'`)
-      .get() as { attempts: number; next_retry_at: string };
-    expect(u1.attempts).toBe(0);
-    expect(u1.next_retry_at).toBeTruthy();
+    // All 3 unknown events must have been requeued (attempts still 0, pushed back by maxBackoffMs)
+    for (const id of ['evt-u1', 'evt-u2', 'evt-u3']) {
+      const row = raw
+        .prepare(`SELECT attempts, next_retry_at FROM inbox_events WHERE id = ?`)
+        .get(id) as { attempts: number; next_retry_at: string };
+      expect(row.attempts).toBe(0);
+      expect(row.next_retry_at).toBeTruthy();
+    }
 
-    // A second immediate poll finds nothing eligible
+    // A second immediate poll finds nothing eligible: all unknowns are within their backoff window
     const result2 = await processor.pollAndProcess();
     expect(result2.processed).toBe(0);
   });
+
+  it('pollAndProcess completes promptly after a long-running handler (heartbeat regression)', async () => {
+    insertInboxEvent('evt-long');
+    let handlerCompleted = false;
+    const handleFn = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      handlerCompleted = true;
+    });
+    const processor = new InboxProcessor(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+      { staleClaimMs: 100 }, // heartbeatMs = 50ms; fires multiple times before handler finishes
+    );
+
+    const result = await processor.pollAndProcess();
+    expect(handlerCompleted).toBe(true);
+    expect(result.processed).toBe(1);
+
+    const row = raw.prepare(`SELECT status FROM inbox_events WHERE id = 'evt-long'`).get() as {
+      status: string;
+    };
+    expect(row.status).toBe('processed');
+  }, 2_000);
 
   it('fails the event when payload schema validation fails', async () => {
     // Insert invalid payload for feature.selected (missing required fields)

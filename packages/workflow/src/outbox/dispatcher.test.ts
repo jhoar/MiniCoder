@@ -144,6 +144,8 @@ describe('OutboxDispatcher', () => {
   it('known events are dispatched even when unknown events outnumber the batch size', async () => {
     // 3 unknown events created before the known event; batchSize=2 so without prioritisation
     // the known event would never be picked up (unknown rows fill the full batch every poll).
+    // batchSize=4 ensures all 3 unknowns fit in the second pass (remaining=3 after 1 known),
+    // so the second poll truly finds nothing eligible.
     insertOutboxEvent('evt-u1', 'unknown.event');
     insertOutboxEvent('evt-u2', 'unknown.event');
     insertOutboxEvent('evt-u3', 'unknown.event');
@@ -152,7 +154,7 @@ describe('OutboxDispatcher', () => {
     const dispatcher = new OutboxDispatcher(
       db,
       new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
-      { maxBackoffMs: 60_000, batchSize: 2 },
+      { maxBackoffMs: 60_000, batchSize: 4 },
     );
 
     const result = await dispatcher.pollAndDispatch();
@@ -161,15 +163,43 @@ describe('OutboxDispatcher', () => {
     expect(result.failed).toBe(0);
     expect(handleFn).toHaveBeenCalledOnce();
 
-    // Unknown events must NOT have been processed (attempts still 0, pushed back by maxBackoffMs)
-    const u1 = raw
-      .prepare(`SELECT attempts, next_retry_at FROM outbox_events WHERE id = 'evt-u1'`)
-      .get() as { attempts: number; next_retry_at: string };
-    expect(u1.attempts).toBe(0);
-    expect(u1.next_retry_at).toBeTruthy();
+    // All 3 unknown events must have been processed (attempts still 0, pushed back by maxBackoffMs)
+    for (const id of ['evt-u1', 'evt-u2', 'evt-u3']) {
+      const row = raw
+        .prepare(`SELECT attempts, next_retry_at FROM outbox_events WHERE id = ?`)
+        .get(id) as { attempts: number; next_retry_at: string };
+      expect(row.attempts).toBe(0);
+      expect(row.next_retry_at).toBeTruthy();
+    }
 
-    // A second immediate poll finds nothing eligible (all unknowns are within the backoff window)
+    // A second immediate poll finds nothing eligible: all unknowns are within their backoff window
     const result2 = await dispatcher.pollAndDispatch();
     expect(result2.dispatched).toBe(0);
   });
+
+  it('pollAndDispatch completes promptly after a long-running handler (heartbeat regression)', async () => {
+    // heartbeatMs = floor(staleClaimMs / 2) = 50ms; handler runs for 200ms so the
+    // heartbeat fires at least twice before the handler completes. The stopped flag
+    // must terminate the loop immediately in the finally block.
+    insertOutboxEvent('evt-long');
+    let handlerCompleted = false;
+    const handleFn = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      handlerCompleted = true;
+    });
+    const dispatcher = new OutboxDispatcher(
+      db,
+      new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]),
+      { staleClaimMs: 100 }, // heartbeatMs = 50ms
+    );
+
+    const result = await dispatcher.pollAndDispatch();
+    expect(handlerCompleted).toBe(true);
+    expect(result.dispatched).toBe(1);
+
+    const row = raw.prepare(`SELECT status FROM outbox_events WHERE id = 'evt-long'`).get() as {
+      status: string;
+    };
+    expect(row.status).toBe('delivered');
+  }, 2_000);
 });

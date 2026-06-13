@@ -130,22 +130,22 @@ export class OutboxDispatcher {
         continue;
       }
 
-      // Awaited heartbeat loop: every staleClaimMs/2 ms, refresh updated_at so
-      // stale-claim recovery never reclaims a row whose handler is still running.
-      // cancelHeartbeat is assigned synchronously in the first Promise executor so
-      // it is always defined by the time the try-block begins.
-      let cancelHeartbeat!: () => void;
+      // Awaited heartbeat loop with persistent cancellation flag.
+      // stopped=true + cancelTimer() terminate the loop even if a timer has already
+      // fired and the loop has moved into a new iteration (fixes stale-cancel bug).
+      let stopped = false;
+      let cancelTimer: () => void = () => {};
       const heartbeatDone = (async () => {
         const intervalMs = Math.floor(this.options.staleClaimMs / 2);
-        while (true) {
+        while (!stopped) {
           const timedOut = await new Promise<boolean>((resolve) => {
             const id = setTimeout(() => resolve(true), intervalMs);
-            cancelHeartbeat = () => {
+            cancelTimer = () => {
               clearTimeout(id);
               resolve(false);
             };
           });
-          if (!timedOut) break;
+          if (!timedOut || stopped) break;
           try {
             await this.db.execute(
               `UPDATE outbox_events SET updated_at = ? WHERE id = ? AND status = 'processing' AND version = ?`,
@@ -177,7 +177,8 @@ export class OutboxDispatcher {
         );
         if (failedCount > 0) failed++;
       } finally {
-        cancelHeartbeat();
+        stopped = true;
+        cancelTimer();
         await heartbeatDone;
       }
     }
