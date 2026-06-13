@@ -161,8 +161,14 @@ describe('OutboxDispatcher', () => {
     expect(result.failed).toBe(0);
     expect(handleFn).toHaveBeenCalledOnce();
 
-    // Unknown events must be pushed back by maxBackoffMs so a second immediate poll
-    // finds nothing eligible (they are not re-eligible within the backoff window).
+    // Unknown events must NOT have been processed (attempts still 0, pushed back by maxBackoffMs)
+    const u1 = raw
+      .prepare(`SELECT attempts, next_retry_at FROM outbox_events WHERE id = 'evt-u1'`)
+      .get() as { attempts: number; next_retry_at: string };
+    expect(u1.attempts).toBe(0);
+    expect(u1.next_retry_at).toBeTruthy();
+
+    // A second immediate poll finds nothing eligible (all unknowns are within the backoff window)
     const result2 = await dispatcher.pollAndDispatch();
     expect(result2.dispatched).toBe(0);
   });

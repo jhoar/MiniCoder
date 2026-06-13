@@ -1,5 +1,5 @@
 import type { DbClient } from '@minicoder/core';
-import { parseJsonField } from '@minicoder/core';
+import { parseJsonField, validateEventPayload } from '@minicoder/core';
 import { deterministicBackoff } from '../outbox/backoff.js';
 
 export interface InboxHandler {
@@ -130,8 +130,20 @@ export class InboxProcessor {
         continue;
       }
 
+      // Heartbeat: refresh updated_at every staleClaimMs/2 so the stale-claim
+      // recovery never reclaims a row whose handler is still running.
+      const heartbeat = setInterval(
+        () => {
+          void this.db.execute(
+            `UPDATE inbox_events SET updated_at = ? WHERE id = ? AND status = 'processing' AND version = ?`,
+            [isoNow(), row.id, claimedVersion],
+          );
+        },
+        Math.floor(this.options.staleClaimMs / 2),
+      );
       try {
         const payload = parseJsonField<unknown>(row.payload);
+        validateEventPayload(row.event_type, payload);
         await handler.handle(payload, row.payload_schema_version);
         const processedCount = await this.markProcessed(row.id, claimedVersion);
         if (processedCount > 0) processed++;
@@ -150,6 +162,8 @@ export class InboxProcessor {
           claimedVersion,
         );
         if (failedCount > 0) failed++;
+      } finally {
+        clearInterval(heartbeat);
       }
     }
 

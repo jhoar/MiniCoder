@@ -81,10 +81,15 @@ export class WorkflowLockManager {
   }
 
   async release(lock: AcquiredLock): Promise<void> {
+    const now = isoNow();
+    // Expire the row rather than deleting it so the fence counter is preserved.
+    // The next acquire() matches expires_at <= now and does fence = fence + 1,
+    // maintaining the monotonically increasing fencing-token invariant.
     await this.db.execute(
-      `DELETE FROM workflow_locks
+      `UPDATE workflow_locks
+       SET expires_at = ?, fence = fence + 1, version = version + 1, updated_at = ?
        WHERE id = ? AND holder_id = ? AND fence = ?`,
-      [lock.lockId, lock.holderId, lock.fence],
+      [now, now, lock.lockId, lock.holderId, lock.fence],
     );
   }
 
@@ -106,9 +111,10 @@ export class WorkflowLockManager {
       [lock.lockId],
     );
     const current = rows[0];
-    const expiresAtStr = current?.expires_at instanceof Date
-      ? current.expires_at.toISOString()
-      : (current?.expires_at ?? null);
+    const expiresAtStr =
+      current?.expires_at instanceof Date
+        ? current.expires_at.toISOString()
+        : (current?.expires_at ?? null);
     if (!current || (expiresAtStr !== null && expiresAtStr < now)) {
       throw new StaleFenceError(lock.lockId, lock.fence, current?.fence ?? -1);
     }

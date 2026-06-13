@@ -74,11 +74,20 @@ describe('WorkflowLockManager.assertFence', () => {
 });
 
 describe('WorkflowLockManager.release', () => {
-  it('removes the lock row', async () => {
+  it('expires the lock row and increments fence so the next acquire gets a higher fence', async () => {
     const lock = await manager.acquire(PROJECT, RESOURCE, { holderId: 'h1', ttlMs: 60_000 });
     await manager.release(lock);
-    const rows = raw.prepare('SELECT * FROM workflow_locks WHERE id = ?').all(lock.lockId);
-    expect(rows).toHaveLength(0);
+
+    // Row must still exist (not deleted) so the fence counter survives
+    const rows = raw
+      .prepare('SELECT fence, expires_at FROM workflow_locks WHERE id = ?')
+      .all(lock.lockId) as Array<{ fence: number; expires_at: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].fence).toBe(lock.fence + 1); // fence incremented on release
+
+    // Re-acquire must return a fence strictly greater than the released fence
+    const lock2 = await manager.acquire(PROJECT, RESOURCE, { holderId: 'h2', ttlMs: 60_000 });
+    expect(lock2.fence).toBeGreaterThan(lock.fence);
   });
 
   it('is a no-op if fence does not match (stale release)', async () => {

@@ -130,6 +130,17 @@ export class OutboxDispatcher {
         continue;
       }
 
+      // Heartbeat: refresh updated_at every staleClaimMs/2 so the stale-claim
+      // recovery never reclaims a row whose handler is still running.
+      const heartbeat = setInterval(
+        () => {
+          void this.db.execute(
+            `UPDATE outbox_events SET updated_at = ? WHERE id = ? AND status = 'processing' AND version = ?`,
+            [isoNow(), row.id, claimedVersion],
+          );
+        },
+        Math.floor(this.options.staleClaimMs / 2),
+      );
       try {
         const payload = parseJsonField<unknown>(row.payload);
         await handler.handle(payload, row.payload_schema_version);
@@ -150,6 +161,8 @@ export class OutboxDispatcher {
           claimedVersion,
         );
         if (failedCount > 0) failed++;
+      } finally {
+        clearInterval(heartbeat);
       }
     }
 

@@ -12,12 +12,10 @@ export class IdempotencySweeper {
    * each call only deletes rows where expires_at <= now.
    */
   async sweep(): Promise<{ removed: number }> {
-    const now = isoNow();
-    const before = await this.db.query<{ count: number }>(
-      `SELECT COUNT(*) as count FROM idempotency_keys WHERE expires_at <= ?`,
-      [now],
+    const removed = await this.db.executeAffected(
+      `DELETE FROM idempotency_keys WHERE expires_at <= ?`,
+      [isoNow()],
     );
-    await this.db.execute(`DELETE FROM idempotency_keys WHERE expires_at <= ?`, [now]);
-    return { removed: before[0]?.count ?? 0 };
+    return { removed };
   }
 }

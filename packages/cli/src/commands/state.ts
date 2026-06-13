@@ -150,7 +150,11 @@ export function createStateCommand(): Command {
           let pendingToken: { token: string; expiresAt: string; projectId: string | null };
           try {
             const raw = fs.readFileSync(REPAIR_PENDING_FILE, 'utf-8');
-            pendingToken = JSON.parse(raw) as { token: string; expiresAt: string; projectId: string | null };
+            pendingToken = JSON.parse(raw) as {
+              token: string;
+              expiresAt: string;
+              projectId: string | null;
+            };
           } catch (e) {
             const code = (e as NodeJS.ErrnoException).code;
             if (code === 'ENOENT') {
@@ -165,16 +169,21 @@ export function createStateCommand(): Command {
             process.exit(1);
           }
           if (new Date(pendingToken.expiresAt) <= new Date()) {
-            console.error('Error: confirmation token has expired. Run --dry-run again to get a new token.');
+            console.error(
+              'Error: confirmation token has expired. Run --dry-run again to get a new token.',
+            );
             process.exit(1);
           }
           // Project binding: token must have been issued for the same project
           if (pendingToken.projectId !== null && opts.project !== pendingToken.projectId) {
-            console.error(`Error: token was issued for project "${pendingToken.projectId}" but --project is "${opts.project ?? '(none)'}"`);
+            console.error(
+              `Error: token was issued for project "${pendingToken.projectId}" but --project is "${opts.project ?? '(none)'}"`,
+            );
             process.exit(1);
           }
-          // Single-use: delete the pending token file before executing
-          fs.unlinkSync(REPAIR_PENDING_FILE);
+          // Execute repairs (Phase 2 scaffold: no DB connection, nothing to repair yet).
+          // Token is consumed AFTER the repair attempt so a failure does not silently
+          // discard the token without doing any work.
           console.log(
             JSON.stringify(
               {
@@ -182,6 +191,7 @@ export function createStateCommand(): Command {
                 projectId: opts.project ?? null,
                 token: opts.confirmation,
                 result: 'accepted',
+                repairedCount: 0,
                 note: 'DB-backed repair execution in Phase 4',
                 timestamp: isoNow(),
               },
@@ -189,6 +199,8 @@ export function createStateCommand(): Command {
               2,
             ),
           );
+          // Single-use: consume token after repair completes
+          fs.unlinkSync(REPAIR_PENDING_FILE);
           return;
         }
 
