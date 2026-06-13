@@ -1,15 +1,31 @@
 import { Command } from 'commander';
-import * as fs from 'fs';
 
 function isoNow(): string {
   return new Date().toISOString();
 }
 
-function stub(command: string, fields: Record<string, unknown> = {}): string {
+function notImplemented(command: string, fields: Record<string, unknown> = {}): never {
+  console.error(
+    JSON.stringify(
+      {
+        command,
+        error: 'not_implemented',
+        note: 'Full implementation requires TRIGGERDEV_API_URL and TRIGGERDEV_API_KEY. Wired in Phase 13 (API layer).',
+        timestamp: isoNow(),
+        ...fields,
+      },
+      null,
+      2,
+    ),
+  );
+  process.exit(1);
+}
+
+function infoStub(command: string, fields: Record<string, unknown> = {}): string {
   return JSON.stringify(
     {
       command,
-      note: 'Trigger.dev lifecycle commands require TRIGGERDEV_API_URL and TRIGGERDEV_API_KEY. Full implementation wired in Phase 13 (API layer).',
+      note: 'Read-only view — full data requires TRIGGERDEV_API_URL. Wired in Phase 13 (API layer).',
       timestamp: isoNow(),
       ...fields,
     },
@@ -26,7 +42,7 @@ export function createTriggerCommand(): Command {
     .description('Deploy task bundle to the configured Trigger.dev backend')
     .option('--env <environment>', 'Target environment (staging, production)', 'staging')
     .action((opts: { env: string }) => {
-      console.log(stub('trigger deploy', { environment: opts.env }));
+      notImplemented('trigger deploy', { environment: opts.env });
     });
 
   trigger
@@ -35,7 +51,7 @@ export function createTriggerCommand(): Command {
     .option('--task <id>', 'Filter by task ID')
     .option('--limit <n>', 'Maximum rows to return', '20')
     .action((opts: { task?: string; limit: string }) => {
-      console.log(stub('trigger list-runs', { taskId: opts.task ?? null, limit: parseInt(opts.limit, 10) }));
+      console.log(infoStub('trigger list-runs', { taskId: opts.task ?? null, limit: parseInt(opts.limit, 10) }));
     });
 
   trigger
@@ -43,7 +59,7 @@ export function createTriggerCommand(): Command {
     .description('Show detail for a specific Trigger.dev run and its linked DB row')
     .argument('<runId>', 'Trigger.dev run ID')
     .action((runId: string) => {
-      console.log(stub('trigger inspect-run', { runId }));
+      console.log(infoStub('trigger inspect-run', { runId }));
     });
 
   trigger
@@ -51,7 +67,7 @@ export function createTriggerCommand(): Command {
     .description('Cancel a stuck or unwanted Trigger.dev run')
     .argument('<runId>', 'Trigger.dev run ID')
     .action((runId: string) => {
-      console.log(stub('trigger cancel-run', { runId }));
+      notImplemented('trigger cancel-run', { runId });
     });
 
   trigger
@@ -59,7 +75,7 @@ export function createTriggerCommand(): Command {
     .description('Re-enqueue a failed run with the same payload')
     .argument('<runId>', 'Trigger.dev run ID to replay')
     .action((runId: string) => {
-      console.log(stub('trigger replay-run', { sourceRunId: runId }));
+      notImplemented('trigger replay-run', { sourceRunId: runId });
     });
 
   trigger
@@ -68,7 +84,7 @@ export function createTriggerCommand(): Command {
     .option('--task <id>', 'Drain only the named task queue')
     .option('--timeout-ms <ms>', 'Maximum wait in milliseconds', '60000')
     .action((opts: { task?: string; timeoutMs: string }) => {
-      console.log(stub('trigger drain-queue', { taskId: opts.task ?? null, timeoutMs: parseInt(opts.timeoutMs, 10) }));
+      notImplemented('trigger drain-queue', { taskId: opts.task ?? null, timeoutMs: parseInt(opts.timeoutMs, 10) });
     });
 
   trigger
@@ -91,19 +107,7 @@ export function createTriggerCommand(): Command {
         console.error(`Error: system env APP_ENV/NODE_ENV is '${systemEnv}' which is not safe. Reset blocked.`);
         process.exit(1);
       }
-      console.log(
-        JSON.stringify(
-          {
-            command: 'trigger reset-dev',
-            environment: opts.env,
-            systemEnv,
-            note: 'Full Trigger.dev API wired in Phase 13',
-            timestamp: isoNow(),
-          },
-          null,
-          2,
-        ),
-      );
+      notImplemented('trigger reset-dev', { environment: opts.env, systemEnv });
     });
 
   trigger
@@ -137,27 +141,8 @@ export function createTriggerCommand(): Command {
     .command('reconcile')
     .description('Compare DB triggerdev_runs against live runs and flag mismatches')
     .option('--project <id>', 'Project ID')
-    .option('--output <path>', 'Output reconciliation report as JSON file')
-    .action((opts: { project?: string; output?: string }) => {
-      const report = JSON.stringify(
-        {
-          command: 'trigger reconcile',
-          projectId: opts.project ?? null,
-          mismatches: [],
-          stuckRuns: [],
-          orphanedRuns: [],
-          note: 'DB-backed reconciliation wired in Phase 13',
-          timestamp: isoNow(),
-        },
-        null,
-        2,
-      );
-      if (opts.output) {
-        fs.writeFileSync(opts.output, report, 'utf-8');
-        console.log(`Reconciliation report written to ${opts.output}`);
-      } else {
-        console.log(report);
-      }
+    .action((opts: { project?: string }) => {
+      notImplemented('trigger reconcile', { projectId: opts.project ?? null });
     });
 
   return trigger;

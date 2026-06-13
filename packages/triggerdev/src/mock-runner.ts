@@ -45,7 +45,7 @@ export class MockTriggerRunner {
     let result: R;
     try {
       result = await impl(payload);
-      await updateRunStatus(this.db, resolvedRunId, 'completed');
+      await updateRunStatus(this.db, resolvedRunId, 'succeeded');
     } catch (err) {
       await updateRunStatus(this.db, resolvedRunId, 'failed');
       throw err;

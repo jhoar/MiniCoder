@@ -65,7 +65,7 @@ describe('MockTriggerRunner', () => {
     const row = await getRunByTriggerdevId(db, runId);
     expect(row).toBeDefined();
     expect(row?.triggerdev_task_id).toBe('planning-readiness-assessment');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
     expect(row?.project_id).toBe('proj-test-001');
   });
 
@@ -83,26 +83,53 @@ describe('MockTriggerRunner', () => {
     expect(row?.triggerdev_status).toBe('failed');
   });
 
-  it('idempotent retry: same runId is rejected by UNIQUE constraint (duplicate detection)', async () => {
-    const runId = 'mock-run-dup-001';
+  it('retry: same runId upserts the row and succeeds on re-attempt', async () => {
+    const runId = 'mock-run-retry-001';
+    // First attempt
     await runner.run('export-plan', { ...BASE_PAYLOAD, planId: 'plan-001' }, runExportPlan, runId);
+    let row = await getRunByTriggerdevId(db, runId);
+    expect(row?.triggerdev_status).toBe('succeeded');
 
-    // A second enqueue with the same runId must be detected via UNIQUE constraint.
-    await expect(
-      runner.run('export-plan', { ...BASE_PAYLOAD, planId: 'plan-001' }, runExportPlan, runId),
-    ).rejects.toThrow();
+    // Retry with same runId: upsert resets status to 'running', impl runs again, status becomes 'succeeded'.
+    const retryResult = await runner.run(
+      'export-plan',
+      { ...BASE_PAYLOAD, planId: 'plan-001' },
+      runExportPlan,
+      runId,
+    );
+    expect(retryResult.runId).toBe(runId);
+    row = await getRunByTriggerdevId(db, runId);
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
-  it('waitpoint simulation: a task that blocks then resumes returns a result', async () => {
+  it('waitpoint simulation: task pauses on a deferred token then resumes with external approval', async () => {
+    let resumeWith!: (approved: boolean) => void;
+    const approvalToken = new Promise<boolean>((resolve) => {
+      resumeWith = resolve;
+    });
+
+    // The task signals the test when it has reached the waitpoint so we can
+    // assert it is genuinely blocked before sending the approval.
+    let notifyWaiting!: () => void;
+    const atWaitpoint = new Promise<void>((resolve) => { notifyWaiting = resolve; });
     let resumed = false;
+
     const waitpointTask = async (_payload: typeof BASE_PAYLOAD) => {
-      // Simulate waiting for a human approval (waitpoint) then resuming
-      await Promise.resolve(); // yield
+      notifyWaiting();                       // signal: task is now at the waitpoint
+      const approved = await approvalToken;  // blocks until externally resolved
       resumed = true;
-      return { approved: true };
+      return { approved };
     };
 
-    const { result } = await runner.run('activate-approved-backlog', BASE_PAYLOAD, waitpointTask);
+    const runPromise = runner.run('activate-approved-backlog', BASE_PAYLOAD, waitpointTask);
+
+    // Wait until the task has signalled it is at the waitpoint — only then send approval.
+    await atWaitpoint;
+    expect(resumed).toBe(false);
+
+    resumeWith(true);
+
+    const { result } = await runPromise;
     expect(result).toEqual({ approved: true });
     expect(resumed).toBe(true);
   });
@@ -187,63 +214,63 @@ describe('all 9 tasks write triggerdev_runs rows via MockTriggerRunner', () => {
     const { runId } = await runner.run('planning-readiness-assessment', BASE_PAYLOAD, runPlanningReadiness);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('planning-readiness-assessment');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('start-clarification', async () => {
     const { runId } = await runner.run('start-clarification', BASE_PAYLOAD, runStartClarification);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('start-clarification');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('generate-implementation-plan', async () => {
     const { runId } = await runner.run('generate-implementation-plan', BASE_PAYLOAD, runGeneratePlan);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('generate-implementation-plan');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('generate-feature-backlog', async () => {
     const { runId } = await runner.run('generate-feature-backlog', BASE_PAYLOAD, runGenerateBacklog);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('generate-feature-backlog');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('activate-approved-backlog', async () => {
     const { runId } = await runner.run('activate-approved-backlog', { ...BASE_PAYLOAD, planId: 'plan-001' }, runActivateBacklog);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('activate-approved-backlog');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('start-next-feature', async () => {
     const { runId } = await runner.run('start-next-feature', BASE_PAYLOAD, runStartNextFeature);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('start-next-feature');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('github-reconciliation', async () => {
     const { runId } = await runner.run('github-reconciliation', BASE_PAYLOAD, runGithubReconciliation);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('github-reconciliation');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('export-plan', async () => {
     const { runId } = await runner.run('export-plan', { ...BASE_PAYLOAD, planId: 'plan-001' }, runExportPlan);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('export-plan');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   it('export-backlog', async () => {
     const { runId } = await runner.run('export-backlog', BASE_PAYLOAD, runExportBacklog);
     const row = await getRunByTriggerdevId(db, runId);
     expect(row?.triggerdev_task_id).toBe('export-backlog');
-    expect(row?.triggerdev_status).toBe('completed');
+    expect(row?.triggerdev_status).toBe('succeeded');
   });
 
   // suppress unused variable warning

@@ -269,15 +269,29 @@ Required runbooks:
   **destructive column-change recipe**: SQLite's create-new-table → copy → drop → rename rebuild
   pattern (SQLite has limited `ALTER`), with the PostgreSQL equivalent. **Dialect-specific DDL is
   forbidden outside an approved migration helper**, keeping one migration set valid on both targets.
-- **Local footprint** — the default self-host single-node Trigger.dev backend runs
-  webapp + **Postgres + Redis** + worker via Docker Compose, so even a "local SQLite" install runs
-  two databases (the app's SQLite + Trigger.dev's Postgres/Redis). The default outbox drainer is a
+- **Local footprint** — the default self-host single-node Trigger.dev v4 backend runs
+  **postgres + redis + electric + webapp + socket-proxy + supervisor + registry + minio** via
+  Docker Compose (`infra/docker-compose.triggerdev.yml`), so even a "local SQLite" install runs
+  Trigger.dev's own Postgres/Redis alongside the app's SQLite. The default outbox drainer is a
   Trigger.dev scheduled task, so outbox liveness inherits the single-node SPOF; the **persistent
   background-worker** drainer alternative (`01-system-specification.md` §6) decouples outbox liveness
   from the scheduler.
-- **Trigger.dev (self-host) operations** — resource sizing for webapp/Postgres/Redis/worker;
-  version upgrades of the self-hosted stack; backup of its Postgres/Redis; queue draining
-  (`trigger drain-queue`) and run replay (`trigger replay-run`).
+- **Trigger.dev v4 (self-host) operations** — minimum resource sizing per service (v4 single-node):
+
+  | Service        | CPU    | RAM    |
+  | -------------- | ------ | ------ |
+  | postgres       | 2      | 1 GB   |
+  | redis          | 1      | 512 MB |
+  | electric       | 1      | 512 MB |
+  | webapp         | 2      | 2 GB   |
+  | supervisor     | 2      | 2 GB   |
+  | socket-proxy   | 0.5    | 256 MB |
+  | registry       | 0.5    | 256 MB |
+  | minio          | 1      | 1 GB   |
+
+  Procedures: version upgrades of the self-hosted stack (pull new image tags, `docker compose up -d`);
+  backup Postgres (`pg_dump`) and Redis (copy AOF file) with restore drills; queue draining
+  (`minicoder trigger drain-queue`) and run replay (`minicoder trigger replay-run`).
 - **Stuck-workflow recovery** — detect via `state doctor`; reconcile (`state reconcile`);
   cancel/replay orphaned runs; clear stale locks/leases and orphaned waitpoints.
 - **GitHub webhook replay** — reprocess missed or failed inbox events; fall back to scheduled

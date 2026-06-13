@@ -12,6 +12,7 @@
  */
 
 import { task } from '@trigger.dev/sdk/v3';
+import { z } from 'zod';
 import { createDbClientFromEnv } from './db.js';
 import { linkRunToDb, updateRunStatus } from './metadata.js';
 
@@ -24,6 +25,18 @@ import { runImpl as runStartNextFeature } from './tasks/start-next-feature.js';
 import { runImpl as runGithubReconciliation } from './tasks/github-reconciliation.js';
 import { runImpl as runExportPlan } from './tasks/export-plan.js';
 import { runImpl as runExportBacklog } from './tasks/export-backlog.js';
+
+import {
+  PlanningReadinessPayload as PlanningReadinessSchema,
+  StartClarificationPayload as StartClarificationSchema,
+  GenerateImplementationPlanPayload as GenerateImplementationPlanSchema,
+  GenerateFeatureBacklogPayload as GenerateFeatureBacklogSchema,
+  ActivateApprovedBacklogPayload as ActivateApprovedBacklogSchema,
+  StartNextFeaturePayload as StartNextFeatureSchema,
+  GithubReconciliationPayload as GithubReconciliationSchema,
+  ExportPlanPayload as ExportPlanSchema,
+  ExportBacklogPayload as ExportBacklogSchema,
+} from './tasks/types.js';
 
 import type { PlanningReadinessPayload } from './tasks/planning-readiness-assessment.js';
 import type { StartClarificationPayload } from './tasks/start-clarification.js';
@@ -44,27 +57,33 @@ const RETRY_CONFIG = {
 
 function makeTaskRunner<P extends { projectId?: string }, R>(
   taskId: string,
+  schema: z.ZodType<P>,
   impl: (payload: P) => Promise<R>,
 ) {
-  return async (payload: P, ctx: { run: { id: string } }): Promise<R> => {
+  return async (rawPayload: unknown, { ctx }: { ctx: { run: { id: string } } }): Promise<R> => {
+    // Validate payload at the task boundary; invalid payloads are rejected before any DB write.
+    const payload = schema.parse(rawPayload);
     const db = await createDbClientFromEnv();
-    await linkRunToDb(db, {
-      triggerdevRunId: ctx.run.id,
-      triggerdevTaskId: taskId,
-      triggerdevStatus: 'running',
-      projectId: payload.projectId,
-    });
-    let result: R;
     try {
-      result = await impl(payload);
-      await updateRunStatus(db, ctx.run.id, 'completed');
-    } catch (err) {
-      await updateRunStatus(db, ctx.run.id, 'failed');
-      throw err;
+      // Upsert: idempotent on retry — same run.id resets status to 'running'.
+      await linkRunToDb(db, {
+        triggerdevRunId: ctx.run.id,
+        triggerdevTaskId: taskId,
+        triggerdevStatus: 'running',
+        projectId: payload.projectId,
+      });
+      let result: R;
+      try {
+        result = await impl(payload);
+        await updateRunStatus(db, ctx.run.id, 'succeeded');
+      } catch (err) {
+        await updateRunStatus(db, ctx.run.id, 'failed');
+        throw err;
+      }
+      return result;
     } finally {
       await db.close();
     }
-    return result;
   };
 }
 
@@ -72,72 +91,63 @@ export const planningReadinessAssessmentTask = task({
   id: 'planning-readiness-assessment',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: async (payload: PlanningReadinessPayload, { ctx }) =>
-    makeTaskRunner('planning-readiness-assessment', runPlanningReadiness)(payload, ctx),
+  run: makeTaskRunner('planning-readiness-assessment', PlanningReadinessSchema, runPlanningReadiness),
 });
 
 export const startClarificationTask = task({
   id: 'start-clarification',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: async (payload: StartClarificationPayload, { ctx }) =>
-    makeTaskRunner('start-clarification', runStartClarification)(payload, ctx),
+  run: makeTaskRunner('start-clarification', StartClarificationSchema, runStartClarification),
 });
 
 export const generateImplementationPlanTask = task({
   id: 'generate-implementation-plan',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: async (payload: GenerateImplementationPlanPayload, { ctx }) =>
-    makeTaskRunner('generate-implementation-plan', runGeneratePlan)(payload, ctx),
+  run: makeTaskRunner('generate-implementation-plan', GenerateImplementationPlanSchema, runGeneratePlan),
 });
 
 export const generateFeatureBacklogTask = task({
   id: 'generate-feature-backlog',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: async (payload: GenerateFeatureBacklogPayload, { ctx }) =>
-    makeTaskRunner('generate-feature-backlog', runGenerateBacklog)(payload, ctx),
+  run: makeTaskRunner('generate-feature-backlog', GenerateFeatureBacklogSchema, runGenerateBacklog),
 });
 
 export const activateApprovedBacklogTask = task({
   id: 'activate-approved-backlog',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: async (payload: ActivateApprovedBacklogPayload, { ctx }) =>
-    makeTaskRunner('activate-approved-backlog', runActivateBacklog)(payload, ctx),
+  run: makeTaskRunner('activate-approved-backlog', ActivateApprovedBacklogSchema, runActivateBacklog),
 });
 
 export const startNextFeatureTask = task({
   id: 'start-next-feature',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: async (payload: StartNextFeaturePayload, { ctx }) =>
-    makeTaskRunner('start-next-feature', runStartNextFeature)(payload, ctx),
+  run: makeTaskRunner('start-next-feature', StartNextFeatureSchema, runStartNextFeature),
 });
 
 export const githubReconciliationTask = task({
   id: 'github-reconciliation',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: async (payload: GithubReconciliationPayload, { ctx }) =>
-    makeTaskRunner('github-reconciliation', runGithubReconciliation)(payload, ctx),
+  run: makeTaskRunner('github-reconciliation', GithubReconciliationSchema, runGithubReconciliation),
 });
 
 export const exportPlanTask = task({
   id: 'export-plan',
   queue: { concurrencyLimit: 5 },
   retry: RETRY_CONFIG,
-  run: async (payload: ExportPlanPayload, { ctx }) =>
-    makeTaskRunner('export-plan', runExportPlan)(payload, ctx),
+  run: makeTaskRunner('export-plan', ExportPlanSchema, runExportPlan),
 });
 
 export const exportBacklogTask = task({
   id: 'export-backlog',
   queue: { concurrencyLimit: 5 },
   retry: RETRY_CONFIG,
-  run: async (payload: ExportBacklogPayload, { ctx }) =>
-    makeTaskRunner('export-backlog', runExportBacklog)(payload, ctx),
+  run: makeTaskRunner('export-backlog', ExportBacklogSchema, runExportBacklog),
 });
 
 export { ALL_TASK_IDS } from './task-ids.js';

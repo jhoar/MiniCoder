@@ -100,4 +100,8 @@ jobs:
 
       - name: Deploy tasks to Trigger.dev
         working-directory: packages/triggerdev
-        run: npx trigger deploy --config trigger.config.ts
+        # trigger.dev is the official CLI binary (not 'trigger'). --env is explicit so
+        # the CLI default (production) is never assumed — staging is the safe default.
+        run: npx trigger.dev@latest deploy --env "$DEPLOY_ENV"
+        env:
+          DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}
