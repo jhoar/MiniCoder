@@ -79,8 +79,8 @@ draft → pending_approval → approved → activated_for_execution
 
 - `activated_for_execution` is the terminal planning state. Activation writes each generated
   feature request into the execution lifecycle at `approved_pending_execution` (see §3.2). The two
-  names describe different entities: `activated_for_execution` is a *plan* state;
-  `approved_pending_execution` is the entry *feature* state.
+  names describe different entities: `activated_for_execution` is a _plan_ state;
+  `approved_pending_execution` is the entry _feature_ state.
 
 #### Project lifecycle
 
@@ -226,7 +226,7 @@ See `01-system-specification.md` §5.11.
 
 ### 3.9 State-transition matrix (required form)
 
-The lifecycle lists above enumerate *states*; the authoritative *transitions* are specified as a
+The lifecycle lists above enumerate _states_; the authoritative _transitions_ are specified as a
 matrix (authored in implementation Phase 2). Each row has exactly these columns:
 
 ```text

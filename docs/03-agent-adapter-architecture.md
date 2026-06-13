@@ -113,11 +113,12 @@ Adapters must support deterministic test scenarios.
 
 ## 11. Adapter Execution Contract
 
-Roles and capabilities (above) describe *what* an adapter does; this contract makes adapter runs
-*implementable and safe*. It applies to all execution-capable adapters (Coder, Reviewer, and any
+Roles and capabilities (above) describe _what_ an adapter does; this contract makes adapter runs
+_implementable and safe_. It applies to all execution-capable adapters (Coder, Reviewer, and any
 file/tool-using adapter) and is enforced by the orchestrator and conformance tests.
 
 ### 11.1 Workspace and isolation
+
 - Each run executes in an **isolated, ephemeral workspace** — a fresh checkout at a known directory,
   on the feature's own branch (`minicoder/<feature-request-id>`), torn down after the run.
 - One run owns one branch; no run may touch another feature's branch. Force-push is disallowed.
@@ -126,26 +127,31 @@ file/tool-using adapter) and is enforced by the orchestrator and conformance tes
   [`07-security-and-secrets.md`](07-security-and-secrets.md).
 
 ### 11.2 Tool and command permissions
+
 - Adapters declare the tools/commands they use; the orchestrator validates them against an allowed
   set before invocation. Test execution is permitted within the sandbox; arbitrary host commands are
   not.
 
 ### 11.3 File-change and commit contract
+
 - Output is expressed as a **bounded diff**: changes are limited to the workspace, must stay under a
   configurable **maximum diff size**, and are rejected if they touch disallowed paths.
 - Commits are attributed to the run, reference the feature request ID, and never include secrets.
   The adapter commits and pushes but **never merges**.
 
 ### 11.4 Structured I/O schemas
+
 - Inputs (context pack) and outputs (e.g., review findings, change summaries) use **versioned Zod
   schemas**; non-conforming output is a normalized failure, not a crash.
 
 ### 11.5 Status, streaming, and cancellation
+
 - Adapters report run status (`queued`/`running`/`succeeded`/`failed`) and may stream progress.
 - Runs are **cancellable**; on cancellation the workspace is cleaned up and the run recorded as
   cancelled.
 
 ### 11.6 Retries, idempotency, and errors
+
 - Runs are driven by idempotent Workflow Layer tasks carrying an **idempotency key**; a retried run
   must not double-commit or double-push.
 - Adapters map provider failures to a **normalized error taxonomy** (e.g.,

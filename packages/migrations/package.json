@@ -1,0 +1,26 @@
+{
+  "name": "@minicoder/migrations",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "minicoder-migrate": "./src/runner.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@minicoder/core": "workspace:*",
+    "@minicoder/persistence-sqlite": "workspace:*",
+    "@minicoder/persistence-postgres": "workspace:*",
+    "better-sqlite3": "^9.6.0",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/pg": "^8.11.6"
+  }
+}
