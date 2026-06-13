@@ -49,7 +49,10 @@ export class RecordCodePushedHandler implements CommandHandler<
     const { featureRunId, projectId, expectedVersion, commitSha } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<FeatureExecutionState>(
-        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+        tx,
+        envelope.idempotencyKey,
+        this.idempotencyScope,
+        IDEMPOTENCY_TTL_MS,
       );
       if (!claim.owned) return claim.result;
 
@@ -77,7 +80,13 @@ export class RecordCodePushedHandler implements CommandHandler<
       const now = isoNow();
       const codePushedAffected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [FeatureExecutionState.CODE_PUSHED, nextVersion(run.version), now, featureRunId, expectedVersion],
+        [
+          FeatureExecutionState.CODE_PUSHED,
+          nextVersion(run.version),
+          now,
+          featureRunId,
+          expectedVersion,
+        ],
       );
       if (codePushedAffected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);

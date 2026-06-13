@@ -27,7 +27,13 @@ export interface CommandEnvelope<P> {
   readonly payload: P;
   readonly actor: ActorIdentity;
   readonly correlationId: string;
-  readonly lockContext?: { readonly lockId: string; readonly fence: number; readonly holderId: string };
+  readonly lockContext?: {
+    readonly lockId: string;
+    readonly fence: number;
+    readonly holderId: string;
+    readonly projectId?: string;
+    readonly resourceKey?: string;
+  };
 }
 
 export interface CommandResult<S extends string = string> {

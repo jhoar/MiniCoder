@@ -37,6 +37,13 @@ export async function claimIdempotencyKey<S extends string>(
   const now = isoNow();
   const expiresAt = ttlIso(ttlMs);
 
+  // Remove any expired row first so the slot can be legitimately reused
+  await tx.execute(`DELETE FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at <= ?`, [
+    key,
+    scope,
+    now,
+  ]);
+
   const inserted = await tx.executeAffected(
     `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
      VALUES (?, ?, ?, NULL, ?, 1, ?, ?)
@@ -48,7 +55,7 @@ export async function claimIdempotencyKey<S extends string>(
     return { owned: true, claimId };
   }
 
-  // Conflict: read the existing slot
+  // Conflict with a live (non-expired) row
   const rows = await tx.query<{ id: string; result: string | null }>(
     `SELECT id, result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ?`,
     [key, scope, now],
@@ -132,17 +139,30 @@ export async function writeOutboxEvent(
 
 export async function assertLockFence(
   tx: TxClient,
-  lockContext: { lockId: string; fence: number; holderId: string },
+  lockContext: {
+    lockId: string;
+    fence: number;
+    holderId: string;
+    projectId?: string;
+    resourceKey?: string;
+  },
 ): Promise<void> {
   const now = isoNow();
-  const rows = await tx.query<{ fence: number; expires_at: string | Date | null; holder_id: string }>(
-    `SELECT fence, expires_at, holder_id FROM workflow_locks WHERE id = ?`,
+  const rows = await tx.query<{
+    fence: number;
+    expires_at: string | Date | null;
+    holder_id: string;
+    project_id: string;
+    resource_key: string;
+  }>(
+    `SELECT fence, expires_at, holder_id, project_id, resource_key FROM workflow_locks WHERE id = ?`,
     [lockContext.lockId],
   );
   const current = rows[0];
-  const expiresAtStr = current?.expires_at instanceof Date
-    ? current.expires_at.toISOString()
-    : (current?.expires_at ?? null);
+  const expiresAtStr =
+    current?.expires_at instanceof Date
+      ? current.expires_at.toISOString()
+      : (current?.expires_at ?? null);
   if (!current || (expiresAtStr !== null && expiresAtStr < now)) {
     throw new StaleFenceError(lockContext.lockId, lockContext.fence, current?.fence ?? -1);
   }
@@ -150,6 +170,12 @@ export async function assertLockFence(
     throw new StaleFenceError(lockContext.lockId, lockContext.fence, current.fence);
   }
   if (current.holder_id !== lockContext.holderId) {
+    throw new StaleFenceError(lockContext.lockId, lockContext.fence, current.fence);
+  }
+  if (lockContext.projectId !== undefined && current.project_id !== lockContext.projectId) {
+    throw new StaleFenceError(lockContext.lockId, lockContext.fence, current.fence);
+  }
+  if (lockContext.resourceKey !== undefined && current.resource_key !== lockContext.resourceKey) {
     throw new StaleFenceError(lockContext.lockId, lockContext.fence, current.fence);
   }
 }

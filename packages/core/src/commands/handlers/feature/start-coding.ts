@@ -48,7 +48,10 @@ export class StartCodingHandler implements CommandHandler<
     const { featureRunId, projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<FeatureExecutionState>(
-        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+        tx,
+        envelope.idempotencyKey,
+        this.idempotencyScope,
+        IDEMPOTENCY_TTL_MS,
       );
       if (!claim.owned) return claim.result;
 
@@ -61,6 +64,21 @@ export class StartCodingHandler implements CommandHandler<
         });
       }
       await assertLockFence(tx, envelope.lockContext);
+
+      // Transition guard: featureRunId must be the project's active feature run
+      const wsRows = await tx.query<{ active_feature_run_id: string | null }>(
+        `SELECT active_feature_run_id FROM workflow_states WHERE project_id = ?`,
+        [projectId],
+      );
+      if (wsRows[0]?.active_feature_run_id !== featureRunId) {
+        throw new CommandError({
+          type: 'not-active-feature-run',
+          title: 'Feature run is not the active run',
+          status: 409,
+          detail: `Feature run ${featureRunId} is not the active run for project ${projectId}`,
+          instance: envelope.correlationId,
+        });
+      }
 
       const rows = await tx.query<FeatureRunRow>(
         `SELECT fr.id, fr.current_execution_state, fr.version
@@ -78,7 +96,13 @@ export class StartCodingHandler implements CommandHandler<
       const now = isoNow();
       const startCodingAffected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [FeatureExecutionState.CODING, nextVersion(run.version), now, featureRunId, expectedVersion],
+        [
+          FeatureExecutionState.CODING,
+          nextVersion(run.version),
+          now,
+          featureRunId,
+          expectedVersion,
+        ],
       );
       if (startCodingAffected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);

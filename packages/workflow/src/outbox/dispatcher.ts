@@ -84,11 +84,18 @@ export class OutboxDispatcher {
 
       const handler = this.handlers.get(row.event_type);
       if (!handler) {
-        // No handler registered yet — requeue as pending so it retries when a
-        // handler is registered, rather than permanently skipping it.
+        // No handler registered — requeue with backoff so the event doesn't
+        // monopolize every batch. Attempts are NOT incremented so the row remains
+        // eligible once a handler is registered.
+        const noHandlerDelayMs = deterministicBackoff(
+          1,
+          this.options.baseBackoffMs,
+          this.options.maxBackoffMs,
+        );
+        const nextRetryAt = new Date(Date.now() + noHandlerDelayMs).toISOString();
         await this.db.execute(
-          `UPDATE outbox_events SET status = 'pending', version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
-          [isoNow(), row.id, claimedVersion],
+          `UPDATE outbox_events SET status = 'pending', next_retry_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
+          [nextRetryAt, isoNow(), row.id, claimedVersion],
         );
         continue;
       }
@@ -96,8 +103,8 @@ export class OutboxDispatcher {
       try {
         const payload = parseJsonField<unknown>(row.payload);
         await handler.handle(payload, row.payload_schema_version);
-        await this.markDelivered(row.id, claimedVersion);
-        dispatched++;
+        const deliveredCount = await this.markDelivered(row.id, claimedVersion);
+        if (deliveredCount > 0) dispatched++;
       } catch {
         const nextAttempts = row.attempts + 1;
         const nextRetryMs = deterministicBackoff(
@@ -106,23 +113,33 @@ export class OutboxDispatcher {
           this.options.maxBackoffMs,
         );
         const nextRetryAt = new Date(Date.now() + nextRetryMs).toISOString();
-        await this.markFailed(row.id, nextAttempts, nextRetryAt, claimedVersion);
-        failed++;
+        const failedCount = await this.markFailed(
+          row.id,
+          nextAttempts,
+          nextRetryAt,
+          claimedVersion,
+        );
+        if (failedCount > 0) failed++;
       }
     }
 
     return { dispatched, failed };
   }
 
-  private async markDelivered(id: string, claimedVersion: number): Promise<void> {
-    await this.db.execute(
+  private async markDelivered(id: string, claimedVersion: number): Promise<number> {
+    return this.db.executeAffected(
       `UPDATE outbox_events SET status = 'delivered', version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
       [isoNow(), id, claimedVersion],
     );
   }
 
-  private async markFailed(id: string, attempts: number, nextRetryAt: string, claimedVersion: number): Promise<void> {
-    await this.db.execute(
+  private async markFailed(
+    id: string,
+    attempts: number,
+    nextRetryAt: string,
+    claimedVersion: number,
+  ): Promise<number> {
+    return this.db.executeAffected(
       `UPDATE outbox_events SET status = 'failed', attempts = ?, next_retry_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
       [attempts, nextRetryAt, isoNow(), id, claimedVersion],
     );

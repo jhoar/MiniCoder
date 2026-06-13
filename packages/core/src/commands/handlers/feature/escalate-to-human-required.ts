@@ -48,7 +48,10 @@ export class EscalateToHumanHandler implements CommandHandler<
     const { featureRunId, projectId, expectedVersion, reason } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<FeatureExecutionState>(
-        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+        tx,
+        envelope.idempotencyKey,
+        this.idempotencyScope,
+        IDEMPOTENCY_TTL_MS,
       );
       if (!claim.owned) return claim.result;
 
@@ -76,7 +79,13 @@ export class EscalateToHumanHandler implements CommandHandler<
       const now = isoNow();
       const escalateAffected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [FeatureExecutionState.HUMAN_REQUIRED, nextVersion(run.version), now, featureRunId, expectedVersion],
+        [
+          FeatureExecutionState.HUMAN_REQUIRED,
+          nextVersion(run.version),
+          now,
+          featureRunId,
+          expectedVersion,
+        ],
       );
       if (escalateAffected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);

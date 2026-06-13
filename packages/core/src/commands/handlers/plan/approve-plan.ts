@@ -46,7 +46,10 @@ export class ApprovePlanHandler implements CommandHandler<ApprovePlanPayload, Pl
     const { planId, projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<PlanState>(
-        tx, envelope.idempotencyKey, this.idempotencyScope, IDEMPOTENCY_TTL_MS,
+        tx,
+        envelope.idempotencyKey,
+        this.idempotencyScope,
+        IDEMPOTENCY_TTL_MS,
       );
       if (!claim.owned) return claim.result;
 
