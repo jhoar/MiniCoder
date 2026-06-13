@@ -7,8 +7,10 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository is currently **specification-only** — no application code exists yet. All work is
-documentation under `docs/`.
+This repository contains the **Phase 1 implementation**: monorepo skeleton, persistence abstraction
+(SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets backends,
+database lifecycle CLI (`minicoder db`), and CI. Canonical specification documents live under
+`docs/`.
 
 ## Repository Structure
 
@@ -32,10 +34,10 @@ disagree, the `docs/` file wins. Within `docs/`, shared vocabulary is defined on
 
 ## Development Branch
 
-All work goes on branch `claude/upbeat-fermi-jv4tye`. Always push with:
+All work goes on branch `claude/wizardly-bell-s7sucy`. Always push with:
 
 ```bash
-git push -u origin claude/upbeat-fermi-jv4tye
+git push -u origin claude/wizardly-bell-s7sucy
 ```
 
 ## Key Architectural Decisions (Do Not Change Without Explicit Instruction)
@@ -180,9 +182,8 @@ before returning to `under_review`. Review and merge never act on un-tested code
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
-as a matrix. This is a CI requirement, not optional. The security scan (pnpm audit/OSV + gitleaks
-
-- semgrep) also runs in CI.
+as a matrix. This is a CI requirement, not optional. The security scan
+(pnpm audit/OSV + gitleaks + semgrep) also runs in CI.
 
 ## Budget Gate
 

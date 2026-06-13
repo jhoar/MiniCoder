@@ -7,8 +7,10 @@ implementation backlog, then orchestrates feature-branch development, pull reque
 reviews, fixes, merge gates, and final design documentation. It is designed to be auditable,
 deterministic, cost-aware, safe, and fully testable without human intervention.
 
-This repository currently contains the **specification set** for MiniCoder (no application code
-yet).
+This repository contains the **Phase 1 implementation** of MiniCoder — the monorepo skeleton,
+persistence abstraction (SQLite + PostgreSQL), initial schema (43 tables), migration tooling,
+config/secrets backends, database lifecycle CLI, and CI. Specification documents live under
+`docs/`.
 
 ## Documentation (canonical)
 

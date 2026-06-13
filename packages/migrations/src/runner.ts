@@ -460,6 +460,17 @@ async function main(): Promise<void> {
 
   if (dialect === 'sqlite') {
     const dbPath = getSqlitePath();
+
+    // Run the reset guard BEFORE opening the database file so a blocked reset
+    // never creates the file on disk.
+    if (command === 'reset') {
+      if (!args.includes('--yes')) {
+        console.error('  reset requires --yes and --env <environment> flags.');
+        process.exit(1);
+      }
+      auditAndGuardReset(args, { dialect, dbIdentifier: dbPath });
+    }
+
     const db = new Database(dbPath);
 
     switch (command) {
@@ -476,11 +487,7 @@ async function main(): Promise<void> {
         if (!sqliteValidate(db)) process.exit(1);
         break;
       case 'reset':
-        if (!args.includes('--yes')) {
-          console.error('  reset requires --yes and --env <environment> flags.');
-          process.exit(1);
-        }
-        auditAndGuardReset(args, { dialect, dbIdentifier: dbPath });
+        // Guard already ran above; proceed directly.
         sqliteReset(db);
         sqliteMigrate(db);
         break;

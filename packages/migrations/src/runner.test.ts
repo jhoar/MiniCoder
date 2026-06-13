@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { SqliteDbClient } from '@minicoder/persistence-sqlite';
 import type { TxClient } from '@minicoder/core';
@@ -388,5 +389,113 @@ describe('EXPECTED_TABLES list', () => {
     expect(EXPECTED_TABLES).toContain('outbox_events');
     expect(EXPECTED_TABLES).toContain('inbox_events');
     expect(EXPECTED_TABLES).toContain('idempotency_keys');
+  });
+});
+
+// ============================================================
+// Reset safety guards (subprocess tests)
+// ============================================================
+
+const runnerPath = path.resolve(__dirname, '../src/runner.ts');
+
+function runRunner(
+  args: string[],
+  env: Record<string, string | undefined>,
+): ReturnType<typeof spawnSync> {
+  return spawnSync('tsx', [runnerPath, ...args], {
+    encoding: 'utf-8',
+    env: { ...process.env, ...env },
+  });
+}
+
+describe('Reset safety guards', () => {
+  let tmpDb: string;
+
+  beforeEach(() => {
+    tmpDb = path.join(os.tmpdir(), `minicoder-reset-guard-${Date.now()}.db`);
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tmpDb)) fs.unlinkSync(tmpDb);
+  });
+
+  it('blocks reset when APP_ENV=production regardless of --env flag', () => {
+    const result = runRunner(['reset', '--yes', '--env', 'development'], {
+      DB_DIALECT: 'sqlite',
+      DB_PATH: tmpDb,
+      APP_ENV: 'production',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/production/);
+  });
+
+  it('does NOT create the SQLite file when the system-env guard blocks reset', () => {
+    expect(fs.existsSync(tmpDb)).toBe(false);
+    runRunner(['reset', '--yes', '--env', 'development'], {
+      DB_DIALECT: 'sqlite',
+      DB_PATH: tmpDb,
+      APP_ENV: 'production',
+    });
+    expect(fs.existsSync(tmpDb)).toBe(false);
+  });
+
+  it('blocks reset when --env flag is missing', () => {
+    const result = runRunner(['reset', '--yes'], {
+      DB_DIALECT: 'sqlite',
+      DB_PATH: tmpDb,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--env/);
+  });
+
+  it('blocks reset when --env value is not an allowed environment', () => {
+    const result = runRunner(['reset', '--yes', '--env', 'staging'], {
+      DB_DIALECT: 'sqlite',
+      DB_PATH: tmpDb,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/staging/);
+  });
+
+  it('blocks reset when --yes is missing', () => {
+    const result = runRunner(['reset', '--env', 'development'], {
+      DB_DIALECT: 'sqlite',
+      DB_PATH: tmpDb,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--yes/);
+  });
+
+  it('redacts PostgreSQL credentials from audit output', () => {
+    // Reset will fail when it tries to connect to a non-existent PostgreSQL
+    // server, but the audit block is printed to stdout before any connection.
+    const result = runRunner(['reset', '--yes', '--env', 'development'], {
+      DB_DIALECT: 'postgres',
+      DB_URL: 'postgresql://alice:supersecret@localhost:15432/devdb',
+    });
+    // Credentials must not appear in stdout (the audit block)
+    expect(result.stdout).not.toMatch(/supersecret/);
+    expect(result.stdout).not.toMatch(/alice/);
+    // Sanitized host/db should appear
+    expect(result.stdout).toMatch(/localhost/);
+  });
+
+  it('allows reset when APP_ENV=development and --env development', () => {
+    const result = runRunner(['reset', '--yes', '--env', 'development'], {
+      DB_DIALECT: 'sqlite',
+      DB_PATH: tmpDb,
+      APP_ENV: 'development',
+    });
+    expect(result.status).toBe(0);
+  });
+
+  it('allows reset when APP_ENV is unset and --env development', () => {
+    const result = runRunner(['reset', '--yes', '--env', 'development'], {
+      DB_DIALECT: 'sqlite',
+      DB_PATH: tmpDb,
+      APP_ENV: undefined,
+      NODE_ENV: undefined,
+    });
+    expect(result.status).toBe(0);
   });
 });
