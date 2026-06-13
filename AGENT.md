@@ -13,16 +13,22 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1 foundation**:
+- The codebase currently contains the **completed Phase 1–2 foundation**:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
   - SQLite and PostgreSQL adapters
-  - paired initial migrations
-  - database lifecycle CLI commands
-  - migration, configuration, secrets, and architectural fitness tests
+  - paired migrations and database lifecycle CLI commands
+  - eight lifecycle state machines and a transition validator
+  - transactional, idempotent command execution and representative command handlers
+  - versioned event schemas, outbox/inbox dispatch, and idempotency sweeping
+  - workflow locks with fencing tokens and sequential execution lanes
+  - local authentication, authorization guards, and secret redaction
+  - scaffolded state lifecycle CLI commands
+  - migration, configuration, security, workflow, and architectural fitness tests
 - Do not describe the repository as specification-only.
-- Do not assume later phases are implemented merely because their schemas and types already exist.
+- Phase 3 and later remain target architecture. Do not assume later phases are implemented merely
+  because their schemas, state machines, CLI scaffolds, or types already exist.
 - Before starting work, inspect the current branch, recent commits, and working tree:
 
 ```bash
@@ -61,6 +67,7 @@ packages/core/                  Provider-neutral domain, config, and persistence
 packages/persistence-sqlite/    better-sqlite3 implementation of core persistence contracts
 packages/persistence-postgres/  pg implementation of core persistence contracts
 packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycle runner
+packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
 packages/cli/                   Thin Commander-based CLI
 .github/workflows/ci.yml        CI checks and database matrix
 ```
@@ -71,6 +78,12 @@ Important files:
 - `packages/core/src/domain/entities.ts` defines persisted domain shapes.
 - `packages/core/src/persistence/types.ts` defines database-neutral interfaces and concurrency
   errors.
+- `packages/core/src/statemachine/machines/` contains the eight implemented transition matrices.
+- `packages/core/src/commands/` contains the command registry, executor, contracts, and handlers.
+- `packages/core/src/events/schemas.ts` owns versioned event payload validation.
+- `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
+- `packages/workflow/src/locks/manager.ts` implements lease ownership and fencing.
+- `packages/workflow/src/outbox/dispatcher.ts` and `inbox/processor.ts` implement durable dispatch.
 - `packages/migrations/src/index.ts` exports the expected table list.
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
 - `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together.
@@ -111,6 +124,23 @@ Do not contradict these rules without an explicit architecture change to the can
 The ESLint rules and `fitness/no-provider-imports.test.ts` enforce part of this boundary. Extend
 fitness tests when introducing a new architectural restriction.
 
+### `@minicoder/workflow`
+
+- Keep workflow primitives database-backed, deterministic, and portable across SQLite and
+  PostgreSQL.
+- Call Orchestrator Core commands for business transitions; do not move domain policy into workflow
+  wrappers.
+- Preserve at-least-once dispatch semantics and idempotent handlers.
+- Validate `payload_schema_version` and event payloads before invoking inbox handlers.
+- Preserve deterministic backoff and the two-pass known/unknown event selection that prevents
+  unknown event types from starving registered handlers.
+- Treat heartbeat ownership loss as authoritative: do not mark a handler result after its claim is
+  lost.
+- Validate `staleClaimMs` as a finite integer greater than or equal to 2.
+- Release locks by expiring and incrementing the stored fence; never delete the lock row and reset
+  its fencing history.
+- Run `assertFence` in the same transaction as the write it guards.
+
 ### Persistence packages
 
 - Implement `PersistenceBackend`, `DbClient`, and `TxClient` from core.
@@ -149,6 +179,9 @@ NNNN_description.postgres.sql
   `--env <development|test|ci>`. The runner also rejects a non-safe `APP_ENV` or `NODE_ENV`.
 - Never run `db reset` against an unknown, shared, or production database. Use a disposable
   database and verify the configured database identifier before invoking it.
+- The `minicoder state` command group exists, but its database-backed inspect, validate, doctor,
+  reconcile, export, and repair behavior is still scaffolded for a later phase. In particular,
+  `state repair --apply` intentionally exits without applying changes.
 - The glossary lists the target CLI surface. Verify a command is implemented before documenting it
   as currently available.
 
@@ -161,7 +194,10 @@ NNNN_description.postgres.sql
 - Persisted mutable entities use optimistic versions.
 - Locks use monotonically increasing fencing tokens; stale-fence writes must be rejected.
 - Outbox and inbox events contain both `payload` and `payload_schema_version`.
-- Inbox processing must be deduplicated.
+- Inbox processing must validate the current schema version before invoking a handler and must be
+  deduplicated.
+- Unknown event types are deferred with `next_retry_at`; they must not consume attempts or starve
+  registered handlers.
 - Discovery work reuses `feature_requests` with `kind = "discovery"` and `executable = false`.
 - `resumed` is an event, not an automation state.
 - A CI failure never silently advances or merges.
@@ -230,7 +266,12 @@ Useful targeted commands:
 ```bash
 pnpm vitest run packages/core/src/persistence/optimistic.test.ts
 pnpm vitest run packages/core/src/config/secrets.test.ts
+pnpm vitest run packages/core/src/statemachine/validator.test.ts
+pnpm vitest run packages/core/src/commands/executor.test.ts
 pnpm vitest run packages/migrations/src/runner.test.ts
+pnpm vitest run packages/workflow/src/outbox/dispatcher.test.ts
+pnpm vitest run packages/workflow/src/inbox/processor.test.ts
+pnpm vitest run packages/workflow/src/locks/manager.test.ts
 ```
 
 SQLite migration smoke test:
