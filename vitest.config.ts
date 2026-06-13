@@ -14,6 +14,7 @@ export default defineConfig({
         'packages/persistence-postgres/src/index.ts',
       ),
       '@minicoder/migrations': path.resolve(__dirname, 'packages/migrations/src/index.ts'),
+      '@minicoder/workflow': path.resolve(__dirname, 'packages/workflow/src/index.ts'),
     },
   },
   test: {

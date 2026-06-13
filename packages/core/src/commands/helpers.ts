@@ -1,0 +1,87 @@
+import type { TxClient } from '../persistence/types.js';
+import type { CommandResult } from './types.js';
+import { SCHEMA_VERSION } from '../events/schemas.js';
+import { defaultRedactor } from '../auth/redaction.js';
+
+export function isoNow(): string {
+  return new Date().toISOString();
+}
+
+export function ttlIso(ms: number): string {
+  return new Date(Date.now() + ms).toISOString();
+}
+
+export function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export async function writeWorkflowEvent(
+  tx: TxClient,
+  opts: {
+    featureRunId?: string;
+    projectId?: string;
+    eventType: string;
+    fromState: string;
+    toState: string;
+    actorId: string;
+    correlationId: string;
+  },
+): Promise<string> {
+  const id = generateId();
+  const now = isoNow();
+  // Schema columns: actor (not actor_id); no correlation_id column in workflow_events
+  await tx.execute(
+    `INSERT INTO workflow_events (id, feature_run_id, project_id, event_type, from_state, to_state, actor, payload_schema_version, occurred_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      opts.featureRunId ?? null,
+      opts.projectId ?? null,
+      opts.eventType,
+      opts.fromState,
+      opts.toState,
+      opts.actorId,
+      SCHEMA_VERSION,
+      now,
+      now,
+    ],
+  );
+  return id;
+}
+
+export async function writeOutboxEvent(
+  tx: TxClient,
+  opts: {
+    eventType: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<string> {
+  const id = generateId();
+  const now = isoNow();
+  const safePayload = defaultRedactor.redactObject(opts.payload);
+  await tx.execute(
+    `INSERT INTO outbox_events (id, event_type, payload, payload_schema_version, status, attempts, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'pending', 0, 1, ?, ?)`,
+    [id, opts.eventType, JSON.stringify(safePayload), SCHEMA_VERSION, now, now],
+  );
+  return id;
+}
+
+export async function writeIdempotencyKey(
+  tx: TxClient,
+  opts: {
+    key: string;
+    scope: string;
+    result: CommandResult;
+    ttlMs: number;
+  },
+): Promise<void> {
+  const id = generateId();
+  const now = isoNow();
+  const expiresAt = ttlIso(opts.ttlMs);
+  await tx.execute(
+    `INSERT OR IGNORE INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+    [id, opts.key, opts.scope, JSON.stringify(opts.result), expiresAt, now, now],
+  );
+}

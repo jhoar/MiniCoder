@@ -1,0 +1,94 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { SqliteDbClient } from '@minicoder/persistence-sqlite';
+import { OutboxDispatcher } from './dispatcher.js';
+import type { OutboxHandler } from './dispatcher.js';
+import { deterministicBackoff } from './backoff.js';
+import { createTestDb, insertTestProject } from '../test-helpers.js';
+
+let db: SqliteDbClient;
+let raw: Database.Database;
+
+beforeEach(() => {
+  db = createTestDb();
+  raw = (db as unknown as { db: Database.Database }).db;
+  insertTestProject(raw);
+});
+
+function insertOutboxEvent(id: string, eventType = 'feature.selected', status = 'pending', attempts = 0): void {
+  raw.prepare(
+    `INSERT INTO outbox_events (id, event_type, payload, payload_schema_version, status, attempts, version, created_at, updated_at)
+     VALUES (?, ?, '{"test":true}', '1.0.0', ?, ?, 1, datetime('now'), datetime('now'))`,
+  ).run(id, eventType, status, attempts);
+}
+
+describe('deterministicBackoff', () => {
+  it('returns 0 for attempt 0', () => {
+    expect(deterministicBackoff(0, 1000, 60_000)).toBe(0);
+  });
+  it('returns baseMs for attempt 1', () => {
+    expect(deterministicBackoff(1, 1000, 60_000)).toBe(1000);
+  });
+  it('doubles per attempt', () => {
+    expect(deterministicBackoff(2, 1000, 60_000)).toBe(2000);
+    expect(deterministicBackoff(3, 1000, 60_000)).toBe(4000);
+  });
+  it('caps at maxMs', () => {
+    expect(deterministicBackoff(10, 1000, 60_000)).toBe(60_000);
+  });
+});
+
+describe('OutboxDispatcher', () => {
+  it('dispatches a pending event and marks it delivered', async () => {
+    insertOutboxEvent('evt-1');
+    const handleFn = vi.fn().mockResolvedValue(undefined);
+    const handler: OutboxHandler = { eventType: 'feature.selected', handle: handleFn };
+    const dispatcher = new OutboxDispatcher(db, new Map([['feature.selected', handler]]));
+
+    const result = await dispatcher.pollAndDispatch();
+    expect(result.dispatched).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(handleFn).toHaveBeenCalledOnce();
+
+    const row = raw.prepare('SELECT status FROM outbox_events WHERE id = ?').get('evt-1') as { status: string };
+    expect(row.status).toBe('delivered');
+  });
+
+  it('increments attempts and sets next_retry_at on handler failure', async () => {
+    insertOutboxEvent('evt-2');
+    const handler: OutboxHandler = {
+      eventType: 'feature.selected',
+      handle: vi.fn().mockRejectedValue(new Error('handler error')),
+    };
+    const dispatcher = new OutboxDispatcher(db, new Map([['feature.selected', handler]]), { baseBackoffMs: 1000 });
+
+    const result = await dispatcher.pollAndDispatch();
+    expect(result.failed).toBe(1);
+
+    const row = raw.prepare('SELECT status, attempts, next_retry_at FROM outbox_events WHERE id = ?').get('evt-2') as { status: string; attempts: number; next_retry_at: string };
+    expect(row.status).toBe('failed');
+    expect(row.attempts).toBe(1);
+    expect(row.next_retry_at).toBeTruthy();
+  });
+
+  it('skips events with no registered handler', async () => {
+    insertOutboxEvent('evt-3', 'unknown.event');
+    const dispatcher = new OutboxDispatcher(db, new Map());
+
+    const result = await dispatcher.pollAndDispatch();
+    expect(result.dispatched).toBe(0);
+    expect(result.failed).toBe(0);
+
+    const row = raw.prepare('SELECT status FROM outbox_events WHERE id = ?').get('evt-3') as { status: string };
+    expect(row.status).toBe('skipped');
+  });
+
+  it('does not re-dispatch events that have reached maxAttempts', async () => {
+    insertOutboxEvent('evt-4', 'feature.selected', 'failed', 5);
+    const handleFn = vi.fn().mockResolvedValue(undefined);
+    const dispatcher = new OutboxDispatcher(db, new Map([['feature.selected', { eventType: 'feature.selected', handle: handleFn }]]), { maxAttempts: 5 });
+
+    await dispatcher.pollAndDispatch();
+    expect(handleFn).not.toHaveBeenCalled();
+  });
+});

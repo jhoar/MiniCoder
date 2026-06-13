@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.0
-> Last-updated: 2026-06-12
+> Version: 1.0.1
+> Last-updated: 2026-06-13
 
 This document is the authoritative security and secrets specification. It expands the principles in
 [`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
@@ -104,7 +104,11 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
   backend. This is a **security/compliance** decision, not merely a deployment-config decision (see
   `00-glossary-and-terms.md` §6.2, `01-system-specification.md` §14).
 - The "no secret in task payloads" rule is enforced as a Phase 2 architectural fitness test (see
-  `06-implementation-plan.md` Phase 2).
+  `06-implementation-plan.md` Phase 2). Implemented at:
+  `packages/core/src/fitness/no-secret-in-task-payloads.test.ts` (RF-12). The test verifies that
+  event payload Zod schemas contain no secret-bearing field names, and that `SecretRedactor` is
+  applied via `defaultRedactor.redactObject()` before every outbox payload is serialized
+  (`packages/core/src/commands/helpers.ts`).
 
 ## 7. Prompt-Injection and Untrusted Content
 

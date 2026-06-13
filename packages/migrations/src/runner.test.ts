@@ -112,9 +112,9 @@ describe('Migration runner (SQLite)', () => {
     if (fs.existsSync(tmpDb)) fs.unlinkSync(tmpDb);
   });
 
-  it('applies 0001_initial_schema cleanly on a fresh database', () => {
+  it('applies all migrations cleanly on a fresh database', () => {
     const count = applyMigrations(db);
-    expect(count).toBe(1);
+    expect(count).toBeGreaterThanOrEqual(1);
   });
 
   it('is idempotent — re-applying migrations makes no changes', () => {
@@ -132,33 +132,34 @@ describe('Migration runner (SQLite)', () => {
     expect(missing, `Missing tables: ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('creates the _migrations tracking table with the applied migration record', () => {
-    applyMigrations(db);
-    const rows = db.prepare('SELECT name FROM _migrations').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(1);
+  it('creates the _migrations tracking table with applied migration records', () => {
+    const count = applyMigrations(db);
+    const rows = db.prepare('SELECT name FROM _migrations ORDER BY name ASC').all() as Array<{ name: string }>;
+    expect(rows.length).toBe(count);
     expect(rows[0]?.name).toBe('0001_initial_schema');
   });
 
-  it('rollback removes all tables and the migration record', () => {
-    applyMigrations(db);
+  it('rollback removes the last migration and its record', () => {
+    const count = applyMigrations(db);
     expect(getExistingTables(db).length).toBe(43);
 
     const rolled = rollbackLast(db);
-    expect(rolled).toBe('0001_initial_schema');
-
-    const tables = getExistingTables(db);
-    expect(tables.length).toBe(0);
+    expect(rolled).not.toBeNull();
 
     const records = db.prepare('SELECT name FROM _migrations').all();
-    expect(records.length).toBe(0);
+    expect(records.length).toBe(count - 1);
   });
 
   it('migrate → rollback → migrate is idempotent', () => {
-    applyMigrations(db);
+    const total = applyMigrations(db);
     rollbackLast(db);
-    const count = applyMigrations(db);
-    expect(count).toBe(1);
-    expect(getExistingTables(db).length).toBe(43);
+    const reapplied = applyMigrations(db);
+    expect(reapplied).toBe(1);
+    // All expected tables must still exist after re-applying
+    const tables = new Set(getExistingTables(db));
+    const missing = EXPECTED_TABLES.filter((t) => !tables.has(t));
+    expect(missing, `Missing tables after re-migration: ${missing.join(', ')}`).toEqual([]);
+    void total;
   });
 
   it('enforces foreign keys (projects must exist before repositories can reference them)', () => {
