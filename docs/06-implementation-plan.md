@@ -110,7 +110,8 @@ fitness tests fail the build on any violated invariant; stale-fence writes are r
 ## Phase 3 — Workflow Layer Harness
 
 Deliver Trigger.dev project setup with **self-hosted single-node as the default backend** (Docker
-Compose: webapp + Postgres + Redis), a GitHub Actions deployment workflow for Trigger.dev
+Compose: 8-service v4 execution stack — Postgres, Redis, Electric, webapp, registry, MinIO,
+docker-socket-proxy, supervisor), a GitHub Actions deployment workflow for Trigger.dev
 tasks, the task-wrapper pattern, queue/retry config, waitpoint patterns, and Trigger.dev run
 metadata linked to the database. Self-hosted HA cluster and Trigger.dev Cloud are drop-in backend
 options selected by configuration, not code (see [`01-system-specification.md`](01-system-specification.md) §14).

@@ -29,11 +29,16 @@ version: '3.8'
 #   TRIGGERDEV_WEBHOOK_SECRET      — MiniCoder verifies inbound webhook payloads with this
 #   MINIO_ROOT_USER                — MinIO access key (e.g. "minioadmin")
 #   MINIO_ROOT_PASSWORD            — MinIO secret (openssl rand -hex 16)
+#
+# All secrets use ${VAR:?message} interpolation — compose exits immediately if any are unset
+# or empty, preventing silent deployment with blank credentials.
 
 services:
   triggerdev-postgres:
     image: postgres:14
     restart: unless-stopped
+    # wal_level=logical is required by Electric for change-data-capture.
+    command: postgres -c wal_level=logical
     environment:
       POSTGRES_USER: trigger
       POSTGRES_PASSWORD: trigger
@@ -113,28 +118,27 @@ services:
       REDIS_TLS_DISABLED: 'true'
       REDIS_HOST: triggerdev-redis
       REDIS_PORT: '6379'
-      MAGIC_LINK_SECRET: '${TRIGGER_MAGIC_LINK_SECRET}'
-      SESSION_SECRET: '${TRIGGER_SESSION_SECRET}'
-      ENCRYPTION_KEY: '${TRIGGER_ENCRYPTION_KEY}'
+      MAGIC_LINK_SECRET: '${TRIGGER_MAGIC_LINK_SECRET:?set TRIGGER_MAGIC_LINK_SECRET}'
+      SESSION_SECRET: '${TRIGGER_SESSION_SECRET:?set TRIGGER_SESSION_SECRET}'
+      ENCRYPTION_KEY: '${TRIGGER_ENCRYPTION_KEY:?set TRIGGER_ENCRYPTION_KEY}'
       # Webhook-secret management: rotate via docs/07-security-and-secrets.md procedure.
-      # No default — startup fails if TRIGGERDEV_WEBHOOK_SECRET is not set.
-      TRIGGER_WEBHOOK_SECRET: '${TRIGGERDEV_WEBHOOK_SECRET}'
+      TRIGGER_WEBHOOK_SECRET: '${TRIGGERDEV_WEBHOOK_SECRET:?set TRIGGERDEV_WEBHOOK_SECRET}'
       APP_ORIGIN: 'http://localhost:3040'
       LOGIN_ORIGIN: 'http://localhost:3040'
       API_ORIGIN: 'http://localhost:3040'
       ELECTRIC_ORIGIN: 'http://triggerdev-electric:3000'
-      # Worker bootstrap: auto-creates a worker group and writes the token to the shared volume.
-      # The supervisor reads the token from the same path.
-      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET}'
+      # Worker bootstrap: webapp auto-creates a worker group on first start and writes the token
+      # to the shared volume. The supervisor reads it from the same path via file:// URI.
+      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET:?set TRIGGER_MANAGED_WORKER_SECRET}'
       TRIGGER_BOOTSTRAP_ENABLED: 'true'
       TRIGGER_BOOTSTRAP_WORKER_GROUP_NAME: 'default'
-      TRIGGER_BOOTSTRAP_WORKER_TOKEN_PATH: '/home/node/shared/worker-token'
-      # Registry and object storage for task images and payloads.
-      DEPLOY_REGISTRY_HOST: 'triggerdev-registry:5000'
+      TRIGGER_BOOTSTRAP_WORKER_TOKEN_PATH: '/home/node/shared/worker_token'
+      # Registry: CLI pushes to localhost:5000 (host-exposed); supervisor pulls from internal name.
+      DEPLOY_REGISTRY_HOST: 'localhost:5000'
       DEPLOY_REGISTRY_NAMESPACE: 'trigger'
       OBJECT_STORE_BASE_URL: 'http://triggerdev-minio:9000'
-      OBJECT_STORE_ACCESS_KEY_ID: '${MINIO_ROOT_USER}'
-      OBJECT_STORE_SECRET_ACCESS_KEY: '${MINIO_ROOT_PASSWORD}'
+      OBJECT_STORE_ACCESS_KEY_ID: '${MINIO_ROOT_USER:?set MINIO_ROOT_USER}'
+      OBJECT_STORE_SECRET_ACCESS_KEY: '${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}'
       # Disable run replication (ClickHouse analytics) for the development stack.
       RUN_REPLICATION_ENABLED: 'false'
     volumes:
@@ -161,6 +165,11 @@ services:
   triggerdev-registry:
     image: registry:2
     restart: unless-stopped
+    # Port exposed to host so the trigger.dev CLI (running outside Docker) can push task images.
+    # The webapp tells the CLI to push to localhost:5000; the supervisor pulls via the internal
+    # container hostname triggerdev-registry:5000.
+    ports:
+      - '5000:5000'
     environment:
       REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
     volumes:
@@ -182,9 +191,9 @@ services:
     image: bitnamilegacy/minio:latest
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: '${MINIO_ROOT_USER}'
-      MINIO_ROOT_PASSWORD: '${MINIO_ROOT_PASSWORD}'
-      MINIO_DEFAULT_BUCKETS: 'trigger'
+      MINIO_ROOT_USER: '${MINIO_ROOT_USER:?set MINIO_ROOT_USER}'
+      MINIO_ROOT_PASSWORD: '${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}'
+      MINIO_DEFAULT_BUCKETS: 'packets'
       MINIO_BROWSER: 'off'
     volumes:
       - triggerdev-minio-data:/bitnami/minio/data
@@ -205,9 +214,12 @@ services:
     image: tecnativa/docker-socket-proxy:latest
     restart: unless-stopped
     environment:
-      # Allow only what the supervisor needs to launch and manage task containers.
+      # Minimum permissions required by the Trigger.dev supervisor.
       CONTAINERS: '1'
       POST: '1'
+      IMAGES: '1'
+      INFO: '1'
+      NETWORKS: '1'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -232,11 +244,17 @@ services:
       triggerdev-docker-proxy:
         condition: service_healthy
     environment:
-      # Reads the worker token written by webapp bootstrap from the shared volume.
-      TRIGGER_WORKER_TOKEN_FILE: '/home/node/shared/worker-token'
-      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET}'
+      # file:// URI scheme — the supervisor reads the worker token from the shared volume path
+      # written by the webapp bootstrap process on first start.
+      TRIGGER_WORKER_TOKEN: 'file:///home/node/shared/worker_token'
+      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET:?set TRIGGER_MANAGED_WORKER_SECRET}'
       TRIGGER_API_URL: 'http://triggerdev-webapp:3000'
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://triggerdev-webapp:4318'
       DOCKER_HOST: 'tcp://triggerdev-docker-proxy:2375'
+      # Supervisor pulls task images from the internal registry hostname and attaches runner
+      # containers to the webapp network so they can reach the Trigger.dev API.
+      DOCKER_REGISTRY_URL: 'http://triggerdev-registry:5000'
+      DOCKER_RUNNER_NETWORKS: 'minicoder-triggerdev-webapp'
     volumes:
       - triggerdev-shared:/home/node/shared
     networks:

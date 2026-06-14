@@ -280,16 +280,10 @@ Required runbooks:
   drainer is a Trigger.dev scheduled task, so outbox liveness inherits the single-node SPOF; the
   **persistent background-worker** drainer alternative (`01-system-specification.md` §6) decouples
   outbox liveness from the scheduler.
-- **Trigger.dev (self-host) operations** — resource sizing for the shipped v3 development stack:
-
-  | Service  | CPU | RAM    |
-  | -------- | --- | ------ |
-  | postgres | 2   | 1 GB   |
-  | redis    | 1   | 512 MB |
-  | webapp   | 2   | 2 GB   |
-
-  Procedures: version upgrades (update image tag in compose file, `docker compose pull && up -d`);
-  backup Postgres (`pg_dump`) and Redis (AOF copy) with restore drills.
+- **Trigger.dev (self-host) operations** — `infra/docker-compose.triggerdev.yml` ships a full v4
+  execution stack (8 services: Postgres, Redis, Electric, webapp, registry, MinIO,
+  docker-socket-proxy, supervisor). See the Phase 3 runbook in §11 for the complete resource
+  sizing table, required env vars, startup procedure, and upgrade/backup procedures.
 
 - **Stuck-workflow recovery** — detect via `state doctor`; reconcile (`state reconcile`);
   cancel/replay orphaned runs; clear stale locks/leases and orphaned waitpoints.
