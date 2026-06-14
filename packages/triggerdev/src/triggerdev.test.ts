@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { DbClient } from '@minicoder/core';
+import type { DbClient, ConfigBackend, SecretBackend } from '@minicoder/core';
+import { MissingSecretError } from '@minicoder/core';
 import { createTestDb, insertTestProject } from './test-helpers.js';
 import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
 import { ALL_TASK_IDS } from './task-ids.js';
+import { loadTriggerConfig } from './config.js';
 
 import { runImpl as runPlanningReadiness } from './tasks/planning-readiness-assessment.js';
 import { runImpl as runStartClarification } from './tasks/start-clarification.js';
@@ -301,4 +303,108 @@ describe('all 9 tasks write triggerdev_runs rows via MockTriggerRunner', () => {
 
   // suppress unused variable warning
   void cases;
+});
+
+// ── loadTriggerConfig unit tests ─────────────────────────────────────────────
+
+function makeConfig(values: Record<string, string>): ConfigBackend {
+  return {
+    get: (k) => values[k],
+    getRequired: (k) => {
+      const v = values[k];
+      if (!v) throw new Error(`Required config missing: ${k}`);
+      return v;
+    },
+  };
+}
+
+function makeSecrets(values: Record<string, string>): SecretBackend {
+  return {
+    get: async (k) => {
+      const v = values[k];
+      if (!v) throw new MissingSecretError(k);
+      return v;
+    },
+    list: async () => [],
+  };
+}
+
+const VALID_SECRET = 'a'.repeat(64);
+const VALID_API_KEY = 'secret-api-key';
+const SELF_HOST_URL = 'http://localhost:3040';
+
+describe('loadTriggerConfig', () => {
+  it('loads self-host-single-node config with required values', async () => {
+    const cfg = await loadTriggerConfig(
+      makeConfig({
+        TRIGGERDEV_BACKEND: 'self-host-single-node',
+        TRIGGERDEV_API_URL: SELF_HOST_URL,
+      }),
+      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
+    );
+    expect(cfg.backend).toBe('self-host-single-node');
+    expect(cfg.apiUrl).toBe(SELF_HOST_URL);
+    expect(cfg.apiKey).toBe(VALID_API_KEY);
+    expect(cfg.webhookSecret).toBe(VALID_SECRET);
+  });
+
+  it('defaults backend to self-host-single-node when TRIGGERDEV_BACKEND is not set', async () => {
+    const cfg = await loadTriggerConfig(
+      makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
+      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
+    );
+    expect(cfg.backend).toBe('self-host-single-node');
+  });
+
+  it('uses cloud URL when backend is cloud', async () => {
+    const cfg = await loadTriggerConfig(
+      makeConfig({ TRIGGERDEV_BACKEND: 'cloud' }),
+      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
+    );
+    expect(cfg.apiUrl).toBe('https://api.trigger.dev');
+  });
+
+  it('throws on invalid TRIGGERDEV_BACKEND value', async () => {
+    await expect(
+      loadTriggerConfig(
+        makeConfig({ TRIGGERDEV_BACKEND: 'invalid-backend', TRIGGERDEV_API_URL: SELF_HOST_URL }),
+        makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
+      ),
+    ).rejects.toThrow("Invalid TRIGGERDEV_BACKEND value: 'invalid-backend'");
+  });
+
+  it('throws when TRIGGERDEV_API_KEY is missing', async () => {
+    await expect(
+      loadTriggerConfig(
+        makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
+        makeSecrets({ TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
+      ),
+    ).rejects.toBeInstanceOf(MissingSecretError);
+  });
+
+  it('throws when TRIGGERDEV_WEBHOOK_SECRET is missing', async () => {
+    await expect(
+      loadTriggerConfig(
+        makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
+        makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY }),
+      ),
+    ).rejects.toBeInstanceOf(MissingSecretError);
+  });
+
+  it('throws when TRIGGERDEV_WEBHOOK_SECRET is shorter than 64 chars', async () => {
+    await expect(
+      loadTriggerConfig(
+        makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
+        makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: 'short' }),
+      ),
+    ).rejects.toThrow('too short');
+  });
+
+  it('accepts a webhook secret of exactly 64 chars', async () => {
+    const cfg = await loadTriggerConfig(
+      makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
+      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: 'b'.repeat(64) }),
+    );
+    expect(cfg.webhookSecret).toHaveLength(64);
+  });
 });

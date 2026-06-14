@@ -437,15 +437,19 @@ stack delivered in Phase 3. The stack definition is `infra/docker-compose.trigge
 
 #### Resource sizing
 
+The shipped `infra/docker-compose.triggerdev.yml` is a **UI-only development stack** — it runs the
+webapp and its dependencies but has no worker, so tasks will queue and never execute. For task
+execution, follow the official self-hosting guide to add a worker/supervisor:
+`https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker`
+
 | Service             | CPU | RAM    | Storage               |
 | ------------------- | --- | ------ | --------------------- |
-| triggerdev-webapp   | 1.0 | 1 GB   | —                     |
-| triggerdev-postgres | 1.0 | 512 MB | persistent volume     |
-| triggerdev-redis    | 0.5 | 256 MB | AOF persistent volume |
-| triggerdev-worker   | 1.0 | 512 MB | —                     |
+| triggerdev-webapp   | 2.0 | 2 GB   | —                     |
+| triggerdev-postgres | 2.0 | 1 GB   | persistent volume     |
+| triggerdev-redis    | 1.0 | 512 MB | AOF persistent volume |
 
-Scale `triggerdev-worker` to 2 replicas for higher throughput; queue concurrency limits enforce
-task-level parallelism independently.
+A worker service is not included in the shipped stack (see compose file header). Resource sizing for
+a worker follows the official Trigger.dev self-hosting guide.
 
 #### Required environment variables
 
@@ -485,7 +489,11 @@ pnpm --filter @minicoder/triggerdev build
 minicoder trigger validate        # confirm all 9 task IDs present
 
 # Direct CLI (until Phase 13 wires minicoder trigger deploy):
-cd packages/triggerdev && TRIGGER_PROJECT_REF=<your-ref> npx trigger.dev@latest deploy --env staging
+# TRIGGER_API_URL must always be set explicitly — omitting it causes the CLI to
+# default to https://api.trigger.dev (Trigger.dev Cloud) regardless of backend config.
+cd packages/triggerdev && \
+  TRIGGER_PROJECT_REF=<your-ref> \
+  npx trigger.dev@latest deploy --env staging --api-url "$TRIGGERDEV_API_URL"
 ```
 
 Or via CI: the `.github/workflows/trigger-deploy.yml` workflow runs on push to the development

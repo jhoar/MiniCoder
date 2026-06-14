@@ -90,7 +90,9 @@ services:
       SESSION_SECRET: '${TRIGGER_SESSION_SECRET}'
       ENCRYPTION_KEY: '${TRIGGER_ENCRYPTION_KEY}'
       # Webhook-secret management: rotate via docs/07-security-and-secrets.md procedure.
-      TRIGGER_WEBHOOK_SECRET: '${TRIGGERDEV_WEBHOOK_SECRET:-}'
+      # No default — startup fails if TRIGGERDEV_WEBHOOK_SECRET is not set, preventing
+      # the webapp from accepting unauthenticated inbound payloads.
+      TRIGGER_WEBHOOK_SECRET: '${TRIGGERDEV_WEBHOOK_SECRET}'
       LOGIN_ORIGIN: 'http://localhost:3040'
       APP_ORIGIN: 'http://localhost:3040'
       DEV_OTEL_EXPORTER_OTLP_ENDPOINT: 'http://triggerdev-webapp:4318'

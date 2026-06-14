@@ -152,26 +152,32 @@ alternative backend (HA cluster or Cloud) selected by configuration only.
 **Harness modules delivered (pending: core-command wiring in Phases 6–8):**
 
 - `packages/triggerdev/` — new package: `TriggerConfig` + `loadTriggerConfig()` (config
-  abstraction for three backends), `linkRunToDb()` + `updateRunStatus()` + `getRunByTriggerdevId()`
+  abstraction for three backends with validated backend string, fail-fast on invalid values),
+  `linkRunToDb()` + `updateRunStatus()` + `getRunByTriggerdevId()`
   (idempotent upsert against the existing `triggerdev_runs` table; retries reuse the original row),
   `MockTriggerRunner` (canonical test seam for unit/integration tests), `ALL_TASK_IDS` constant
   (9 canonical task ID strings), and 9 task `runImpl` stubs (payload-validated via Zod; stub
-  implementations are replaced with real core-command calls in Phases 6–8)
+  implementations are replaced with real core-command calls in Phases 6–8).
+  `loadTriggerConfig()` and `applyTriggerEnv()` have no call sites in Phase 3; they are wired
+  to runtime by Phases 6–8 as core commands are added.
 - `packages/triggerdev/src/triggerdev-tasks.ts` — Trigger.dev task registration entry point; all 9
   tasks registered using `task()` from `@trigger.dev/sdk/v3`; `makeTaskRunner` wrapper parses
   payloads with Zod, handles DB lifecycle (idempotent linkRunToDb / updateRunStatus / close in
   try-finally), and status transitions use canonical `succeeded`/`failed` tokens
 - `packages/triggerdev/trigger.config.ts` — Trigger.dev deployment configuration; project ref from
   `TRIGGER_PROJECT_REF` env var; `dirs` points to `./src` (directory, not file path)
-- `infra/docker-compose.triggerdev.yml` — self-hosted local-development stack (webapp + Postgres +
-  Redis) using verified image tags; v4 production architecture requires the official self-hosting
-  guide (`https://trigger.dev/docs/self-hosting/docker`)
+- `infra/docker-compose.triggerdev.yml` — **UI-only** local-development stack (webapp + Postgres +
+  Redis); no worker/supervisor, so queued tasks do not execute. Task execution requires a
+  worker added per the official self-hosting guide
+  (`https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker`)
 - `.github/workflows/trigger-deploy.yml` — CI/CD workflow: typecheck → build → verify task IDs →
-  deploy with explicit `--env`; CLI accepts `staging` or `prod` (not `production`)
+  deploy with explicit `--env` and `--api-url`; CLI accepts `staging` or `prod` (not `production`);
+  `TRIGGER_API_URL` is required and passed unconditionally — omitting it would silently target Cloud
 - `packages/cli/src/commands/trigger.ts` — `minicoder trigger` command group scaffolded; `validate`
-  and read-only commands (`list-runs`, `inspect-run`) are functional; operational commands
-  (`deploy`, `drain-queue`, `cancel-run`, `replay-run`, `reset-dev`, `reconcile`) exit 1 with
-  "not implemented" until the API layer is wired in Phase 13
+  is functional (reads `ALL_TASK_IDS` from the package); `list-runs` and `inspect-run` return
+  static placeholder JSON only (not live data); all operational commands (`deploy`, `drain-queue`,
+  `cancel-run`, `replay-run`, `reset-dev`, `reconcile`) exit 1 with "not implemented" until the
+  API layer is wired in Phase 13
 - `packages/core/src/fitness/no-domain-logic-in-task-wrappers.test.ts` — extended to scan
   `packages/triggerdev/src/tasks/` and `triggerdev-tasks.ts` for banned domain-logic patterns
 
@@ -183,6 +189,9 @@ alternative backend (HA cluster or Cloud) selected by configuration only.
 - The waitpoint pattern is proven at the in-process level (deferred Promise / external signal); a
   durable Trigger.dev waitpoint test requires a live Trigger.dev environment and is deferred to
   Phase 4's dedicated Trigger.dev integration test job.
+- End-to-end task execution (queued task runs to completion) requires a worker/supervisor added to
+  the compose stack per the official Trigger.dev self-hosting guide; the shipped compose stack is
+  UI-only.
 
 ## Phase 4 — Test Harness and State Lifecycle Tooling
 
