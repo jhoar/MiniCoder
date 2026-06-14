@@ -108,10 +108,12 @@ jobs:
         # for self-host set it to your self-hosted URL. Omitting the var will cause the CLI
         # to error, which is preferable to silently deploying to the wrong endpoint.
         #
-        # NOTE: For self-hosted registries (DEPLOY_REGISTRY_HOST=localhost:5000), this job must
-        # run on a self-hosted runner co-located with the Trigger.dev stack. GitHub-hosted runners
-        # resolve localhost to themselves and cannot reach a local registry. Alternatively, set
-        # DEPLOY_REGISTRY_HOST to an externally-reachable registry URL in environment vars.
+        # Registry note: The CLI pushes task images to DEPLOY_REGISTRY_HOST (set in the
+        # compose stack's env or .env file). The supervisor pulls from DOCKER_REGISTRY_URL
+        # (compose env; defaults to http://triggerdev-registry:5000). For GitHub-hosted runners
+        # both must point to the same externally-reachable registry — set DEPLOY_REGISTRY_HOST
+        # and DOCKER_REGISTRY_URL in your .env before starting the compose stack. Self-hosted
+        # runners co-located with the stack may use the defaults (localhost:5000 / internal).
         run: npx trigger.dev@4.4.6 deploy --env "$DEPLOY_ENV" --api-url "$TRIGGER_API_URL"
         env:
           DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}

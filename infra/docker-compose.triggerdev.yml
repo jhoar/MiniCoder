@@ -31,6 +31,11 @@ version: '3.8'
 #   MINIO_ROOT_USER                — MinIO access key (e.g. "minioadmin")
 #   MINIO_ROOT_PASSWORD            — MinIO secret (openssl rand -hex 16)
 #
+# Optional env vars (override defaults for external registry / CI):
+#   DEPLOY_REGISTRY_HOST — where the CLI pushes task images (default: localhost:5000)
+#   DOCKER_REGISTRY_URL  — where the supervisor pulls task images (default: http://triggerdev-registry:5000)
+#                          Set both to the same externally-reachable registry when using GitHub-hosted runners.
+#
 # All secrets use ${VAR:?message} interpolation — compose exits immediately if any are unset
 # or empty, preventing silent deployment with blank credentials.
 
@@ -234,7 +239,8 @@ services:
       retries: 5
 
   triggerdev-docker-proxy:
-    image: tecnativa/docker-socket-proxy:0.7.0
+    # Pin to an immutable digest for production; :latest is the only widely published tag.
+    image: tecnativa/docker-socket-proxy:latest
     restart: unless-stopped
     environment:
       # Minimum permissions required by the Trigger.dev supervisor.
@@ -280,7 +286,9 @@ services:
       DOCKER_HOST: 'tcp://triggerdev-docker-proxy:2375'
       # Supervisor pulls task images from the internal registry hostname and attaches runner
       # containers to the webapp network so they can reach the Trigger.dev API.
-      DOCKER_REGISTRY_URL: 'http://triggerdev-registry:5000'
+      # When using an external registry for CI, set DOCKER_REGISTRY_URL to the same
+      # registry URL supplied to DEPLOY_REGISTRY_HOST, e.g. http://my-registry.example.com.
+      DOCKER_REGISTRY_URL: '${DOCKER_REGISTRY_URL:-http://triggerdev-registry:5000}'
       DOCKER_RUNNER_NETWORKS: 'minicoder-triggerdev-webapp'
       # Supervisor advertises this hostname to runner containers for the workload API callback.
       # Runners are attached to minicoder-triggerdev-webapp so this must resolve on that network.
@@ -297,7 +305,11 @@ services:
           cpus: '2.0'
           memory: 2G
     healthcheck:
-      test: ['CMD-SHELL', 'curl -f http://localhost:8020/health || exit 1']
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "require(''http'').get(''http://localhost:8020/health'', r => process.exit(r.statusCode === 200 ? 0 : 1))"',
+        ]
       interval: 15s
       timeout: 5s
       retries: 5
