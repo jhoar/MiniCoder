@@ -107,6 +107,11 @@ jobs:
         # is always explicit. For Trigger.dev Cloud set TRIGGER_API_URL=https://api.trigger.dev;
         # for self-host set it to your self-hosted URL. Omitting the var will cause the CLI
         # to error, which is preferable to silently deploying to the wrong endpoint.
-        run: npx trigger.dev@latest deploy --env "$DEPLOY_ENV" --api-url "$TRIGGER_API_URL"
+        #
+        # NOTE: For self-hosted registries (DEPLOY_REGISTRY_HOST=localhost:5000), this job must
+        # run on a self-hosted runner co-located with the Trigger.dev stack. GitHub-hosted runners
+        # resolve localhost to themselves and cannot reach a local registry. Alternatively, set
+        # DEPLOY_REGISTRY_HOST to an externally-reachable registry URL in environment vars.
+        run: npx trigger.dev@4.4.6 deploy --env "$DEPLOY_ENV" --api-url "$TRIGGER_API_URL"
         env:
           DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}

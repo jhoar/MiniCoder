@@ -2,7 +2,8 @@ version: '3.8'
 
 # MiniCoder — Trigger.dev v4 self-hosted single-node stack (full execution)
 #
-# Services (8 total):
+# Services (9 total):
+#   triggerdev-init          — One-shot init: sets /home/node/shared ownership for node uid 1000
 #   triggerdev-postgres      — Trigger.dev state store
 #   triggerdev-redis         — Queue / cache (AOF persistence enabled)
 #   triggerdev-electric      — Real-time sync engine (required by v4 webapp)
@@ -13,7 +14,7 @@ version: '3.8'
 #   triggerdev-docker-proxy  — Secure Docker socket proxy for supervisor
 #
 # Networks:
-#   triggerdev-webapp        — postgres, redis, electric, webapp, registry, minio
+#   triggerdev-webapp        — postgres, redis, electric, webapp, registry, minio, supervisor
 #   triggerdev-supervisor    — webapp, supervisor
 #   triggerdev-docker-proxy  — supervisor, docker-proxy
 #
@@ -34,6 +35,19 @@ version: '3.8'
 # or empty, preventing silent deployment with blank credentials.
 
 services:
+  triggerdev-init:
+    image: alpine:3.19
+    restart: 'no'
+    # Ensures /home/node/shared is owned by uid 1000 (node) before webapp or supervisor start.
+    command: ['chown', '-R', '1000:1000', '/home/node/shared']
+    volumes:
+      - triggerdev-shared:/home/node/shared
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 32M
+
   triggerdev-postgres:
     image: postgres:14
     restart: unless-stopped
@@ -101,9 +115,13 @@ services:
       retries: 5
 
   triggerdev-webapp:
+    # v4-beta is the only published channel while Trigger.dev v4 is in beta.
+    # For production, pin to an immutable digest: ghcr.io/triggerdotdev/trigger.dev@sha256:...
     image: ghcr.io/triggerdotdev/trigger.dev:v4-beta
     restart: unless-stopped
     depends_on:
+      triggerdev-init:
+        condition: service_completed_successfully
       triggerdev-postgres:
         condition: service_healthy
       triggerdev-redis:
@@ -133,8 +151,11 @@ services:
       TRIGGER_BOOTSTRAP_ENABLED: 'true'
       TRIGGER_BOOTSTRAP_WORKER_GROUP_NAME: 'default'
       TRIGGER_BOOTSTRAP_WORKER_TOKEN_PATH: '/home/node/shared/worker_token'
-      # Registry: CLI pushes to localhost:5000 (host-exposed); supervisor pulls from internal name.
-      DEPLOY_REGISTRY_HOST: 'localhost:5000'
+      # Registry: The CLI (running on the host) pushes task images to DEPLOY_REGISTRY_HOST.
+      # For local dev this is localhost:5000. For CI with GitHub-hosted runners, override
+      # DEPLOY_REGISTRY_HOST to an externally-reachable registry (self-hosted runner can use
+      # localhost:5000; hosted runner requires an external registry URL).
+      DEPLOY_REGISTRY_HOST: '${DEPLOY_REGISTRY_HOST:-localhost:5000}'
       DEPLOY_REGISTRY_NAMESPACE: 'trigger'
       OBJECT_STORE_BASE_URL: 'http://triggerdev-minio:9000'
       OBJECT_STORE_ACCESS_KEY_ID: '${MINIO_ROOT_USER:?set MINIO_ROOT_USER}'
@@ -149,8 +170,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 2G
+          cpus: '4.0'
+          memory: 4G
     healthcheck:
       test:
         [
@@ -165,11 +186,12 @@ services:
   triggerdev-registry:
     image: registry:2
     restart: unless-stopped
-    # Port exposed to host so the trigger.dev CLI (running outside Docker) can push task images.
+    # Port bound to 127.0.0.1 so only the local host can push; container-to-container traffic
+    # uses the internal hostname triggerdev-registry:5000.
     # The webapp tells the CLI to push to localhost:5000; the supervisor pulls via the internal
     # container hostname triggerdev-registry:5000.
     ports:
-      - '5000:5000'
+      - '127.0.0.1:5000:5000'
     environment:
       REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
     volumes:
@@ -188,6 +210,7 @@ services:
       retries: 5
 
   triggerdev-minio:
+    # bitnamilegacy/minio:latest — pin to a specific tag for production (check available tags).
     image: bitnamilegacy/minio:latest
     restart: unless-stopped
     environment:
@@ -211,7 +234,7 @@ services:
       retries: 5
 
   triggerdev-docker-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+    image: tecnativa/docker-socket-proxy:0.7.0
     restart: unless-stopped
     environment:
       # Minimum permissions required by the Trigger.dev supervisor.
@@ -236,9 +259,13 @@ services:
       retries: 5
 
   triggerdev-supervisor:
+    # v4-beta is the only published channel while Trigger.dev v4 is in beta.
+    # For production, pin to an immutable digest: ghcr.io/triggerdotdev/supervisor@sha256:...
     image: ghcr.io/triggerdotdev/supervisor:v4-beta
     restart: unless-stopped
     depends_on:
+      triggerdev-init:
+        condition: service_completed_successfully
       triggerdev-webapp:
         condition: service_healthy
       triggerdev-docker-proxy:
@@ -249,22 +276,26 @@ services:
       TRIGGER_WORKER_TOKEN: 'file:///home/node/shared/worker_token'
       MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET:?set TRIGGER_MANAGED_WORKER_SECRET}'
       TRIGGER_API_URL: 'http://triggerdev-webapp:3000'
-      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://triggerdev-webapp:4318'
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://triggerdev-webapp:3000/otel'
       DOCKER_HOST: 'tcp://triggerdev-docker-proxy:2375'
       # Supervisor pulls task images from the internal registry hostname and attaches runner
       # containers to the webapp network so they can reach the Trigger.dev API.
       DOCKER_REGISTRY_URL: 'http://triggerdev-registry:5000'
       DOCKER_RUNNER_NETWORKS: 'minicoder-triggerdev-webapp'
+      # Supervisor advertises this hostname to runner containers for the workload API callback.
+      # Runners are attached to minicoder-triggerdev-webapp so this must resolve on that network.
+      TRIGGER_WORKLOAD_API_DOMAIN: 'triggerdev-supervisor'
     volumes:
       - triggerdev-shared:/home/node/shared
     networks:
+      - triggerdev-webapp
       - triggerdev-supervisor
       - triggerdev-docker-proxy
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 512M
+          cpus: '2.0'
+          memory: 2G
     healthcheck:
       test: ['CMD-SHELL', 'curl -f http://localhost:8020/health || exit 1']
       interval: 15s

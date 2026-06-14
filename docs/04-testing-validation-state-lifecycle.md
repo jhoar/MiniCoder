@@ -281,7 +281,7 @@ Required runbooks:
   **persistent background-worker** drainer alternative (`01-system-specification.md` §6) decouples
   outbox liveness from the scheduler.
 - **Trigger.dev (self-host) operations** — `infra/docker-compose.triggerdev.yml` ships a full v4
-  execution stack (8 services: Postgres, Redis, Electric, webapp, registry, MinIO,
+  execution stack (9 services: init, Postgres, Redis, Electric, webapp, registry, MinIO,
   docker-socket-proxy, supervisor). See the Phase 3 runbook in §11 for the complete resource
   sizing table, required env vars, startup procedure, and upgrade/backup procedures.
 
@@ -432,19 +432,20 @@ stack delivered in Phase 3. The stack definition is `infra/docker-compose.trigge
 
 #### Resource sizing
 
-`infra/docker-compose.triggerdev.yml` ships an 8-service full execution stack. ClickHouse
+`infra/docker-compose.triggerdev.yml` ships a 9-service full execution stack. ClickHouse
 (analytics) is omitted from the development stack (`RUN_REPLICATION_ENABLED=false`).
 
 | Service                 | CPU  | RAM    | Storage               |
 | ----------------------- | ---- | ------ | --------------------- |
+| triggerdev-init         | 0.1  | 32 MB  | shared volume (chown) |
 | triggerdev-postgres     | 2.0  | 1 GB   | persistent volume     |
 | triggerdev-redis        | 1.0  | 512 MB | AOF persistent volume |
 | triggerdev-electric     | 0.5  | 256 MB | —                     |
-| triggerdev-webapp       | 2.0  | 2 GB   | shared volume (token) |
+| triggerdev-webapp       | 4.0  | 4 GB   | shared volume (token) |
 | triggerdev-registry     | 0.5  | 256 MB | persistent volume     |
 | triggerdev-minio        | 0.5  | 512 MB | persistent volume     |
 | triggerdev-docker-proxy | 0.25 | 64 MB  | — (Docker socket ro)  |
-| triggerdev-supervisor   | 1.0  | 512 MB | shared volume (token) |
+| triggerdev-supervisor   | 2.0  | 2 GB   | shared volume (token) |
 
 #### Required environment variables
 
@@ -470,11 +471,12 @@ Preconditions: Docker and Docker Compose are installed; all env vars are set;
 ```bash
 docker compose -f infra/docker-compose.triggerdev.yml up -d
 
-# Wait for all 8 services to become healthy (webapp + supervisor take ~60s to bootstrap)
+# Wait for all services to become healthy (webapp + supervisor take ~60s to bootstrap)
+# triggerdev-init exits immediately (service_completed_successfully); the remaining 8 run continuously.
 docker compose -f infra/docker-compose.triggerdev.yml ps
 ```
 
-Expected: all 8 services `Up (healthy)` or `Up`. The webapp auto-bootstraps on first start,
+Expected: `triggerdev-init` shows `Exited (0)`; all 8 remaining services `Up (healthy)` or `Up`. The webapp auto-bootstraps on first start,
 creates a default worker group, and writes the worker token to the shared volume. The supervisor
 reads this token and connects. Open `http://localhost:3040` to verify the webapp and confirm
 the worker appears in the Workers section.
@@ -497,11 +499,17 @@ minicoder trigger validate        # confirm all 9 task IDs present
 # default to https://api.trigger.dev (Trigger.dev Cloud) regardless of backend config.
 cd packages/triggerdev && \
   TRIGGER_PROJECT_REF=<your-ref> \
-  npx trigger.dev@latest deploy --env staging --api-url "$TRIGGERDEV_API_URL"
+  npx trigger.dev@4.4.6 deploy --env staging --api-url "$TRIGGERDEV_API_URL"
 ```
 
 Or via CI: the `.github/workflows/trigger-deploy.yml` workflow runs on push to the development
 branch and deploys to `staging` by default; `prod` requires a manual workflow dispatch.
+
+> **CI registry constraint:** The deploy-tasks job pushes task images to `DEPLOY_REGISTRY_HOST`
+> (default `localhost:5000`). GitHub-hosted runners resolve `localhost` to themselves, not to
+> the self-hosted Trigger.dev stack. For CI deployments either: (a) use a self-hosted runner
+> co-located with the stack, or (b) set `DEPLOY_REGISTRY_HOST` to an externally-reachable
+> registry URL in the environment's variable settings.
 
 #### Procedure: Queue drain (CI / pre-deploy)
 
