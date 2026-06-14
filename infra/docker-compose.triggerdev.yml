@@ -1,41 +1,38 @@
 version: '3.8'
 
-# MiniCoder — Trigger.dev self-hosted development UI stack (UI-only — no task execution)
+# MiniCoder — Trigger.dev v4 self-hosted single-node stack (full execution)
 #
-# This stack ships the Trigger.dev webapp, its Postgres state store, and Redis queue.
-# It does NOT include a worker/supervisor, so tasks queued from this environment will
-# queue indefinitely and never execute. Use this stack to:
-#   - Browse run history via the Trigger.dev webapp (http://localhost:3040)
-#   - Inspect DB state during local development
-#   - Run `minicoder trigger validate` (static check, no worker required)
+# Services (8 total):
+#   triggerdev-postgres      — Trigger.dev state store
+#   triggerdev-redis         — Queue / cache (AOF persistence enabled)
+#   triggerdev-electric      — Real-time sync engine (required by v4 webapp)
+#   triggerdev-webapp        — Trigger.dev webapp UI + API (http://localhost:3040)
+#   triggerdev-registry      — Docker registry for task images
+#   triggerdev-minio         — Object storage for task payloads and artifacts
+#   triggerdev-supervisor    — Task executor (the worker)
+#   triggerdev-docker-proxy  — Secure Docker socket proxy for supervisor
 #
-# TASK EXECUTION requires the worker component. Trigger.dev v4 self-hosting needs a
-# materially different architecture (supervisor image, Docker socket proxy, task registry,
-# object storage). Follow the official guide before adding a worker:
-#   https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker
+# Networks:
+#   triggerdev-webapp        — postgres, redis, electric, webapp, registry, minio
+#   triggerdev-supervisor    — webapp, supervisor
+#   triggerdev-docker-proxy  — supervisor, docker-proxy
 #
-# Services:
-#   triggerdev-postgres — Trigger.dev state store
-#   triggerdev-redis    — Queue / cache (AOF persistence enabled)
-#   triggerdev-webapp   — Trigger.dev webapp UI (http://localhost:3040)
+# Startup: `docker compose -f infra/docker-compose.triggerdev.yml up -d`
+# The webapp bootstraps automatically and writes a worker token to the shared volume.
+# The supervisor waits for the token file before starting.
 #
-# Resource sizing (single-node development minimum):
-#   postgres: 2 CPU / 1 GB RAM
-#   redis:    1 CPU / 512 MB RAM
-#   webapp:   2 CPU / 2 GB RAM
-#
-# Usage:
-#   docker compose -f infra/docker-compose.triggerdev.yml up -d
-#
-# Required env vars (set in .env or via shell):
-#   TRIGGER_MAGIC_LINK_SECRET  — random secret for magic-link auth
-#   TRIGGER_ENCRYPTION_KEY     — 32-byte hex key for payload encryption
-#   TRIGGER_SESSION_SECRET     — random secret for session cookies
-#   TRIGGERDEV_WEBHOOK_SECRET  — MiniCoder verifies inbound webhook payloads with this
+# Required env vars (set in .env or via shell — generate secrets with openssl rand -hex 32):
+#   TRIGGER_MAGIC_LINK_SECRET      — random secret for magic-link auth
+#   TRIGGER_ENCRYPTION_KEY         — 32-byte hex key for payload encryption
+#   TRIGGER_SESSION_SECRET         — random secret for session cookies
+#   TRIGGER_MANAGED_WORKER_SECRET  — shared secret between webapp and supervisor
+#   TRIGGERDEV_WEBHOOK_SECRET      — MiniCoder verifies inbound webhook payloads with this
+#   MINIO_ROOT_USER                — MinIO access key (e.g. "minioadmin")
+#   MINIO_ROOT_PASSWORD            — MinIO secret (openssl rand -hex 16)
 
 services:
   triggerdev-postgres:
-    image: postgres:16
+    image: postgres:14
     restart: unless-stopped
     environment:
       POSTGRES_USER: trigger
@@ -43,6 +40,8 @@ services:
       POSTGRES_DB: trigger
     volumes:
       - triggerdev-postgres-data:/var/lib/postgresql/data
+    networks:
+      - triggerdev-webapp
     deploy:
       resources:
         limits:
@@ -55,11 +54,13 @@ services:
       retries: 5
 
   triggerdev-redis:
-    image: redis:7-alpine
+    image: redis:7
     restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:
       - triggerdev-redis-data:/data
+    networks:
+      - triggerdev-webapp
     deploy:
       resources:
         limits:
@@ -71,18 +72,44 @@ services:
       timeout: 5s
       retries: 5
 
+  triggerdev-electric:
+    image: electricsql/electric:1.2.4
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
+      ELECTRIC_INSECURE: 'true'
+      ELECTRIC_USAGE_REPORTING: 'false'
+    depends_on:
+      triggerdev-postgres:
+        condition: service_healthy
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:3000/v1/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   triggerdev-webapp:
-    image: ghcr.io/triggerdotdev/trigger.dev:latest
+    image: ghcr.io/triggerdotdev/trigger.dev:v4-beta
     restart: unless-stopped
     depends_on:
       triggerdev-postgres:
         condition: service_healthy
       triggerdev-redis:
         condition: service_healthy
+      triggerdev-electric:
+        condition: service_healthy
     ports:
       - '3040:3000'
     environment:
       DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
+      DIRECT_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
       REDIS_TLS_DISABLED: 'true'
       REDIS_HOST: triggerdev-redis
       REDIS_PORT: '6379'
@@ -90,22 +117,154 @@ services:
       SESSION_SECRET: '${TRIGGER_SESSION_SECRET}'
       ENCRYPTION_KEY: '${TRIGGER_ENCRYPTION_KEY}'
       # Webhook-secret management: rotate via docs/07-security-and-secrets.md procedure.
-      # No default — startup fails if TRIGGERDEV_WEBHOOK_SECRET is not set, preventing
-      # the webapp from accepting unauthenticated inbound payloads.
+      # No default — startup fails if TRIGGERDEV_WEBHOOK_SECRET is not set.
       TRIGGER_WEBHOOK_SECRET: '${TRIGGERDEV_WEBHOOK_SECRET}'
-      LOGIN_ORIGIN: 'http://localhost:3040'
       APP_ORIGIN: 'http://localhost:3040'
-      DEV_OTEL_EXPORTER_OTLP_ENDPOINT: 'http://triggerdev-webapp:4318'
+      LOGIN_ORIGIN: 'http://localhost:3040'
+      API_ORIGIN: 'http://localhost:3040'
+      ELECTRIC_ORIGIN: 'http://triggerdev-electric:3000'
+      # Worker bootstrap: auto-creates a worker group and writes the token to the shared volume.
+      # The supervisor reads the token from the same path.
+      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET}'
+      TRIGGER_BOOTSTRAP_ENABLED: 'true'
+      TRIGGER_BOOTSTRAP_WORKER_GROUP_NAME: 'default'
+      TRIGGER_BOOTSTRAP_WORKER_TOKEN_PATH: '/home/node/shared/worker-token'
+      # Registry and object storage for task images and payloads.
+      DEPLOY_REGISTRY_HOST: 'triggerdev-registry:5000'
+      DEPLOY_REGISTRY_NAMESPACE: 'trigger'
+      OBJECT_STORE_BASE_URL: 'http://triggerdev-minio:9000'
+      OBJECT_STORE_ACCESS_KEY_ID: '${MINIO_ROOT_USER}'
+      OBJECT_STORE_SECRET_ACCESS_KEY: '${MINIO_ROOT_PASSWORD}'
+      # Disable run replication (ClickHouse analytics) for the development stack.
+      RUN_REPLICATION_ENABLED: 'false'
+    volumes:
+      - triggerdev-shared:/home/node/shared
+    networks:
+      - triggerdev-webapp
+      - triggerdev-supervisor
     deploy:
       resources:
         limits:
           cpus: '2.0'
           memory: 2G
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "require(''http'').get(''http://localhost:3000/healthcheck'', r => process.exit(r.statusCode === 200 ? 0 : 1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  triggerdev-registry:
+    image: registry:2
+    restart: unless-stopped
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+    volumes:
+      - triggerdev-registry-data:/var/lib/registry
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://localhost:5000/ || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-minio:
+    image: bitnamilegacy/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: '${MINIO_ROOT_USER}'
+      MINIO_ROOT_PASSWORD: '${MINIO_ROOT_PASSWORD}'
+      MINIO_DEFAULT_BUCKETS: 'trigger'
+      MINIO_BROWSER: 'off'
+    volumes:
+      - triggerdev-minio-data:/bitnami/minio/data
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:9000/minio/health/live || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      # Allow only what the supervisor needs to launch and manage task containers.
+      CONTAINERS: '1'
+      POST: '1'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - triggerdev-docker-proxy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
+    healthcheck:
+      test: ['CMD-SHELL', 'nc -z localhost 2375 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-supervisor:
+    image: ghcr.io/triggerdotdev/supervisor:v4-beta
+    restart: unless-stopped
+    depends_on:
+      triggerdev-webapp:
+        condition: service_healthy
+      triggerdev-docker-proxy:
+        condition: service_healthy
+    environment:
+      # Reads the worker token written by webapp bootstrap from the shared volume.
+      TRIGGER_WORKER_TOKEN_FILE: '/home/node/shared/worker-token'
+      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET}'
+      TRIGGER_API_URL: 'http://triggerdev-webapp:3000'
+      DOCKER_HOST: 'tcp://triggerdev-docker-proxy:2375'
+    volumes:
+      - triggerdev-shared:/home/node/shared
+    networks:
+      - triggerdev-supervisor
+      - triggerdev-docker-proxy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:8020/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   triggerdev-postgres-data:
   triggerdev-redis-data:
+  triggerdev-registry-data:
+  triggerdev-minio-data:
+  triggerdev-shared:
 
 networks:
-  default:
-    name: minicoder-triggerdev
+  triggerdev-webapp:
+    name: minicoder-triggerdev-webapp
+  triggerdev-supervisor:
+    name: minicoder-triggerdev-supervisor
+  triggerdev-docker-proxy:
+    name: minicoder-triggerdev-docker-proxy

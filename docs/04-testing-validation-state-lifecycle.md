@@ -269,16 +269,17 @@ Required runbooks:
   **destructive column-change recipe**: SQLite's create-new-table → copy → drop → rename rebuild
   pattern (SQLite has limited `ALTER`), with the PostgreSQL equivalent. **Dialect-specific DDL is
   forbidden outside an approved migration helper**, keeping one migration set valid on both targets.
-- **Local footprint** — `infra/docker-compose.triggerdev.yml` ships a **UI-only** development
-  stack (Postgres + Redis + webapp, v3 images). It has no worker/supervisor, so tasks will queue
-  but never execute; use it to browse the webapp and inspect DB state only. Even this "local SQLite"
-  install therefore requires two additional Docker services (Trigger.dev's Postgres and Redis). Full
-  v4 self-hosting (with task execution) requires additional services (supervisor, Docker socket
-  proxy, task registry, object storage) — follow the official guide at
-  `https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker` before adding a worker or
-  deploying to production. The default outbox drainer is a Trigger.dev scheduled task, so outbox
-  liveness inherits the single-node SPOF; the **persistent background-worker** drainer alternative
-  (`01-system-specification.md` §6) decouples outbox liveness from the scheduler.
+- **Local footprint** — `infra/docker-compose.triggerdev.yml` ships a full **8-service v4
+  execution stack**: Postgres, Redis, Electric (sync), webapp, Docker registry, MinIO (object
+  store), docker-socket-proxy, and supervisor (worker). Even a "local SQLite" install therefore
+  runs 8 additional Docker services. The supervisor uses the Docker socket (via the proxy) to
+  launch task containers, so the host Docker daemon must be running. ClickHouse (analytics) is
+  omitted from the development stack (`RUN_REPLICATION_ENABLED=false`); add it for production
+  following the official guide at
+  `https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker`. The default outbox
+  drainer is a Trigger.dev scheduled task, so outbox liveness inherits the single-node SPOF; the
+  **persistent background-worker** drainer alternative (`01-system-specification.md` §6) decouples
+  outbox liveness from the scheduler.
 - **Trigger.dev (self-host) operations** — resource sizing for the shipped v3 development stack:
 
   | Service  | CPU | RAM    |
@@ -437,43 +438,52 @@ stack delivered in Phase 3. The stack definition is `infra/docker-compose.trigge
 
 #### Resource sizing
 
-The shipped `infra/docker-compose.triggerdev.yml` is a **UI-only development stack** — it runs the
-webapp and its dependencies but has no worker, so tasks will queue and never execute. For task
-execution, follow the official self-hosting guide to add a worker/supervisor:
-`https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker`
+`infra/docker-compose.triggerdev.yml` ships an 8-service full execution stack. ClickHouse
+(analytics) is omitted from the development stack (`RUN_REPLICATION_ENABLED=false`).
 
-| Service             | CPU | RAM    | Storage               |
-| ------------------- | --- | ------ | --------------------- |
-| triggerdev-webapp   | 2.0 | 2 GB   | —                     |
-| triggerdev-postgres | 2.0 | 1 GB   | persistent volume     |
-| triggerdev-redis    | 1.0 | 512 MB | AOF persistent volume |
-
-A worker service is not included in the shipped stack (see compose file header). Resource sizing for
-a worker follows the official Trigger.dev self-hosting guide.
+| Service                 | CPU  | RAM    | Storage               |
+| ----------------------- | ---- | ------ | --------------------- |
+| triggerdev-postgres     | 2.0  | 1 GB   | persistent volume     |
+| triggerdev-redis        | 1.0  | 512 MB | AOF persistent volume |
+| triggerdev-electric     | 0.5  | 256 MB | —                     |
+| triggerdev-webapp       | 2.0  | 2 GB   | shared volume (token) |
+| triggerdev-registry     | 0.5  | 256 MB | persistent volume     |
+| triggerdev-minio        | 0.5  | 512 MB | persistent volume     |
+| triggerdev-docker-proxy | 0.25 | 64 MB  | — (Docker socket ro)  |
+| triggerdev-supervisor   | 1.0  | 512 MB | shared volume (token) |
 
 #### Required environment variables
 
-| Variable                    | Description                                 |
-| --------------------------- | ------------------------------------------- |
-| `TRIGGER_MAGIC_LINK_SECRET` | Random secret for magic-link auth           |
-| `TRIGGER_SESSION_SECRET`    | Random secret for session cookies           |
-| `TRIGGER_ENCRYPTION_KEY`    | 32-byte hex key for payload encryption      |
-| `TRIGGERDEV_API_KEY`        | Project API key (created in the webapp)     |
-| `TRIGGERDEV_API_URL`        | Self-host URL, e.g. `http://localhost:3040` |
-| `TRIGGERDEV_WEBHOOK_SECRET` | Webhook signing secret — rotate per §7 docs |
+Generate all secrets with `openssl rand -hex 32` unless noted otherwise.
+
+| Variable                        | Description                                           |
+| ------------------------------- | ----------------------------------------------------- |
+| `TRIGGER_MAGIC_LINK_SECRET`     | Random secret for magic-link auth                     |
+| `TRIGGER_SESSION_SECRET`        | Random secret for session cookies                     |
+| `TRIGGER_ENCRYPTION_KEY`        | 32-byte hex key for payload encryption                |
+| `TRIGGER_MANAGED_WORKER_SECRET` | Shared secret between webapp and supervisor           |
+| `TRIGGERDEV_WEBHOOK_SECRET`     | Webhook signing secret — rotate per §7 docs           |
+| `MINIO_ROOT_USER`               | MinIO access key (e.g. `minioadmin`)                  |
+| `MINIO_ROOT_PASSWORD`           | MinIO secret — `openssl rand -hex 16`                 |
+| `TRIGGERDEV_API_KEY`            | Project API key (created in the webapp after startup) |
+| `TRIGGERDEV_API_URL`            | Self-host URL, e.g. `http://localhost:3040`           |
 
 #### Procedure: Start the self-hosted stack
 
-Preconditions: Docker and Docker Compose are installed; env vars are set.
+Preconditions: Docker and Docker Compose are installed; all env vars are set;
+`/var/run/docker.sock` is accessible (required by `triggerdev-docker-proxy`).
 
 ```bash
 docker compose -f infra/docker-compose.triggerdev.yml up -d
 
-# Wait for health checks
+# Wait for all 8 services to become healthy (webapp + supervisor take ~60s to bootstrap)
 docker compose -f infra/docker-compose.triggerdev.yml ps
 ```
 
-Expected: all services `Up (healthy)` or `Up`. Open `http://localhost:3040` for the webapp.
+Expected: all 8 services `Up (healthy)` or `Up`. The webapp auto-bootstraps on first start,
+creates a default worker group, and writes the worker token to the shared volume. The supervisor
+reads this token and connects. Open `http://localhost:3040` to verify the webapp and confirm
+the worker appears in the Workers section.
 
 > **CLI command status (Phase 3):**
 >
@@ -579,10 +589,10 @@ see `07-security-and-secrets.md` for the overlap procedure.
 
 #### Diagnostics and known failure modes
 
-| Symptom                                 | Likely cause                        | Resolution                                                                              |
-| --------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------- |
-| Tasks not appearing after deploy        | Build or deploy step failed         | Run `minicoder trigger validate`; check CI logs                                         |
-| Run stuck in `running`                  | Worker crashed mid-run              | Cancel via Trigger.dev webapp; re-enqueue from webapp (CLI cancel/replay pending Ph 13) |
-| DB row status `running` but no live run | Orphaned row from crash             | Manually update the `triggerdev_runs` row; `minicoder trigger reconcile` pending Ph 13  |
-| `TRIGGER_SECRET_KEY not set`            | Env var missing                     | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv`                                     |
-| Webhook signature mismatch              | `TRIGGERDEV_WEBHOOK_SECRET` rotated | Update secret in all services simultaneously                                            |
+| Symptom                                 | Likely cause                        | Resolution                                                                             |
+| --------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------- |
+| Tasks not appearing after deploy        | Build or deploy step failed         | Run `minicoder trigger validate`; check CI logs                                        |
+| Run stuck in `running`                  | Supervisor crashed mid-run          | Cancel via Trigger.dev webapp; check `docker compose logs triggerdev-supervisor`       |
+| DB row status `running` but no live run | Orphaned row from crash             | Manually update the `triggerdev_runs` row; `minicoder trigger reconcile` pending Ph 13 |
+| `TRIGGER_SECRET_KEY not set`            | Env var missing                     | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv`                                    |
+| Webhook signature mismatch              | `TRIGGERDEV_WEBHOOK_SECRET` rotated | Update secret in all services simultaneously                                           |
