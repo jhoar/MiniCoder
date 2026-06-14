@@ -15,7 +15,10 @@ import * as path from 'path';
 
 const WORKFLOW_SRC = path.resolve(__dirname, '../../../../workflow/src');
 const TRIGGERDEV_TASKS_SRC = path.resolve(__dirname, '../../../../triggerdev/src/tasks');
-const TRIGGERDEV_WRAPPER_SRC = path.resolve(__dirname, '../../../../triggerdev/src/triggerdev-tasks.ts');
+const TRIGGERDEV_WRAPPER_SRC = path.resolve(
+  __dirname,
+  '../../../../triggerdev/src/triggerdev-tasks.ts',
+);
 
 const BANNED_PATTERNS = [
   { pattern: 'StateTransitionValidator', description: 'StateTransitionValidator import' },

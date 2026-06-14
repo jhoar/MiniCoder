@@ -103,6 +103,13 @@ jobs:
         working-directory: packages/triggerdev
         # trigger.dev is the official CLI binary (not 'trigger'). --env is explicit so
         # the CLI default (production) is never assumed — staging is the safe default.
-        run: npx trigger.dev@latest deploy --env "$DEPLOY_ENV"
+        # TRIGGER_API_URL must be passed via --api-url; the env var alone is not honoured
+        # by the CLI and the deploy would otherwise target https://api.trigger.dev.
+        run: |
+          EXTRA_FLAGS=""
+          if [ -n "$TRIGGER_API_URL" ]; then
+            EXTRA_FLAGS="--api-url $TRIGGER_API_URL"
+          fi
+          npx trigger.dev@latest deploy --env "$DEPLOY_ENV" $EXTRA_FLAGS
         env:
           DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}

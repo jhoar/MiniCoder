@@ -6,10 +6,14 @@ export interface TriggerConfig {
   backend: TriggerBackend;
   apiUrl: string;
   apiKey: string;
-  webhookSecret?: string;
+  webhookSecret: string;
 }
 
 const CLOUD_API_URL = 'https://api.trigger.dev';
+
+// Minimum entropy for HMAC webhook secrets (docs/07-security-and-secrets.md §123).
+// openssl rand -hex 32 produces 64 hex chars (32 bytes of entropy).
+const WEBHOOK_SECRET_MIN_LENGTH = 32;
 
 /**
  * Load Trigger.dev configuration.
@@ -28,11 +32,15 @@ export async function loadTriggerConfig(
 
   const apiKey = await secrets.get('TRIGGERDEV_API_KEY');
 
-  let webhookSecret: string | undefined;
-  try {
-    webhookSecret = await secrets.get('TRIGGERDEV_WEBHOOK_SECRET');
-  } catch {
-    webhookSecret = undefined;
+  // Backend errors propagate: a missing or backend-error secret must not silently disable
+  // webhook verification, as that would allow unauthenticated inbound payloads.
+  const webhookSecret = await secrets.get('TRIGGERDEV_WEBHOOK_SECRET');
+  if (webhookSecret.length < WEBHOOK_SECRET_MIN_LENGTH) {
+    throw new Error(
+      `TRIGGERDEV_WEBHOOK_SECRET is too short (${webhookSecret.length} chars). ` +
+        `Minimum is ${WEBHOOK_SECRET_MIN_LENGTH} chars. ` +
+        `Generate with: openssl rand -hex 32`,
+    );
   }
 
   return { backend, apiUrl, apiKey, webhookSecret };

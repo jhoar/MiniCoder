@@ -9,9 +9,7 @@ export interface StartNextFeatureResult {
 }
 
 /** Orchestrator Core command invocation wired in Phase 8. */
-export async function runImpl(
-  payload: StartNextFeaturePayload,
-): Promise<StartNextFeatureResult> {
+export async function runImpl(payload: StartNextFeaturePayload): Promise<StartNextFeatureResult> {
   return {
     projectId: payload.projectId,
     featureRunId: payload.featureRunId ?? null,

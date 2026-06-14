@@ -269,11 +269,13 @@ Required runbooks:
   **destructive column-change recipe**: SQLite's create-new-table → copy → drop → rename rebuild
   pattern (SQLite has limited `ALTER`), with the PostgreSQL equivalent. **Dialect-specific DDL is
   forbidden outside an approved migration helper**, keeping one migration set valid on both targets.
-- **Local footprint** — `infra/docker-compose.triggerdev.yml` ships a minimal **Postgres + Redis +
-  webapp** (v3) development stack; even a "local SQLite" install therefore runs two additional
-  services (Trigger.dev's Postgres and Redis). Full v4 self-hosting requires additional services
-  (supervisor, Docker socket proxy, task registry, object storage) — follow the official guide at
-  `https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker` before upgrading or
+- **Local footprint** — `infra/docker-compose.triggerdev.yml` ships a **UI-only** development
+  stack (Postgres + Redis + webapp, v3 images). It has no worker/supervisor, so tasks will queue
+  but never execute; use it to browse the webapp and inspect DB state only. Even this "local SQLite"
+  install therefore requires two additional Docker services (Trigger.dev's Postgres and Redis). Full
+  v4 self-hosting (with task execution) requires additional services (supervisor, Docker socket
+  proxy, task registry, object storage) — follow the official guide at
+  `https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker` before adding a worker or
   deploying to production. The default outbox drainer is a Trigger.dev scheduled task, so outbox
   liveness inherits the single-node SPOF; the **persistent background-worker** drainer alternative
   (`01-system-specification.md` §6) decouples outbox liveness from the scheduler.
@@ -529,7 +531,8 @@ docker compose -f infra/docker-compose.triggerdev.yml up -d
 
 #### Procedure: Version upgrade of the self-hosted stack
 
-1. Check for active runs: `minicoder trigger list-runs --limit 50`
+1. Check for active runs: inspect the Trigger.dev webapp run list at http://localhost:3040
+   (`minicoder trigger list-runs` returns placeholder JSON only; use the webapp for live status)
 2. Wait for all runs to complete (monitor via Trigger.dev webapp)
 3. Update the image tag in `infra/docker-compose.triggerdev.yml`
 4. `docker compose -f infra/docker-compose.triggerdev.yml pull`
@@ -568,10 +571,10 @@ see `07-security-and-secrets.md` for the overlap procedure.
 
 #### Diagnostics and known failure modes
 
-| Symptom                                 | Likely cause                        | Resolution                                          |
-| --------------------------------------- | ----------------------------------- | --------------------------------------------------- |
-| Tasks not appearing after deploy        | Build or deploy step failed         | Run `minicoder trigger validate`; check CI logs     |
-| Run stuck in `running`                  | Worker crashed mid-run              | `trigger cancel-run <id>` then `replay-run`         |
-| DB row status `running` but no live run | Orphaned row from crash             | `trigger reconcile`, then manual row update         |
-| `TRIGGER_SECRET_KEY not set`            | Env var missing                     | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv` |
-| Webhook signature mismatch              | `TRIGGERDEV_WEBHOOK_SECRET` rotated | Update secret in all services simultaneously        |
+| Symptom                                 | Likely cause                        | Resolution                                                                              |
+| --------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------- |
+| Tasks not appearing after deploy        | Build or deploy step failed         | Run `minicoder trigger validate`; check CI logs                                         |
+| Run stuck in `running`                  | Worker crashed mid-run              | Cancel via Trigger.dev webapp; re-enqueue from webapp (CLI cancel/replay pending Ph 13) |
+| DB row status `running` but no live run | Orphaned row from crash             | Manually update the `triggerdev_runs` row; `minicoder trigger reconcile` pending Ph 13  |
+| `TRIGGER_SECRET_KEY not set`            | Env var missing                     | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv`                                     |
+| Webhook signature mismatch              | `TRIGGERDEV_WEBHOOK_SECRET` rotated | Update secret in all services simultaneously                                            |
