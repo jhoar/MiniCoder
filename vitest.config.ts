@@ -21,6 +21,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    pool: 'forks',
     include: ['packages/*/src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
