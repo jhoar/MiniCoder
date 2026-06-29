@@ -54,10 +54,6 @@ describe('MockTriggerRunner', () => {
     runner = new MockTriggerRunner(db);
   });
 
-  afterEach(async () => {
-    await db.close();
-  });
-
   it('writes triggerdev_runs row and updates status to completed on success', async () => {
     const { runId } = await runner.run(
       'planning-readiness-assessment',
@@ -207,10 +203,6 @@ describe('all 9 tasks write triggerdev_runs rows via MockTriggerRunner', () => {
     insertTestProject(testDb);
     db = testDb;
     runner = new MockTriggerRunner(db);
-  });
-
-  afterEach(async () => {
-    await db.close();
   });
 
   const cases: Array<[string, () => Promise<void>]> = [];
@@ -416,7 +408,7 @@ describe('assertSchemaReady', () => {
   it('resolves when triggerdev_runs table exists (migrated DB)', async () => {
     const db = createTestDb();
     await expect(assertSchemaReady(db)).resolves.toBeUndefined();
-    await db.close();
+    // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
   });
 
   it('throws with a clear message on an unmigrated DB', async () => {
@@ -425,6 +417,6 @@ describe('assertSchemaReady', () => {
     const raw = new Database(':memory:');
     const db = new SqliteDbClient(raw);
     await expect(assertSchemaReady(db)).rejects.toThrow('triggerdev_runs table not found');
-    await db.close();
+    // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
   });
 });
