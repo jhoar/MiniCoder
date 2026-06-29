@@ -1,4 +1,5 @@
 export * from './config.js';
+export * from './db.js';
 export * from './metadata.js';
 export * from './mock-runner.js';
 export * from './task-ids.js';

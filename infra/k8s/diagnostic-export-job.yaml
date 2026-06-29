@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minicoder-diagnostic-export
+  labels:
+    app: minicoder
+    component: diagnostics
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: minicoder
+        component: diagnostics
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: diagnostics-output
+          emptyDir: {}
+      containers:
+        - name: diagnostic-export
+          image: minicoder:latest
+          command:
+            - node
+            - packages/cli/dist/index.js
+            - state
+            - export-diagnostics
+            - --output
+            - /diagnostics/report.json
+          volumeMounts:
+            - name: diagnostics-output
+              mountPath: /diagnostics
+          env:
+            - name: DB_DIALECT
+              valueFrom:
+                secretKeyRef:
+                  name: minicoder-db-secret
+                  key: dialect
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: minicoder-db-secret
+                  key: url
+            - name: APP_ENV
+              value: production

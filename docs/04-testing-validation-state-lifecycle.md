@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.2.1
+> Version: 1.3.0
 > Last-updated: 2026-06-29
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -610,3 +610,247 @@ see `07-security-and-secrets.md` for the overlap procedure.
 | DB row status `running` but no live run | Orphaned row from crash             | Manually update the `triggerdev_runs` row; `minicoder trigger reconcile` pending Ph 13 |
 | `TRIGGER_SECRET_KEY not set`            | Env var missing                     | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv`                                    |
 | Webhook signature mismatch              | `TRIGGERDEV_WEBHOOK_SECRET` rotated | Update secret in all services simultaneously                                           |
+
+---
+
+## 12. Phase 4 Runbook — Test Harness and State Lifecycle Tooling
+
+This section documents the operational procedures added in Phase 4.
+
+### 12.1 Seeding the Database
+
+Insert a named fixture into the database (development/test/CI only):
+
+```bash
+# Insert the planning-review-merge fixture (default)
+minicoder db seed --env development
+
+# Insert a specific fixture
+minicoder db seed --fixture clarification-required --env development
+
+# Insert with a custom project ID
+minicoder db seed --fixture backlog-activation --project my-proj --env development
+```
+
+Available fixture names:
+- `planning-basic` — project, spec, assessment (sufficient), plan (draft)
+- `planning-review-merge` — full happy-path: project, spec, plan (approved), 5 features at `approved_pending_execution`
+- `clarification-required` — project, spec, assessment (insufficient), 2 unanswered questions
+- `backlog-activation` — project, plan (approved), 3 features at `approved_pending_execution`
+- `review-loop` — feature at `under_review`, 2 blocking findings
+- `merge-gate` — feature at `merge_ready`, 1 approved MergeGateEvaluation
+- `trigger-retry` — feature at `selected`, triggerdev_runs row at `failed`
+- `github-race` — feature at `ci_running`, inbox_events row with `pr.closed`
+- `final-design-document` — project (implementation_complete), artifact_exports (pending), design_documents row
+
+### 12.2 Database Snapshot and Restore
+
+Snapshot the SQLite database (SQLite only; use `pg_dump` for PostgreSQL):
+
+```bash
+# Take a snapshot
+minicoder db snapshot --output ./backup-2026-06-29.db
+
+# Restore from a snapshot (dev/CI only)
+minicoder db restore --input ./backup-2026-06-29.db --yes --env development
+```
+
+A JSON sidecar file (`<output>.meta.json`) is written alongside the snapshot with metadata.
+
+### 12.3 Migration Diff
+
+List pending migrations not yet applied to the database:
+
+```bash
+minicoder db diff
+```
+
+Output includes applied migrations, pending migrations, and an `upToDate` flag.
+
+### 12.4 GitHub Event Simulation
+
+Simulate GitHub events to drive the inbox processor (development/test/CI only):
+
+```bash
+# Simulate PR opened
+minicoder github simulate-pr-opened --project proj-1 --pr-number 42 --head-sha abc123
+
+# Simulate CI check passed
+minicoder github simulate-check-passed --project proj-1 --pr-number 42 --check-name ci/test
+
+# Simulate CI check failed
+minicoder github simulate-check-failed --project proj-1 --pr-number 42
+
+# Simulate review approved
+minicoder github simulate-review-approved --project proj-1 --pr-number 42 --reviewer alice
+
+# Simulate review requesting changes
+minicoder github simulate-review-changes-requested --project proj-1 --pr-number 42 --reviewer alice
+
+# Simulate PR merged
+minicoder github simulate-pr-merged --project proj-1 --pr-number 42 --merge-sha def456
+
+# Simulate PR closed (without merge)
+minicoder github simulate-pr-closed --project proj-1 --pr-number 42
+
+# Simulate branch protection OK
+minicoder github simulate-branch-protection-ok --project proj-1 --pr-number 42
+```
+
+Each command inserts a row into `inbox_events` and prints a JSON confirmation.
+
+### 12.5 Running System Scenarios
+
+Run all system scenarios against an in-memory SQLite database:
+
+```bash
+DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci minicoder test system
+```
+
+Run a single named scenario:
+
+```bash
+DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci minicoder test scenario planning-basic
+DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci minicoder test scenario clarification-required
+```
+
+Available scenario names mirror the fixture names. All 8 scenarios are registered in `SCENARIO_REGISTRY`.
+
+### 12.6 State Doctor
+
+Detect anomalies in workflow state:
+
+```bash
+# Check all projects
+minicoder state doctor
+
+# Check a specific project
+minicoder state doctor --project proj-1
+```
+
+The doctor runs 5 checks:
+
+| Check | Severity | Auto-clearable |
+|-------|----------|---------------|
+| `stale_locks` | error | yes |
+| `stuck_outbox` | error | yes |
+| `stuck_inbox` | error | yes |
+| `orphaned_runs` | error | manually repairable |
+| `triggerdev_mismatch` | warning | no (Phase 13) |
+
+Exits with code 1 if any error-severity issues are found.
+
+#### Interpreting Output
+
+```json
+{
+  "command": "state doctor",
+  "healthy": false,
+  "checks": [
+    { "name": "stale_locks", "severity": "error", "autoClearable": true, "count": 2 },
+    { "name": "stuck_outbox", "severity": "ok", "count": 0 }
+  ]
+}
+```
+
+### 12.7 State Reconcile
+
+Clear auto-clearable anomalies found by the doctor:
+
+```bash
+# Reconcile all auto-clearable issues
+minicoder state reconcile --all
+
+# Reconcile for a specific project
+minicoder state reconcile --project proj-1
+```
+
+Auto-cleared issues:
+- **stale_locks** — sets `expires_at = now`
+- **stuck_outbox** — marks status `failed`
+- **stuck_inbox** — marks status `failed`
+
+Orphaned runs require `state repair --apply` (manually repairable path).
+
+### 12.8 Export Diagnostics
+
+Export full state diagnostics to a file or stdout:
+
+```bash
+# Export to stdout
+minicoder state export-diagnostics --project proj-1
+
+# Export to file
+minicoder state export-diagnostics --project proj-1 --output /tmp/diagnostics.json
+```
+
+The export includes: project row, last 50 workflow events, pending outbox/inbox events,
+running/failed triggerdev_runs, and all workflow locks.
+
+### 12.9 State Repair
+
+The repair workflow is two-step to prevent accidental execution:
+
+```bash
+# Step 1: Dry-run — preview repairs and get a single-use token
+minicoder state repair --dry-run --project proj-1
+
+# Step 2: Apply — provide the token issued in step 1
+minicoder state repair --apply --confirmation <token> --project proj-1
+```
+
+The confirmation token is time-boxed (5 minutes) and single-use. The token file is stored at
+`~/.minicoder/pending-repair-token.json` and consumed when `--apply` succeeds.
+
+Currently repairable: orphaned runs are marked `human_required`. A `workflow_events` row with
+`event_type = 'state.repaired'` is written on success.
+
+### 12.10 Docker Compose Test Flow
+
+Run the full test suite against PostgreSQL in Docker Compose:
+
+```bash
+docker compose -f infra/docker-compose.test.yml up \
+  --exit-code-from minicoder-test \
+  --abort-on-container-exit
+```
+
+This spins up Postgres 16 with a health check, then runs install → build → migrate → validate
+→ vitest → system scenario smoke tests. Exits with the test container's exit code.
+
+### 12.11 Kubernetes Job Execution
+
+Apply the K8s job manifests:
+
+```bash
+# Run migrations
+kubectl apply -f infra/k8s/migration-job.yaml
+kubectl wait --for=condition=complete job/minicoder-migration --timeout=120s
+
+# Seed data (CI only)
+kubectl apply -f infra/k8s/seed-job.yaml
+kubectl wait --for=condition=complete job/minicoder-seed --timeout=60s
+
+# Run system tests
+kubectl apply -f infra/k8s/system-test-job.yaml
+kubectl wait --for=condition=complete job/minicoder-system-test --timeout=300s
+
+# Export diagnostics
+kubectl apply -f infra/k8s/diagnostic-export-job.yaml
+
+# Install reconciliation CronJob (runs every 30 minutes)
+kubectl apply -f infra/k8s/reconciliation-job.yaml
+```
+
+All jobs except the CronJob require a `minicoder-db-secret` Secret with `dialect` and `url` keys.
+
+### 12.12 Diagnostics and Known Failure Modes (Phase 4)
+
+| Symptom | Likely cause | Resolution |
+|---------|-------------|-----------|
+| `db seed` fails with "Unknown fixture" | Fixture name typo | Run `minicoder db seed --fixture ?` to see valid names |
+| `db snapshot` fails with "already exists" | Output file collision | Delete existing file or choose a different output path |
+| `state doctor` exits 1 | Error-severity anomalies found | Run `minicoder state reconcile --all` for auto-clearable issues |
+| `test scenario` exits 1 | Scenario assertion failed | Check the `error` field in JSON output |
+| `github simulate-*` fails with env guard | Wrong `APP_ENV` | Set `APP_ENV=development` or `APP_ENV=ci` |
+| `state repair --apply` fails with token mismatch | Token file tampered or expired | Re-run `--dry-run` to get a new token |

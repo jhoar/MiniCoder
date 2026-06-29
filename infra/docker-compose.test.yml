@@ -1,0 +1,41 @@
+version: '3.9'
+
+services:
+  minicoder-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: minicoder_test
+      POSTGRES_USER: minicoder
+      POSTGRES_PASSWORD: minicoder_test_pw
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U minicoder -d minicoder_test']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - '5433:5432'
+
+  minicoder-test:
+    image: node:20-alpine
+    depends_on:
+      minicoder-postgres:
+        condition: service_healthy
+    volumes:
+      - ../:/app:ro
+    working_dir: /app
+    environment:
+      DB_DIALECT: postgres
+      DB_URL: postgresql://minicoder:minicoder_test_pw@minicoder-postgres:5432/minicoder_test
+      APP_ENV: ci
+      NODE_ENV: ci
+    command: >
+      sh -c "
+        corepack enable &&
+        pnpm install --frozen-lockfile &&
+        pnpm build &&
+        pnpm tsx packages/migrations/src/runner.ts migrate &&
+        pnpm tsx packages/migrations/src/runner.ts validate &&
+        pnpm vitest run &&
+        node packages/cli/dist/index.js test scenario planning-basic &&
+        node packages/cli/dist/index.js test scenario clarification-required
+      "

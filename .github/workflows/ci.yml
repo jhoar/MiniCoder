@@ -138,3 +138,53 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm tsx packages/migrations/src/runner.ts migrate
       - run: pnpm tsx packages/migrations/src/runner.ts validate
+
+  system-test-smoke:
+    name: System Test Smoke (SQLite)
+    runs-on: ubuntu-latest
+    env:
+      DB_DIALECT: sqlite
+      DB_PATH: ":memory:"
+      APP_ENV: ci
+      NODE_ENV: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Build @minicoder/testing
+        run: pnpm --filter @minicoder/testing build
+      - name: Run planning-basic scenario
+        run: DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci pnpm vitest run packages/testing/src/testing.test.ts
+      - name: Run clarification-required scenario
+        run: DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci pnpm vitest run --reporter=verbose packages/testing/src/testing.test.ts
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Dependency audit
+        run: pnpm audit --audit-level=high
+      - name: TruffleHog secret scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified

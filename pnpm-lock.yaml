@@ -47,6 +47,9 @@ importers:
       '@minicoder/migrations':
         specifier: workspace:*
         version: link:../migrations
+      '@minicoder/testing':
+        specifier: workspace:*
+        version: link:../testing
       '@minicoder/triggerdev':
         specifier: workspace:*
         version: link:../triggerdev
@@ -110,6 +113,34 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.11
         version: 7.6.13
+
+  packages/testing:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      '@minicoder/migrations':
+        specifier: workspace:*
+        version: link:../migrations
+      '@minicoder/persistence-sqlite':
+        specifier: workspace:*
+        version: link:../persistence-sqlite
+      '@minicoder/triggerdev':
+        specifier: workspace:*
+        version: link:../triggerdev
+      '@minicoder/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: '*'
+        version: 7.6.13
+      better-sqlite3:
+        specifier: '*'
+        version: 9.6.0
 
   packages/triggerdev:
     dependencies:
