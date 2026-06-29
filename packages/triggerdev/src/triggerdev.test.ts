@@ -6,6 +6,7 @@ import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
 import { ALL_TASK_IDS } from './task-ids.js';
 import { loadTriggerConfig } from './config.js';
+import { assertSchemaReady } from './db.js';
 
 import { runImpl as runPlanningReadiness } from './tasks/planning-readiness-assessment.js';
 import { runImpl as runStartClarification } from './tasks/start-clarification.js';
@@ -406,5 +407,24 @@ describe('loadTriggerConfig', () => {
       makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: 'b'.repeat(64) }),
     );
     expect(cfg.webhookSecret).toHaveLength(64);
+  });
+});
+
+// ── assertSchemaReady ────────────────────────────────────────────────────────
+
+describe('assertSchemaReady', () => {
+  it('resolves when triggerdev_runs table exists (migrated DB)', async () => {
+    const db = createTestDb();
+    await expect(assertSchemaReady(db)).resolves.toBeUndefined();
+    await db.close();
+  });
+
+  it('throws with a clear message on an unmigrated DB', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const { SqliteDbClient } = await import('@minicoder/persistence-sqlite');
+    const raw = new Database(':memory:');
+    const db = new SqliteDbClient(raw);
+    await expect(assertSchemaReady(db)).rejects.toThrow('triggerdev_runs table not found');
+    await db.close();
   });
 });

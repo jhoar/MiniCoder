@@ -463,6 +463,18 @@ Generate all secrets with `openssl rand -hex 32` unless noted otherwise.
 | `TRIGGERDEV_API_KEY`            | Project API key (created in the webapp after startup) |
 | `TRIGGERDEV_API_URL`            | Self-host URL, e.g. `http://localhost:3040`           |
 
+**Task container DB env vars** — Trigger.dev task containers are ephemeral Docker containers
+spun up by the supervisor. They inherit the project environment set in the Trigger.dev dashboard
+or CLI. Set these in the project environment so `createDbClientFromEnv()` can connect to a
+migrated database (it performs a schema check on startup and rejects containers that point to
+an unmigrated or missing DB):
+
+| Variable     | Required for  | Description                                                   |
+| ------------ | ------------- | ------------------------------------------------------------- |
+| `DB_DIALECT` | always        | `sqlite` or `postgres`                                        |
+| `DB_PATH`    | SQLite only   | Path to migrated SQLite file (must be mounted into container) |
+| `DB_URL`     | Postgres only | PostgreSQL connection string to a migrated database           |
+
 #### Procedure: Start the self-hosted stack
 
 Preconditions: Docker and Docker Compose are installed; all env vars are set;
