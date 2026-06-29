@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.1.0
-> Last-updated: 2026-06-12
+> Version: 1.2.1
+> Last-updated: 2026-06-29
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -269,15 +269,22 @@ Required runbooks:
   **destructive column-change recipe**: SQLite's create-new-table → copy → drop → rename rebuild
   pattern (SQLite has limited `ALTER`), with the PostgreSQL equivalent. **Dialect-specific DDL is
   forbidden outside an approved migration helper**, keeping one migration set valid on both targets.
-- **Local footprint** — the default self-host single-node Trigger.dev backend runs
-  webapp + **Postgres + Redis** + worker via Docker Compose, so even a "local SQLite" install runs
-  two databases (the app's SQLite + Trigger.dev's Postgres/Redis). The default outbox drainer is a
-  Trigger.dev scheduled task, so outbox liveness inherits the single-node SPOF; the **persistent
-  background-worker** drainer alternative (`01-system-specification.md` §6) decouples outbox liveness
-  from the scheduler.
-- **Trigger.dev (self-host) operations** — resource sizing for webapp/Postgres/Redis/worker;
-  version upgrades of the self-hosted stack; backup of its Postgres/Redis; queue draining
-  (`trigger drain-queue`) and run replay (`trigger replay-run`).
+- **Local footprint** — `infra/docker-compose.triggerdev.yml` ships a full **8-service v4
+  execution stack**: Postgres, Redis, Electric (sync), webapp, Docker registry, MinIO (object
+  store), docker-socket-proxy, and supervisor (worker). Even a "local SQLite" install therefore
+  runs 8 additional Docker services. The supervisor uses the Docker socket (via the proxy) to
+  launch task containers, so the host Docker daemon must be running. ClickHouse (analytics) is
+  omitted from the development stack (`RUN_REPLICATION_ENABLED=false`); add it for production
+  following the official guide at
+  `https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker`. The default outbox
+  drainer is a Trigger.dev scheduled task, so outbox liveness inherits the single-node SPOF; the
+  **persistent background-worker** drainer alternative (`01-system-specification.md` §6) decouples
+  outbox liveness from the scheduler.
+- **Trigger.dev (self-host) operations** — `infra/docker-compose.triggerdev.yml` ships a full v4
+  execution stack (9 services: init, Postgres, Redis, Electric, webapp, registry, MinIO,
+  docker-socket-proxy, supervisor). See the Phase 3 runbook in §11 for the complete resource
+  sizing table, required env vars, startup procedure, and upgrade/backup procedures.
+
 - **Stuck-workflow recovery** — detect via `state doctor`; reconcile (`state reconcile`);
   cancel/replay orphaned runs; clear stale locks/leases and orphaned waitpoints.
 - **GitHub webhook replay** — reprocess missed or failed inbox events; fall back to scheduled
@@ -415,3 +422,191 @@ Expected output: all steps print `✓`; exits 0.
 | `Validation FAILED. Missing tables:`         | Migration not applied or partially failed | Run `migrate`, check for errors                                           |
 | `Down migration not found`                   | `*.down.sql` file missing                 | Check `packages/migrations/migrations/` for the file                      |
 | `UNIQUE constraint failed: _migrations.name` | Concurrent migration run                  | Serialise migration runs; only one process should run `migrate` at a time |
+
+---
+
+### Phase 3 — Trigger.dev (Self-Host) Operations Runbook
+
+This runbook covers the `minicoder trigger` commands and the self-hosted single-node Trigger.dev
+stack delivered in Phase 3. The stack definition is `infra/docker-compose.triggerdev.yml`.
+
+#### Resource sizing
+
+`infra/docker-compose.triggerdev.yml` ships a 9-service full execution stack. ClickHouse
+(analytics) is omitted from the development stack (`RUN_REPLICATION_ENABLED=false`).
+
+| Service                 | CPU  | RAM    | Storage               |
+| ----------------------- | ---- | ------ | --------------------- |
+| triggerdev-init         | 0.1  | 32 MB  | shared volume (chown) |
+| triggerdev-postgres     | 2.0  | 1 GB   | persistent volume     |
+| triggerdev-redis        | 1.0  | 512 MB | AOF persistent volume |
+| triggerdev-electric     | 0.5  | 256 MB | —                     |
+| triggerdev-webapp       | 4.0  | 4 GB   | shared volume (token) |
+| triggerdev-registry     | 0.5  | 256 MB | persistent volume     |
+| triggerdev-minio        | 0.5  | 512 MB | persistent volume     |
+| triggerdev-docker-proxy | 0.25 | 64 MB  | — (Docker socket ro)  |
+| triggerdev-supervisor   | 2.0  | 2 GB   | shared volume (token) |
+
+#### Required environment variables
+
+Generate all secrets with `openssl rand -hex 32` unless noted otherwise.
+
+| Variable                        | Description                                           |
+| ------------------------------- | ----------------------------------------------------- |
+| `TRIGGER_MAGIC_LINK_SECRET`     | Random secret for magic-link auth                     |
+| `TRIGGER_SESSION_SECRET`        | Random secret for session cookies                     |
+| `TRIGGER_ENCRYPTION_KEY`        | 32-byte hex key for payload encryption                |
+| `TRIGGER_MANAGED_WORKER_SECRET` | Shared secret between webapp and supervisor           |
+| `TRIGGERDEV_WEBHOOK_SECRET`     | Webhook signing secret — rotate per §7 docs           |
+| `MINIO_ROOT_USER`               | MinIO access key (e.g. `minioadmin`)                  |
+| `MINIO_ROOT_PASSWORD`           | MinIO secret — `openssl rand -hex 16`                 |
+| `TRIGGERDEV_API_KEY`            | Project API key (created in the webapp after startup) |
+| `TRIGGERDEV_API_URL`            | Self-host URL, e.g. `http://localhost:3040`           |
+
+**Task container DB env vars** — Trigger.dev task containers are ephemeral Docker containers
+spun up by the supervisor. They inherit the project environment set in the Trigger.dev dashboard
+or CLI. Set these in the project environment so `createDbClientFromEnv()` can connect to a
+migrated database (it performs a schema check on startup and rejects containers that point to
+an unmigrated or missing DB):
+
+| Variable     | Required for  | Description                                                   |
+| ------------ | ------------- | ------------------------------------------------------------- |
+| `DB_DIALECT` | always        | `sqlite` or `postgres`                                        |
+| `DB_PATH`    | SQLite only   | Path to migrated SQLite file (must be mounted into container) |
+| `DB_URL`     | Postgres only | PostgreSQL connection string to a migrated database           |
+
+#### Procedure: Start the self-hosted stack
+
+Preconditions: Docker and Docker Compose are installed; all env vars are set;
+`/var/run/docker.sock` is accessible (required by `triggerdev-docker-proxy`).
+
+```bash
+docker compose -f infra/docker-compose.triggerdev.yml up -d
+
+# Wait for all services to become healthy (webapp + supervisor take ~60s to bootstrap)
+# triggerdev-init exits immediately (service_completed_successfully); the remaining 8 run continuously.
+docker compose -f infra/docker-compose.triggerdev.yml ps
+```
+
+Expected: `triggerdev-init` shows `Exited (0)`; all 8 remaining services `Up (healthy)` or `Up`. The webapp auto-bootstraps on first start,
+creates a default worker group, and writes the worker token to the shared volume. The supervisor
+reads this token and connects. Open `http://localhost:3040` to verify the webapp and confirm
+the worker appears in the Workers section.
+
+> **CLI command status (Phase 3):**
+>
+> - `minicoder trigger validate` — functional; reads `ALL_TASK_IDS` from the package.
+> - All other `minicoder trigger` commands — exit 1 ("not implemented") until Phase 13 wires the
+>   API layer. `list-runs` and `inspect-run` return static placeholder JSON only, not live data.
+> - `minicoder state` commands (`doctor`, `reconcile`, etc.) — stub implementations pending Phase 4.
+
+#### Procedure: Deploy tasks
+
+```bash
+pnpm --filter @minicoder/triggerdev build
+minicoder trigger validate        # confirm all 9 task IDs present
+
+# Direct CLI (until Phase 13 wires minicoder trigger deploy):
+# TRIGGER_API_URL must always be set explicitly — omitting it causes the CLI to
+# default to https://api.trigger.dev (Trigger.dev Cloud) regardless of backend config.
+cd packages/triggerdev && \
+  TRIGGER_PROJECT_REF=<your-ref> \
+  npx trigger.dev@4.4.6 deploy --env staging --api-url "$TRIGGERDEV_API_URL"
+```
+
+Or via CI: the `.github/workflows/trigger-deploy.yml` workflow runs on push to the development
+branch and deploys to `staging` by default; `prod` requires a manual workflow dispatch.
+
+> **CI registry constraint:** The deploy-tasks job pushes task images to `DEPLOY_REGISTRY_HOST`
+> (default `localhost:5000`). GitHub-hosted runners resolve `localhost` to themselves, not to
+> the self-hosted Trigger.dev stack. For CI deployments either: (a) use a self-hosted runner
+> co-located with the stack, or (b) set `DEPLOY_REGISTRY_HOST` to an externally-reachable
+> registry URL in the environment's variable settings.
+
+#### Procedure: Queue drain (CI / pre-deploy)
+
+All `minicoder trigger` queue commands exit 1 until Phase 13. Monitor queue state via the
+Trigger.dev webapp at `http://localhost:3040`. Wait for all runs to reach a terminal state before
+running destructive operations or schema migrations.
+
+#### Procedure: Inspect and replay a failed run
+
+Use the Trigger.dev webapp at `http://localhost:3040` to view run history, inspect payloads, and
+trigger replays. There is no supported CLI sub-command for replay in the current Trigger.dev v4
+CLI; the webapp is the authoritative interface until Phase 13 provides `minicoder trigger
+replay-run`.
+
+#### Procedure: Cancel a stuck run
+
+Use the Trigger.dev webapp at `http://localhost:3040` to cancel individual runs. There is no
+supported `cancel` CLI sub-command in the current Trigger.dev v4 CLI. `minicoder trigger
+cancel-run` is pending Phase 13.
+
+#### Procedure: Reconcile DB vs live runs
+
+`minicoder trigger reconcile` is pending Phase 13. Until then, manually compare `triggerdev_runs`
+rows with status `running` against the Trigger.dev webapp run list and update stale rows directly
+in the database. `minicoder state reconcile` (pending Phase 4) will automate the workflow-state
+side of this reconciliation.
+
+#### Procedure: Dev reset (dev/CI only)
+
+> `minicoder trigger reset-dev` is not yet implemented (Phase 13). In the interim, use Docker
+> Compose to restart the stack with a fresh database:
+
+```bash
+docker compose -f infra/docker-compose.triggerdev.yml down -v
+docker compose -f infra/docker-compose.triggerdev.yml up -d
+```
+
+**Never run against staging or production.**
+
+#### Procedure: Version upgrade of the self-hosted stack
+
+1. Check for active runs: inspect the Trigger.dev webapp run list at http://localhost:3040
+   (`minicoder trigger list-runs` returns placeholder JSON only; use the webapp for live status)
+2. Wait for all runs to complete (monitor via Trigger.dev webapp)
+3. Update the image tag in `infra/docker-compose.triggerdev.yml`
+4. `docker compose -f infra/docker-compose.triggerdev.yml pull`
+5. `docker compose -f infra/docker-compose.triggerdev.yml up -d`
+6. `minicoder trigger validate` — confirm tasks still report correctly
+7. Monitor `docker compose logs -f triggerdev-webapp` for errors
+
+#### Procedure: Backup and restore Trigger.dev Postgres
+
+```bash
+# Backup
+docker compose -f infra/docker-compose.triggerdev.yml exec triggerdev-postgres \
+  pg_dump -U trigger trigger > /tmp/triggerdev-$(date +%Y%m%d).sql
+
+# Restore (stop webapp first)
+docker compose -f infra/docker-compose.triggerdev.yml stop triggerdev-webapp
+docker compose -f infra/docker-compose.triggerdev.yml exec -T triggerdev-postgres \
+  psql -U trigger trigger < /tmp/triggerdev-backup.sql
+docker compose -f infra/docker-compose.triggerdev.yml start triggerdev-webapp
+```
+
+Redis AOF is persisted via Docker volume (`triggerdev-redis-data`). Back up by snapshotting the
+volume or copying the AOF file.
+
+#### Procedure: Webhook-secret rotation
+
+See `docs/07-security-and-secrets.md` for the full procedure. In brief:
+
+1. Generate a new secret: `openssl rand -hex 32`
+2. Set `TRIGGERDEV_WEBHOOK_SECRET` in the deployment environment
+3. Restart `triggerdev-webapp` with the new value
+4. Update `TRIGGERDEV_WEBHOOK_SECRET` in the MiniCoder config/secrets backend
+
+Zero downtime rotation requires a brief overlap window where both old and new secrets are accepted;
+see `07-security-and-secrets.md` for the overlap procedure.
+
+#### Diagnostics and known failure modes
+
+| Symptom                                 | Likely cause                        | Resolution                                                                             |
+| --------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------- |
+| Tasks not appearing after deploy        | Build or deploy step failed         | Run `minicoder trigger validate`; check CI logs                                        |
+| Run stuck in `running`                  | Supervisor crashed mid-run          | Cancel via Trigger.dev webapp; check `docker compose logs triggerdev-supervisor`       |
+| DB row status `running` but no live run | Orphaned row from crash             | Manually update the `triggerdev_runs` row; `minicoder trigger reconcile` pending Ph 13 |
+| `TRIGGER_SECRET_KEY not set`            | Env var missing                     | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv`                                    |
+| Webhook signature mismatch              | `TRIGGERDEV_WEBHOOK_SECRET` rotated | Update secret in all services simultaneously                                           |

@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.1
-> Last-updated: 2026-06-13
+> Version: 1.0.3
+> Last-updated: 2026-06-29
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -110,7 +110,8 @@ fitness tests fail the build on any violated invariant; stale-fence writes are r
 ## Phase 3 — Workflow Layer Harness
 
 Deliver Trigger.dev project setup with **self-hosted single-node as the default backend** (Docker
-Compose: webapp + Postgres + Redis + worker), a GitHub Actions deployment workflow for Trigger.dev
+Compose: 9-service v4 execution stack — init, Postgres, Redis, Electric, webapp, registry, MinIO,
+docker-socket-proxy, supervisor), a GitHub Actions deployment workflow for Trigger.dev
 tasks, the task-wrapper pattern, queue/retry config, waitpoint patterns, and Trigger.dev run
 metadata linked to the database. Self-hosted HA cluster and Trigger.dev Cloud are drop-in backend
 options selected by configuration, not code (see [`01-system-specification.md`](01-system-specification.md) §14).
@@ -148,6 +149,50 @@ Acceptance: tasks deploy and run on the default self-hosted single-node backend;
 the database through a core command; retry behavior is configured and idempotent; the waitpoint
 pattern is proven with a simulated human approval; and the same tasks run unchanged against an
 alternative backend (HA cluster or Cloud) selected by configuration only.
+
+**Harness modules delivered (pending: core-command wiring in Phases 6–8):**
+
+- `packages/triggerdev/` — new package: `TriggerConfig` + `loadTriggerConfig()` (config
+  abstraction for three backends with validated backend string, fail-fast on invalid values),
+  `assertSchemaReady()` (probes `triggerdev_runs` after connecting; task containers fail fast
+  with an actionable message if the DB is empty or unmigrated rather than crashing inside
+  `linkRunToDb()`), `linkRunToDb()` + `updateRunStatus()` + `getRunByTriggerdevId()`
+  (idempotent upsert against the existing `triggerdev_runs` table; retries reuse the original row),
+  `MockTriggerRunner` (canonical test seam for unit/integration tests), `ALL_TASK_IDS` constant
+  (9 canonical task ID strings), and 9 task `runImpl` stubs (payload-validated via Zod; stub
+  implementations are replaced with real core-command calls in Phases 6–8).
+  `loadTriggerConfig()` and `applyTriggerEnv()` have no call sites in Phase 3; they are wired
+  to runtime by Phases 6–8 as core commands are added.
+- `packages/triggerdev/src/triggerdev-tasks.ts` — Trigger.dev task registration entry point; all 9
+  tasks registered using `task()` from `@trigger.dev/sdk/v3`; `makeTaskRunner` wrapper parses
+  payloads with Zod, handles DB lifecycle (idempotent linkRunToDb / updateRunStatus / close in
+  try-finally), and status transitions use canonical `succeeded`/`failed` tokens
+- `packages/triggerdev/trigger.config.ts` — Trigger.dev deployment configuration; project ref from
+  `TRIGGER_PROJECT_REF` env var; `dirs` points to `./src` (directory, not file path)
+- `infra/docker-compose.triggerdev.yml` — full v4 execution stack: init, Postgres, Redis, Electric
+  (sync), webapp, Docker registry, MinIO (object store), docker-socket-proxy, and supervisor
+  (worker); 9 services total; includes `triggerdev-init` (one-shot chown container). ClickHouse
+  omitted for development (`RUN_REPLICATION_ENABLED=false`).
+  Webapp auto-bootstraps a default worker group on first start via shared volume token handoff.
+- `.github/workflows/trigger-deploy.yml` — CI/CD workflow: typecheck → build → verify task IDs →
+  deploy with explicit `--env` and `--api-url`; CLI accepts `staging` or `prod` (not `production`);
+  `TRIGGER_API_URL` is required and passed unconditionally — omitting it would silently target Cloud
+- `packages/cli/src/commands/trigger.ts` — `minicoder trigger` command group scaffolded; `validate`
+  is functional (reads `ALL_TASK_IDS` from the package); `list-runs` and `inspect-run` return
+  static placeholder JSON only (not live data); all operational commands (`deploy`, `drain-queue`,
+  `cancel-run`, `replay-run`, `reset-dev`, `reconcile`) exit 1 with "not implemented" until the
+  API layer is wired in Phase 13
+- `packages/core/src/fitness/no-domain-logic-in-task-wrappers.test.ts` — extended to scan
+  `packages/triggerdev/src/tasks/` and `triggerdev-tasks.ts` for banned domain-logic patterns
+
+**Remaining Phase 3 acceptance criteria (to be completed before marking done):**
+
+- A task `runImpl` must call a real Orchestrator Core command and update domain state in the
+  database (not just the `triggerdev_runs` metadata table). This wiring lands with Phase 6
+  (Bootstrap Planner) for the planner tasks and Phase 7/8 for reconciliation/execution tasks.
+- The waitpoint pattern is proven at the in-process level (deferred Promise / external signal); a
+  durable Trigger.dev waitpoint test requires a live Trigger.dev environment and is deferred to
+  Phase 4's dedicated Trigger.dev integration test job.
 
 ## Phase 4 — Test Harness and State Lifecycle Tooling
 

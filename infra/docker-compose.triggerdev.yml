@@ -1,0 +1,331 @@
+version: '3.8'
+
+# MiniCoder — Trigger.dev v4 self-hosted single-node stack (full execution)
+#
+# Services (9 total):
+#   triggerdev-init          — One-shot init: sets /home/node/shared ownership for node uid 1000
+#   triggerdev-postgres      — Trigger.dev state store
+#   triggerdev-redis         — Queue / cache (AOF persistence enabled)
+#   triggerdev-electric      — Real-time sync engine (required by v4 webapp)
+#   triggerdev-webapp        — Trigger.dev webapp UI + API (http://localhost:3040)
+#   triggerdev-registry      — Docker registry for task images
+#   triggerdev-minio         — Object storage for task payloads and artifacts
+#   triggerdev-supervisor    — Task executor (the worker)
+#   triggerdev-docker-proxy  — Secure Docker socket proxy for supervisor
+#
+# Networks:
+#   triggerdev-webapp        — postgres, redis, electric, webapp, registry, minio, supervisor
+#   triggerdev-supervisor    — webapp, supervisor
+#   triggerdev-docker-proxy  — supervisor, docker-proxy
+#
+# Startup: `docker compose -f infra/docker-compose.triggerdev.yml up -d`
+# The webapp bootstraps automatically and writes a worker token to the shared volume.
+# The supervisor waits for the token file before starting.
+#
+# Required env vars (set in .env or via shell — generate secrets with openssl rand -hex 32):
+#   TRIGGER_MAGIC_LINK_SECRET      — random secret for magic-link auth
+#   TRIGGER_ENCRYPTION_KEY         — 32-byte hex key for payload encryption
+#   TRIGGER_SESSION_SECRET         — random secret for session cookies
+#   TRIGGER_MANAGED_WORKER_SECRET  — shared secret between webapp and supervisor
+#   TRIGGERDEV_WEBHOOK_SECRET      — MiniCoder verifies inbound webhook payloads with this
+#   MINIO_ROOT_USER                — MinIO access key (e.g. "minioadmin")
+#   MINIO_ROOT_PASSWORD            — MinIO secret (openssl rand -hex 16)
+#
+# Optional env vars (override defaults for external registry / CI):
+#   DEPLOY_REGISTRY_HOST — where the CLI pushes task images (default: localhost:5000)
+#   DOCKER_REGISTRY_URL  — where the supervisor pulls task images (default: http://triggerdev-registry:5000)
+#                          Set both to the same externally-reachable registry when using GitHub-hosted runners.
+#
+# All secrets use ${VAR:?message} interpolation — compose exits immediately if any are unset
+# or empty, preventing silent deployment with blank credentials.
+
+services:
+  triggerdev-init:
+    image: alpine:3.19
+    restart: 'no'
+    # Ensures /home/node/shared is owned by uid 1000 (node) before webapp or supervisor start.
+    command: ['chown', '-R', '1000:1000', '/home/node/shared']
+    volumes:
+      - triggerdev-shared:/home/node/shared
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 32M
+
+  triggerdev-postgres:
+    image: postgres:14
+    restart: unless-stopped
+    # wal_level=logical is required by Electric for change-data-capture.
+    command: postgres -c wal_level=logical
+    environment:
+      POSTGRES_USER: trigger
+      POSTGRES_PASSWORD: trigger
+      POSTGRES_DB: trigger
+    volumes:
+      - triggerdev-postgres-data:/var/lib/postgresql/data
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U trigger']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-redis:
+    image: redis:7
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - triggerdev-redis-data:/data
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-electric:
+    image: electricsql/electric:1.2.4
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
+      ELECTRIC_INSECURE: 'true'
+      ELECTRIC_USAGE_REPORTING: 'false'
+    depends_on:
+      triggerdev-postgres:
+        condition: service_healthy
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:3000/v1/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-webapp:
+    # v4-beta is the only published channel while Trigger.dev v4 is in beta.
+    # For production, pin to an immutable digest: ghcr.io/triggerdotdev/trigger.dev@sha256:...
+    image: ghcr.io/triggerdotdev/trigger.dev:v4-beta
+    restart: unless-stopped
+    depends_on:
+      triggerdev-init:
+        condition: service_completed_successfully
+      triggerdev-postgres:
+        condition: service_healthy
+      triggerdev-redis:
+        condition: service_healthy
+      triggerdev-electric:
+        condition: service_healthy
+    ports:
+      - '3040:3000'
+    environment:
+      DATABASE_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
+      DIRECT_URL: postgresql://trigger:trigger@triggerdev-postgres:5432/trigger
+      REDIS_TLS_DISABLED: 'true'
+      REDIS_HOST: triggerdev-redis
+      REDIS_PORT: '6379'
+      MAGIC_LINK_SECRET: '${TRIGGER_MAGIC_LINK_SECRET:?set TRIGGER_MAGIC_LINK_SECRET}'
+      SESSION_SECRET: '${TRIGGER_SESSION_SECRET:?set TRIGGER_SESSION_SECRET}'
+      ENCRYPTION_KEY: '${TRIGGER_ENCRYPTION_KEY:?set TRIGGER_ENCRYPTION_KEY}'
+      # Webhook-secret management: rotate via docs/07-security-and-secrets.md procedure.
+      TRIGGER_WEBHOOK_SECRET: '${TRIGGERDEV_WEBHOOK_SECRET:?set TRIGGERDEV_WEBHOOK_SECRET}'
+      APP_ORIGIN: 'http://localhost:3040'
+      LOGIN_ORIGIN: 'http://localhost:3040'
+      API_ORIGIN: 'http://localhost:3040'
+      ELECTRIC_ORIGIN: 'http://triggerdev-electric:3000'
+      # Worker bootstrap: webapp auto-creates a worker group on first start and writes the token
+      # to the shared volume. The supervisor reads it from the same path via file:// URI.
+      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET:?set TRIGGER_MANAGED_WORKER_SECRET}'
+      TRIGGER_BOOTSTRAP_ENABLED: 'true'
+      TRIGGER_BOOTSTRAP_WORKER_GROUP_NAME: 'default'
+      TRIGGER_BOOTSTRAP_WORKER_TOKEN_PATH: '/home/node/shared/worker_token'
+      # Registry: The CLI (running on the host) pushes task images to DEPLOY_REGISTRY_HOST.
+      # For local dev this is localhost:5000. For CI with GitHub-hosted runners, override
+      # DEPLOY_REGISTRY_HOST to an externally-reachable registry (self-hosted runner can use
+      # localhost:5000; hosted runner requires an external registry URL).
+      DEPLOY_REGISTRY_HOST: '${DEPLOY_REGISTRY_HOST:-localhost:5000}'
+      DEPLOY_REGISTRY_NAMESPACE: 'trigger'
+      OBJECT_STORE_BASE_URL: 'http://triggerdev-minio:9000'
+      OBJECT_STORE_ACCESS_KEY_ID: '${MINIO_ROOT_USER:?set MINIO_ROOT_USER}'
+      OBJECT_STORE_SECRET_ACCESS_KEY: '${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}'
+      # Disable run replication (ClickHouse analytics) for the development stack.
+      RUN_REPLICATION_ENABLED: 'false'
+    volumes:
+      - triggerdev-shared:/home/node/shared
+    networks:
+      - triggerdev-webapp
+      - triggerdev-supervisor
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "require(''http'').get(''http://localhost:3000/healthcheck'', r => process.exit(r.statusCode === 200 ? 0 : 1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  triggerdev-registry:
+    image: registry:2
+    restart: unless-stopped
+    # Port bound to 127.0.0.1 so only the local host can push; container-to-container traffic
+    # uses the internal hostname triggerdev-registry:5000.
+    # The webapp tells the CLI to push to localhost:5000; the supervisor pulls via the internal
+    # container hostname triggerdev-registry:5000.
+    ports:
+      - '127.0.0.1:5000:5000'
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+    volumes:
+      - triggerdev-registry-data:/var/lib/registry
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://localhost:5000/ || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-minio:
+    # bitnamilegacy/minio:latest — pin to a specific tag for production (check available tags).
+    image: bitnamilegacy/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: '${MINIO_ROOT_USER:?set MINIO_ROOT_USER}'
+      MINIO_ROOT_PASSWORD: '${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}'
+      MINIO_DEFAULT_BUCKETS: 'packets'
+      MINIO_BROWSER: 'off'
+    volumes:
+      - triggerdev-minio-data:/bitnami/minio/data
+    networks:
+      - triggerdev-webapp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:9000/minio/health/live || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-docker-proxy:
+    # Pin to an immutable digest for production; :latest is the only widely published tag.
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      # Minimum permissions required by the Trigger.dev supervisor.
+      CONTAINERS: '1'
+      POST: '1'
+      IMAGES: '1'
+      INFO: '1'
+      NETWORKS: '1'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - triggerdev-docker-proxy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
+    healthcheck:
+      test: ['CMD-SHELL', 'nc -z localhost 2375 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  triggerdev-supervisor:
+    # v4-beta is the only published channel while Trigger.dev v4 is in beta.
+    # For production, pin to an immutable digest: ghcr.io/triggerdotdev/supervisor@sha256:...
+    image: ghcr.io/triggerdotdev/supervisor:v4-beta
+    restart: unless-stopped
+    depends_on:
+      triggerdev-init:
+        condition: service_completed_successfully
+      triggerdev-webapp:
+        condition: service_healthy
+      triggerdev-docker-proxy:
+        condition: service_healthy
+    environment:
+      # file:// URI scheme — the supervisor reads the worker token from the shared volume path
+      # written by the webapp bootstrap process on first start.
+      TRIGGER_WORKER_TOKEN: 'file:///home/node/shared/worker_token'
+      MANAGED_WORKER_SECRET: '${TRIGGER_MANAGED_WORKER_SECRET:?set TRIGGER_MANAGED_WORKER_SECRET}'
+      TRIGGER_API_URL: 'http://triggerdev-webapp:3000'
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://triggerdev-webapp:3000/otel'
+      DOCKER_HOST: 'tcp://triggerdev-docker-proxy:2375'
+      # Supervisor pulls task images from the internal registry hostname and attaches runner
+      # containers to the webapp network so they can reach the Trigger.dev API.
+      # When using an external registry for CI, set DOCKER_REGISTRY_URL to the same
+      # registry URL supplied to DEPLOY_REGISTRY_HOST, e.g. http://my-registry.example.com.
+      DOCKER_REGISTRY_URL: '${DOCKER_REGISTRY_URL:-http://triggerdev-registry:5000}'
+      DOCKER_RUNNER_NETWORKS: 'minicoder-triggerdev-webapp'
+      # Supervisor advertises this hostname to runner containers for the workload API callback.
+      # Runners are attached to minicoder-triggerdev-webapp so this must resolve on that network.
+      TRIGGER_WORKLOAD_API_DOMAIN: 'triggerdev-supervisor'
+    volumes:
+      - triggerdev-shared:/home/node/shared
+    networks:
+      - triggerdev-webapp
+      - triggerdev-supervisor
+      - triggerdev-docker-proxy
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "require(''http'').get(''http://localhost:8020/health'', r => process.exit(r.statusCode === 200 ? 0 : 1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  triggerdev-postgres-data:
+  triggerdev-redis-data:
+  triggerdev-registry-data:
+  triggerdev-minio-data:
+  triggerdev-shared:
+
+networks:
+  triggerdev-webapp:
+    name: minicoder-triggerdev-webapp
+  triggerdev-supervisor:
+    name: minicoder-triggerdev-supervisor
+  triggerdev-docker-proxy:
+    name: minicoder-triggerdev-docker-proxy
