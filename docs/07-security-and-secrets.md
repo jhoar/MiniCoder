@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.2
-> Last-updated: 2026-06-13
+> Version: 1.0.3
+> Last-updated: 2026-06-29
 
 This document is the authoritative security and secrets specification. It expands the principles in
 [`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
@@ -112,8 +112,16 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 
 ## 6b. Trigger.dev Webhook-Secret Management (Phase 3)
 
-MiniCoder uses `TRIGGERDEV_WEBHOOK_SECRET` to verify that inbound payloads from the self-hosted
-Trigger.dev server have not been tampered with. This secret must be:
+MiniCoder uses two secrets when integrating with the self-hosted Trigger.dev server:
+
+- **`TRIGGERDEV_API_KEY`** — authenticates the MiniCoder application and task containers to the
+  Trigger.dev webapp API. Set as `TRIGGER_ACCESS_TOKEN` in the Docker Compose environment and
+  injected into task containers at runtime. Must be treated as a credential: stored only in the
+  secret backend, never committed to source control or included in task payloads.
+- **`TRIGGERDEV_WEBHOOK_SECRET`** — verifies that inbound payloads from the Trigger.dev server
+  have not been tampered with (see rotation procedure below).
+
+`TRIGGERDEV_WEBHOOK_SECRET` must be:
 
 - **Stored only in the secret backend** (`EnvSecretBackend` or `ManagedSecretBackend`), never
   committed to source control or included in task payloads.

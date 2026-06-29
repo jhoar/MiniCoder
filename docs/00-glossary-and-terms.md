@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.2
-> Last-updated: 2026-06-13
+> Version: 1.0.3
+> Last-updated: 2026-06-29
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must

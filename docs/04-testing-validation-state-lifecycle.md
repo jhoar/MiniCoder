@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.2.0
-> Last-updated: 2026-06-13
+> Version: 1.2.1
+> Last-updated: 2026-06-29
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.

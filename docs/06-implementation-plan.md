@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.2
-> Last-updated: 2026-06-13
+> Version: 1.0.3
+> Last-updated: 2026-06-29
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -110,7 +110,7 @@ fitness tests fail the build on any violated invariant; stale-fence writes are r
 ## Phase 3 — Workflow Layer Harness
 
 Deliver Trigger.dev project setup with **self-hosted single-node as the default backend** (Docker
-Compose: 8-service v4 execution stack — Postgres, Redis, Electric, webapp, registry, MinIO,
+Compose: 9-service v4 execution stack — init, Postgres, Redis, Electric, webapp, registry, MinIO,
 docker-socket-proxy, supervisor), a GitHub Actions deployment workflow for Trigger.dev
 tasks, the task-wrapper pattern, queue/retry config, waitpoint patterns, and Trigger.dev run
 metadata linked to the database. Self-hosted HA cluster and Trigger.dev Cloud are drop-in backend
@@ -154,7 +154,9 @@ alternative backend (HA cluster or Cloud) selected by configuration only.
 
 - `packages/triggerdev/` — new package: `TriggerConfig` + `loadTriggerConfig()` (config
   abstraction for three backends with validated backend string, fail-fast on invalid values),
-  `linkRunToDb()` + `updateRunStatus()` + `getRunByTriggerdevId()`
+  `assertSchemaReady()` (probes `triggerdev_runs` after connecting; task containers fail fast
+  with an actionable message if the DB is empty or unmigrated rather than crashing inside
+  `linkRunToDb()`), `linkRunToDb()` + `updateRunStatus()` + `getRunByTriggerdevId()`
   (idempotent upsert against the existing `triggerdev_runs` table; retries reuse the original row),
   `MockTriggerRunner` (canonical test seam for unit/integration tests), `ALL_TASK_IDS` constant
   (9 canonical task ID strings), and 9 task `runImpl` stubs (payload-validated via Zod; stub
@@ -167,9 +169,10 @@ alternative backend (HA cluster or Cloud) selected by configuration only.
   try-finally), and status transitions use canonical `succeeded`/`failed` tokens
 - `packages/triggerdev/trigger.config.ts` — Trigger.dev deployment configuration; project ref from
   `TRIGGER_PROJECT_REF` env var; `dirs` points to `./src` (directory, not file path)
-- `infra/docker-compose.triggerdev.yml` — full v4 execution stack: Postgres, Redis, Electric
+- `infra/docker-compose.triggerdev.yml` — full v4 execution stack: init, Postgres, Redis, Electric
   (sync), webapp, Docker registry, MinIO (object store), docker-socket-proxy, and supervisor
-  (worker); 8 services total. ClickHouse omitted for development (`RUN_REPLICATION_ENABLED=false`).
+  (worker); 9 services total; includes `triggerdev-init` (one-shot chown container). ClickHouse
+  omitted for development (`RUN_REPLICATION_ENABLED=false`).
   Webapp auto-bootstraps a default worker group on first start via shared volume token handoff.
 - `.github/workflows/trigger-deploy.yml` — CI/CD workflow: typecheck → build → verify task IDs →
   deploy with explicit `--env` and `--api-url`; CLI accepts `staging` or `prod` (not `production`);
