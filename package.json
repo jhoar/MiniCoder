@@ -12,7 +12,7 @@
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\"",
-    "typecheck": "tsc -p packages/core/tsconfig.json && tsc -p packages/persistence-sqlite/tsconfig.json && tsc -p packages/persistence-postgres/tsconfig.json && pnpm -r --filter !@minicoder/core --filter !@minicoder/persistence-sqlite --filter !@minicoder/persistence-postgres typecheck",
+    "typecheck": "tsc -p packages/core/tsconfig.json && tsc -p packages/persistence-sqlite/tsconfig.json && tsc -p packages/persistence-postgres/tsconfig.json && tsc -p packages/triggerdev/tsconfig.json && pnpm -r --filter !@minicoder/core --filter !@minicoder/persistence-sqlite --filter !@minicoder/persistence-postgres --filter !@minicoder/triggerdev typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
