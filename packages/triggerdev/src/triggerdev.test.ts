@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import type { DbClient, ConfigBackend, SecretBackend } from '@minicoder/core';
 import { MissingSecretError } from '@minicoder/core';
 import { createTestDb, insertTestProject } from './test-helpers.js';
