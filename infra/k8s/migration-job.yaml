@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minicoder-migration
+  labels:
+    app: minicoder
+    component: migration
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: minicoder
+        component: migration
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migration
+          image: minicoder:latest
+          command:
+            - sh
+            - -c
+            - |
+              node packages/cli/dist/index.js db migrate &&
+              node packages/cli/dist/index.js db validate
+          env:
+            - name: DB_DIALECT
+              valueFrom:
+                secretKeyRef:
+                  name: minicoder-db-secret
+                  key: dialect
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: minicoder-db-secret
+                  key: url
+            - name: APP_ENV
+              value: production

@@ -225,6 +225,24 @@ The integration test suite and migration validation **must** run against both SQ
 as a matrix. This is a CI requirement, not optional. The security scan
 (pnpm audit/OSV + gitleaks + semgrep) also runs in CI.
 
+CI enforces `pnpm audit --prod --audit-level=high` (runtime dependencies only). Two dev-only
+advisories are known and accepted: GHSA-5xrq-8626-4rwp (vitest critical — UI server not used) and
+GHSA-fx2h-pf6j-xcff (vite high — Windows-only path, CI runs Linux). Full rationale in
+docs/04 §12.13. Full `pnpm audit --audit-level=high` will report these locally — that is expected.
+
+## Vitest Test Command Tiers
+
+| CLI command                  | What it runs                                                                     | Config                                      |
+| ---------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------- |
+| `minicoder test unit`        | All `*.test.ts` except `*.integration.test.ts` (includes scenario/fixture tests) | `vitest.unit.config.ts`                     |
+| `minicoder test integration` | Only `*.integration.test.ts` (requires real DB)                                  | root `vitest.config.ts` + positional filter |
+| `minicoder test system`      | Programmatic scenario runner (`runAllScenarios()`)                               | —                                           |
+| `pnpm test`                  | All `*.test.ts` including integration                                            | root `vitest.config.ts`                     |
+
+`vitest.unit.config.ts` excludes `**/*.integration.test.ts` and is the only way to run the
+non-integration Vitest tier via CLI. Do not add `--include`/`--exclude` CLI flags — Vitest 1.6.x
+does not support them; use a separate config file instead.
+
 ## SQLite Test Teardown Rule
 
 **Never call `db.close()` in tests** (including `afterEach`/`afterAll` hooks).
@@ -243,7 +261,7 @@ calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do no
 The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
 running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
 appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
-Current order: `core → persistence-sqlite → persistence-postgres → triggerdev → (rest --noEmit)`.
+Current order: `core → persistence-sqlite → persistence-postgres → triggerdev → testing → (rest --noEmit)`.
 
 When adding a new workspace package that others import for types, add it to this chain.
 
@@ -272,13 +290,47 @@ breaker and escalates to human.
 
 ## State Repair CLI
 
-`state repair` requires two steps:
+`state repair` requires `--project <id>` and two steps:
 
-1. `minicoder state repair --dry-run` — previews changes, prints a single-use confirmation token.
-2. `minicoder state repair --apply --confirmation <token>` — executes; token is time-boxed and
-   single-use.
+1. `minicoder state repair --project <id> --dry-run` — previews changes, prints a single-use
+   confirmation token (expires in 5 minutes).
+2. `minicoder state repair --project <id> --apply --confirmation <token>` — executes; token is
+   time-boxed, single-use, and bound to the project ID that issued it.
 
 `state purge` does not exist. Irreversible maintenance uses only the guarded `repair --apply` path.
+Global (unscoped) repair is not supported — `--project` is mandatory for both steps.
+
+## State Reconcile CLI
+
+`state reconcile` requires either `--project <id>` or `--all`:
+
+- `--project <id>` only: clears stale workflow locks scoped to that project; does **not** touch
+  global queues.
+- `--all`: clears stale locks globally **and** marks stuck `outbox_events`/`inbox_events` as
+  failed. Global queue mutation requires explicit `--all`.
+- Neither flag: exits 1.
+
+`outbox_events` and `inbox_events` have no `project_id` column and are always global scope.
+`state doctor` and `state export-diagnostics` label these entries with `scope: 'global'`.
+`state export-diagnostics` groups all global tables under `globalOperationalState: { scope: 'global', ... }`.
+
+## Dev/Test-Only Command Safety Guards
+
+The following commands write directly to application tables and are restricted to development, test,
+and CI environments:
+
+- `minicoder db seed` — inserts fixture data
+- `minicoder db restore` — overwrites the live database file
+- `minicoder github simulate-*` — inserts inbox events
+
+All three commands call `guardEnv()` which enforces two levels:
+
+1. **Hard production reject (cannot be overridden):** exits 1 immediately if `APP_ENV` or
+   `NODE_ENV` is `'production'` — regardless of any `--env` flag passed by the caller.
+2. **Allowed-env check:** target env (from `--env`, then `APP_ENV`, then `NODE_ENV`) must be one
+   of `development`, `test`, or `ci`.
+
+`--env development` cannot be used to bypass a production process environment.
 
 ## What Multiple State Machines Look Like
 

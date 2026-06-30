@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minicoder-seed
+  labels:
+    app: minicoder
+    component: seed
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: minicoder
+        component: seed
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: minicoder:latest
+          command:
+            - node
+            - packages/cli/dist/index.js
+            - db
+            - seed
+            - --fixture
+            - planning-review-merge
+            - --env
+            - ci
+          env:
+            - name: DB_DIALECT
+              valueFrom:
+                secretKeyRef:
+                  name: minicoder-db-secret
+                  key: dialect
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: minicoder-db-secret
+                  key: url
+            - name: APP_ENV
+              value: ci

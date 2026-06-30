@@ -3,6 +3,8 @@ import { Command } from 'commander';
 import { createDbCommand } from './commands/db.js';
 import { createStateCommand } from './commands/state.js';
 import { createTriggerCommand } from './commands/trigger.js';
+import { createGithubCommand } from './commands/github.js';
+import { createTestCommand } from './commands/test.js';
 
 const program = new Command();
 
@@ -14,6 +16,8 @@ program
 program.addCommand(createDbCommand());
 program.addCommand(createStateCommand());
 program.addCommand(createTriggerCommand());
+program.addCommand(createGithubCommand());
+program.addCommand(createTestCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error('Fatal error:', err);

@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.3
-> Last-updated: 2026-06-29
+> Version: 1.0.4
+> Last-updated: 2026-06-30
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -439,11 +439,12 @@ minicoder trigger reconcile
 # Workflow / state lifecycle
 minicoder state inspect
 minicoder state validate
-minicoder state reconcile
+minicoder state reconcile --project <id>               # project-scoped (stale locks only)
+minicoder state reconcile --all                        # global (stale locks + stuck queues)
 minicoder state doctor
 minicoder state export-diagnostics
-minicoder state repair --dry-run                       # preview only (default; non-destructive)
-minicoder state repair --apply --confirmation <token>  # guarded destructive apply
+minicoder state repair --project <id> --dry-run        # preview only (non-destructive; --project required)
+minicoder state repair --project <id> --apply --confirmation <token>  # guarded destructive apply
 
 # GitHub simulation (test/dev only)
 minicoder github simulate-pr-opened
@@ -474,9 +475,13 @@ environment check, role/permission check, dry-run where possible, explicit confi
 an audit event. Production destructive operations are disallowed unless implemented as guarded
 safe-maintenance workflows.
 
+Dev/test-only mutating commands (`db seed`, `db restore`, `github simulate-*`) reject immediately
+if `APP_ENV` or `NODE_ENV` is `'production'` — this check cannot be overridden by `--env`.
+
 The `state repair --apply` confirmation token is **issued by `state repair --dry-run`** (which
-prints it alongside the planned changes), is **single-use**, **time-boxed** (short expiry), bound to
-the previewed change set, and its issuance and use are audited.
+prints it alongside the planned changes), is **single-use**, **time-boxed** (5-minute expiry),
+bound to the `--project <id>` that issued it, and its issuance and use are audited. `--project`
+is mandatory for both `--dry-run` and `--apply`.
 
 ---
 

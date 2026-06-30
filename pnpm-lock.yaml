@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  systeminformation: '>=5.31.6'
+  ws: '>=8.21.0'
+
 importers:
 
   .:
@@ -47,6 +51,9 @@ importers:
       '@minicoder/migrations':
         specifier: workspace:*
         version: link:../migrations
+      '@minicoder/testing':
+        specifier: workspace:*
+        version: link:../testing
       '@minicoder/triggerdev':
         specifier: workspace:*
         version: link:../triggerdev
@@ -110,6 +117,34 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.11
         version: 7.6.13
+
+  packages/testing:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      '@minicoder/migrations':
+        specifier: workspace:*
+        version: link:../migrations
+      '@minicoder/persistence-sqlite':
+        specifier: workspace:*
+        version: link:../persistence-sqlite
+      '@minicoder/triggerdev':
+        specifier: workspace:*
+        version: link:../triggerdev
+      '@minicoder/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: '*'
+        version: 7.6.13
+      better-sqlite3:
+        specifier: '*'
+        version: 9.6.0
 
   packages/triggerdev:
     dependencies:
@@ -2258,8 +2293,8 @@ packages:
     resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
     engines: {node: '>= 0.4'}
 
-  systeminformation@5.23.8:
-    resolution: {integrity: sha512-Osd24mNKe6jr/YoXLLK3k8TMdzaxDffhpCxgkfgBHcapykIkd50HXThM3TCEuHO2pPuCsSx2ms/SunqhU5MmsQ==}
+  systeminformation@5.31.11:
+    resolution: {integrity: sha512-I6O7iaUj23AXRgCPDDnvi3xHvdOLp4+1YMbF+X194lJwY1NeWojgHJPhslVKcmTtrLTguRk3QJK+xEdTiI3P0w==}
     engines: {node: '>=8.0.0'}
     os: [darwin, linux, win32, freebsd, openbsd, netbsd, sunos, android]
     hasBin: true
@@ -2472,30 +2507,6 @@ packages:
 
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
-
-  ws@8.17.1:
-    resolution: {integrity: sha512-6XQFvXTkbfUOZOKKILFG1PDK2NDQs4azKQl26T0YS5CxqWLgXajbPZ+h4gZekJyRqFU8pvnbAbbs/3TgRPy+GQ==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
-  ws@8.20.1:
-    resolution: {integrity: sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
 
   ws@8.21.0:
     resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
@@ -2832,7 +2843,7 @@ snapshots:
   '@opentelemetry/host-metrics@0.37.0(@opentelemetry/api@1.9.0)':
     dependencies:
       '@opentelemetry/api': 1.9.0
-      systeminformation: 5.23.8
+      systeminformation: 5.31.11
 
   '@opentelemetry/instrumentation@0.203.0(@opentelemetry/api@1.9.0)':
     dependencies:
@@ -3518,7 +3529,7 @@ snapshots:
       '@socket.io/component-emitter': 3.1.2
       debug: 4.3.7
       engine.io-parser: 5.2.3
-      ws: 8.17.1
+      ws: 8.21.0
       xmlhttprequest-ssl: 2.0.0
     transitivePeerDependencies:
       - bufferutil
@@ -3538,7 +3549,7 @@ snapshots:
       cors: 2.8.6
       debug: 4.3.7
       engine.io-parser: 5.2.3
-      ws: 8.17.1
+      ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -4719,7 +4730,7 @@ snapshots:
   socket.io-adapter@2.5.7:
     dependencies:
       debug: 4.4.3
-      ws: 8.20.1
+      ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -4820,7 +4831,7 @@ snapshots:
 
   supports-preserve-symlinks-flag@1.0.0: {}
 
-  systeminformation@5.23.8: {}
+  systeminformation@5.31.11: {}
 
   tar-fs@2.1.4:
     dependencies:
@@ -5064,10 +5075,6 @@ snapshots:
   word-wrap@1.2.5: {}
 
   wrappy@1.0.2: {}
-
-  ws@8.17.1: {}
-
-  ws@8.20.1: {}
 
   ws@8.21.0: {}
 
