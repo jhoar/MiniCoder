@@ -1,5 +1,5 @@
 import { generateId } from '@minicoder/core';
-import type { AgentCapabilityToken, AgentRole, AdapterRunSnapshot } from '@minicoder/core';
+import type { AgentCapabilityToken, AgentRole } from '@minicoder/core';
 import { AdapterRunError } from '@minicoder/core';
 import { MockPlannerAdapter } from '../adapters/mock-planner.js';
 import { MockCoderAdapter, MockCoderError } from '../adapters/mock-coder.js';
@@ -236,7 +236,6 @@ function skip(scenarioName: string, details: string): ConformanceScenarioResult 
 async function runScenarios(
   descriptor: AdapterDescriptor,
   adapterId: string,
-  adapterSnapshot: AdapterRunSnapshot,
   opts: ConformanceRunOptions,
 ): Promise<ConformanceScenarioResult[]> {
   const results: ConformanceScenarioResult[] = [];
@@ -262,7 +261,7 @@ async function runScenarios(
   // 2. Successful run — output is non-null and has expected fields; agent_runs row reaches succeeded
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput(), adapterSnapshot },
+      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{ state: string }>(
@@ -283,7 +282,7 @@ async function runScenarios(
     let threw = false;
     try {
       await recorder.record(
-        { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput(), adapterSnapshot },
+        { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
         () => {
           const adapted = descriptor.makeFailureAdapter();
           const input = descriptor.makeSuccessInput();
@@ -355,12 +354,7 @@ async function runScenarios(
       let threw = false;
       try {
         await recorder.record(
-          {
-            adapterId,
-            role: descriptor.role,
-            input: descriptor.makeSuccessInput(),
-            adapterSnapshot,
-          },
+          { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
           () =>
             runAdapter(invalidAdapter, descriptor.makeSuccessInput()).then(
               (out) => out,
@@ -407,7 +401,7 @@ async function runScenarios(
   };
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: secretInput, adapterSnapshot },
+      { adapterId, role: descriptor.role, input: secretInput },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{ input_summary: string }>(
@@ -461,7 +455,7 @@ async function runScenarios(
   // 7. State transition sequence — verify queued→running→succeeded ordering via timestamps
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput(), adapterSnapshot },
+      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{
@@ -541,14 +535,8 @@ export async function runConformanceSuite(
     });
 
     const adapterRecord = await opts.registry.getById(adapterId);
-    const adapterSnapshot: AdapterRunSnapshot = {
-      name: adapterRecord.name,
-      implementation: adapterRecord.implementation,
-      version: adapterRecord.version,
-      capabilitiesUsed: adapterRecord.capabilities.slice(),
-    };
 
-    const scenarios = await runScenarios(descriptor, adapterId, adapterSnapshot, opts);
+    const scenarios = await runScenarios(descriptor, adapterId, opts);
     const passedCount = scenarios.filter((s) => s.passed && !s.skipped).length;
     const failedCount = scenarios.filter((s) => !s.passed && !s.skipped).length;
     const skippedCount = scenarios.filter((s) => s.skipped).length;

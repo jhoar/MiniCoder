@@ -42,17 +42,22 @@ export class InMemoryAdapterDb implements DbClient {
 
   private insert(s: string, params: unknown[]): void {
     if (s.includes('INTO agent_adapters')) {
-      const [id, role, name, implementation, isActive, , createdAt, updatedAt] = params;
-      this.agentAdapters.push({
-        id,
-        role,
-        name,
-        implementation,
-        is_active: isActive,
-        version: 1,
-        created_at: createdAt,
-        updated_at: updatedAt,
-      });
+      // Params: [id, role, name, implementation, is_active, created_at, updated_at]
+      // (version=1 is a SQL literal, not a param; ON CONFLICT DO NOTHING is handled below)
+      const [id, role, name, implementation, isActive, createdAt, updatedAt] = params;
+      const hasConflict = this.agentAdapters.some((r) => r.role === role && r.name === name);
+      if (!hasConflict) {
+        this.agentAdapters.push({
+          id,
+          role,
+          name,
+          implementation,
+          is_active: isActive,
+          version: 1,
+          created_at: createdAt,
+          updated_at: updatedAt,
+        });
+      }
       return;
     }
     if (s.includes('INTO agent_capabilities')) {

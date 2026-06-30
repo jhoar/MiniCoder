@@ -48,15 +48,6 @@ interface ConfigRow {
   config: string;
 }
 
-function isUniqueConstraintError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  // SQLite: "UNIQUE constraint failed: agent_adapters.role, agent_adapters.name"
-  if (err.message.includes('UNIQUE constraint failed')) return true;
-  // PostgreSQL driver: error code 23505
-  if ((err as { code?: string }).code === '23505') return true;
-  return false;
-}
-
 /**
  * Database-backed resolution of "which adapter implementation handles role X" plus its
  * declared capabilities and resolved configuration (docs/03 §7: adapter configuration is
@@ -66,56 +57,43 @@ export class AdapterRegistry {
   constructor(private readonly db: DbClient) {}
 
   /**
-   * Idempotent upsert keyed on (role, name): re-registering replaces capabilities.
-   * Safe under concurrent callers — unique-constraint violations are caught and resolved
-   * by re-reading the winning row and falling through to the UPDATE path.
+   * Idempotent upsert keyed on (role, name): re-registering replaces capabilities and
+   * increments version. Safe under concurrent callers in both SQLite and PostgreSQL:
+   * ON CONFLICT DO NOTHING avoids any error (and the PostgreSQL aborted-transaction problem),
+   * then a re-select identifies the winning row so re-registrations fall through to UPDATE.
    */
   async register(input: RegisterAdapterInput): Promise<string> {
     return this.db.transaction(async (tx) => {
       const now = isoNow();
-      const existing = await tx.query<{ id: string }>(
+      const newId = generateId();
+
+      // ON CONFLICT DO NOTHING: never errors, so the transaction stays healthy in PostgreSQL
+      // (catching 23505 inside an active transaction aborts it, making further queries fail).
+      await tx.execute(
+        `INSERT INTO agent_adapters (id, role, name, implementation, is_active, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+         ON CONFLICT (role, name) DO NOTHING`,
+        [
+          newId,
+          input.role,
+          input.name,
+          input.implementation,
+          (input.isActive ?? true) ? 1 : 0,
+          now,
+          now,
+        ],
+      );
+
+      const rows = await tx.query<{ id: string }>(
         `SELECT id FROM agent_adapters WHERE role = ? AND name = ?`,
         [input.role, input.name],
       );
+      if (!rows[0])
+        throw new Error(`adapter insert produced no row for ${input.role}/${input.name}`);
+      const adapterId = rows[0].id;
 
-      let adapterId: string;
-      let isNew: boolean;
-
-      if (existing[0]) {
-        adapterId = existing[0].id;
-        isNew = false;
-      } else {
-        const newId = generateId();
-        try {
-          await tx.execute(
-            `INSERT INTO agent_adapters (id, role, name, implementation, is_active, version, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-            [
-              newId,
-              input.role,
-              input.name,
-              input.implementation,
-              (input.isActive ?? true) ? 1 : 0,
-              now,
-              now,
-            ],
-          );
-          adapterId = newId;
-          isNew = true;
-        } catch (err) {
-          if (!isUniqueConstraintError(err)) throw err;
-          // Concurrent registration won the INSERT race — re-read and fall through to UPDATE.
-          const concurrent = await tx.query<{ id: string }>(
-            `SELECT id FROM agent_adapters WHERE role = ? AND name = ?`,
-            [input.role, input.name],
-          );
-          if (!concurrent[0]) throw err;
-          adapterId = concurrent[0].id;
-          isNew = false;
-        }
-      }
-
-      if (!isNew) {
+      if (adapterId !== newId) {
+        // Pre-existing row (or concurrent winner) — update metadata and replace capabilities.
         await tx.execute(
           `UPDATE agent_adapters
            SET implementation = ?, is_active = ?, version = version + 1, updated_at = ?

@@ -4,6 +4,7 @@ import { defaultRedactor, type SecretRedactor } from '../auth/redaction.js';
 import { AgentRunState } from '../domain/states.js';
 import { StateTransitionValidator } from '../statemachine/validator.js';
 import { AGENT_RUN_MATRIX } from '../statemachine/machines/agent-run.js';
+import type { AdapterRegistry } from './registry.js';
 
 /** Normalized provider-failure taxonomy (docs/03 §11.6). */
 export type AgentRunErrorType =
@@ -42,8 +43,12 @@ export interface RecordRunOptions {
   readonly projectId?: string;
   readonly featureRunId?: string;
   readonly input: unknown;
-  /** Immutable adapter provenance snapshot. Omit only in legacy/test paths that pre-date migration 0004. */
-  readonly adapterSnapshot?: AdapterRunSnapshot;
+  /**
+   * Which capabilities the run exercised. The recorder snapshots name/implementation/version
+   * from the registry automatically; only the exercised-capabilities list is caller-supplied
+   * since the recorder cannot observe which subset was used during a run.
+   */
+  readonly capabilitiesUsed?: readonly string[];
 }
 
 export interface RecordRunResult<O> {
@@ -56,19 +61,31 @@ const validator = new StateTransitionValidator(AGENT_RUN_MATRIX, 'agent-run');
 /**
  * Wraps an adapter invocation with persistence-backed `agent_runs` lifecycle recording
  * (queued -> running -> succeeded|failed), driven through the agent-run state matrix delivered
- * in Phase 2. Private chain-of-thought must never be passed as `input`/output here — only
- * structured I/O.
+ * in Phase 2. Adapter provenance (name/implementation/version) is resolved automatically from
+ * the injected registry at invocation time, so re-registration cannot alter historical records.
+ * Private chain-of-thought must never be passed as `input`/output here — only structured I/O.
  */
 export class AgentRunRecorder {
   constructor(
     private readonly db: DbClient,
+    private readonly registry: AdapterRegistry,
     private readonly redactor: SecretRedactor = defaultRedactor,
   ) {}
 
   async record<O>(opts: RecordRunOptions, fn: () => Promise<O>): Promise<RecordRunResult<O>> {
     const agentRunId = generateId();
     const queuedAt = isoNow();
-    const snap = opts.adapterSnapshot;
+
+    // Snapshot adapter identity from the registry at invocation time. getById throws
+    // UnknownAdapterError for an invalid adapterId, which is correct — recording a run
+    // against an unknown adapter is a caller error.
+    const adapterRecord = await this.registry.getById(opts.adapterId);
+    const snap: AdapterRunSnapshot = {
+      name: adapterRecord.name,
+      implementation: adapterRecord.implementation,
+      version: adapterRecord.version,
+      capabilitiesUsed: opts.capabilitiesUsed ?? [],
+    };
 
     await this.db.execute(
       `INSERT INTO agent_runs
@@ -84,10 +101,10 @@ export class AgentRunRecorder {
         opts.role,
         AgentRunState.QUEUED,
         JSON.stringify(this.redactor.redactObject(opts.input)),
-        snap?.name ?? null,
-        snap?.implementation ?? null,
-        snap?.version ?? null,
-        snap ? JSON.stringify(snap.capabilitiesUsed) : null,
+        snap.name,
+        snap.implementation,
+        snap.version,
+        JSON.stringify(snap.capabilitiesUsed),
         queuedAt,
         queuedAt,
       ],

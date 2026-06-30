@@ -27,6 +27,30 @@ describe('AdapterRegistry.register', () => {
     expect(record.capabilities).toEqual(['can_modify_files', 'can_commit', 'can_push_branch']);
   });
 
+  it('concurrent registration via ON CONFLICT DO NOTHING: second caller gets same id and updates', async () => {
+    // Simulate what happens when a second caller's INSERT hits the DO NOTHING path:
+    // the InMemoryAdapterDb skips the duplicate insert, and the re-select returns the first ID.
+    const firstId = await registry.register({
+      role: 'CoderAgentAdapter',
+      name: 'ConcurrentAdapter',
+      implementation: 'v1',
+      capabilities: ['can_modify_files'],
+    });
+    // Second registration for the same (role, name) — simulates the concurrent winner path
+    const secondId = await registry.register({
+      role: 'CoderAgentAdapter',
+      name: 'ConcurrentAdapter',
+      implementation: 'v2',
+      capabilities: ['can_modify_files', 'can_commit'],
+    });
+
+    expect(secondId).toBe(firstId);
+    const record = await registry.getById(firstId);
+    expect(record.implementation).toBe('v2');
+    expect(record.version).toBe(2);
+    expect(record.capabilities).toEqual(['can_modify_files', 'can_commit']);
+  });
+
   it('re-registering the same (role, name) replaces capabilities rather than duplicating the adapter', async () => {
     const firstId = await registry.register({
       role: 'ReviewerAgentAdapter',

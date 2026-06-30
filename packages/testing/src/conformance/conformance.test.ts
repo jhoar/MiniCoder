@@ -14,7 +14,7 @@ describe('Phase 5 smoke adapter conformance suite', () => {
   beforeEach(async () => {
     db = createTestDb();
     registry = new AdapterRegistry(db);
-    recorder = new AgentRunRecorder(db);
+    recorder = new AgentRunRecorder(db, registry);
     results = await runConformanceSuite({ db, registry, recorder });
   });
 
