@@ -30,31 +30,44 @@ export function createGithubCommand(): Command {
     .requiredOption('--pr-number <number>', 'PR number', parseInt)
     .option('--feature-run <id>', 'Feature run ID')
     .option('--head-sha <sha>', 'HEAD commit SHA', 'abc000000000')
-    .action(async (opts: { project: string; prNumber: number; featureRun?: string; headSha: string }) => {
-      guardEnv();
-      const db = await createDbClientFromEnv();
-      try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          featureRunId: opts.featureRun ?? null,
-          headSha: opts.headSha,
-          action: 'opened',
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
+    .action(
+      async (opts: { project: string; prNumber: number; featureRun?: string; headSha: string }) => {
+        guardEnv();
+        const db = await createDbClientFromEnv();
+        try {
+          const payload = JSON.stringify({
+            projectId: opts.project,
+            prNumber: opts.prNumber,
+            featureRunId: opts.featureRun ?? null,
+            headSha: opts.headSha,
+            action: 'opened',
+          });
+          await db.execute(
+            `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
            VALUES (?, ?, 'github', 'pr.opened', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-pr-opened-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:pr.opened:${opts.project}:${opts.prNumber}`,
-            payload,
-          ],
-        );
-        console.log(JSON.stringify({ event: 'pr.opened', prNumber: opts.prNumber, projectId: opts.project, timestamp: isoNow() }, null, 2));
-      } finally {
-        await db.close();
-      }
-    });
+            [
+              `sim-pr-opened-${opts.project}-${opts.prNumber}-${Date.now()}`,
+              `github:pr.opened:${opts.project}:${opts.prNumber}`,
+              payload,
+            ],
+          );
+          console.log(
+            JSON.stringify(
+              {
+                event: 'pr.opened',
+                prNumber: opts.prNumber,
+                projectId: opts.project,
+                timestamp: isoNow(),
+              },
+              null,
+              2,
+            ),
+          );
+        } finally {
+          await db.close();
+        }
+      },
+    );
 
   github
     .command('simulate-pr-closed')
@@ -81,7 +94,19 @@ export function createGithubCommand(): Command {
             payload,
           ],
         );
-        console.log(JSON.stringify({ event: 'pr.closed', prNumber: opts.prNumber, merged: opts.merged, projectId: opts.project, timestamp: isoNow() }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              event: 'pr.closed',
+              prNumber: opts.prNumber,
+              merged: opts.merged,
+              projectId: opts.project,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }
@@ -113,7 +138,19 @@ export function createGithubCommand(): Command {
             payload,
           ],
         );
-        console.log(JSON.stringify({ event: 'pr.merged', prNumber: opts.prNumber, mergeSha: opts.mergeSha, projectId: opts.project, timestamp: isoNow() }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              event: 'pr.merged',
+              prNumber: opts.prNumber,
+              mergeSha: opts.mergeSha,
+              projectId: opts.project,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }
@@ -144,7 +181,19 @@ export function createGithubCommand(): Command {
             payload,
           ],
         );
-        console.log(JSON.stringify({ event: 'check.passed', checkName: opts.checkName, prNumber: opts.prNumber, projectId: opts.project, timestamp: isoNow() }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              event: 'check.passed',
+              checkName: opts.checkName,
+              prNumber: opts.prNumber,
+              projectId: opts.project,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }
@@ -175,7 +224,19 @@ export function createGithubCommand(): Command {
             payload,
           ],
         );
-        console.log(JSON.stringify({ event: 'check.failed', checkName: opts.checkName, prNumber: opts.prNumber, projectId: opts.project, timestamp: isoNow() }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              event: 'check.failed',
+              checkName: opts.checkName,
+              prNumber: opts.prNumber,
+              projectId: opts.project,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }
@@ -206,7 +267,19 @@ export function createGithubCommand(): Command {
             payload,
           ],
         );
-        console.log(JSON.stringify({ event: 'review.approved', reviewer: opts.reviewer, prNumber: opts.prNumber, projectId: opts.project, timestamp: isoNow() }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              event: 'review.approved',
+              reviewer: opts.reviewer,
+              prNumber: opts.prNumber,
+              projectId: opts.project,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }
@@ -237,7 +310,19 @@ export function createGithubCommand(): Command {
             payload,
           ],
         );
-        console.log(JSON.stringify({ event: 'review.changes_requested', reviewer: opts.reviewer, prNumber: opts.prNumber, projectId: opts.project, timestamp: isoNow() }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              event: 'review.changes_requested',
+              reviewer: opts.reviewer,
+              prNumber: opts.prNumber,
+              projectId: opts.project,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }
@@ -266,7 +351,18 @@ export function createGithubCommand(): Command {
             payload,
           ],
         );
-        console.log(JSON.stringify({ event: 'branch.protection_ok', prNumber: opts.prNumber, projectId: opts.project, timestamp: isoNow() }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              event: 'branch.protection_ok',
+              prNumber: opts.prNumber,
+              projectId: opts.project,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }

@@ -24,6 +24,9 @@ export const mergeGateScenario: Scenario = {
     const { id: featureRunId, feature_request_id: featureRequestId } = featureRun[0];
     const prNumber = 99;
 
+    // Register the PR before any other simulate calls require it
+    github.simulatePrOpened(prNumber, featureRunId, 'initial-sha');
+
     // Simulate CI check passed
     github.simulateCheckPassed(prNumber, 'ci/test');
     const prStateAfterCheck = github.getPrState(prNumber);
@@ -74,9 +77,7 @@ export const mergeGateScenario: Scenario = {
     }
 
     if (finalState[0]?.state !== 'merged') {
-      throw new Error(
-        `Expected feature_request state 'merged', got '${finalState[0]?.state}'`,
-      );
+      throw new Error(`Expected feature_request state 'merged', got '${finalState[0]?.state}'`);
     }
   },
 };

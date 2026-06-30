@@ -3,7 +3,8 @@ import type { Fixture } from './types.js';
 
 export const finalDesignDocumentFixture: Fixture = {
   name: 'final-design-document',
-  description: 'Project at implementation_complete with pending artifact_exports and a design_documents row',
+  description:
+    'Project at implementation_complete with pending artifact_exports and a design_documents row',
 
   async setup(db: DbClient, projectId = 'proj-final-doc'): Promise<void> {
     const planId = `plan-${projectId}`;

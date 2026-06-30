@@ -9,62 +9,54 @@ export const finalDesignDocumentScenario: Scenario = {
     const { db, projectId, runner, documentation, storage } = ctx;
 
     // Run export-plan task
-    await runner.run(
-      'export-plan',
-      { projectId },
-      async (_payload: unknown) => {
-        const result = await documentation.run({
-          projectId,
-          planId: `plan-${projectId}`,
-          featureCount: 0,
-          correlationId: `corr-export-plan-${projectId}`,
-        });
+    await runner.run('export-plan', { projectId }, async (_payload: unknown) => {
+      const result = await documentation.run({
+        projectId,
+        planId: `plan-${projectId}`,
+        featureCount: 0,
+        correlationId: `corr-export-plan-${projectId}`,
+      });
 
-        const content = result.sections
-          .map((s) => `## ${s.sectionName}\n\n${s.content}`)
-          .join('\n\n');
+      const content = result.sections
+        .map((s) => `## ${s.sectionName}\n\n${s.content}`)
+        .join('\n\n');
 
-        storage.store(`plan-${projectId}`, content);
+      storage.store(`plan-${projectId}`, content);
 
-        await db.execute(
-          `UPDATE artifact_exports
+      await db.execute(
+        `UPDATE artifact_exports
            SET state = 'exported', content = ?, exported_at = datetime('now'), updated_at = datetime('now')
            WHERE project_id = ? AND artifact_type = 'plan'`,
-          [content, projectId],
-        );
+        [content, projectId],
+      );
 
-        return result;
-      },
-    );
+      return result;
+    });
 
     // Run export-backlog task
-    await runner.run(
-      'export-backlog',
-      { projectId },
-      async (_payload: unknown) => {
-        const result = await documentation.run({
-          projectId,
-          planId: `plan-${projectId}`,
-          featureCount: 0,
-          correlationId: `corr-export-backlog-${projectId}`,
-        });
+    await runner.run('export-backlog', { projectId }, async (_payload: unknown) => {
+      const result = await documentation.run({
+        projectId,
+        planId: `plan-${projectId}`,
+        featureCount: 0,
+        correlationId: `corr-export-backlog-${projectId}`,
+      });
 
-        const content = result.sections
-          .map((s) => `## ${s.sectionName}\n\n${s.content}`)
-          .join('\n\n');
+      const content = result.sections
+        .map((s) => `## ${s.sectionName}\n\n${s.content}`)
+        .join('\n\n');
 
-        storage.store(`backlog-${projectId}`, content);
+      storage.store(`backlog-${projectId}`, content);
 
-        await db.execute(
-          `UPDATE artifact_exports
+      await db.execute(
+        `UPDATE artifact_exports
            SET state = 'exported', content = ?, exported_at = datetime('now'), updated_at = datetime('now')
            WHERE project_id = ? AND artifact_type = 'backlog'`,
-          [content, projectId],
-        );
+        [content, projectId],
+      );
 
-        return result;
-      },
-    );
+      return result;
+    });
 
     // Assert both artifacts are exported
     const exports = await db.query<{ artifact_type: string; state: string }>(

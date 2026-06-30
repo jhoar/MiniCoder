@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.0
-> Last-updated: 2026-06-29
+> Version: 1.3.1
+> Last-updated: 2026-06-30
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -633,6 +633,7 @@ minicoder db seed --fixture backlog-activation --project my-proj --env developme
 ```
 
 Available fixture names:
+
 - `planning-basic` — project, spec, assessment (sufficient), plan (draft)
 - `planning-review-merge` — full happy-path: project, spec, plan (approved), 5 features at `approved_pending_execution`
 - `clarification-required` — project, spec, assessment (insufficient), 2 unanswered questions
@@ -730,13 +731,13 @@ minicoder state doctor --project proj-1
 
 The doctor runs 5 checks:
 
-| Check | Severity | Auto-clearable |
-|-------|----------|---------------|
-| `stale_locks` | error | yes |
-| `stuck_outbox` | error | yes |
-| `stuck_inbox` | error | yes |
-| `orphaned_runs` | error | manually repairable |
-| `triggerdev_mismatch` | warning | no (Phase 13) |
+| Check                 | Severity | Auto-clearable      |
+| --------------------- | -------- | ------------------- |
+| `stale_locks`         | error    | yes                 |
+| `stuck_outbox`        | error    | yes                 |
+| `stuck_inbox`         | error    | yes                 |
+| `orphaned_runs`       | error    | manually repairable |
+| `triggerdev_mismatch` | warning  | no (Phase 13)       |
 
 Exits with code 1 if any error-severity issues are found.
 
@@ -766,6 +767,7 @@ minicoder state reconcile --project proj-1
 ```
 
 Auto-cleared issues:
+
 - **stale_locks** — sets `expires_at = now`
 - **stuck_outbox** — marks status `failed`
 - **stuck_inbox** — marks status `failed`
@@ -846,11 +848,41 @@ All jobs except the CronJob require a `minicoder-db-secret` Secret with `dialect
 
 ### 12.12 Diagnostics and Known Failure Modes (Phase 4)
 
-| Symptom | Likely cause | Resolution |
-|---------|-------------|-----------|
-| `db seed` fails with "Unknown fixture" | Fixture name typo | Run `minicoder db seed --fixture ?` to see valid names |
-| `db snapshot` fails with "already exists" | Output file collision | Delete existing file or choose a different output path |
-| `state doctor` exits 1 | Error-severity anomalies found | Run `minicoder state reconcile --all` for auto-clearable issues |
-| `test scenario` exits 1 | Scenario assertion failed | Check the `error` field in JSON output |
-| `github simulate-*` fails with env guard | Wrong `APP_ENV` | Set `APP_ENV=development` or `APP_ENV=ci` |
-| `state repair --apply` fails with token mismatch | Token file tampered or expired | Re-run `--dry-run` to get a new token |
+| Symptom                                          | Likely cause                   | Resolution                                                      |
+| ------------------------------------------------ | ------------------------------ | --------------------------------------------------------------- |
+| `db seed` fails with "Unknown fixture"           | Fixture name typo              | Run `minicoder db seed --fixture ?` to see valid names          |
+| `db seed` fails with PostgreSQL dialect error    | Fixtures are SQLite-only       | Use `pg_restore` to load test data for PostgreSQL environments  |
+| `db snapshot` fails with "already exists"        | Output file collision          | Delete existing file or choose a different output path          |
+| `db restore` rejected in production              | `NODE_ENV` or `APP_ENV=production` | Set env to `development`, `test`, or `ci` and use `--env`  |
+| `state doctor` exits 1                           | Error-severity anomalies found | Run `minicoder state reconcile --all` for auto-clearable issues |
+| `state validate` exits 1                         | Feature run has unknown state  | Validates enum membership; does not check transition history    |
+| `test scenario` exits 1                          | Scenario assertion failed      | Check the `error` field in JSON output                          |
+| `github simulate-*` fails with env guard         | Wrong `APP_ENV`                | Set `APP_ENV=development` or `APP_ENV=ci`                       |
+
+#### `db seed` — SQLite-only scope
+
+`minicoder db seed` uses SQLite-specific SQL (`INSERT OR IGNORE`, `datetime('now')`). It exits 1
+with a clear error if `DB_DIALECT=postgres`. For PostgreSQL environments, use `pg_restore` or a
+purpose-built seed script that uses standard SQL.
+
+#### `state validate` — enum membership check only
+
+`state validate` checks that every active feature run's `current_execution_state` is a member of
+the known enum (`KNOWN_FEATURE_STATES`). It does **not** verify transition history or enforce that
+the state was reached via a valid path. Use `state inspect` and the workflow event log for
+transition-history analysis.
+
+#### `state repair --apply` — transactional guarantee
+
+The `repair --apply` path wraps all mutations and the `workflow_events` audit INSERT in a single
+database transaction. The confirmation token file is deleted **only after** the transaction commits
+successfully. If the transaction fails, the token is preserved and the command can be retried.
+
+#### SQLite test teardown — do not call `db.close()`
+
+Never call `db.close()` in Vitest tests or scenario runner code. `better-sqlite3` registers native
+GC finalizers for `Database` and `Statement` objects; explicit `db.close()` finalizes all
+statements, causing a double-free SIGSEGV when V8's GC later runs the `Statement` finalizer.
+The `vitest.config.ts` `pool: 'forks'` setting bypasses finalizers via `process.exit()` on
+test-file completion. Let GC handle teardown naturally.
+| `state repair --apply` fails with token mismatch | Token file tampered or expired | Re-run `--dry-run` to get a new token                           |

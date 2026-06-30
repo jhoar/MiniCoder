@@ -3,7 +3,8 @@ import type { Fixture } from './types.js';
 
 export const githubRaceFixture: Fixture = {
   name: 'github-race',
-  description: 'Feature at ci_running state with a pr.closed inbox_events row, simulating a GitHub race condition',
+  description:
+    'Feature at ci_running state with a pr.closed inbox_events row, simulating a GitHub race condition',
 
   async setup(db: DbClient, projectId = 'proj-github-race'): Promise<void> {
     const planId = `plan-${projectId}`;
@@ -55,11 +56,7 @@ export const githubRaceFixture: Fixture = {
          (id, dedup_key, source, event_type, payload, payload_schema_version,
           status, version, created_at, updated_at)
        VALUES (?, ?, 'github', 'pr.closed', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-      [
-        `inbox-${projectId}-pr-closed`,
-        `github:pr.closed:${projectId}:${prNumber}`,
-        payload,
-      ],
+      [`inbox-${projectId}-pr-closed`, `github:pr.closed:${projectId}:${prNumber}`, payload],
     );
   },
 };

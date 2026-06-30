@@ -77,12 +77,20 @@ export function createDbCommand(): Command {
     });
 
   db.command('seed')
-    .description('Insert fixture data into the database (dev/CI only)')
+    .description('Insert fixture data into the database (dev/CI only, SQLite only)')
     .option('--fixture <name>', 'Fixture name', 'planning-review-merge')
     .option('--env <environment>', 'Target environment — must be development, test, or ci')
     .option('--project <id>', 'Project ID override')
     .action(async (opts: { fixture: string; env?: string; project?: string }) => {
       guardEnv(opts.env);
+      const dialect = process.env['DB_DIALECT'] ?? 'sqlite';
+      if (dialect === 'postgres') {
+        console.error(
+          'Error: db seed is only supported with SQLite.\n' +
+            'For PostgreSQL, use pg_restore to load fixture data.',
+        );
+        process.exit(1);
+      }
       const { getFixture } = await import('@minicoder/testing');
       const dbClient = await createDbClientFromEnv();
       try {
@@ -135,6 +143,11 @@ export function createDbCommand(): Command {
     .option('--yes', 'Confirm the restore (will overwrite existing database)')
     .action((opts: { input: string; env?: string; yes?: boolean }) => {
       guardEnv(opts.env);
+      const sysEnv = process.env['NODE_ENV'] ?? process.env['APP_ENV'] ?? 'development';
+      if (sysEnv === 'production') {
+        console.error('Error: db restore is not allowed in production environments.');
+        process.exit(1);
+      }
       const dialect = process.env['DB_DIALECT'] ?? 'sqlite';
       if (dialect !== 'sqlite') {
         console.error(
@@ -181,8 +194,7 @@ export function createDbCommand(): Command {
           .readdirSync(MIGRATIONS_DIR)
           .filter(
             (f) =>
-              (f.endsWith('.sqlite.sql') || f.endsWith('.postgres.sql')) &&
-              !f.includes('.down.'),
+              (f.endsWith('.sqlite.sql') || f.endsWith('.postgres.sql')) && !f.includes('.down.'),
           )
           .sort()
           .map((f) => f.replace(/\.(sqlite|postgres)\.sql$/, ''));

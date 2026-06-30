@@ -49,7 +49,6 @@ export async function runScenario(
 
   try {
     await scenario.run(ctx);
-    await db.close();
 
     return {
       passed: true,
@@ -57,8 +56,6 @@ export async function runScenario(
       durationMs: Date.now() - startMs,
     };
   } catch (err) {
-    await db.close().catch(() => {});
-
     const message = err instanceof Error ? err.message : String(err);
     assertions.push({
       label: 'scenario completed without error',

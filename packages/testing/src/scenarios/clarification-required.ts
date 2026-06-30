@@ -2,7 +2,8 @@ import type { Scenario, ScenarioContext } from './types.js';
 
 export const clarificationRequiredScenario: Scenario = {
   name: 'clarification-required',
-  description: 'Runs readiness assessment (insufficient) and start-clarification, asserts questions in DB',
+  description:
+    'Runs readiness assessment (insufficient) and start-clarification, asserts questions in DB',
   fixtureName: 'clarification-required',
 
   async run(ctx: ScenarioContext): Promise<void> {
@@ -11,27 +12,19 @@ export const clarificationRequiredScenario: Scenario = {
     // Override planner behavior to return insufficient
     planner.behavior = 'insufficient';
 
-    await runner.run(
-      'planning-readiness-assessment',
-      { projectId },
-      async (_payload: unknown) => {
-        const result = await planner.run({
-          projectId,
-          specificationContent: 'Build something awesome.',
-          correlationId: `corr-clarification-${projectId}`,
-        });
-        return result;
-      },
-    );
+    await runner.run('planning-readiness-assessment', { projectId }, async (_payload: unknown) => {
+      const result = await planner.run({
+        projectId,
+        specificationContent: 'Build something awesome.',
+        correlationId: `corr-clarification-${projectId}`,
+      });
+      return result;
+    });
 
-    await runner.run(
-      'start-clarification',
-      { projectId },
-      async (_payload: unknown) => {
-        // Simulate clarification task: ensure unanswered questions remain
-        return { started: true };
-      },
-    );
+    await runner.run('start-clarification', { projectId }, async (_payload: unknown) => {
+      // Simulate clarification task: ensure unanswered questions remain
+      return { started: true };
+    });
 
     const questions = await db.query<{ id: string; answer: string | null }>(
       `SELECT pq.id, pq.answer FROM planning_questions pq
@@ -52,9 +45,7 @@ export const clarificationRequiredScenario: Scenario = {
     );
 
     if (assessment[0]?.status !== 'insufficient') {
-      throw new Error(
-        `Expected assessment status 'insufficient', got '${assessment[0]?.status}'`,
-      );
+      throw new Error(`Expected assessment status 'insufficient', got '${assessment[0]?.status}'`);
     }
   },
 };

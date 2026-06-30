@@ -68,9 +68,7 @@ export const githubRaceScenario: Scenario = {
 
     const state = finalState[0]?.current_execution_state;
     if (state !== 'human_required' && state !== 'blocked') {
-      throw new Error(
-        `Expected feature_run state 'human_required' or 'blocked', got '${state}'`,
-      );
+      throw new Error(`Expected feature_run state 'human_required' or 'blocked', got '${state}'`);
     }
 
     const processedEvent = await db.query<{ status: string }>(

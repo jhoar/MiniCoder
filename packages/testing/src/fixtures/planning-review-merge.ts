@@ -3,7 +3,8 @@ import type { Fixture } from './types.js';
 
 export const planningReviewMergeFixture: Fixture = {
   name: 'planning-review-merge',
-  description: 'Full happy-path seed: project with approved plan and 5 features ready for execution',
+  description:
+    'Full happy-path seed: project with approved plan and 5 features ready for execution',
 
   async setup(db: DbClient, projectId = 'proj-prm'): Promise<void> {
     const specId = `spec-${projectId}`;

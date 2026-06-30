@@ -3,7 +3,8 @@ import type { Fixture } from './types.js';
 
 export const reviewLoopFixture: Fixture = {
   name: 'review-loop',
-  description: 'Feature at under_review state with 2 blocking findings and 3 review cycles recorded',
+  description:
+    'Feature at under_review state with 2 blocking findings and 3 review cycles recorded',
 
   async setup(db: DbClient, projectId = 'proj-review-loop'): Promise<void> {
     const planId = `plan-${projectId}`;

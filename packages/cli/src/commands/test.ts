@@ -4,9 +4,8 @@ import * as path from 'path';
 
 const VITEST_BIN = path.resolve(__dirname, '../../../../node_modules/.bin/vitest');
 
-function runVitest(filter?: string): void {
-  const args = ['run'];
-  if (filter) args.push('--reporter=verbose', filter);
+function runVitest(...extraArgs: string[]): void {
+  const args = ['run', ...extraArgs];
   const result = spawnSync('node', [VITEST_BIN, ...args], {
     stdio: 'inherit',
     env: process.env,
@@ -52,16 +51,16 @@ export function createTestCommand(): Command {
 
   test
     .command('unit')
-    .description('Run unit tests (vitest)')
+    .description('Run unit tests — excludes *.integration.test.ts files')
     .action(() => {
-      runVitest('--reporter=verbose');
+      runVitest('--reporter=verbose', '--exclude', '**/*.integration.test.ts');
     });
 
   test
     .command('integration')
-    .description('Run integration tests (vitest)')
+    .description('Run integration tests — only *.integration.test.ts files')
     .action(() => {
-      runVitest('--reporter=verbose');
+      runVitest('--reporter=verbose', '--include', '**/*.integration.test.ts');
     });
 
   test

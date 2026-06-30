@@ -2,7 +2,8 @@ import type { Scenario, ScenarioContext } from './types.js';
 
 export const reviewLoopScenario: Scenario = {
   name: 'review-loop',
-  description: 'Coder (success) → reviewer (request_changes) → coder → reviewer (approve) → assert approved_by_policy',
+  description:
+    'Coder (success) → reviewer (request_changes) → coder → reviewer (approve) → assert approved_by_policy',
   fixtureName: 'review-loop',
 
   async run(ctx: ScenarioContext): Promise<void> {

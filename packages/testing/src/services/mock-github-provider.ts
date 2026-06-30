@@ -125,7 +125,8 @@ export class MockGitHubProvider {
 
   private requirePr(prNumber: number): MockPrState {
     const pr = this.prs.get(prNumber);
-    if (!pr) throw new Error(`MockGitHubProvider: PR #${prNumber} not found (simulate-pr-opened first)`);
+    if (!pr)
+      throw new Error(`MockGitHubProvider: PR #${prNumber} not found (simulate-pr-opened first)`);
     return pr;
   }
 

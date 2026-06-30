@@ -91,7 +91,9 @@ export const triggerRetryScenario: Scenario = {
 
     // Total coder calls: 2 (one fail, one success)
     if (coder.calls.length < 2) {
-      throw new Error(`Expected at least 2 coder calls (fail + success), got ${coder.calls.length}`);
+      throw new Error(
+        `Expected at least 2 coder calls (fail + success), got ${coder.calls.length}`,
+      );
     }
   },
 };

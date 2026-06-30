@@ -8,28 +8,24 @@ export const planningBasicScenario: Scenario = {
   async run(ctx: ScenarioContext): Promise<void> {
     const { db, projectId, runner, planner } = ctx;
 
-    await runner.run(
-      'planning-readiness-assessment',
-      { projectId },
-      async (_payload: unknown) => {
-        const result = await planner.run({
-          projectId,
-          specificationContent: 'Build a task management system with projects and assignments.',
-          correlationId: `corr-planning-basic-${projectId}`,
-        });
+    await runner.run('planning-readiness-assessment', { projectId }, async (_payload: unknown) => {
+      const result = await planner.run({
+        projectId,
+        specificationContent: 'Build a task management system with projects and assignments.',
+        correlationId: `corr-planning-basic-${projectId}`,
+      });
 
-        if (result.readinessResult === 'sufficient') {
-          // No questions means assessment is sufficient — update assessment
-          await db.execute(
-            `UPDATE planning_readiness_assessments SET status = 'sufficient', updated_at = datetime('now')
+      if (result.readinessResult === 'sufficient') {
+        // No questions means assessment is sufficient — update assessment
+        await db.execute(
+          `UPDATE planning_readiness_assessments SET status = 'sufficient', updated_at = datetime('now')
              WHERE project_id = ?`,
-            [projectId],
-          );
-        }
+          [projectId],
+        );
+      }
 
-        return result;
-      },
-    );
+      return result;
+    });
 
     const questions = await db.query<{ id: string }>(
       `SELECT id FROM planning_questions
@@ -39,9 +35,7 @@ export const planningBasicScenario: Scenario = {
     );
 
     if (questions.length > 0) {
-      throw new Error(
-        `Expected 0 unanswered planning questions, found ${questions.length}`,
-      );
+      throw new Error(`Expected 0 unanswered planning questions, found ${questions.length}`);
     }
 
     if (planner.calls.length !== 1) {

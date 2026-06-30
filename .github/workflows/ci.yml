@@ -163,6 +163,8 @@ jobs:
         run: DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci pnpm vitest run packages/testing/src/testing.test.ts
       - name: Run clarification-required scenario
         run: DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci pnpm vitest run --reporter=verbose packages/testing/src/testing.test.ts
+      - name: Run full scenario registry
+        run: DB_DIALECT=sqlite DB_PATH=:memory: APP_ENV=ci pnpm vitest run --reporter=verbose packages/testing/src/testing.test.ts
 
   security-scan:
     name: Security Scan
@@ -182,7 +184,7 @@ jobs:
       - name: Dependency audit
         run: pnpm audit --audit-level=high
       - name: TruffleHog secret scan
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@f1ba218abb93e405a01d7f5ee6b4b529ba3a2a3b # v3.82.6
         with:
           path: ./
           base: ${{ github.event.repository.default_branch }}

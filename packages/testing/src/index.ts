@@ -6,7 +6,12 @@ export { FIXTURE_REGISTRY, getFixture } from './fixtures/index.js';
 export type { FixtureName, Fixture } from './fixtures/index.js';
 
 export { SCENARIO_REGISTRY, getScenario } from './scenarios/index.js';
-export type { Scenario, ScenarioContext, ScenarioResult, AssertionResult } from './scenarios/index.js';
+export type {
+  Scenario,
+  ScenarioContext,
+  ScenarioResult,
+  AssertionResult,
+} from './scenarios/index.js';
 
 export { parseSystemTestConfig, loadSystemTestConfig } from './config.js';
 export type { SystemTestConfig } from './config.js';
