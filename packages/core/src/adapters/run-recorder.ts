@@ -24,12 +24,26 @@ export class AdapterRunError extends Error {
   }
 }
 
+/**
+ * Immutable snapshot of the adapter's identity at the moment of invocation. Stored on the
+ * agent_runs row so that re-registering or deactivating an adapter does not alter the provenance
+ * record of historical runs (docs/03 §6).
+ */
+export interface AdapterRunSnapshot {
+  readonly name: string;
+  readonly implementation: string;
+  readonly version: number;
+  readonly capabilitiesUsed: readonly string[];
+}
+
 export interface RecordRunOptions {
   readonly adapterId: string;
   readonly role: string;
   readonly projectId?: string;
   readonly featureRunId?: string;
   readonly input: unknown;
+  /** Immutable adapter provenance snapshot. Omit only in legacy/test paths that pre-date migration 0004. */
+  readonly adapterSnapshot?: AdapterRunSnapshot;
 }
 
 export interface RecordRunResult<O> {
@@ -54,11 +68,14 @@ export class AgentRunRecorder {
   async record<O>(opts: RecordRunOptions, fn: () => Promise<O>): Promise<RecordRunResult<O>> {
     const agentRunId = generateId();
     const queuedAt = isoNow();
+    const snap = opts.adapterSnapshot;
 
     await this.db.execute(
       `INSERT INTO agent_runs
-         (id, adapter_id, project_id, feature_run_id, role, state, input_summary, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+         (id, adapter_id, project_id, feature_run_id, role, state, input_summary,
+          adapter_name, adapter_implementation, adapter_version, capabilities_used,
+          version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       [
         agentRunId,
         opts.adapterId,
@@ -67,6 +84,10 @@ export class AgentRunRecorder {
         opts.role,
         AgentRunState.QUEUED,
         JSON.stringify(this.redactor.redactObject(opts.input)),
+        snap?.name ?? null,
+        snap?.implementation ?? null,
+        snap?.version ?? null,
+        snap ? JSON.stringify(snap.capabilitiesUsed) : null,
         queuedAt,
         queuedAt,
       ],

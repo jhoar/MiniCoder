@@ -1,5 +1,5 @@
 import { generateId } from '@minicoder/core';
-import type { AgentCapabilityToken, AgentRole } from '@minicoder/core';
+import type { AgentCapabilityToken, AgentRole, AdapterRunSnapshot } from '@minicoder/core';
 import { AdapterRunError } from '@minicoder/core';
 import { MockPlannerAdapter } from '../adapters/mock-planner.js';
 import { MockCoderAdapter, MockCoderError } from '../adapters/mock-coder.js';
@@ -222,16 +222,21 @@ function runAdapter(adapter: AnyAdapter, input: AnyInput): Promise<unknown> {
 }
 
 function pass(scenarioName: string, details: string): ConformanceScenarioResult {
-  return { scenarioName, passed: true, details };
+  return { scenarioName, passed: true, skipped: false, details };
 }
 
 function fail(scenarioName: string, details: string, error?: string): ConformanceScenarioResult {
-  return { scenarioName, passed: false, details, error };
+  return { scenarioName, passed: false, skipped: false, details, error };
+}
+
+function skip(scenarioName: string, details: string): ConformanceScenarioResult {
+  return { scenarioName, passed: false, skipped: true, details };
 }
 
 async function runScenarios(
   descriptor: AdapterDescriptor,
   adapterId: string,
+  adapterSnapshot: AdapterRunSnapshot,
   opts: ConformanceRunOptions,
 ): Promise<ConformanceScenarioResult[]> {
   const results: ConformanceScenarioResult[] = [];
@@ -257,7 +262,7 @@ async function runScenarios(
   // 2. Successful run — output is non-null and has expected fields; agent_runs row reaches succeeded
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput(), adapterSnapshot },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{ state: string }>(
@@ -278,7 +283,7 @@ async function runScenarios(
     let threw = false;
     try {
       await recorder.record(
-        { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+        { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput(), adapterSnapshot },
         () => {
           const adapted = descriptor.makeFailureAdapter();
           const input = descriptor.makeSuccessInput();
@@ -339,13 +344,23 @@ async function runScenarios(
   // 4. Invalid output handling
   const invalidAdapter = descriptor.makeInvalidOutputAdapter();
   if (!invalidAdapter) {
-    results.push(pass('invalid_output_handling', 'Not applicable for this adapter role (skipped)'));
+    results.push(
+      skip(
+        'invalid_output_handling',
+        'Not applicable: this adapter role has no invalid-output mode in Phase 5 mocks',
+      ),
+    );
   } else {
     try {
       let threw = false;
       try {
         await recorder.record(
-          { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+          {
+            adapterId,
+            role: descriptor.role,
+            input: descriptor.makeSuccessInput(),
+            adapterSnapshot,
+          },
           () =>
             runAdapter(invalidAdapter, descriptor.makeSuccessInput()).then(
               (out) => out,
@@ -392,7 +407,7 @@ async function runScenarios(
   };
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: secretInput },
+      { adapterId, role: descriptor.role, input: secretInput, adapterSnapshot },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{ input_summary: string }>(
@@ -446,7 +461,7 @@ async function runScenarios(
   // 7. State transition sequence — verify queued→running→succeeded ordering via timestamps
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput(), adapterSnapshot },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{
@@ -502,8 +517,15 @@ async function runScenarios(
 }
 
 /**
- * Runs the full conformance suite (7 scenarios × 6 adapters) against the provided DB,
+ * Runs the Phase 5 smoke conformance suite (9 scenarios × 6 adapters) against the provided DB,
  * writing one adapter_conformance_results row per adapter. Returns one suite result per adapter.
+ *
+ * This is a smoke-level conformance gate covering: capability declaration, successful run,
+ * failure handling, invalid-output handling (skipped for roles without a deterministic
+ * invalid-output mock), secret redaction, configuration resolution, state-transition sequencing,
+ * output shape validation, and assertCapabilities. Full canonical adapter-contract conformance
+ * (timeout taxonomy, cost/token reporting, Workflow Layer wrapper invocation) is deferred to
+ * Phase 9+ when real provider adapters are connected.
  */
 export async function runConformanceSuite(
   opts: ConformanceRunOptions,
@@ -518,28 +540,39 @@ export async function runConformanceSuite(
       capabilities: descriptor.capabilities.slice(),
     });
 
-    const scenarios = await runScenarios(descriptor, adapterId, opts);
-    const passedCount = scenarios.filter((s) => s.passed).length;
-    const failedCount = scenarios.filter((s) => !s.passed).length;
+    const adapterRecord = await opts.registry.getById(adapterId);
+    const adapterSnapshot: AdapterRunSnapshot = {
+      name: adapterRecord.name,
+      implementation: adapterRecord.implementation,
+      version: adapterRecord.version,
+      capabilitiesUsed: adapterRecord.capabilities.slice(),
+    };
+
+    const scenarios = await runScenarios(descriptor, adapterId, adapterSnapshot, opts);
+    const passedCount = scenarios.filter((s) => s.passed && !s.skipped).length;
+    const failedCount = scenarios.filter((s) => !s.passed && !s.skipped).length;
+    const skippedCount = scenarios.filter((s) => s.skipped).length;
     const totalCount = scenarios.length;
 
     const conformanceResultId = generateId();
     const now = new Date().toISOString();
     await opts.db.execute(
       `INSERT INTO adapter_conformance_results
-         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, details, run_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, skipped_tests, details, run_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         conformanceResultId,
         adapterId,
         descriptor.role,
-        'phase5-conformance',
-        passedCount === totalCount ? 1 : 0,
+        'phase5-smoke-conformance',
+        failedCount === 0 ? 1 : 0,
         totalCount,
         failedCount,
+        skippedCount,
         JSON.stringify({
           adapterName: descriptor.adapterName,
           implementation: descriptor.implementation,
+          version: adapterRecord.version,
           capabilities: descriptor.capabilities,
           scenarios,
         }),
@@ -555,6 +588,7 @@ export async function runConformanceSuite(
       scenarios,
       passedCount,
       failedCount,
+      skippedCount,
       totalCount,
       conformanceResultId,
     });

@@ -4,6 +4,7 @@ import type { AdapterRegistry, AgentRunRecorder } from '@minicoder/core';
 export interface ConformanceScenarioResult {
   readonly scenarioName: string;
   readonly passed: boolean;
+  readonly skipped: boolean;
   readonly details: string;
   readonly error?: string;
 }
@@ -15,6 +16,7 @@ export interface ConformanceSuiteResult {
   readonly scenarios: readonly ConformanceScenarioResult[];
   readonly passedCount: number;
   readonly failedCount: number;
+  readonly skippedCount: number;
   readonly totalCount: number;
   /** Row ID written to adapter_conformance_results for this suite run. */
   readonly conformanceResultId: string;

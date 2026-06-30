@@ -23,6 +23,7 @@ describe('AdapterRegistry.register', () => {
     const record = await registry.resolve('CoderAgentAdapter', 'MockCoderAdapter');
     expect(record.id).toBe(adapterId);
     expect(record.isActive).toBe(true);
+    expect(record.version).toBe(1);
     expect(record.capabilities).toEqual(['can_modify_files', 'can_commit', 'can_push_branch']);
   });
 
@@ -43,6 +44,7 @@ describe('AdapterRegistry.register', () => {
     expect(secondId).toBe(firstId);
     const record = await registry.getById(firstId);
     expect(record.implementation).toBe('mock-v2');
+    expect(record.version).toBeGreaterThan(1);
     expect(record.capabilities).toEqual([
       'can_review_pull_request',
       'can_return_structured_findings',

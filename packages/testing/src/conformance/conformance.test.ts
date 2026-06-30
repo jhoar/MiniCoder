@@ -10,7 +10,7 @@ let registry: AdapterRegistry;
 let recorder: AgentRunRecorder;
 let results: ConformanceSuiteResult[];
 
-describe('Phase 5 adapter conformance suite', () => {
+describe('Phase 5 smoke adapter conformance suite', () => {
   beforeEach(async () => {
     db = createTestDb();
     registry = new AdapterRegistry(db);
@@ -33,11 +33,11 @@ describe('Phase 5 adapter conformance suite', () => {
     );
   });
 
-  it('all adapters pass every conformance scenario', () => {
+  it('all adapters pass every non-skipped conformance scenario', () => {
     const failures: string[] = [];
     for (const suite of results) {
       for (const scenario of suite.scenarios) {
-        if (!scenario.passed) {
+        if (!scenario.passed && !scenario.skipped) {
           failures.push(
             `${suite.adapterName}/${scenario.scenarioName}: ${scenario.details}${scenario.error ? ` (${scenario.error})` : ''}`,
           );
@@ -47,9 +47,37 @@ describe('Phase 5 adapter conformance suite', () => {
     expect(failures, `Conformance failures:\n${failures.join('\n')}`).toHaveLength(0);
   });
 
+  it('skipped scenarios are not counted as passed', () => {
+    for (const suite of results) {
+      for (const scenario of suite.scenarios) {
+        if (scenario.skipped) {
+          expect(scenario.passed).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('MockCoderAdapter has 0 skipped scenarios; all other adapters skip invalid_output_handling', () => {
+    for (const suite of results) {
+      if (suite.adapterName === 'MockCoderAdapter') {
+        expect(suite.skippedCount).toBe(0);
+      } else {
+        expect(suite.skippedCount).toBe(1);
+        const skipped = suite.scenarios.find((s) => s.skipped);
+        expect(skipped?.scenarioName).toBe('invalid_output_handling');
+      }
+    }
+  });
+
   it('writes adapter_conformance_results rows to the database for each adapter', async () => {
-    const rows = await db.query<{ id: string; role: string; passed: number; total_tests: number }>(
-      `SELECT id, role, passed, total_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-conformance'`,
+    const rows = await db.query<{
+      id: string;
+      role: string;
+      passed: number;
+      total_tests: number;
+      skipped_tests: number;
+    }>(
+      `SELECT id, role, passed, total_tests, skipped_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
       [],
     );
     expect(rows).toHaveLength(6);
@@ -60,7 +88,7 @@ describe('Phase 5 adapter conformance suite', () => {
 
   it('all written conformance results have passed=1', async () => {
     const failedRows = await db.query<{ role: string; failed_tests: number }>(
-      `SELECT role, failed_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-conformance' AND passed = 0`,
+      `SELECT role, failed_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance' AND passed = 0`,
       [],
     );
     expect(
@@ -69,12 +97,46 @@ describe('Phase 5 adapter conformance suite', () => {
     ).toHaveLength(0);
   });
 
+  it('adapter_conformance_results skipped_tests=0 for MockCoderAdapter and =1 for others', async () => {
+    const rows = await db.query<{ role: string; skipped_tests: number }>(
+      `SELECT role, skipped_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
+      [],
+    );
+    for (const row of rows) {
+      if (row.role === 'CoderAgentAdapter') {
+        expect(row.skipped_tests).toBe(0);
+      } else {
+        expect(row.skipped_tests).toBe(1);
+      }
+    }
+  });
+
   it('agent_runs rows are created and reach succeeded state for successful scenarios', async () => {
     const succeededRuns = await db.query<{ id: string }>(
       `SELECT id FROM agent_runs WHERE state = 'succeeded'`,
       [],
     );
     expect(succeededRuns.length).toBeGreaterThan(0);
+  });
+
+  it('agent_runs rows store immutable adapter provenance snapshot', async () => {
+    const rows = await db.query<{
+      adapter_name: string;
+      adapter_implementation: string;
+      adapter_version: number;
+      capabilities_used: string;
+    }>(
+      `SELECT adapter_name, adapter_implementation, adapter_version, capabilities_used
+       FROM agent_runs WHERE adapter_name IS NOT NULL LIMIT 1`,
+      [],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    const row = rows[0]!;
+    expect(typeof row.adapter_name).toBe('string');
+    expect(typeof row.adapter_implementation).toBe('string');
+    expect(row.adapter_version).toBeGreaterThanOrEqual(1);
+    const caps = JSON.parse(row.capabilities_used) as unknown[];
+    expect(Array.isArray(caps)).toBe(true);
   });
 
   it('agent_errors rows are created for the CoderAgentAdapter failure scenario', async () => {
@@ -95,23 +157,24 @@ describe('Phase 5 adapter conformance suite', () => {
     const rowId = generateId();
     await db.execute(
       `INSERT INTO adapter_conformance_results
-         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, details, run_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, skipped_tests, details, run_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         rowId,
         fakeAdapterId,
         'PlannerAgentAdapter',
-        'phase5-conformance-failed',
+        'phase5-smoke-conformance-failed',
         0,
         9,
         3,
+        0,
         '{}',
         now,
         now,
       ],
     );
     const failedRows = await db.query<{ id: string; passed: number }>(
-      `SELECT id, passed FROM adapter_conformance_results WHERE test_suite = 'phase5-conformance-failed' AND passed = 0`,
+      `SELECT id, passed FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance-failed' AND passed = 0`,
       [],
     );
     expect(failedRows).toHaveLength(1);

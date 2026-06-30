@@ -9,6 +9,7 @@ export interface AdapterRecord {
   readonly name: string;
   readonly implementation: string;
   readonly isActive: boolean;
+  readonly version: number;
   readonly capabilities: readonly AgentCapabilityToken[];
 }
 
@@ -36,6 +37,7 @@ interface AdapterRow {
   name: string;
   implementation: string;
   is_active: number | boolean;
+  version: number;
 }
 
 interface CapabilityRow {
@@ -46,6 +48,15 @@ interface ConfigRow {
   config: string;
 }
 
+function isUniqueConstraintError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // SQLite: "UNIQUE constraint failed: agent_adapters.role, agent_adapters.name"
+  if (err.message.includes('UNIQUE constraint failed')) return true;
+  // PostgreSQL driver: error code 23505
+  if ((err as { code?: string }).code === '23505') return true;
+  return false;
+}
+
 /**
  * Database-backed resolution of "which adapter implementation handles role X" plus its
  * declared capabilities and resolved configuration (docs/03 §7: adapter configuration is
@@ -54,18 +65,57 @@ interface ConfigRow {
 export class AdapterRegistry {
   constructor(private readonly db: DbClient) {}
 
-  /** Idempotent upsert keyed on (role, name): re-registering replaces capabilities. */
+  /**
+   * Idempotent upsert keyed on (role, name): re-registering replaces capabilities.
+   * Safe under concurrent callers — unique-constraint violations are caught and resolved
+   * by re-reading the winning row and falling through to the UPDATE path.
+   */
   async register(input: RegisterAdapterInput): Promise<string> {
     return this.db.transaction(async (tx) => {
       const now = isoNow();
-      const existing = await tx.query<AdapterRow>(
+      const existing = await tx.query<{ id: string }>(
         `SELECT id FROM agent_adapters WHERE role = ? AND name = ?`,
         [input.role, input.name],
       );
 
       let adapterId: string;
+      let isNew: boolean;
+
       if (existing[0]) {
         adapterId = existing[0].id;
+        isNew = false;
+      } else {
+        const newId = generateId();
+        try {
+          await tx.execute(
+            `INSERT INTO agent_adapters (id, role, name, implementation, is_active, version, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+            [
+              newId,
+              input.role,
+              input.name,
+              input.implementation,
+              (input.isActive ?? true) ? 1 : 0,
+              now,
+              now,
+            ],
+          );
+          adapterId = newId;
+          isNew = true;
+        } catch (err) {
+          if (!isUniqueConstraintError(err)) throw err;
+          // Concurrent registration won the INSERT race — re-read and fall through to UPDATE.
+          const concurrent = await tx.query<{ id: string }>(
+            `SELECT id FROM agent_adapters WHERE role = ? AND name = ?`,
+            [input.role, input.name],
+          );
+          if (!concurrent[0]) throw err;
+          adapterId = concurrent[0].id;
+          isNew = false;
+        }
+      }
+
+      if (!isNew) {
         await tx.execute(
           `UPDATE agent_adapters
            SET implementation = ?, is_active = ?, version = version + 1, updated_at = ?
@@ -73,21 +123,6 @@ export class AdapterRegistry {
           [input.implementation, (input.isActive ?? true) ? 1 : 0, now, adapterId],
         );
         await tx.execute(`DELETE FROM agent_capabilities WHERE adapter_id = ?`, [adapterId]);
-      } else {
-        adapterId = generateId();
-        await tx.execute(
-          `INSERT INTO agent_adapters (id, role, name, implementation, is_active, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-          [
-            adapterId,
-            input.role,
-            input.name,
-            input.implementation,
-            (input.isActive ?? true) ? 1 : 0,
-            now,
-            now,
-          ],
-        );
       }
 
       for (const capability of input.capabilities) {
@@ -104,7 +139,7 @@ export class AdapterRegistry {
 
   async resolve(role: string, name: string): Promise<AdapterRecord> {
     const rows = await this.db.query<AdapterRow>(
-      `SELECT id, role, name, implementation, is_active FROM agent_adapters WHERE role = ? AND name = ?`,
+      `SELECT id, role, name, implementation, is_active, version FROM agent_adapters WHERE role = ? AND name = ?`,
       [role, name],
     );
     const row = rows.find((r) => Boolean(r.is_active));
@@ -116,7 +151,7 @@ export class AdapterRegistry {
 
   async getById(adapterId: string): Promise<AdapterRecord> {
     const rows = await this.db.query<AdapterRow>(
-      `SELECT id, role, name, implementation, is_active FROM agent_adapters WHERE id = ?`,
+      `SELECT id, role, name, implementation, is_active, version FROM agent_adapters WHERE id = ?`,
       [adapterId],
     );
     const row = rows.find((r) => Boolean(r.is_active));
@@ -129,7 +164,7 @@ export class AdapterRegistry {
   /** Retrieves an adapter record regardless of its active state (for audit/diagnostic use only). */
   async getByIdIncludingInactive(adapterId: string): Promise<AdapterRecord> {
     const rows = await this.db.query<AdapterRow>(
-      `SELECT id, role, name, implementation, is_active FROM agent_adapters WHERE id = ?`,
+      `SELECT id, role, name, implementation, is_active, version FROM agent_adapters WHERE id = ?`,
       [adapterId],
     );
     const row = rows[0];
@@ -181,6 +216,7 @@ export class AdapterRegistry {
       name: row.name,
       implementation: row.implementation,
       isActive: Boolean(row.is_active),
+      version: row.version,
       capabilities: capabilityRows.map((c) => c.capability as AgentCapabilityToken),
     };
   }

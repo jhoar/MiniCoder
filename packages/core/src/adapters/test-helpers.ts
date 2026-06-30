@@ -1,7 +1,7 @@
 import type { DbClient, TxClient } from '../persistence/types.js';
 
 /**
- * Minimal in-memory fake of the four tables touched by AdapterRegistry/AgentRunRecorder.
+ * Minimal in-memory fake of the tables touched by AdapterRegistry/AgentRunRecorder.
  * Core intentionally has no real DB driver dependency (see no-provider-imports fitness test),
  * so unit tests against these DB-backed classes use this hand-rolled double rather than sqlite.
  */
@@ -42,20 +42,21 @@ export class InMemoryAdapterDb implements DbClient {
 
   private insert(s: string, params: unknown[]): void {
     if (s.includes('INTO agent_adapters')) {
-      const [id, role, name, implementation, isActive, createdAt, updatedAt] = params;
+      const [id, role, name, implementation, isActive, , createdAt, updatedAt] = params;
       this.agentAdapters.push({
         id,
         role,
         name,
         implementation,
         is_active: isActive,
+        version: 1,
         created_at: createdAt,
         updated_at: updatedAt,
       });
       return;
     }
     if (s.includes('INTO agent_capabilities')) {
-      const [id, adapterId, capability, createdAt, updatedAt] = params;
+      const [id, adapterId, capability, , createdAt, updatedAt] = params;
       this.agentCapabilities.push({
         id,
         adapter_id: adapterId,
@@ -66,6 +67,9 @@ export class InMemoryAdapterDb implements DbClient {
       return;
     }
     if (s.includes('INTO agent_runs')) {
+      // Column order: id, adapter_id, project_id, feature_run_id, role, state, input_summary,
+      //   adapter_name, adapter_implementation, adapter_version, capabilities_used,
+      //   version(literal 1), created_at, updated_at
       const [
         id,
         adapterId,
@@ -74,6 +78,10 @@ export class InMemoryAdapterDb implements DbClient {
         role,
         state,
         inputSummary,
+        adapterName,
+        adapterImplementation,
+        adapterVersion,
+        capabilitiesUsed,
         createdAt,
         updatedAt,
       ] = params;
@@ -85,6 +93,10 @@ export class InMemoryAdapterDb implements DbClient {
         role,
         state,
         input_summary: inputSummary,
+        adapter_name: adapterName,
+        adapter_implementation: adapterImplementation,
+        adapter_version: adapterVersion,
+        capabilities_used: capabilitiesUsed,
         created_at: createdAt,
         updated_at: updatedAt,
       });
@@ -109,7 +121,13 @@ export class InMemoryAdapterDb implements DbClient {
     if (s.includes('UPDATE agent_adapters')) {
       const [implementation, isActive, updatedAt, id] = params;
       const row = this.agentAdapters.find((r) => r.id === id);
-      if (row) Object.assign(row, { implementation, is_active: isActive, updated_at: updatedAt });
+      if (row)
+        Object.assign(row, {
+          implementation,
+          is_active: isActive,
+          version: (Number(row.version) || 1) + 1,
+          updated_at: updatedAt,
+        });
       return;
     }
     if (s.includes('UPDATE agent_runs') && s.includes('started_at')) {

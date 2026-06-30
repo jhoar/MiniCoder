@@ -261,25 +261,42 @@ Phase 18.)
   handling, invalid-output handling, secret redaction, configuration resolution, state-transition
   sequence, output-shape validation, assertCapabilities), and writes one
   `adapter_conformance_results` row per adapter. The `details` JSON snapshot includes
-  `adapterName`, `implementation`, and `capabilities` alongside the scenario results so historical
-  records remain attributable after adapter re-registration. All 6 adapters × 9 scenarios = 54
-  scenario results, all green.
+  `adapterName`, `implementation`, `version`, and `capabilities` alongside the scenario results so
+  historical records remain attributable after adapter re-registration. All 6 adapters × 9
+  scenarios = 54 scenario executions total; 5 are skipped (`invalid_output_handling` for the 5
+  non-Coder adapters), 49 pass, 0 fail.
 - `packages/core/src/index.ts` — new `// Phase 5: agent adapters` export section.
 - `packages/migrations/migrations/0003_unique_adapter_role_name.*` — adds a unique index on
   `agent_adapters(role, name)` for both SQLite and PostgreSQL, preventing concurrent duplicate
-  registrations.
+  registrations. Each file includes a preflight comment with a diagnostic query to identify and
+  remove any duplicate rows before applying the migration.
+- `packages/migrations/migrations/0004_agent_runs_provenance.*` — adds four immutable provenance
+  columns to `agent_runs`: `adapter_name TEXT`, `adapter_implementation TEXT`,
+  `adapter_version INTEGER`, and `capabilities_used TEXT`. These are populated from an
+  `AdapterRunSnapshot` at invocation time and never updated, so historical records remain
+  attributable after adapter re-registration.
+- `packages/migrations/migrations/0005_conformance_skipped_tests.*` — adds `skipped_tests INTEGER
+NOT NULL DEFAULT 0` to `adapter_conformance_results`, tracking how many scenarios were
+  intentionally skipped (e.g. `invalid_output_handling` is N/A for non-Coder adapters).
 
-**Deferred to Phase 9–10.** The `agent_runs` schema already includes richer fields
-(`adapter_name`, `provider`, `model`, `capabilities_used`, `triggerdev_run_id`,
-`prompt_template_version`, and artifact-reference columns) but these are intentionally **not
-populated** in Phase 5. They will be filled by the reference Coder and Reviewer adapters when
-real provider connections are established (Phase 9 — Reference Coder Adapter; Phase 10 —
-Reference Reviewer Adapter). Writing dummy values here would create misleading data in production
-runs; leaving them NULL makes the absence explicit.
+**Deferred to Phase 9–10.** Provider-level fields (`provider`, `model`, `triggerdev_run_id`,
+`prompt_template_version`, and artifact-reference columns) are **not** added to the schema in
+Phase 5. They will be introduced when real provider connections are established (Phase 9 —
+Reference Coder Adapter; Phase 10 — Reference Reviewer Adapter). Writing dummy values here would
+create misleading data in production runs.
 
-**No core schema migration.** The `agent_adapters`, `agent_capabilities`, `agent_configurations`,
+**Smoke conformance scope.** The Phase 5 conformance suite (`phase5-smoke-conformance`) verifies
+adapter wiring: capability declaration, successful run, failure handling, secret redaction,
+configuration resolution, state-transition sequence, output-shape validation, and
+assertCapabilities. The `invalid_output_handling` scenario runs only for `MockCoderAdapter`; the
+other five adapters skip it (skipped scenarios do not count as failures). Timeout taxonomy, cost
+and token reporting, and Workflow Layer wrapper invocation are deferred to the full canonical
+adapter contract in Phase 9+.
+
+**Existing tables.** The `agent_adapters`, `agent_capabilities`, `agent_configurations`,
 `agent_runs`, `agent_errors`, `agent_tool_operations`, `agent_context_packs`, and
-`adapter_conformance_results` tables were already created in `0001_initial_schema.*` (Phase 1).
+`adapter_conformance_results` tables were created in `0001_initial_schema.*` (Phase 1). Migrations
+0003–0005 extend them without recreating any tables.
 
 ## Phase 6 — Bootstrap Planner, Readiness, and Clarification
 
