@@ -13,7 +13,7 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–3 implementation**:
+- The codebase currently contains the **Phase 1–4 implementation**:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -24,13 +24,16 @@ architecture requirements remain under `docs/`.
   - versioned event schemas, outbox/inbox dispatch, and idempotency sweeping
   - workflow locks with fencing tokens and sequential execution lanes
   - local authentication, authorization guards, and secret redaction
-  - scaffolded state lifecycle CLI commands
+  - database-backed state lifecycle CLI commands for inspect, validate, doctor, reconcile, diagnostics, and scoped repair
+  - Phase 4 testing harness with deterministic fixtures, mock adapters, scenario registry, and system-test CLI commands
+  - database lifecycle seed, snapshot, restore, and diff helpers for disposable local/CI workflows
+  - GitHub event simulation CLI commands for development/test inbox scenarios
   - Workflow Layer harness backed by Trigger.dev v4 task wrappers
   - 9-service self-hosted Trigger.dev Docker Compose stack
   - Trigger.dev deployment workflow and `minicoder trigger` CLI scaffold
   - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
 - Do not describe the repository as specification-only.
-- Phase 4 and later remain target architecture. Do not assume later phases are implemented merely
+- Phase 5 and later remain target architecture. Do not assume later phases are implemented merely
   because their schemas, state machines, CLI scaffolds, task stubs, or types already exist.
 - Phase 3 task wrappers are a harness: the 9 initial task IDs and Trigger.dev metadata plumbing
   exist, but real Orchestrator Core command wiring arrives in Phases 6–8.
@@ -74,9 +77,12 @@ packages/persistence-postgres/  pg implementation of core persistence contracts
 packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycle runner
 packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
 packages/triggerdev/            Trigger.dev Workflow Layer harness and task registrations
+packages/testing/               Deterministic fixtures, mock adapters, scenarios, and runner
 packages/cli/                   Thin Commander-based CLI
 infra/docker-compose.triggerdev.yml  Self-hosted Trigger.dev v4 single-node stack
-.github/workflows/ci.yml        CI checks and database matrix
+infra/docker-compose.test.yml   Disposable PostgreSQL test stack
+infra/k8s/                      Batch jobs for migrations, seed, diagnostics, reconciliation, and system tests
+.github/workflows/ci.yml        CI checks, database matrix, system smoke, and production dependency audit
 .github/workflows/trigger-deploy.yml Trigger.dev task deployment workflow
 ```
 
@@ -100,7 +106,10 @@ Important files:
 - `packages/migrations/src/index.ts` exports the expected table list.
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
 - `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together.
+- `packages/testing/src/fixtures/` owns SQLite-only deterministic fixture setup for local/system scenarios.
+- `packages/testing/src/scenarios/` owns the registered scenario flows exercised by `minicoder test system`.
 - `infra/docker-compose.triggerdev.yml` owns the local self-hosted Trigger.dev stack.
+- `infra/docker-compose.test.yml` owns the disposable PostgreSQL service used by cross-dialect validation.
 
 ## Locked Architectural Invariants
 
@@ -206,10 +215,20 @@ NNNN_description.postgres.sql
   `--env <development|test|ci>`. The runner also rejects a non-safe `APP_ENV` or `NODE_ENV`.
 - Never run `db reset` against an unknown, shared, or production database. Use a disposable
   database and verify the configured database identifier before invoking it.
-- The `minicoder state` command group exists, but its database-backed inspect, validate, doctor,
-  reconcile, export, and repair behavior is still scaffolded for a later phase. In particular,
-  `state repair --dry-run` emits a time-boxed confirmation token and `state repair --apply`
-  intentionally exits without applying changes until Phase 4 DB-backed repair lands.
+- The `minicoder state` command group is Phase 4 database-backed tooling. `inspect`, `validate`,
+  `doctor`, `reconcile`, `export-diagnostics`, and `repair` are implemented against the configured
+  database. `state repair` requires `--project`, emits a time-boxed token on dry run, applies
+  scoped orphaned-run repairs transactionally, and writes a `workflow_events` audit record.
+- `state reconcile --project` is project-scoped for project-owned resources; global outbox/inbox
+  queue reconciliation requires explicit `--all`.
+- `db seed`, `db snapshot`, and `db restore` are SQLite-only development/CI helpers. `db seed` and
+  `db restore` reject production `APP_ENV`/`NODE_ENV`; PostgreSQL fixture loading should use
+  `pg_restore` or a purpose-built seed script.
+- `github simulate-*` commands are development/test/CI helpers that insert synthetic inbox events
+  and reject production `APP_ENV`/`NODE_ENV`.
+- The `minicoder test` group is implemented: `unit` runs non-integration Vitest files,
+  `integration` runs `*.integration.test.ts` files, `system` runs all registered scenarios, and
+  `scenario <name>` runs one registered scenario.
 - The `minicoder trigger` command group exists. `trigger validate` is functional and reports the
   registered task IDs; `list-runs` and `inspect-run` are read-only placeholder JSON; operational
   commands (`deploy`, `drain-queue`, `cancel-run`, `replay-run`, `reset-dev`, `reconcile`) exit
@@ -313,6 +332,7 @@ pnpm vitest run packages/migrations/src/runner.test.ts
 pnpm vitest run packages/workflow/src/outbox/dispatcher.test.ts
 pnpm vitest run packages/workflow/src/inbox/processor.test.ts
 pnpm vitest run packages/workflow/src/locks/manager.test.ts
+pnpm vitest run packages/testing/src/testing.test.ts
 ```
 
 SQLite migration smoke test:
@@ -336,6 +356,16 @@ DB_DIALECT=postgres DB_URL=postgresql://... pnpm db:migrate
 DB_DIALECT=postgres DB_URL=postgresql://... pnpm db:validate
 ```
 
+Phase 4 lifecycle and system-test smoke checks:
+
+```bash
+APP_ENV=ci DB_DIALECT=sqlite DB_PATH=:memory: pnpm tsx packages/cli/src/index.ts test system
+pnpm tsx packages/cli/src/index.ts test unit
+pnpm tsx packages/cli/src/index.ts test integration
+APP_ENV=development DB_DIALECT=sqlite DB_PATH=/tmp/minicoder-agent.db \
+  pnpm tsx packages/cli/src/index.ts state doctor
+```
+
 Trigger.dev task ID smoke check:
 
 ```bash
@@ -353,13 +383,19 @@ Do not substitute SQLite-only validation for a required cross-dialect check.
 - Default tests must not call real LLM providers, mutate real GitHub repositories, or require
   human interaction.
 - Integration and migration changes must be validated against both SQLite and PostgreSQL.
+- Scenario fixtures under `packages/testing/src/fixtures/` are SQLite-only unless explicitly
+  documented otherwise; do not use them as PostgreSQL portability evidence.
+- `pnpm audit --prod --audit-level=high` is the CI production dependency gate. Full local
+  `pnpm audit --audit-level=high` currently reports documented Vitest/Vite dev-only advisories;
+  upgrade them when feasible rather than weakening runtime dependency checks.
 - Never call `db.close()` in SQLite tests; `better-sqlite3` native finalizers can double-free after
   explicit close. `vitest.config.ts` uses `pool: 'forks'` to isolate test-file teardown.
 - Use disposable databases and deterministic fixtures.
 - Test failure paths, retries, idempotency, constraint enforcement, rollback, and stale-write
   rejection—not only happy paths.
 - New architecture boundaries should receive fitness tests.
-- Preserve the Vitest convention `packages/*/src/**/*.test.ts`.
+- Preserve the Vitest convention `packages/*/src/**/*.test.ts`. Use `*.integration.test.ts` for
+  tests that should be selected by `minicoder test integration`.
 
 For a phase-level change, satisfy the Definition of Done in `docs/06-implementation-plan.md`:
 schema changes, appropriate tests, canonical doc updates, runbook/diagnostic updates where relevant,
