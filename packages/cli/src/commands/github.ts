@@ -18,6 +18,23 @@ function isoNow(): string {
   return new Date().toISOString();
 }
 
+type DbClient = Awaited<ReturnType<typeof createDbClientFromEnv>>;
+
+async function insertInboxEvent(
+  db: DbClient,
+  id: string,
+  dedupKey: string,
+  eventType: string,
+  payload: string,
+): Promise<void> {
+  const now = isoNow();
+  await db.execute(
+    `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
+     VALUES (?, ?, 'github', ?, ?, '1.0', 'pending', 1, ?, ?)`,
+    [id, dedupKey, eventType, payload, now, now],
+  );
+}
+
 export function createGithubCommand(): Command {
   const github = new Command('github').description(
     'GitHub event simulation commands (development/test/ci only)',
@@ -35,21 +52,18 @@ export function createGithubCommand(): Command {
         guardEnv();
         const db = await createDbClientFromEnv();
         try {
-          const payload = JSON.stringify({
-            projectId: opts.project,
-            prNumber: opts.prNumber,
-            featureRunId: opts.featureRun ?? null,
-            headSha: opts.headSha,
-            action: 'opened',
-          });
-          await db.execute(
-            `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'pr.opened', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-            [
-              `sim-pr-opened-${opts.project}-${opts.prNumber}-${Date.now()}`,
-              `github:pr.opened:${opts.project}:${opts.prNumber}`,
-              payload,
-            ],
+          await insertInboxEvent(
+            db,
+            `sim-pr-opened-${opts.project}-${opts.prNumber}-${Date.now()}`,
+            `github:pr.opened:${opts.project}:${opts.prNumber}`,
+            'pr.opened',
+            JSON.stringify({
+              projectId: opts.project,
+              prNumber: opts.prNumber,
+              featureRunId: opts.featureRun ?? null,
+              headSha: opts.headSha,
+              action: 'opened',
+            }),
           );
           console.log(
             JSON.stringify(
@@ -79,20 +93,17 @@ export function createGithubCommand(): Command {
       guardEnv();
       const db = await createDbClientFromEnv();
       try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          action: 'closed',
-          merged: opts.merged,
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'pr.closed', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-pr-closed-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:pr.closed:${opts.project}:${opts.prNumber}`,
-            payload,
-          ],
+        await insertInboxEvent(
+          db,
+          `sim-pr-closed-${opts.project}-${opts.prNumber}-${Date.now()}`,
+          `github:pr.closed:${opts.project}:${opts.prNumber}`,
+          'pr.closed',
+          JSON.stringify({
+            projectId: opts.project,
+            prNumber: opts.prNumber,
+            action: 'closed',
+            merged: opts.merged,
+          }),
         );
         console.log(
           JSON.stringify(
@@ -122,21 +133,18 @@ export function createGithubCommand(): Command {
       guardEnv();
       const db = await createDbClientFromEnv();
       try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          action: 'closed',
-          merged: true,
-          mergeSha: opts.mergeSha,
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'pr.merged', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-pr-merged-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:pr.merged:${opts.project}:${opts.prNumber}`,
-            payload,
-          ],
+        await insertInboxEvent(
+          db,
+          `sim-pr-merged-${opts.project}-${opts.prNumber}-${Date.now()}`,
+          `github:pr.merged:${opts.project}:${opts.prNumber}`,
+          'pr.merged',
+          JSON.stringify({
+            projectId: opts.project,
+            prNumber: opts.prNumber,
+            action: 'closed',
+            merged: true,
+            mergeSha: opts.mergeSha,
+          }),
         );
         console.log(
           JSON.stringify(
@@ -166,20 +174,17 @@ export function createGithubCommand(): Command {
       guardEnv();
       const db = await createDbClientFromEnv();
       try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          checkName: opts.checkName,
-          conclusion: 'success',
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'check.passed', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-check-passed-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:check.passed:${opts.project}:${opts.prNumber}:${opts.checkName}`,
-            payload,
-          ],
+        await insertInboxEvent(
+          db,
+          `sim-check-passed-${opts.project}-${opts.prNumber}-${Date.now()}`,
+          `github:check.passed:${opts.project}:${opts.prNumber}:${opts.checkName}`,
+          'check.passed',
+          JSON.stringify({
+            projectId: opts.project,
+            prNumber: opts.prNumber,
+            checkName: opts.checkName,
+            conclusion: 'success',
+          }),
         );
         console.log(
           JSON.stringify(
@@ -209,20 +214,17 @@ export function createGithubCommand(): Command {
       guardEnv();
       const db = await createDbClientFromEnv();
       try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          checkName: opts.checkName,
-          conclusion: 'failure',
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'check.failed', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-check-failed-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:check.failed:${opts.project}:${opts.prNumber}:${opts.checkName}`,
-            payload,
-          ],
+        await insertInboxEvent(
+          db,
+          `sim-check-failed-${opts.project}-${opts.prNumber}-${Date.now()}`,
+          `github:check.failed:${opts.project}:${opts.prNumber}:${opts.checkName}`,
+          'check.failed',
+          JSON.stringify({
+            projectId: opts.project,
+            prNumber: opts.prNumber,
+            checkName: opts.checkName,
+            conclusion: 'failure',
+          }),
         );
         console.log(
           JSON.stringify(
@@ -252,20 +254,17 @@ export function createGithubCommand(): Command {
       guardEnv();
       const db = await createDbClientFromEnv();
       try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          reviewer: opts.reviewer,
-          state: 'approved',
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'review.approved', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-review-approved-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:review.approved:${opts.project}:${opts.prNumber}:${opts.reviewer}`,
-            payload,
-          ],
+        await insertInboxEvent(
+          db,
+          `sim-review-approved-${opts.project}-${opts.prNumber}-${Date.now()}`,
+          `github:review.approved:${opts.project}:${opts.prNumber}:${opts.reviewer}`,
+          'review.approved',
+          JSON.stringify({
+            projectId: opts.project,
+            prNumber: opts.prNumber,
+            reviewer: opts.reviewer,
+            state: 'approved',
+          }),
         );
         console.log(
           JSON.stringify(
@@ -295,20 +294,17 @@ export function createGithubCommand(): Command {
       guardEnv();
       const db = await createDbClientFromEnv();
       try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          reviewer: opts.reviewer,
-          state: 'changes_requested',
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'review.changes_requested', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-review-changes-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:review.changes_requested:${opts.project}:${opts.prNumber}:${opts.reviewer}`,
-            payload,
-          ],
+        await insertInboxEvent(
+          db,
+          `sim-review-changes-${opts.project}-${opts.prNumber}-${Date.now()}`,
+          `github:review.changes_requested:${opts.project}:${opts.prNumber}:${opts.reviewer}`,
+          'review.changes_requested',
+          JSON.stringify({
+            projectId: opts.project,
+            prNumber: opts.prNumber,
+            reviewer: opts.reviewer,
+            state: 'changes_requested',
+          }),
         );
         console.log(
           JSON.stringify(
@@ -337,19 +333,12 @@ export function createGithubCommand(): Command {
       guardEnv();
       const db = await createDbClientFromEnv();
       try {
-        const payload = JSON.stringify({
-          projectId: opts.project,
-          prNumber: opts.prNumber,
-          protected: true,
-        });
-        await db.execute(
-          `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-           VALUES (?, ?, 'github', 'branch.protection_ok', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-          [
-            `sim-branch-ok-${opts.project}-${opts.prNumber}-${Date.now()}`,
-            `github:branch.protection_ok:${opts.project}:${opts.prNumber}`,
-            payload,
-          ],
+        await insertInboxEvent(
+          db,
+          `sim-branch-ok-${opts.project}-${opts.prNumber}-${Date.now()}`,
+          `github:branch.protection_ok:${opts.project}:${opts.prNumber}`,
+          'branch.protection_ok',
+          JSON.stringify({ projectId: opts.project, prNumber: opts.prNumber, protected: true }),
         );
         console.log(
           JSON.stringify(

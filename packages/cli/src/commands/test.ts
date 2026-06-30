@@ -2,11 +2,9 @@ import { Command } from 'commander';
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 
-const VITEST_BIN = path.resolve(__dirname, '../../../../node_modules/.bin/vitest');
-
 function runVitest(...extraArgs: string[]): void {
-  const args = ['run', ...extraArgs];
-  const result = spawnSync('node', [VITEST_BIN, ...args], {
+  const args = ['exec', 'vitest', 'run', ...extraArgs];
+  const result = spawnSync('pnpm', args, {
     stdio: 'inherit',
     env: process.env,
     cwd: path.resolve(__dirname, '../../../..'),
@@ -51,16 +49,18 @@ export function createTestCommand(): Command {
 
   test
     .command('unit')
-    .description('Run unit tests — excludes *.integration.test.ts files')
+    .description('Run unit tests (all test files; no *.integration.test.ts files exist yet)')
     .action(() => {
-      runVitest('--reporter=verbose', '--exclude', '**/*.integration.test.ts');
+      // vitest 1.6.x has no --include/--exclude CLI flags; positional arg filters by file path
+      runVitest('--reporter=verbose');
     });
 
   test
     .command('integration')
     .description('Run integration tests — only *.integration.test.ts files')
     .action(() => {
-      runVitest('--reporter=verbose', '--include', '**/*.integration.test.ts');
+      // positional arg matches against file paths (vitest 1.6.x does not support --include)
+      runVitest('--reporter=verbose', 'integration.test');
     });
 
   test

@@ -143,8 +143,9 @@ export function createDbCommand(): Command {
     .option('--yes', 'Confirm the restore (will overwrite existing database)')
     .action((opts: { input: string; env?: string; yes?: boolean }) => {
       guardEnv(opts.env);
-      const sysEnv = process.env['NODE_ENV'] ?? process.env['APP_ENV'] ?? 'development';
-      if (sysEnv === 'production') {
+      const isProduction =
+        process.env['APP_ENV'] === 'production' || process.env['NODE_ENV'] === 'production';
+      if (isProduction) {
         console.error('Error: db restore is not allowed in production environments.');
         process.exit(1);
       }

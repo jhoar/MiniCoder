@@ -229,7 +229,7 @@ export function createStateCommand(): Command {
           details: staleLocks.map((l) => ({ id: l.id, expiresAt: l.expires_at })),
         });
 
-        // Check: stuck_outbox (no project_id on outbox_events table)
+        // Check: stuck_outbox (no project_id on outbox_events table — always global)
         const stuckOutbox = await db.query<{ id: string; event_type: string; attempts: number }>(
           `SELECT id, event_type, attempts FROM outbox_events
            WHERE status IN ('pending', 'processing') AND attempts >= 5`,
@@ -237,13 +237,14 @@ export function createStateCommand(): Command {
         );
         checks.push({
           name: 'stuck_outbox',
+          scope: 'global',
           severity: stuckOutbox.length > 0 ? 'error' : 'ok',
           autoClearable: true,
           count: stuckOutbox.length,
           details: stuckOutbox,
         });
 
-        // Check: stuck_inbox (no project_id on inbox_events table)
+        // Check: stuck_inbox (no project_id on inbox_events table — always global)
         const stuckInbox = await db.query<{ id: string; event_type: string; attempts: number }>(
           `SELECT id, event_type, attempts FROM inbox_events
            WHERE status IN ('pending', 'processing') AND attempts >= 5`,
@@ -251,6 +252,7 @@ export function createStateCommand(): Command {
         );
         checks.push({
           name: 'stuck_inbox',
+          scope: 'global',
           severity: stuckInbox.length > 0 ? 'error' : 'ok',
           autoClearable: true,
           count: stuckInbox.length,
@@ -286,7 +288,7 @@ export function createStateCommand(): Command {
           details: orphanedRuns,
         });
 
-        // Check: triggerdev_mismatch
+        // Check: triggerdev_mismatch (triggerdev_runs has no project_id — always global)
         const tdMismatch = await db.query<{
           id: string;
           triggerdev_task_id: string;
@@ -300,6 +302,7 @@ export function createStateCommand(): Command {
         );
         checks.push({
           name: 'triggerdev_mismatch',
+          scope: 'global',
           severity: tdMismatch.length > 0 ? 'warning' : 'ok',
           autoClearable: false,
           count: tdMismatch.length,
@@ -361,7 +364,7 @@ export function createStateCommand(): Command {
              WHERE status IN ('pending', 'processing') AND attempts >= 5`,
             [],
           );
-          cleared.push({ type: 'stuck_outbox', count: stuckOutboxIds.length });
+          cleared.push({ type: 'stuck_outbox', scope: 'global', count: stuckOutboxIds.length });
         }
 
         // Mark stuck inbox events as failed (inbox_events has no project_id)
@@ -375,7 +378,7 @@ export function createStateCommand(): Command {
              WHERE status IN ('pending', 'processing') AND attempts >= 5`,
             [],
           );
-          cleared.push({ type: 'stuck_inbox', count: stuckInboxIds.length });
+          cleared.push({ type: 'stuck_inbox', scope: 'global', count: stuckInboxIds.length });
         }
 
         console.log(
@@ -492,6 +495,10 @@ export function createStateCommand(): Command {
         apply?: boolean;
         confirmation?: string;
       }) => {
+        if (!opts.project) {
+          console.error('Error: --project <id> is required for state repair.');
+          process.exit(1);
+        }
         if (opts.apply && !opts.dryRun) {
           if (!opts.confirmation) {
             console.error('Error: --apply requires --confirmation <token> (run --dry-run first)');
