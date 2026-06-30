@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.3
-> Last-updated: 2026-06-29
+> Version: 1.0.4
+> Last-updated: 2026-06-30
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -219,6 +219,97 @@ wrappers; `agent_runs` records are created; capability validation works; and the
 framework runs the six mock adapters and `HumanTestAdapter` to green, writing
 `adapter_conformance_results`. (Provider-adapter conformance fixtures for additional adapters are
 Phase 18.)
+
+**Pre-existing groundwork (built ahead of schedule in Phase 4 for the test harness — to be
+promoted/extended, not redone):**
+
+- Schema already shipped in migration `0001_initial_schema.*`: `agent_adapters`,
+  `agent_capabilities`, `agent_configurations`, `agent_runs`, `agent_errors`,
+  `agent_tool_operations`, `agent_context_packs`, `adapter_conformance_results`. **Phase 5 needs no
+  new migration.**
+- `packages/testing/src/adapters/types.ts` already declares the six role interfaces
+  (`PlannerAgentAdapter`, `CoderAgentAdapter`, `ReviewerAgentAdapter`, `ArbiterAgentAdapter`,
+  `DocumentationAgentAdapter`, `HumanAgentAdapter`) plus per-role `Input`/`Output` types and
+  `AdapterCall<I, O>`.
+- `packages/testing/src/adapters/{mock-planner,mock-coder,mock-reviewer,mock-arbiter,
+  mock-documentation,human-test-adapter}.ts` implement deterministic mocks
+  (`MockPlannerAdapter`, `MockCoderAdapter` + `MockCoderError`, `MockReviewerAdapter`,
+  `MockArbiterAdapter`, `MockDocumentationAdapter`, `HumanTestAdapter` +
+  `HumanTestAdapterExhaustedError`), each tracking calls in-memory only (`this.calls`) — none
+  persist an `agent_runs` row today.
+
+**Gap to close in Phase 5** (this is the actual Phase-5 scope — current code is test-fixture-only
+and architecturally misplaced for a foundation phase):
+
+1. The role interfaces and the capability model are vendor/test-agnostic core concepts and belong
+   in `packages/core/src/adapters/`, not in `packages/testing/`. `packages/testing` may keep
+   re-exporting the mocks for harness convenience, but the interfaces themselves must move so that
+   non-test adapters (Phase 9+ reference adapters) implement the same core contract without
+   depending on the testing package.
+2. No capability model exists yet: the 15 capability tokens in
+   [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md) §3 (`can_generate_plan`,
+   `can_modify_files`, `can_commit`, ... `can_report_run_status`) are not yet a typed/Zod enum, are
+   not declared per adapter, and are not validated before invocation.
+3. No adapter registry exists: nothing resolves "which adapter implementation handles role X" or
+   exposes the resolved active configuration (per `03` §7, adapter configuration is
+   database-backed against `agent_adapters`/`agent_configurations`).
+4. No code path writes `agent_runs` (or `agent_errors`/`agent_tool_operations`/
+   `agent_context_packs`); mocks only push to an in-memory array. Phase 5 must add the
+   persistence-backed run-recording step (start → running → succeeded/failed/cancelled) wrapping
+   any adapter `.run()` call, using the existing `agent-run` state machine in
+   `packages/core/src/statemachine/machines/agent-run.ts`.
+5. No conformance framework exists: nothing runs the six mocks + `HumanTestAdapter` through the
+   conformance scenarios in `03-agent-adapter-architecture.md` §8 (config validation, capability
+   declaration, successful run, timeout/failure, invalid output, secret redaction, cost/token
+   reporting, structured-output normalization) or writes `adapter_conformance_results`.
+6. Secret redaction must run on adapter run records (reuse `SecretRedactor` from
+   `packages/core/src/auth/`, delivered in Phase 2) before any input/output is persisted.
+
+**Planned modules:**
+
+- `packages/core/src/adapters/types.ts` — the six role interfaces + per-role I/O types, moved
+  (not duplicated) from `packages/testing/src/adapters/types.ts`; `packages/testing` imports from
+  core afterward.
+- `packages/core/src/adapters/capabilities.ts` — `AgentCapability` Zod enum of the 15 tokens in
+  `03` §3; `validateCapabilities(declared, required)` helper.
+- `packages/core/src/adapters/registry.ts` — `AdapterRegistry`: register/resolve an adapter
+  implementation per role + `adapter_name`, backed by reads against `agent_adapters` /
+  `agent_configurations` (no hardcoded provider list in core).
+- `packages/core/src/adapters/run-recorder.ts` — `AgentRunRecorder`: wraps any adapter `.run()`
+  call; creates the `agent_runs` row (`queued`→`running`), validates capabilities against the
+  registry before invoking, redacts secrets, persists `agent_errors` on failure mapped to the
+  normalized error taxonomy (`timeout`, `rate_limited`, `invalid_output`, `auth`,
+  `provider_unavailable`, `cancelled`), and drives the row through the `agent-run` state machine
+  to `succeeded`/`failed`/`cancelled`.
+- `packages/core/src/fitness/` — extend `no-provider-imports.test.ts` coverage to
+  `packages/core/src/adapters/` (registry/recorder must stay provider-SDK-free; only the
+  Phase-9+ reference adapters import provider SDKs).
+- `packages/testing/src/adapters/` — keep the six mocks + `HumanTestAdapter`, retarget their
+  `implements` clauses at `@minicoder/core` interfaces, and route their `.run()` through
+  `AgentRunRecorder` instead of pushing only to the in-memory `calls` array (in-memory `calls`
+  stays, for assertions in existing harness tests).
+- `packages/testing/src/conformance/` — new conformance-scenario runner: one scenario module per
+  §8 check, executed against each of the six mocks + `HumanTestAdapter`; writes one
+  `adapter_conformance_results` row per (adapter, scenario) pair.
+- `packages/cli/src/commands/` — optional `minicoder adapter conformance` entry point invoking the
+  runner (not required for acceptance, but keeps parity with the existing CLI-surface pattern).
+
+**Sequencing:**
+
+1. Move interfaces to `packages/core/src/adapters/types.ts`; update `packages/testing` imports;
+   no behavior change, tests stay green.
+2. Add the capability Zod enum and `validateCapabilities()`; unit-test the validator alone.
+3. Add `AdapterRegistry` over `agent_adapters`/`agent_capabilities`/`agent_configurations`.
+4. Add `AgentRunRecorder`; wire each of the six mocks + `HumanTestAdapter` through it.
+5. Add the conformance scenario runner and run it against all seven adapters to green, persisting
+   `adapter_conformance_results`.
+6. Extend the `no-provider-imports` fitness test to cover the new `adapters/` directory; run the
+   full unit suite + the cross-dialect integration matrix (SQLite + PostgreSQL) per the Phase 4
+   harness.
+7. Update this plan's Phase 5 entry with a "Delivered modules" list (matching the Phase 2/3
+   convention) once merged, and update `docs/03-agent-adapter-architecture.md` /
+   `docs/00-glossary-and-terms.md` only if any new term/state is introduced (none is anticipated —
+   this phase implements existing canonical names only).
 
 ## Phase 6 — Bootstrap Planner, Readiness, and Clarification
 
