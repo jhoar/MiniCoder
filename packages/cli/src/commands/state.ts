@@ -333,6 +333,12 @@ export function createStateCommand(): Command {
     .option('--project <id>', 'Project ID')
     .option('--all', 'Reconcile all auto-clearable issues')
     .action(async (opts: { project?: string; all?: boolean }) => {
+      if (!opts.project && !opts.all) {
+        console.error(
+          'Error: state reconcile requires --project <id> (project-scoped) or --all (global queues).',
+        );
+        process.exit(1);
+      }
       const db = await createDbClientFromEnv();
       try {
         const cleared = [];
@@ -353,32 +359,33 @@ export function createStateCommand(): Command {
           cleared.push({ type: 'stale_locks', count: staleLockIds.length });
         }
 
-        // Mark stuck outbox events as failed (outbox_events has no project_id)
-        const stuckOutboxIds = await db.query<{ id: string }>(
-          `SELECT id FROM outbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-          [],
-        );
-        if (stuckOutboxIds.length > 0) {
-          await db.execute(
-            `UPDATE outbox_events SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-             WHERE status IN ('pending', 'processing') AND attempts >= 5`,
+        // Global queue clearing requires explicit --all (outbox/inbox have no project_id)
+        if (opts.all) {
+          const stuckOutboxIds = await db.query<{ id: string }>(
+            `SELECT id FROM outbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5`,
             [],
           );
-          cleared.push({ type: 'stuck_outbox', scope: 'global', count: stuckOutboxIds.length });
-        }
+          if (stuckOutboxIds.length > 0) {
+            await db.execute(
+              `UPDATE outbox_events SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+               WHERE status IN ('pending', 'processing') AND attempts >= 5`,
+              [],
+            );
+            cleared.push({ type: 'stuck_outbox', scope: 'global', count: stuckOutboxIds.length });
+          }
 
-        // Mark stuck inbox events as failed (inbox_events has no project_id)
-        const stuckInboxIds = await db.query<{ id: string }>(
-          `SELECT id FROM inbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-          [],
-        );
-        if (stuckInboxIds.length > 0) {
-          await db.execute(
-            `UPDATE inbox_events SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-             WHERE status IN ('pending', 'processing') AND attempts >= 5`,
+          const stuckInboxIds = await db.query<{ id: string }>(
+            `SELECT id FROM inbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5`,
             [],
           );
-          cleared.push({ type: 'stuck_inbox', scope: 'global', count: stuckInboxIds.length });
+          if (stuckInboxIds.length > 0) {
+            await db.execute(
+              `UPDATE inbox_events SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+               WHERE status IN ('pending', 'processing') AND attempts >= 5`,
+              [],
+            );
+            cleared.push({ type: 'stuck_inbox', scope: 'global', count: stuckInboxIds.length });
+          }
         }
 
         console.log(
@@ -458,10 +465,13 @@ export function createStateCommand(): Command {
             exportedAt: isoNow(),
             project: project[0] ?? null,
             workflowEvents,
-            pendingOutbox,
-            pendingInbox,
-            triggerdevRuns,
-            workflowLocks,
+            globalOperationalState: {
+              scope: 'global',
+              pendingOutbox,
+              pendingInbox,
+              triggerdevRuns,
+              workflowLocks,
+            },
           },
           null,
           2,
@@ -504,13 +514,13 @@ export function createStateCommand(): Command {
             console.error('Error: --apply requires --confirmation <token> (run --dry-run first)');
             process.exit(1);
           }
-          let pendingToken: { token: string; expiresAt: string; projectId: string | null };
+          let pendingToken: { token: string; expiresAt: string; projectId: string };
           try {
             const raw = fs.readFileSync(REPAIR_PENDING_FILE, 'utf-8');
             pendingToken = JSON.parse(raw) as {
               token: string;
               expiresAt: string;
-              projectId: string | null;
+              projectId: string;
             };
           } catch (e) {
             const code = (e as NodeJS.ErrnoException).code;
@@ -531,9 +541,9 @@ export function createStateCommand(): Command {
             );
             process.exit(1);
           }
-          if (pendingToken.projectId !== null && opts.project !== pendingToken.projectId) {
+          if (opts.project !== pendingToken.projectId) {
             console.error(
-              `Error: token was issued for project "${pendingToken.projectId}" but --project is "${opts.project ?? '(none)'}"`,
+              `Error: token was issued for project "${pendingToken.projectId}" but --project is "${opts.project}"`,
             );
             process.exit(1);
           }
@@ -542,11 +552,9 @@ export function createStateCommand(): Command {
           try {
             const repairs: Array<{ type: string; description: string }> = [];
             const orphanedThreshold = agoIso(ORPHANED_RUN_THRESHOLD_MS);
-            const effectiveProjectId = opts.project ?? pendingToken.projectId;
 
-            const projectFilter = effectiveProjectId ? `AND freq.project_id = ?` : '';
-            const orphanedParams: unknown[] = [orphanedThreshold];
-            if (effectiveProjectId) orphanedParams.push(effectiveProjectId);
+            // opts.project is guaranteed non-null (guarded at top of action)
+            const orphanedParams: unknown[] = [orphanedThreshold, opts.project];
 
             // Wrap mutations + event INSERT in a single transaction
             await db.transaction(async (tx) => {
@@ -557,7 +565,7 @@ export function createStateCommand(): Command {
                    AND fr.current_execution_state NOT IN ('merged', 'human_required', 'blocked', 'failed', 'system_failed', 'ci_failed', 'merge_failed')
                    AND fr.id NOT IN (SELECT active_feature_run_id FROM workflow_states WHERE active_feature_run_id IS NOT NULL)
                    AND fr.started_at < ?
-                   ${projectFilter}`,
+                   AND freq.project_id = ?`,
                 orphanedParams,
               );
 
@@ -573,14 +581,13 @@ export function createStateCommand(): Command {
                 });
               }
 
-              // Record workflow event only when a project is scoped (project_id is NOT NULL)
-              if (repairs.length > 0 && effectiveProjectId) {
+              if (repairs.length > 0) {
                 await tx.execute(
                   `INSERT INTO workflow_events (id, project_id, event_type, from_state, to_state, actor, payload, payload_schema_version, occurred_at, created_at)
                    VALUES (?, ?, 'state.repaired', NULL, NULL, 'operator', ?, '1.0', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
                   [
                     crypto.randomUUID(),
-                    effectiveProjectId,
+                    opts.project,
                     JSON.stringify({ repairs, appliedAt: isoNow() }),
                   ],
                 );
@@ -594,7 +601,7 @@ export function createStateCommand(): Command {
               JSON.stringify(
                 {
                   command: 'state repair --apply',
-                  projectId: opts.project ?? null,
+                  projectId: opts.project,
                   repairs,
                   timestamp: isoNow(),
                 },

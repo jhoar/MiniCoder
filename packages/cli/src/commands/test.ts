@@ -49,10 +49,9 @@ export function createTestCommand(): Command {
 
   test
     .command('unit')
-    .description('Run unit tests (all test files; no *.integration.test.ts files exist yet)')
+    .description('Run unit tests — excludes *.integration.test.ts files')
     .action(() => {
-      // vitest 1.6.x has no --include/--exclude CLI flags; positional arg filters by file path
-      runVitest('--reporter=verbose');
+      runVitest('--reporter=verbose', '--config', 'vitest.unit.config.ts');
     });
 
   test

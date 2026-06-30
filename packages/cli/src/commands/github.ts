@@ -4,6 +4,12 @@ import { createDbClientFromEnv } from '../db-client.js';
 const ALLOWED_ENVS = new Set(['development', 'test', 'ci']);
 
 function guardEnv(): void {
+  if (process.env['APP_ENV'] === 'production' || process.env['NODE_ENV'] === 'production') {
+    console.error(
+      'Error: minicoder github commands are not permitted when APP_ENV or NODE_ENV is production.',
+    );
+    process.exit(1);
+  }
   const env = process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? 'production';
   if (!ALLOWED_ENVS.has(env)) {
     console.error(
