@@ -1,0 +1,119 @@
+import type { DbClient } from '../persistence/types.js';
+import { generateId, isoNow } from '../commands/helpers.js';
+import { defaultRedactor, type SecretRedactor } from '../auth/redaction.js';
+import { AgentRunState } from '../domain/states.js';
+import { StateTransitionValidator } from '../statemachine/validator.js';
+import { AGENT_RUN_MATRIX } from '../statemachine/machines/agent-run.js';
+
+/** Normalized provider-failure taxonomy (docs/03 §11.6). */
+export type AgentRunErrorType =
+  | 'timeout'
+  | 'rate_limited'
+  | 'invalid_output'
+  | 'auth'
+  | 'provider_unavailable'
+  | 'cancelled';
+
+export class AdapterRunError extends Error {
+  constructor(
+    public readonly errorType: AgentRunErrorType,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AdapterRunError';
+  }
+}
+
+export interface RecordRunOptions {
+  readonly adapterId: string;
+  readonly role: string;
+  readonly projectId?: string;
+  readonly featureRunId?: string;
+  readonly input: unknown;
+}
+
+export interface RecordRunResult<O> {
+  readonly agentRunId: string;
+  readonly output: O;
+}
+
+const validator = new StateTransitionValidator(AGENT_RUN_MATRIX, 'agent-run');
+
+/**
+ * Wraps an adapter invocation with persistence-backed `agent_runs` lifecycle recording
+ * (queued -> running -> succeeded|failed), driven through the agent-run state matrix delivered
+ * in Phase 2. Private chain-of-thought must never be passed as `input`/output here — only
+ * structured I/O.
+ */
+export class AgentRunRecorder {
+  constructor(
+    private readonly db: DbClient,
+    private readonly redactor: SecretRedactor = defaultRedactor,
+  ) {}
+
+  async record<O>(opts: RecordRunOptions, fn: () => Promise<O>): Promise<RecordRunResult<O>> {
+    const agentRunId = generateId();
+    const queuedAt = isoNow();
+
+    await this.db.execute(
+      `INSERT INTO agent_runs
+         (id, adapter_id, project_id, feature_run_id, role, state, input_summary, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        agentRunId,
+        opts.adapterId,
+        opts.projectId ?? null,
+        opts.featureRunId ?? null,
+        opts.role,
+        AgentRunState.QUEUED,
+        JSON.stringify(this.redactor.redactObject(opts.input)),
+        queuedAt,
+        queuedAt,
+      ],
+    );
+
+    validator.assertValid(AgentRunState.QUEUED, AgentRunState.RUNNING);
+    const startedAt = isoNow();
+    await this.db.execute(
+      `UPDATE agent_runs SET state = ?, started_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+      [AgentRunState.RUNNING, startedAt, startedAt, agentRunId],
+    );
+
+    try {
+      const output = await fn();
+
+      validator.assertValid(AgentRunState.RUNNING, AgentRunState.SUCCEEDED);
+      const endedAt = isoNow();
+      await this.db.execute(
+        `UPDATE agent_runs SET state = ?, output_summary = ?, ended_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+        [
+          AgentRunState.SUCCEEDED,
+          JSON.stringify(this.redactor.redactObject(output)),
+          endedAt,
+          endedAt,
+          agentRunId,
+        ],
+      );
+
+      return { agentRunId, output };
+    } catch (err) {
+      const errorType: AgentRunErrorType =
+        err instanceof AdapterRunError ? err.errorType : 'provider_unavailable';
+      const message = this.redactor.redact(err instanceof Error ? err.message : String(err));
+
+      validator.assertValid(AgentRunState.RUNNING, AgentRunState.FAILED);
+      const endedAt = isoNow();
+      await this.db.execute(
+        `UPDATE agent_runs SET state = ?, error = ?, ended_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+        [AgentRunState.FAILED, message, endedAt, endedAt, agentRunId],
+      );
+      await this.db.execute(
+        `INSERT INTO agent_errors (id, agent_run_id, error_type, message, occurred_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [generateId(), agentRunId, errorType, message, endedAt, endedAt],
+      );
+
+      throw err;
+    }
+  }
+}
