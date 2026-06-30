@@ -7,12 +7,16 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–2 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–3 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
-backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); and full state-machine / command
+backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
 workflow locks with fencing tokens, execution lanes, local auth, secret-redaction tests, and the
-`minicoder state` CLI (Phase 2). Canonical specification documents live under `docs/`.
+`minicoder state` CLI (Phase 2); and the Workflow Layer harness with a 9-service Trigger.dev v4
+Docker Compose stack (`infra/docker-compose.triggerdev.yml`), 9 task stubs registered via
+`@trigger.dev/sdk/v3`, `assertSchemaReady()` post-connect schema probe, CI/CD deploy workflow
+(`.github/workflows/trigger-deploy.yml`), and `minicoder trigger` CLI scaffold (Phase 3).
+Canonical specification documents live under `docs/`.
 
 ## Repository Structure
 
@@ -36,11 +40,14 @@ disagree, the `docs/` file wins. Within `docs/`, shared vocabulary is defined on
 
 ## Development Branch
 
-All work goes on branch `claude/sleepy-gauss-p1y6c0`. Always push with:
+Each session works on a dedicated PR branch specified in the session system prompt. Always
+push with:
 
 ```bash
-git push -u origin claude/sleepy-gauss-p1y6c0
+git push -u origin <branch-from-session-prompt>
 ```
+
+Never push directly to `main`.
 
 ## Key Architectural Decisions (Do Not Change Without Explicit Instruction)
 
@@ -191,11 +198,54 @@ before returning to `under_review`. Review and merge never act on un-tested code
 - **Lock fencing — release is an UPDATE, not a DELETE.** `WorkflowLockManager.release()` updates `expires_at = now` and increments `fence`, preserving the row. The monotonically increasing fence counter must survive across acquire/release cycles so re-acquisition always returns a strictly higher fence. Deleting the row would reset the fence to 1.
 - **`assertFence` must run inside the same transaction as the guarded write** to prevent TOCTOU races between the fence check and the protected state mutation.
 
+## Trigger.dev Operational Constraints (`packages/triggerdev/`)
+
+- **9-service compose stack.** `infra/docker-compose.triggerdev.yml`: `triggerdev-init`
+  (one-shot alpine:3.19 chown, must exit 0 before webapp/supervisor start), postgres, redis,
+  electric, webapp, registry, minio, docker-proxy, supervisor.
+- **Supervisor network.** Supervisor must join the `triggerdev-webapp` Docker network.
+  Set `TRIGGER_WORKLOAD_API_DOMAIN=triggerdev-supervisor` so runner containers can reach the
+  workload API by hostname. Supervisor healthcheck uses a Node `http.get` call (no curl in
+  the Node image).
+- **OTEL endpoint.** `OTEL_EXPORTER_OTLP_ENDPOINT=http://triggerdev-webapp:3000/otel` —
+  NOT the standard OpenTelemetry port `:4318`.
+- **Registry topology.** `DEPLOY_REGISTRY_HOST` (CLI push target) and `DOCKER_REGISTRY_URL`
+  (supervisor pull source) must point to the same registry. For GitHub-hosted CI runners,
+  `localhost:5000` is unreachable; both vars need an external registry.
+- **`assertSchemaReady()`.** `packages/triggerdev/src/db.ts` probes `triggerdev_runs`
+  immediately after connecting. Missing table → actionable error. Run `minicoder db migrate`
+  before starting tasks.
+- **CLI pin.** Deploy with `npx trigger.dev@4.4.6 deploy …`. Never use `@latest`.
+- **All secrets use `${VAR:?message}` syntax** in `docker-compose.triggerdev.yml` — Docker
+  Compose exits on missing/empty values.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
 as a matrix. This is a CI requirement, not optional. The security scan
 (pnpm audit/OSV + gitleaks + semgrep) also runs in CI.
+
+## SQLite Test Teardown Rule
+
+**Never call `db.close()` in tests** (including `afterEach`/`afterAll` hooks).
+
+`better-sqlite3` registers native GC finalizers for `Database` and `Statement` objects.
+Explicit `db.close()` calls `sqlite3_close()`, which finalizes all statements on the database.
+When V8's GC later runs the `Statement` finalizer, it double-frees → SIGSEGV (exit 139). Let
+GC handle teardown order naturally — do not add explicit close calls.
+
+`vitest.config.ts` uses `pool: 'forks'`: each test file runs in a forked child process that
+calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do not change
+`pool` without understanding this constraint.
+
+## Typecheck Script Ordering
+
+The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
+running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
+appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
+Current order: `core → persistence-sqlite → persistence-postgres → triggerdev → (rest --noEmit)`.
+
+When adding a new workspace package that others import for types, add it to this chain.
 
 ## Budget Gate
 
