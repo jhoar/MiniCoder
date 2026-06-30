@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AgentCapabilitySchema, AgentCapabilityToken, CapabilityError, validateCapabilities } from './capabilities.js';
+import { AgentCapabilitySchema, CapabilityError, validateCapabilities } from './capabilities.js';
 
 describe('AgentCapabilitySchema', () => {
   it('accepts all 15 canonical capability tokens', () => {

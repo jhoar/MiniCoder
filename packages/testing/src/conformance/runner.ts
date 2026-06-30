@@ -42,10 +42,12 @@ interface AdapterDescriptor {
   readonly adapterName: string;
   readonly implementation: string;
   readonly capabilities: readonly AgentCapabilityToken[];
+  readonly requiredCapabilities: readonly AgentCapabilityToken[];
   makeSuccessAdapter(): AnyAdapter;
   makeFailureAdapter(): AnyAdapter;
   makeInvalidOutputAdapter(): AnyAdapter | null;
   makeSuccessInput(): AnyInput;
+  validateOutput(output: unknown): string | null;
 }
 
 const COMMON_CORRELATION = 'conformance-test';
@@ -57,6 +59,7 @@ const DESCRIPTORS: AdapterDescriptor[] = [
     adapterName: 'MockPlannerAdapter',
     implementation: '@minicoder/testing:MockPlannerAdapter',
     capabilities: ['can_generate_plan', 'can_generate_clarification_questions'],
+    requiredCapabilities: ['can_generate_plan'],
     makeSuccessAdapter: () => new MockPlannerAdapter('sufficient'),
     makeFailureAdapter: () => new MockPlannerAdapter('insufficient'),
     makeInvalidOutputAdapter: () => null,
@@ -65,12 +68,27 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       specificationContent: 'Build a todo app with CRUD operations.',
       correlationId: COMMON_CORRELATION,
     }),
+    validateOutput: (out: unknown): string | null => {
+      const o = out as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return 'output is not an object';
+      if (
+        !['sufficient', 'sufficient_with_assumptions', 'insufficient'].includes(
+          o['readinessResult'] as string,
+        )
+      )
+        return `readinessResult invalid: ${String(o['readinessResult'])}`;
+      if (!Array.isArray(o['questions'])) return 'questions must be an array';
+      if (!Array.isArray(o['assumptions'])) return 'assumptions must be an array';
+      if (!Array.isArray(o['gaps'])) return 'gaps must be an array';
+      return null;
+    },
   },
   {
     role: 'CoderAgentAdapter',
     adapterName: 'MockCoderAdapter',
     implementation: '@minicoder/testing:MockCoderAdapter',
     capabilities: ['can_modify_files', 'can_commit', 'can_push_branch'],
+    requiredCapabilities: ['can_modify_files', 'can_commit'],
     makeSuccessAdapter: () => new MockCoderAdapter('success'),
     makeFailureAdapter: () => new MockCoderAdapter('fail'),
     makeInvalidOutputAdapter: () => new MockCoderAdapter('invalid_output'),
@@ -81,12 +99,23 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       acceptanceCriteria: ['Endpoint returns 200', 'Tests pass'],
       correlationId: COMMON_CORRELATION,
     }),
+    validateOutput: (out: unknown): string | null => {
+      const o = out as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return 'output is not an object';
+      if (typeof o['commitSha'] !== 'string' || !o['commitSha'])
+        return 'commitSha must be a non-empty string';
+      if (typeof o['branchName'] !== 'string' || !o['branchName'])
+        return 'branchName must be a non-empty string';
+      if (typeof o['filesChanged'] !== 'number') return 'filesChanged must be a number';
+      return null;
+    },
   },
   {
     role: 'ReviewerAgentAdapter',
     adapterName: 'MockReviewerAdapter',
     implementation: '@minicoder/testing:MockReviewerAdapter',
     capabilities: ['can_review_pull_request', 'can_return_structured_findings'],
+    requiredCapabilities: ['can_review_pull_request', 'can_return_structured_findings'],
     makeSuccessAdapter: () => new MockReviewerAdapter('approve'),
     makeFailureAdapter: () => new MockReviewerAdapter('request_changes'),
     makeInvalidOutputAdapter: () => null,
@@ -97,12 +126,21 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       reviewCycle: 1,
       correlationId: COMMON_CORRELATION,
     }),
+    validateOutput: (out: unknown): string | null => {
+      const o = out as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return 'output is not an object';
+      if (!['approved', 'changes_requested'].includes(o['decision'] as string))
+        return `decision invalid: ${String(o['decision'])}`;
+      if (!Array.isArray(o['findings'])) return 'findings must be an array';
+      return null;
+    },
   },
   {
     role: 'ArbiterAgentAdapter',
     adapterName: 'MockArbiterAdapter',
     implementation: '@minicoder/testing:MockArbiterAdapter',
     capabilities: ['can_resolve_disagreement'],
+    requiredCapabilities: ['can_resolve_disagreement'],
     makeSuccessAdapter: () => new MockArbiterAdapter('resolve'),
     makeFailureAdapter: () => new MockArbiterAdapter('escalate'),
     makeInvalidOutputAdapter: () => null,
@@ -114,12 +152,25 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       reviewerPosition: 'A specific error message is required by the spec',
       correlationId: COMMON_CORRELATION,
     }),
+    validateOutput: (out: unknown): string | null => {
+      const o = out as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return 'output is not an object';
+      if (
+        !['coder_correct', 'reviewer_correct', 'compromise', 'escalate_to_human'].includes(
+          o['resolution'] as string,
+        )
+      )
+        return `resolution invalid: ${String(o['resolution'])}`;
+      if (typeof o['notes'] !== 'string') return 'notes must be a string';
+      return null;
+    },
   },
   {
     role: 'DocumentationAgentAdapter',
     adapterName: 'MockDocumentationAdapter',
     implementation: '@minicoder/testing:MockDocumentationAdapter',
     capabilities: ['can_generate_design_document'],
+    requiredCapabilities: ['can_generate_design_document'],
     makeSuccessAdapter: () => new MockDocumentationAdapter('succeed'),
     makeFailureAdapter: () => new MockDocumentationAdapter('require_revision'),
     makeInvalidOutputAdapter: () => null,
@@ -129,12 +180,22 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       featureCount: 3,
       correlationId: COMMON_CORRELATION,
     }),
+    validateOutput: (out: unknown): string | null => {
+      const o = out as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return 'output is not an object';
+      if (typeof o['documentId'] !== 'string' || !o['documentId'])
+        return 'documentId must be a non-empty string';
+      if (!Array.isArray(o['sections'])) return 'sections must be an array';
+      if (typeof o['requiresRevision'] !== 'boolean') return 'requiresRevision must be a boolean';
+      return null;
+    },
   },
   {
     role: 'HumanAgentAdapter',
     adapterName: 'HumanTestAdapter',
     implementation: '@minicoder/testing:HumanTestAdapter',
     capabilities: ['can_report_run_status'],
+    requiredCapabilities: ['can_report_run_status'],
     makeSuccessAdapter: () => new HumanTestAdapter(['approved']),
     makeFailureAdapter: () => new HumanTestAdapter(['rejected']),
     makeInvalidOutputAdapter: () => null,
@@ -145,6 +206,14 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       description: 'Approve the generated plan for execution',
       correlationId: COMMON_CORRELATION,
     }),
+    validateOutput: (out: unknown): string | null => {
+      const o = out as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return 'output is not an object';
+      if (!['approved', 'rejected', 'deferred'].includes(o['decision'] as string))
+        return `decision invalid: ${String(o['decision'])}`;
+      if (typeof o['notes'] !== 'string') return 'notes must be a string';
+      return null;
+    },
   },
 ];
 
@@ -175,7 +244,10 @@ async function runScenarios(
       results.push(fail('capability_declaration', 'Adapter declared no capabilities'));
     } else {
       results.push(
-        pass('capability_declaration', `Declared ${record.capabilities.length} capabilities: ${record.capabilities.join(', ')}`),
+        pass(
+          'capability_declaration',
+          `Declared ${record.capabilities.length} capabilities: ${record.capabilities.join(', ')}`,
+        ),
       );
     }
   } catch (e) {
@@ -236,15 +308,32 @@ async function runScenarios(
     );
 
     if (threw && failedRuns.length > 0 && errorRows.length > 0) {
-      results.push(pass('failure_handling', `agent_run reached failed state; ${errorRows.length} error row(s) recorded`));
+      results.push(
+        pass(
+          'failure_handling',
+          `agent_run reached failed state; ${errorRows.length} error row(s) recorded`,
+        ),
+      );
     } else if (!threw) {
       // Some "failure" behaviors return normally (e.g., reviewer request_changes, human rejected)
-      results.push(pass('failure_handling', 'Adapter failure behavior completed without exception (non-throwing failure mode)'));
+      results.push(
+        pass(
+          'failure_handling',
+          'Adapter failure behavior completed without exception (non-throwing failure mode)',
+        ),
+      );
     } else {
-      results.push(fail('failure_handling', `threw=${threw} failedRuns=${failedRuns.length} errorRows=${errorRows.length}`));
+      results.push(
+        fail(
+          'failure_handling',
+          `threw=${threw} failedRuns=${failedRuns.length} errorRows=${errorRows.length}`,
+        ),
+      );
     }
   } catch (e) {
-    results.push(fail('failure_handling', 'Unexpected exception during failure scenario', String(e)));
+    results.push(
+      fail('failure_handling', 'Unexpected exception during failure scenario', String(e)),
+    );
   }
 
   // 4. Invalid output handling
@@ -262,7 +351,10 @@ async function runScenarios(
               (out) => out,
               (err) => {
                 const code = err instanceof MockCoderError ? err.code : 'invalid_output';
-                throw new AdapterRunError(code as never, err instanceof Error ? err.message : String(err));
+                throw new AdapterRunError(
+                  code as never,
+                  err instanceof Error ? err.message : String(err),
+                );
               },
             ),
         );
@@ -277,12 +369,16 @@ async function runScenarios(
           [adapterId],
         );
         if (invalidErrors.length > 0) {
-          results.push(pass('invalid_output_handling', `error_type=invalid_output recorded in agent_errors`));
+          results.push(
+            pass('invalid_output_handling', `error_type=invalid_output recorded in agent_errors`),
+          );
         } else {
           results.push(fail('invalid_output_handling', 'No invalid_output error_type row found'));
         }
       } else {
-        results.push(fail('invalid_output_handling', 'Expected adapter to throw on invalid_output behavior'));
+        results.push(
+          fail('invalid_output_handling', 'Expected adapter to throw on invalid_output behavior'),
+        );
       }
     } catch (e) {
       results.push(fail('invalid_output_handling', 'Unexpected exception', String(e)));
@@ -290,7 +386,10 @@ async function runScenarios(
   }
 
   // 5. Secret redaction — input containing a secret-shaped value must not appear in input_summary
-  const secretInput = { ...descriptor.makeSuccessInput(), apiKey: 'sk-secret-placeholder-do-not-store-123456789012' };
+  const secretInput = {
+    ...descriptor.makeSuccessInput(),
+    apiKey: 'sk-secret-placeholder-do-not-store-123456789012',
+  };
   try {
     const { agentRunId } = await recorder.record(
       { adapterId, role: descriptor.role, input: secretInput },
@@ -302,9 +401,13 @@ async function runScenarios(
     );
     const summary = runRow?.input_summary ?? '';
     if (summary.includes('sk-secret-placeholder-do-not-store')) {
-      results.push(fail('secret_redaction', 'Secret value was stored un-redacted in input_summary'));
+      results.push(
+        fail('secret_redaction', 'Secret value was stored un-redacted in input_summary'),
+      );
     } else {
-      results.push(pass('secret_redaction', 'Secret-shaped apiKey value was redacted from input_summary'));
+      results.push(
+        pass('secret_redaction', 'Secret-shaped apiKey value was redacted from input_summary'),
+      );
     }
   } catch (e) {
     results.push(fail('secret_redaction', 'Unexpected exception', String(e)));
@@ -315,13 +418,26 @@ async function runScenarios(
     const expectedConfig = { model: 'conformance-model', temperature: 0 };
     await opts.db.execute(
       `INSERT INTO agent_configurations (id, adapter_id, project_id, config, version, created_at, updated_at) VALUES (?, ?, NULL, ?, 1, ?, ?)`,
-      [generateId(), adapterId, JSON.stringify(expectedConfig), new Date().toISOString(), new Date().toISOString()],
+      [
+        generateId(),
+        adapterId,
+        JSON.stringify(expectedConfig),
+        new Date().toISOString(),
+        new Date().toISOString(),
+      ],
     );
     const resolved = await registry.getConfiguration(adapterId);
     if (resolved?.model === 'conformance-model') {
-      results.push(pass('configuration_resolution', 'Adapter-default configuration row resolved correctly'));
+      results.push(
+        pass('configuration_resolution', 'Adapter-default configuration row resolved correctly'),
+      );
     } else {
-      results.push(fail('configuration_resolution', `Expected model=conformance-model, got ${JSON.stringify(resolved)}`));
+      results.push(
+        fail(
+          'configuration_resolution',
+          `Expected model=conformance-model, got ${JSON.stringify(resolved)}`,
+        ),
+      );
     }
   } catch (e) {
     results.push(fail('configuration_resolution', 'Unexpected exception', String(e)));
@@ -333,27 +449,65 @@ async function runScenarios(
       { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
-    const [runRow] = await opts.db.query<{ state: string; started_at: string | null; ended_at: string | null }>(
-      `SELECT state, started_at, ended_at FROM agent_runs WHERE id = ?`,
-      [agentRunId],
-    );
+    const [runRow] = await opts.db.query<{
+      state: string;
+      started_at: string | null;
+      ended_at: string | null;
+    }>(`SELECT state, started_at, ended_at FROM agent_runs WHERE id = ?`, [agentRunId]);
     if (runRow?.state === 'succeeded' && runRow.started_at !== null && runRow.ended_at !== null) {
-      results.push(pass('state_transition_sequence', 'queued→running→succeeded; started_at and ended_at set'));
+      results.push(
+        pass('state_transition_sequence', 'queued→running→succeeded; started_at and ended_at set'),
+      );
     } else {
-      results.push(fail('state_transition_sequence', `state=${String(runRow?.state)} started_at=${String(runRow?.started_at)} ended_at=${String(runRow?.ended_at)}`));
+      results.push(
+        fail(
+          'state_transition_sequence',
+          `state=${String(runRow?.state)} started_at=${String(runRow?.started_at)} ended_at=${String(runRow?.ended_at)}`,
+        ),
+      );
     }
   } catch (e) {
     results.push(fail('state_transition_sequence', 'Unexpected exception', String(e)));
+  }
+
+  // 8. Output shape validation — successful run output conforms to role-specific schema
+  try {
+    const output = await runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput());
+    const shapeError = descriptor.validateOutput(output);
+    if (shapeError) {
+      results.push(fail('output_shape', `Output shape validation failed: ${shapeError}`));
+    } else {
+      results.push(pass('output_shape', 'Successful run output conforms to role-specific schema'));
+    }
+  } catch (e) {
+    results.push(
+      fail('output_shape', 'Unexpected exception during output shape validation', String(e)),
+    );
+  }
+
+  // 9. assertCapabilities — adapter passes when holding required capabilities
+  try {
+    await registry.assertCapabilities(adapterId, descriptor.requiredCapabilities.slice());
+    results.push(
+      pass(
+        'assert_capabilities',
+        `assertCapabilities passed for [${descriptor.requiredCapabilities.join(', ')}]`,
+      ),
+    );
+  } catch (e) {
+    results.push(fail('assert_capabilities', 'assertCapabilities unexpectedly threw', String(e)));
   }
 
   return results;
 }
 
 /**
- * Runs the full conformance suite (7 scenarios × 7 adapters) against the provided DB,
+ * Runs the full conformance suite (7 scenarios × 6 adapters) against the provided DB,
  * writing one adapter_conformance_results row per adapter. Returns one suite result per adapter.
  */
-export async function runConformanceSuite(opts: ConformanceRunOptions): Promise<ConformanceSuiteResult[]> {
+export async function runConformanceSuite(
+  opts: ConformanceRunOptions,
+): Promise<ConformanceSuiteResult[]> {
   const suiteResults: ConformanceSuiteResult[] = [];
 
   for (const descriptor of DESCRIPTORS) {
@@ -383,7 +537,12 @@ export async function runConformanceSuite(opts: ConformanceRunOptions): Promise<
         passedCount === totalCount ? 1 : 0,
         totalCount,
         failedCount,
-        JSON.stringify(scenarios),
+        JSON.stringify({
+          adapterName: descriptor.adapterName,
+          implementation: descriptor.implementation,
+          capabilities: descriptor.capabilities,
+          scenarios,
+        }),
         now,
         now,
       ],

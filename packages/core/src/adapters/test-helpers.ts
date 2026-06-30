@@ -66,8 +66,17 @@ export class InMemoryAdapterDb implements DbClient {
       return;
     }
     if (s.includes('INTO agent_runs')) {
-      const [id, adapterId, projectId, featureRunId, role, state, inputSummary, createdAt, updatedAt] =
-        params;
+      const [
+        id,
+        adapterId,
+        projectId,
+        featureRunId,
+        role,
+        state,
+        inputSummary,
+        createdAt,
+        updatedAt,
+      ] = params;
       this.agentRuns.push({
         id,
         adapter_id: adapterId,
@@ -144,13 +153,13 @@ export class InMemoryAdapterDb implements DbClient {
   private select(s: string, params: unknown[]): Record<string, unknown>[] {
     if (s.startsWith('SELECT id FROM agent_adapters WHERE role')) {
       const [role, name] = params;
-      return this.agentAdapters.filter((r) => r.role === role && r.name === name).map((r) => ({ id: r.id }));
+      return this.agentAdapters
+        .filter((r) => r.role === role && r.name === name)
+        .map((r) => ({ id: r.id }));
     }
-    if (s.includes('FROM agent_adapters WHERE role') && s.includes('is_active = 1')) {
+    if (s.includes('FROM agent_adapters WHERE role') && s.includes('AND name')) {
       const [role, name] = params;
-      return this.agentAdapters.filter(
-        (r) => r.role === role && r.name === name && Number(r.is_active) === 1,
-      );
+      return this.agentAdapters.filter((r) => r.role === role && r.name === name);
     }
     if (s.includes('FROM agent_adapters WHERE id')) {
       const [id] = params;
@@ -158,7 +167,9 @@ export class InMemoryAdapterDb implements DbClient {
     }
     if (s.startsWith('SELECT capability FROM agent_capabilities')) {
       const [adapterId] = params;
-      return this.agentCapabilities.filter((r) => r.adapter_id === adapterId).map((r) => ({ capability: r.capability }));
+      return this.agentCapabilities
+        .filter((r) => r.adapter_id === adapterId)
+        .map((r) => ({ capability: r.capability }));
     }
     if (s.startsWith('SELECT config FROM agent_configurations')) {
       const [adapterId, projectId] = params;

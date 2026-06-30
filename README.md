@@ -7,10 +7,15 @@ implementation backlog, then orchestrates feature-branch development, pull reque
 reviews, fixes, merge gates, and final design documentation. It is designed to be auditable,
 deterministic, cost-aware, safe, and fully testable without human intervention.
 
-This repository contains the **Phase 1 implementation** of MiniCoder — the monorepo skeleton,
+This repository contains the **Phase 1–5 implementation** of MiniCoder — the monorepo skeleton,
 persistence abstraction (SQLite + PostgreSQL), initial schema (43 tables), migration tooling,
-config/secrets backends, database lifecycle CLI, and CI. Specification documents live under
-`docs/`.
+config/secrets backends, database lifecycle CLI, and CI (Phase 1); full state-machine / command
+layer, transactional idempotent commands, outbox/inbox dispatching, workflow locks, and local auth
+(Phase 2); Workflow Layer harness with Trigger.dev v4 Docker Compose stack and `minicoder trigger`
+CLI scaffold (Phase 3); mock agent adapter library with six role implementations and per-adapter
+scenario test suites (Phase 4); and the Agent Adapter Foundation — role interfaces, capability
+model, AdapterRegistry, AgentRunRecorder, and conformance test framework (Phase 5). Specification
+documents live under `docs/`.
 
 ## Documentation (canonical)
 

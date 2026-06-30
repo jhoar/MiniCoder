@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.5
+> Version: 1.0.6
 > Last-updated: 2026-06-30
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -257,13 +257,27 @@ Phase 18.)
   `import from './types.js'` unchanged.
 - `packages/testing/src/conformance/` — new conformance-scenario runner:
   `runConformanceSuite({ db, registry, recorder })` iterates over all six mock adapters
-  (one per role), runs 7 scenarios per adapter (capability declaration, successful run, failure
+  (one per role), runs 9 scenarios per adapter (capability declaration, successful run, failure
   handling, invalid-output handling, secret redaction, configuration resolution, state-transition
-  sequence), and writes one `adapter_conformance_results` row per adapter. All 6 adapters × 7
-  scenarios = 42 scenario results, all green.
+  sequence, output-shape validation, assertCapabilities), and writes one
+  `adapter_conformance_results` row per adapter. The `details` JSON snapshot includes
+  `adapterName`, `implementation`, and `capabilities` alongside the scenario results so historical
+  records remain attributable after adapter re-registration. All 6 adapters × 9 scenarios = 54
+  scenario results, all green.
 - `packages/core/src/index.ts` — new `// Phase 5: agent adapters` export section.
+- `packages/migrations/migrations/0003_unique_adapter_role_name.*` — adds a unique index on
+  `agent_adapters(role, name)` for both SQLite and PostgreSQL, preventing concurrent duplicate
+  registrations.
 
-**No new migration.** The `agent_adapters`, `agent_capabilities`, `agent_configurations`,
+**Deferred to Phase 9–10.** The `agent_runs` schema already includes richer fields
+(`adapter_name`, `provider`, `model`, `capabilities_used`, `triggerdev_run_id`,
+`prompt_template_version`, and artifact-reference columns) but these are intentionally **not
+populated** in Phase 5. They will be filled by the reference Coder and Reviewer adapters when
+real provider connections are established (Phase 9 — Reference Coder Adapter; Phase 10 —
+Reference Reviewer Adapter). Writing dummy values here would create misleading data in production
+runs; leaving them NULL makes the absence explicit.
+
+**No core schema migration.** The `agent_adapters`, `agent_capabilities`, `agent_configurations`,
 `agent_runs`, `agent_errors`, `agent_tool_operations`, `agent_context_packs`, and
 `adapter_conformance_results` tables were already created in `0001_initial_schema.*` (Phase 1).
 

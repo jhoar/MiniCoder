@@ -52,9 +52,12 @@ describe('AgentRunRecorder.record', () => {
 
   it('defaults non-AdapterRunError failures to provider_unavailable', async () => {
     await expect(
-      recorder.record({ adapterId: 'adapter-1', role: 'CoderAgentAdapter', input: {} }, async () => {
-        throw new Error('boom');
-      }),
+      recorder.record(
+        { adapterId: 'adapter-1', role: 'CoderAgentAdapter', input: {} },
+        async () => {
+          throw new Error('boom');
+        },
+      ),
     ).rejects.toThrow('boom');
 
     expect(db.agentErrors[0]?.error_type).toBe('provider_unavailable');

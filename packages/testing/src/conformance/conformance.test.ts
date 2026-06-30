@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { AdapterRegistry, AgentRunRecorder } from '@minicoder/core';
+import { AdapterRegistry, AgentRunRecorder, generateId } from '@minicoder/core';
 import type { ConformanceSuiteResult } from './types.js';
 import { runConformanceSuite } from './runner.js';
 import { createTestDb } from '../db.js';
@@ -21,14 +21,16 @@ describe('Phase 5 adapter conformance suite', () => {
   it('runs conformance for all 6 adapters (one per role, including HumanTestAdapter)', () => {
     expect(results).toHaveLength(6);
     const names = results.map((r) => r.adapterName).sort();
-    expect(names).toEqual([
-      'HumanTestAdapter',
-      'MockArbiterAdapter',
-      'MockCoderAdapter',
-      'MockDocumentationAdapter',
-      'MockPlannerAdapter',
-      'MockReviewerAdapter',
-    ].sort());
+    expect(names).toEqual(
+      [
+        'HumanTestAdapter',
+        'MockArbiterAdapter',
+        'MockCoderAdapter',
+        'MockDocumentationAdapter',
+        'MockPlannerAdapter',
+        'MockReviewerAdapter',
+      ].sort(),
+    );
   });
 
   it('all adapters pass every conformance scenario', () => {
@@ -36,7 +38,9 @@ describe('Phase 5 adapter conformance suite', () => {
     for (const suite of results) {
       for (const scenario of suite.scenarios) {
         if (!scenario.passed) {
-          failures.push(`${suite.adapterName}/${scenario.scenarioName}: ${scenario.details}${scenario.error ? ` (${scenario.error})` : ''}`);
+          failures.push(
+            `${suite.adapterName}/${scenario.scenarioName}: ${scenario.details}${scenario.error ? ` (${scenario.error})` : ''}`,
+          );
         }
       }
     }
@@ -50,7 +54,7 @@ describe('Phase 5 adapter conformance suite', () => {
     );
     expect(rows).toHaveLength(6);
     for (const row of rows) {
-      expect(row.total_tests).toBeGreaterThan(0);
+      expect(row.total_tests).toBe(9);
     }
   });
 
@@ -83,5 +87,34 @@ describe('Phase 5 adapter conformance suite', () => {
     expect(errorRows.length).toBeGreaterThan(0);
     const types = errorRows.map((r) => r.error_type);
     expect(types).toContain('provider_unavailable');
+  });
+
+  it('a failed conformance result row writes passed=0 to the database', async () => {
+    const now = new Date().toISOString();
+    const fakeAdapterId = results[0]!.adapterId;
+    const rowId = generateId();
+    await db.execute(
+      `INSERT INTO adapter_conformance_results
+         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, details, run_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        rowId,
+        fakeAdapterId,
+        'PlannerAgentAdapter',
+        'phase5-conformance-failed',
+        0,
+        9,
+        3,
+        '{}',
+        now,
+        now,
+      ],
+    );
+    const failedRows = await db.query<{ id: string; passed: number }>(
+      `SELECT id, passed FROM adapter_conformance_results WHERE test_suite = 'phase5-conformance-failed' AND passed = 0`,
+      [],
+    );
+    expect(failedRows).toHaveLength(1);
+    expect(failedRows[0]!.passed).toBe(0);
   });
 });

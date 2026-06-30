@@ -43,7 +43,10 @@ describe('AdapterRegistry.register', () => {
     expect(secondId).toBe(firstId);
     const record = await registry.getById(firstId);
     expect(record.implementation).toBe('mock-v2');
-    expect(record.capabilities).toEqual(['can_review_pull_request', 'can_return_structured_findings']);
+    expect(record.capabilities).toEqual([
+      'can_review_pull_request',
+      'can_return_structured_findings',
+    ]);
   });
 });
 
@@ -113,8 +116,18 @@ describe('AdapterRegistry.getConfiguration', () => {
       capabilities: [],
     });
     db.agentConfigurations.push(
-      { id: 'cfg-default', adapter_id: adapterId, project_id: null, config: JSON.stringify({ tier: 'default' }) },
-      { id: 'cfg-proj', adapter_id: adapterId, project_id: 'proj-1', config: JSON.stringify({ tier: 'project' }) },
+      {
+        id: 'cfg-default',
+        adapter_id: adapterId,
+        project_id: null,
+        config: JSON.stringify({ tier: 'default' }),
+      },
+      {
+        id: 'cfg-proj',
+        adapter_id: adapterId,
+        project_id: 'proj-1',
+        config: JSON.stringify({ tier: 'project' }),
+      },
     );
 
     expect(await registry.getConfiguration(adapterId, 'proj-1')).toEqual({ tier: 'project' });
