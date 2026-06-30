@@ -13,7 +13,7 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **completed Phase 1–2 foundation**:
+- The codebase currently contains the **Phase 1–3 implementation**:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -25,10 +25,15 @@ architecture requirements remain under `docs/`.
   - workflow locks with fencing tokens and sequential execution lanes
   - local authentication, authorization guards, and secret redaction
   - scaffolded state lifecycle CLI commands
-  - migration, configuration, security, workflow, and architectural fitness tests
+  - Workflow Layer harness backed by Trigger.dev v4 task wrappers
+  - 9-service self-hosted Trigger.dev Docker Compose stack
+  - Trigger.dev deployment workflow and `minicoder trigger` CLI scaffold
+  - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
 - Do not describe the repository as specification-only.
-- Phase 3 and later remain target architecture. Do not assume later phases are implemented merely
-  because their schemas, state machines, CLI scaffolds, or types already exist.
+- Phase 4 and later remain target architecture. Do not assume later phases are implemented merely
+  because their schemas, state machines, CLI scaffolds, task stubs, or types already exist.
+- Phase 3 task wrappers are a harness: the 9 initial task IDs and Trigger.dev metadata plumbing
+  exist, but real Orchestrator Core command wiring arrives in Phases 6–8.
 - Before starting work, inspect the current branch, recent commits, and working tree:
 
 ```bash
@@ -68,8 +73,11 @@ packages/persistence-sqlite/    better-sqlite3 implementation of core persistenc
 packages/persistence-postgres/  pg implementation of core persistence contracts
 packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycle runner
 packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
+packages/triggerdev/            Trigger.dev Workflow Layer harness and task registrations
 packages/cli/                   Thin Commander-based CLI
+infra/docker-compose.triggerdev.yml  Self-hosted Trigger.dev v4 single-node stack
 .github/workflows/ci.yml        CI checks and database matrix
+.github/workflows/trigger-deploy.yml Trigger.dev task deployment workflow
 ```
 
 Important files:
@@ -84,9 +92,15 @@ Important files:
 - `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
 - `packages/workflow/src/locks/manager.ts` implements lease ownership and fencing.
 - `packages/workflow/src/outbox/dispatcher.ts` and `inbox/processor.ts` implement durable dispatch.
+- `packages/triggerdev/src/task-ids.ts` owns the 9 Phase 3 task ID constants.
+- `packages/triggerdev/src/triggerdev-tasks.ts` registers the Trigger.dev task wrappers.
+- `packages/triggerdev/src/db.ts` links Trigger.dev runs to `triggerdev_runs` and probes schema
+  readiness.
+- `packages/triggerdev/trigger.config.ts` configures Trigger.dev deployment.
 - `packages/migrations/src/index.ts` exports the expected table list.
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
 - `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together.
+- `infra/docker-compose.triggerdev.yml` owns the local self-hosted Trigger.dev stack.
 
 ## Locked Architectural Invariants
 
@@ -150,6 +164,19 @@ fitness tests when introducing a new architectural restriction.
 - Account for genuine SQLite/PostgreSQL differences rather than pretending their concurrency
   models are identical.
 
+### `@minicoder/triggerdev`
+
+- Treat Trigger.dev as the concrete Workflow Layer runtime, not a place for business rules.
+- Register only canonical task ID strings from `ALL_TASK_IDS`; no renames, aliases, or drift.
+- Keep Phase 3 `runImpl` functions as payload-validated stubs until Phases 6–8 wire real core
+  commands.
+- Preserve `assertSchemaReady()` so task containers fail fast on an unmigrated database.
+- Keep Trigger.dev run metadata idempotent: retries reuse the original `triggerdev_runs` row.
+- Deploy with `npx trigger.dev@4.4.6 deploy ...`; do not use `@latest`.
+- Keep `TRIGGER_API_URL` explicit in deployment so CI does not silently target Trigger.dev Cloud.
+- `loadTriggerConfig()` and `applyTriggerEnv()` are Phase 3 abstractions with no runtime call sites
+  yet; they are wired as core-command-backed task execution arrives in later phases.
+
 ### Migrations
 
 - Every schema change must have equivalent SQLite and PostgreSQL migration paths.
@@ -181,7 +208,14 @@ NNNN_description.postgres.sql
   database and verify the configured database identifier before invoking it.
 - The `minicoder state` command group exists, but its database-backed inspect, validate, doctor,
   reconcile, export, and repair behavior is still scaffolded for a later phase. In particular,
-  `state repair --apply` intentionally exits without applying changes.
+  `state repair --dry-run` emits a time-boxed confirmation token and `state repair --apply`
+  intentionally exits without applying changes until Phase 4 DB-backed repair lands.
+- The `minicoder trigger` command group exists. `trigger validate` is functional and reports the
+  registered task IDs; `list-runs` and `inspect-run` are read-only placeholder JSON; operational
+  commands (`deploy`, `drain-queue`, `cancel-run`, `replay-run`, `reset-dev`, `reconcile`) exit
+  non-zero as not implemented until live API wiring lands.
+- Destructive trigger reset scaffolding requires `--yes` and `--env <development|test|ci>` and
+  rejects unsafe `APP_ENV`/`NODE_ENV` before reaching the not-implemented path.
 - The glossary lists the target CLI surface. Verify a command is implemented before documenting it
   as currently available.
 
@@ -191,6 +225,10 @@ NNNN_description.postgres.sql
 - Feature IDs use `FR-<zero-padded-int>`, such as `FR-002`.
 - Feature branches use `minicoder/FR-<n>`.
 - The GitHub review-gate status check is `minicoder/review-gate`.
+- Phase 3 Trigger.dev task IDs are exact strings:
+  `planning-readiness-assessment`, `start-clarification`, `generate-implementation-plan`,
+  `generate-feature-backlog`, `activate-approved-backlog`, `start-next-feature`,
+  `github-reconciliation`, `export-plan`, and `export-backlog`.
 - Persisted mutable entities use optimistic versions.
 - Locks use monotonically increasing fencing tokens; stale-fence writes must be rejected.
 - Outbox and inbox events contain both `payload` and `payload_schema_version`.
@@ -227,6 +265,9 @@ When modifying states, schemas, or entities, keep these layers synchronized:
   untrusted data.
 - Untrusted content cannot expand permissions, alter orchestration policy, or bypass merge gates.
 - Provider credentials must be scoped to the adapter that needs them.
+- Trigger.dev webhook payloads require `TRIGGERDEV_WEBHOOK_SECRET`; all secrets in
+  `docker-compose.triggerdev.yml` use `${VAR:?message}` interpolation so Compose exits on missing
+  or empty values.
 - Hosted agent workspaces require isolated ephemeral checkouts, bounded diffs, least-privilege
   secrets, and default-deny egress.
 - Production GitHub authentication uses a least-privilege GitHub App with verified webhook
@@ -295,6 +336,14 @@ DB_DIALECT=postgres DB_URL=postgresql://... pnpm db:migrate
 DB_DIALECT=postgres DB_URL=postgresql://... pnpm db:validate
 ```
 
+Trigger.dev task ID smoke check:
+
+```bash
+pnpm --filter @minicoder/triggerdev build
+pnpm --filter @minicoder/cli build
+pnpm tsx packages/cli/src/index.ts trigger validate
+```
+
 Do not substitute SQLite-only validation for a required cross-dialect check.
 
 ## Testing Expectations
@@ -304,6 +353,8 @@ Do not substitute SQLite-only validation for a required cross-dialect check.
 - Default tests must not call real LLM providers, mutate real GitHub repositories, or require
   human interaction.
 - Integration and migration changes must be validated against both SQLite and PostgreSQL.
+- Never call `db.close()` in SQLite tests; `better-sqlite3` native finalizers can double-free after
+  explicit close. `vitest.config.ts` uses `pool: 'forks'` to isolate test-file teardown.
 - Use disposable databases and deterministic fixtures.
 - Test failure paths, retries, idempotency, constraint enforcement, rollback, and stale-write
   rejection—not only happy paths.
@@ -322,6 +373,8 @@ and a runnable demonstration scenario.
 - Prefix intentionally unused parameters with `_`.
 - Avoid import cycles.
 - Use `.js` suffixes for local TypeScript imports, matching the existing source convention.
+- Preserve root `pnpm typecheck` ordering for packages whose `types` point to generated `dist/`:
+  `core → persistence-sqlite → persistence-postgres → triggerdev → recursive --noEmit`.
 - Prefer small functions and explicit domain types over loosely shaped objects.
 - Formatting is controlled by Prettier:
   - semicolons
