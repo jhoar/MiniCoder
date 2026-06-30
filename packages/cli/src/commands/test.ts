@@ -49,7 +49,9 @@ export function createTestCommand(): Command {
 
   test
     .command('unit')
-    .description('Run unit tests — excludes *.integration.test.ts files')
+    .description(
+      'Run Vitest tests (excludes *.integration.test.ts; includes unit and scenario tests)',
+    )
     .action(() => {
       runVitest('--reporter=verbose', '--config', 'vitest.unit.config.ts');
     });

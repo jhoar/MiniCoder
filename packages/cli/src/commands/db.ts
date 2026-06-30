@@ -147,12 +147,6 @@ export function createDbCommand(): Command {
     .option('--yes', 'Confirm the restore (will overwrite existing database)')
     .action((opts: { input: string; env?: string; yes?: boolean }) => {
       guardEnv(opts.env);
-      const isProduction =
-        process.env['APP_ENV'] === 'production' || process.env['NODE_ENV'] === 'production';
-      if (isProduction) {
-        console.error('Error: db restore is not allowed in production environments.');
-        process.exit(1);
-      }
       const dialect = process.env['DB_DIALECT'] ?? 'sqlite';
       if (dialect !== 'sqlite') {
         console.error(

@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.1
+> Version: 1.3.2
 > Last-updated: 2026-06-30
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -848,21 +848,21 @@ All jobs except the CronJob require a `minicoder-db-secret` Secret with `dialect
 
 ### 12.12 Diagnostics and Known Failure Modes (Phase 4)
 
-| Symptom                                                | Likely cause                             | Resolution                                                                    |
-| ------------------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| `db seed` fails with "Unknown fixture"                 | Fixture name typo                        | Run `minicoder db seed --fixture ?` to see valid names                        |
-| `db seed` fails with PostgreSQL dialect error          | Fixtures are SQLite-only                 | Use `pg_restore` to load test data for PostgreSQL environments                |
-| `db snapshot` fails with "already exists"              | Output file collision                    | Delete existing file or choose a different output path                        |
-| `db restore` rejected in production                    | `NODE_ENV` or `APP_ENV=production`       | Set env to `development`, `test`, or `ci` and use `--env`                     |
-| `state doctor` exits 1                                 | Error-severity anomalies found           | Run `minicoder state reconcile --all` for auto-clearable issues               |
-| `state validate` exits 1                               | Feature run has unknown state            | Validates enum membership; does not check transition history                  |
-| `state repair --apply` fails with token mismatch       | Token file tampered or expired           | Re-run `--dry-run` to get a new token                                         |
-| `state repair` exits 1 with "project required"         | `--project` flag omitted                 | Provide `--project <id>`; global repair is not supported                      |
-| `test scenario` exits 1                                | Scenario assertion failed                | Check the `error` field in JSON output                                        |
-| `github simulate-*` fails with env guard               | Wrong `APP_ENV`                          | Set `APP_ENV=development` or `APP_ENV=ci`                                     |
-| `github simulate-*` fails on PostgreSQL                | SQLite-only timestamps                   | These commands use JS ISO timestamps and support both dialects                |
-| `pnpm audit --audit-level=high` exits non-zero locally | dev-only vitest/vite advisories          | Expected; CI scopes to `--prod` — runtime deps are clean via `pnpm.overrides` |
-| `state reconcile` exits 1 with no flags                | Neither `--project` nor `--all` supplied | Pass `--project <id>` for scoped or `--all` for global queue clearing         |
+| Symptom                                                | Likely cause                                       | Resolution                                                            |
+| ------------------------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------- |
+| `db seed` fails with "Unknown fixture"                 | Fixture name typo                                  | Run `minicoder db seed --fixture ?` to see valid names                |
+| `db seed` fails with PostgreSQL dialect error          | Fixtures are SQLite-only                           | Use `pg_restore` to load test data for PostgreSQL environments        |
+| `db snapshot` fails with "already exists"              | Output file collision                              | Delete existing file or choose a different output path                |
+| `db restore` rejected in production                    | `NODE_ENV` or `APP_ENV=production`                 | Set env to `development`, `test`, or `ci` and use `--env`             |
+| `state doctor` exits 1                                 | Error-severity anomalies found                     | Run `minicoder state reconcile --all` for auto-clearable issues       |
+| `state validate` exits 1                               | Feature run has unknown state                      | Validates enum membership; does not check transition history          |
+| `state repair --apply` fails with token mismatch       | Token file tampered or expired                     | Re-run `--dry-run` to get a new token                                 |
+| `state repair` exits 1 with "project required"         | `--project` flag omitted                           | Provide `--project <id>`; global repair is not supported              |
+| `test scenario` exits 1                                | Scenario assertion failed                          | Check the `error` field in JSON output                                |
+| `github simulate-*` fails with env guard               | Wrong `APP_ENV`                                    | Set `APP_ENV=development` or `APP_ENV=ci`                             |
+| `github simulate-*` fails on PostgreSQL                | SQLite-only timestamps                             | These commands use JS ISO timestamps and support both dialects        |
+| `pnpm audit --audit-level=high` exits non-zero locally | Known dev-only vitest/vite advisories (see §12.13) | Expected; CI enforces `--prod` gate only — runtime deps are clean     |
+| `state reconcile` exits 1 with no flags                | Neither `--project` nor `--all` supplied           | Pass `--project <id>` for scoped or `--all` for global queue clearing |
 
 #### `db seed` — SQLite-only scope
 
@@ -882,6 +882,29 @@ transition-history analysis.
 The `repair --apply` path wraps all mutations and the `workflow_events` audit INSERT in a single
 database transaction. The confirmation token file is deleted **only after** the transaction commits
 successfully. If the transaction fails, the token is preserved and the command can be retried.
+
+#### §12.13 Known dev-only audit advisories — accepted risk
+
+Two known advisories affect the dev toolchain but are not exploitable in this project:
+
+| Advisory                       | Package  | Patched at | Why not exploitable here                                                         |
+| ------------------------------ | -------- | ---------- | -------------------------------------------------------------------------------- |
+| GHSA-5xrq-8626-4rwp (critical) | `vitest` | ≥3.2.6     | Exploits the Vitest UI server (`--ui`); this project never starts the UI server  |
+| GHSA-fx2h-pf6j-xcff (high)     | `vite`   | ≥6.4.3     | `server.fs.deny` bypass via Windows alternate paths; CI and production run Linux |
+
+CI enforces `pnpm audit --prod --audit-level=high`, which passes cleanly. Production runtime
+dependencies are covered by `pnpm.overrides` in `package.json`. The full `pnpm audit
+--audit-level=high` will report these advisories locally — that is expected and documented here.
+
+Fixing them requires upgrading to vitest ≥3.2.6 (major version jump from 1.6.x). The upgrade is
+deferred until the API surface can be validated against the full test suite.
+
+#### §12.14 `minicoder test unit` — scope
+
+`minicoder test unit` runs all Vitest test files except `*.integration.test.ts`. This includes
+pure unit tests and the `packages/testing/src/testing.test.ts` scenario/fixture suite.
+It is **not** limited to pure unit tests — the command name reflects the non-integration
+Vitest tier, distinct from `test integration` (real-DB files) and `test system` (CLI scenarios).
 
 #### SQLite test teardown — do not call `db.close()`
 
