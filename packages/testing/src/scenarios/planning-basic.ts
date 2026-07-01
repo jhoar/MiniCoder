@@ -1,3 +1,4 @@
+import { runPlanningReadinessAssessment } from '@minicoder/triggerdev';
 import type { Scenario, ScenarioContext } from './types.js';
 
 export const planningBasicScenario: Scenario = {
@@ -8,24 +9,23 @@ export const planningBasicScenario: Scenario = {
   async run(ctx: ScenarioContext): Promise<void> {
     const { db, projectId, runner, planner } = ctx;
 
-    await runner.run('planning-readiness-assessment', { projectId }, async (_payload: unknown) => {
-      const result = await planner.run({
+    const { result } = await runner.run(
+      'planning-readiness-assessment',
+      {
         projectId,
-        specificationContent: 'Build a task management system with projects and assignments.',
         correlationId: `corr-planning-basic-${projectId}`,
-      });
+        idempotencyKey: `idem-planning-basic-${projectId}`,
+        specificationContent: 'Build a task management system with projects and assignments.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
+      runPlanningReadinessAssessment,
+      undefined,
+      planner,
+    );
 
-      if (result.readinessResult === 'sufficient') {
-        // No questions means assessment is sufficient — update assessment
-        await db.execute(
-          `UPDATE planning_readiness_assessments SET status = 'sufficient', updated_at = datetime('now')
-             WHERE project_id = ?`,
-          [projectId],
-        );
-      }
-
-      return result;
-    });
+    if (result.readinessResult !== 'sufficient') {
+      throw new Error(`Expected readinessResult 'sufficient', got '${result.readinessResult}'`);
+    }
 
     const questions = await db.query<{ id: string }>(
       `SELECT id FROM planning_questions

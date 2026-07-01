@@ -1,21 +1,25 @@
-import { StartClarificationHandler, TransactionalCommandExecutor, generateId } from '@minicoder/core';
+import {
+  SubmitPlanForApprovalHandler,
+  TransactionalCommandExecutor,
+  generateId,
+} from '@minicoder/core';
 import type { CommandEnvelope, DbClient } from '@minicoder/core';
-import type { StartClarificationPayload } from './types.js';
+import type { RequestPlanApprovalPayload } from './types.js';
 import { humanActor } from './actor.js';
 
-export type { StartClarificationPayload };
+export type { RequestPlanApprovalPayload };
 
-export interface StartClarificationResult {
+export interface RequestPlanApprovalResult {
   projectId: string;
-  clarificationSessionId: string;
+  planId: string;
 }
 
-const handler = new StartClarificationHandler();
+const handler = new SubmitPlanForApprovalHandler();
 
 export async function runImpl(
-  payload: StartClarificationPayload,
+  payload: RequestPlanApprovalPayload,
   db: DbClient,
-): Promise<StartClarificationResult> {
+): Promise<RequestPlanApprovalResult> {
   const envelope: CommandEnvelope<typeof payload> = {
     commandId: generateId(),
     idempotencyKey: payload.idempotencyKey,
@@ -31,5 +35,5 @@ export async function runImpl(
   const executor = new TransactionalCommandExecutor(db);
   await executor.execute(handler, envelope);
 
-  return { projectId: payload.projectId, clarificationSessionId: payload.clarificationSessionId };
+  return { projectId: payload.projectId, planId: payload.planId };
 }

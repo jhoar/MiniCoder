@@ -6,6 +6,7 @@ import type {
   AgentRunState,
   ArtifactExportState,
   ReadinessStatus,
+  ClarificationStatus,
   FindingSeverity,
   AgentRole,
   FeatureKind,
@@ -66,6 +67,7 @@ export interface PlanningGap extends Entity {
   severity: GapSeverity;
   resolution: string | null;
   resolvedAt: string | null;
+  clarificationSessionId: string | null;
 }
 
 export interface PlanningQuestion extends Entity {
@@ -80,6 +82,41 @@ export interface PlanningAssumption extends Entity {
   assessmentId: string;
   description: string;
   confidence: 'high' | 'medium' | 'low';
+  clarificationSessionId: string | null;
+}
+
+export interface ClarificationSession extends Entity {
+  projectId: string;
+  specificationInputId: string | null;
+  status: ClarificationStatus;
+  round: number;
+  maxRounds: number;
+  roundTimeoutAt: string | null;
+}
+
+export interface ClarificationQuestion extends Entity {
+  clarificationSessionId: string;
+  question: string;
+  round: number;
+  orderIndex: number;
+  askedAt: string | null;
+}
+
+export interface ClarificationAnswer extends Entity {
+  clarificationQuestionId: string;
+  answer: string;
+  actor: string;
+  actorRole: string;
+  answeredAt: string;
+}
+
+export interface ClarificationDecision extends Entity {
+  clarificationSessionId: string;
+  decisionType: string;
+  actor: string;
+  actorRole: string;
+  notes: string | null;
+  decidedAt: string;
 }
 
 export interface ImplementationPlan extends Entity {

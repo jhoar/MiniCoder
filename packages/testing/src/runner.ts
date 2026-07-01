@@ -1,5 +1,6 @@
 import { createTestDb } from './db.js';
 import { MockTriggerRunner } from '@minicoder/triggerdev';
+import { AdapterRegistry } from '@minicoder/core';
 import { MockPlannerAdapter } from './adapters/mock-planner.js';
 import { MockCoderAdapter } from './adapters/mock-coder.js';
 import { MockReviewerAdapter } from './adapters/mock-reviewer.js';
@@ -28,6 +29,16 @@ export async function runScenario(
   const projectId = options.projectId ?? `proj-${name}-${Date.now()}`;
 
   await fixture.setup(db, projectId);
+
+  // Register MockPlannerAdapter in the DB-backed adapter registry so commands that resolve
+  // PlannerAgentAdapter by name (e.g. AssessPlanningReadinessCommand) can find it.
+  const registry = new AdapterRegistry(db);
+  await registry.register({
+    role: 'PlannerAgentAdapter',
+    name: 'MockPlannerAdapter',
+    implementation: '@minicoder/testing:MockPlannerAdapter',
+    capabilities: ['can_generate_plan', 'can_generate_clarification_questions'],
+  });
 
   const ctx: ScenarioContext = {
     db,
