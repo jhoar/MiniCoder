@@ -31,6 +31,48 @@ export class CapabilityError extends Error {
   }
 }
 
+export class InvalidCapabilityError extends Error {
+  constructor(
+    public readonly source: string,
+    public readonly invalid: readonly unknown[],
+  ) {
+    super(
+      `${source} contains invalid capability token(s): ${invalid.map((v) => JSON.stringify(v)).join(', ')}`,
+    );
+    this.name = 'InvalidCapabilityError';
+  }
+}
+
+/**
+ * Validates every entry against AgentCapabilitySchema and dedupes, preserving first-seen order.
+ * Throws InvalidCapabilityError (not a raw ZodError) with every offending value listed, so both
+ * caller-supplied registration input and rows read back from the database fail loudly rather
+ * than silently casting an unrecognized string to AgentCapabilityToken (docs/03 §3).
+ */
+export function parseCapabilities(
+  capabilities: readonly unknown[],
+  source: string,
+): AgentCapabilityToken[] {
+  const invalid: unknown[] = [];
+  const seen = new Set<AgentCapabilityToken>();
+  const result: AgentCapabilityToken[] = [];
+  for (const value of capabilities) {
+    const parsed = AgentCapabilitySchema.safeParse(value);
+    if (!parsed.success) {
+      invalid.push(value);
+      continue;
+    }
+    if (!seen.has(parsed.data)) {
+      seen.add(parsed.data);
+      result.push(parsed.data);
+    }
+  }
+  if (invalid.length > 0) {
+    throw new InvalidCapabilityError(source, invalid);
+  }
+  return result;
+}
+
 /**
  * Throws CapabilityError if any capability in `required` is absent from `declared`.
  * Called before every adapter invocation (03 §3: "the orchestrator validates capabilities

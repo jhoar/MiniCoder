@@ -212,16 +212,16 @@ smoke scenario.
 
 > **Status: Complete** (2026-06-30)
 
-Deliver the six role interfaces, an adapter registry, the capability model, the mock adapters and
-`HumanTestAdapter`, adapter run records, and adapter conformance tests (see
+Deliver the six role interfaces, an adapter registry, the capability model, the six role adapters
+(including `HumanTestAdapter`), adapter run records, and adapter conformance tests (see
 [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md)).
 
 Acceptance: core does not depend on provider SDKs; mock adapters are invoked directly by the
 conformance runner and `AgentRunRecorder` (Workflow Layer task-wrapper invocation of adapters is
 architecturally scoped in `03-agent-adapter-architecture.md` §10 but is **not** part of Phase 5's
 completed scope — see "Smoke conformance scope" below); `agent_runs` records are created;
-capability validation works; and the conformance framework runs the six mock adapters and
-`HumanTestAdapter` to green, writing `adapter_conformance_results`. (Provider-adapter conformance
+capability validation works; and the conformance framework runs all six role adapters (including
+`HumanTestAdapter`) to green, writing `adapter_conformance_results`. (Provider-adapter conformance
 fixtures for additional adapters are
 Phase 18.)
 
@@ -303,6 +303,22 @@ Phase 18.)
 - `packages/migrations/migrations/0005_conformance_skipped_tests.*` — adds `skipped_tests INTEGER
 NOT NULL DEFAULT 0` to `adapter_conformance_results`, tracking how many scenarios were
   intentionally skipped (e.g. `invalid_output_handling` is N/A for non-Coder adapters).
+- `packages/core/src/adapters/capabilities.ts` — new `parseCapabilities(capabilities, source)`:
+  validates every entry against `AgentCapabilitySchema` and dedupes (preserving first-seen
+  order), throwing `InvalidCapabilityError` (listing every offending value) rather than silently
+  casting an unrecognized string to `AgentCapabilityToken`. `AdapterRegistry.register()` calls it
+  on caller-supplied input before the transaction opens; `toRecord()` calls it on capability rows
+  read back from `agent_capabilities`, so a corrupted DB row fails loudly instead of defeating
+  `assertCapabilities` silently.
+- `packages/migrations/migrations/0006_unique_agent_configurations.*` — adds two partial unique
+  indexes on `agent_configurations`: `uq_agent_configurations_default` on `(adapter_id)` where
+  `project_id IS NULL` (at most one default config per adapter), and
+  `uq_agent_configurations_project` on `(adapter_id, project_id)` where `project_id IS NOT NULL`
+  (at most one config per adapter/project pair). Both dialects support partial/filtered unique
+  indexes; SQLite's plain `UNIQUE(adapter_id, project_id)` would not have caught duplicate
+  default rows since SQL treats every `NULL` as distinct. `AdapterRegistry.getConfiguration()`
+  adds a `version DESC, updated_at DESC` tiebreaker as defense-in-depth in case this invariant is
+  ever violated by a direct DB write.
 
 **Deferred to Phase 9–10.** Provider-level fields (`provider`, `model`, `triggerdev_run_id`,
 `prompt_template_version`, and artifact-reference columns) are **not** added to the schema in

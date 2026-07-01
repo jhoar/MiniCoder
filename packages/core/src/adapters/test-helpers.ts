@@ -199,7 +199,14 @@ export class InMemoryAdapterDb implements DbClient {
       const matches = this.agentConfigurations.filter(
         (r) => r.adapter_id === adapterId && (r.project_id === projectId || r.project_id === null),
       );
-      matches.sort((a, b) => (a.project_id === null ? 1 : 0) - (b.project_id === null ? 1 : 0));
+      // Mirrors the real ORDER BY: project_id IS NULL ASC, version DESC, updated_at DESC.
+      matches.sort((a, b) => {
+        const nullRank = (a.project_id === null ? 1 : 0) - (b.project_id === null ? 1 : 0);
+        if (nullRank !== 0) return nullRank;
+        const versionDiff = (Number(b.version) || 0) - (Number(a.version) || 0);
+        if (versionDiff !== 0) return versionDiff;
+        return String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? ''));
+      });
       return matches.slice(0, 1).map((r) => ({ config: r.config }));
     }
     throw new Error(`InMemoryAdapterDb: unsupported SELECT: ${s}`);

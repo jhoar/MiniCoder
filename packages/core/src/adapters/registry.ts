@@ -1,7 +1,7 @@
 import type { DbClient } from '../persistence/types.js';
 import { generateId, isoNow } from '../commands/helpers.js';
 import type { AgentCapabilityToken } from './capabilities.js';
-import { validateCapabilities } from './capabilities.js';
+import { validateCapabilities, parseCapabilities } from './capabilities.js';
 
 export interface AdapterRecord {
   readonly id: string;
@@ -63,6 +63,13 @@ export class AdapterRegistry {
    * then a re-select identifies the winning row so re-registrations fall through to UPDATE.
    */
   async register(input: RegisterAdapterInput): Promise<string> {
+    // Validate and dedupe before touching the transaction — fail loudly on any capability
+    // token that is not in AgentCapabilitySchema rather than persisting it as-is.
+    const capabilities = parseCapabilities(
+      input.capabilities,
+      `register(${input.role}/${input.name}).capabilities`,
+    );
+
     return this.db.transaction(async (tx) => {
       const now = isoNow();
       const newId = generateId();
@@ -103,7 +110,7 @@ export class AdapterRegistry {
         await tx.execute(`DELETE FROM agent_capabilities WHERE adapter_id = ?`, [adapterId]);
       }
 
-      for (const capability of input.capabilities) {
+      for (const capability of capabilities) {
         await tx.execute(
           `INSERT INTO agent_capabilities (id, adapter_id, capability, version, created_at, updated_at)
            VALUES (?, ?, ?, 1, ?, ?)`,
@@ -163,7 +170,10 @@ export class AdapterRegistry {
 
   /**
    * Resolves the active configuration for an adapter, preferring a project-scoped row over the
-   * adapter's default (project_id IS NULL) row.
+   * adapter's default (project_id IS NULL) row. Migration 0006 enforces at most one default row
+   * and at most one project-scoped row per (adapter, project) at the schema level; the
+   * `version DESC, updated_at DESC` tiebreaker is defense-in-depth in case that invariant is
+   * ever violated (e.g. a direct DB write bypassing the registry).
    */
   async getConfiguration(
     adapterId: string,
@@ -172,7 +182,7 @@ export class AdapterRegistry {
     const rows = await this.db.query<ConfigRow>(
       `SELECT config FROM agent_configurations
        WHERE adapter_id = ? AND (project_id = ? OR project_id IS NULL)
-       ORDER BY project_id IS NULL ASC
+       ORDER BY project_id IS NULL ASC, version DESC, updated_at DESC
        LIMIT 1`,
       [adapterId, projectId ?? null],
     );
@@ -188,6 +198,12 @@ export class AdapterRegistry {
       `SELECT capability FROM agent_capabilities WHERE adapter_id = ?`,
       [row.id],
     );
+    // Fail loudly rather than casting a corrupted persisted row to AgentCapabilityToken —
+    // a malformed capability string here would otherwise silently defeat assertCapabilities.
+    const capabilities = parseCapabilities(
+      capabilityRows.map((c) => c.capability),
+      `agent_capabilities row(s) for adapter ${row.id}`,
+    );
     return {
       id: row.id,
       role: row.role,
@@ -195,7 +211,7 @@ export class AdapterRegistry {
       implementation: row.implementation,
       isActive: Boolean(row.is_active),
       version: row.version,
-      capabilities: capabilityRows.map((c) => c.capability as AgentCapabilityToken),
+      capabilities,
     };
   }
 }

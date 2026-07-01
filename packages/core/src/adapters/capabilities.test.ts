@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { AgentCapabilitySchema, CapabilityError, validateCapabilities } from './capabilities.js';
+import {
+  AgentCapabilitySchema,
+  CapabilityError,
+  InvalidCapabilityError,
+  validateCapabilities,
+  parseCapabilities,
+} from './capabilities.js';
 
 describe('AgentCapabilitySchema', () => {
   it('accepts all 15 canonical capability tokens', () => {
@@ -51,5 +57,43 @@ describe('validateCapabilities', () => {
 
   it('passes with no required capabilities', () => {
     expect(() => validateCapabilities('adapter-1', [], [])).not.toThrow();
+  });
+});
+
+describe('parseCapabilities', () => {
+  it('returns validated tokens unchanged when all are valid', () => {
+    expect(parseCapabilities(['can_modify_files', 'can_commit'], 'test')).toEqual([
+      'can_modify_files',
+      'can_commit',
+    ]);
+  });
+
+  it('dedupes repeated tokens, preserving first-seen order', () => {
+    expect(parseCapabilities(['can_commit', 'can_modify_files', 'can_commit'], 'test')).toEqual([
+      'can_commit',
+      'can_modify_files',
+    ]);
+  });
+
+  it('throws InvalidCapabilityError listing every invalid token when given an unknown string', () => {
+    try {
+      parseCapabilities(['can_modify_files', 'can_do_anything', 'not_a_capability'], 'test-source');
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(InvalidCapabilityError);
+      const err = e as InvalidCapabilityError;
+      expect(err.source).toBe('test-source');
+      expect(err.invalid).toEqual(['can_do_anything', 'not_a_capability']);
+    }
+  });
+
+  it('throws InvalidCapabilityError for non-string / malformed values (e.g. from corrupted DB rows)', () => {
+    expect(() => parseCapabilities([null, 42, {}], 'malformed-db-row')).toThrow(
+      InvalidCapabilityError,
+    );
+  });
+
+  it('returns an empty array for an empty input', () => {
+    expect(parseCapabilities([], 'test')).toEqual([]);
   });
 });

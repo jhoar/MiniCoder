@@ -171,6 +171,35 @@ describe.skipIf(!RUN_PG)('Migration runner (PostgreSQL)', () => {
     ).rejects.toThrow();
   });
 
+  it('enforces at most one default (project_id IS NULL) agent_configurations row per adapter', async () => {
+    await pool.query(
+      "INSERT INTO agent_adapters (id, role, name, implementation) VALUES ('adapter-pg-1', 'CoderAgentAdapter', 'TestAdapter', 'mock')",
+    );
+    await pool.query(
+      "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-pg-1', 'adapter-pg-1', NULL, '{}')",
+    );
+    await expect(
+      pool.query(
+        "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-pg-2', 'adapter-pg-1', NULL, '{}')",
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('enforces at most one agent_configurations row per (adapter, project)', async () => {
+    await pool.query("INSERT INTO projects (id, name) VALUES ('proj-pg-cfg', 'Config Test')");
+    await pool.query(
+      "INSERT INTO agent_adapters (id, role, name, implementation) VALUES ('adapter-pg-2', 'CoderAgentAdapter', 'TestAdapter2', 'mock')",
+    );
+    await pool.query(
+      "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-pg-3', 'adapter-pg-2', 'proj-pg-cfg', '{}')",
+    );
+    await expect(
+      pool.query(
+        "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-pg-4', 'adapter-pg-2', 'proj-pg-cfg', '{}')",
+      ),
+    ).rejects.toThrow();
+  });
+
   it('rollback removes the last migration and its record', async () => {
     const countBefore = (await pool.query<{ name: string }>('SELECT name FROM _migrations')).rows
       .length;
