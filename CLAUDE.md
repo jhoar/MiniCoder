@@ -7,15 +7,19 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–3 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–3 and Phase 5 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
 backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
 workflow locks with fencing tokens, execution lanes, local auth, secret-redaction tests, and the
-`minicoder state` CLI (Phase 2); and the Workflow Layer harness with a 9-service Trigger.dev v4
+`minicoder state` CLI (Phase 2); the Workflow Layer harness with a 9-service Trigger.dev v4
 Docker Compose stack (`infra/docker-compose.triggerdev.yml`), 9 task stubs registered via
 `@trigger.dev/sdk/v3`, `assertSchemaReady()` post-connect schema probe, CI/CD deploy workflow
-(`.github/workflows/trigger-deploy.yml`), and `minicoder trigger` CLI scaffold (Phase 3).
+(`.github/workflows/trigger-deploy.yml`), and `minicoder trigger` CLI scaffold (Phase 3); and the
+Agent Adapter Foundation — the six role interfaces, `AdapterRegistry`, the capability model with
+runtime validation, `AgentRunRecorder` with automatic provenance snapshotting, six deterministic
+mock adapters (including `HumanTestAdapter`), and the Phase 5 smoke conformance suite (Phase 5,
+migrations 0003–0006).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -218,6 +222,58 @@ before returning to `under_review`. Review and merge never act on un-tested code
 - **CLI pin.** Deploy with `npx trigger.dev@4.4.6 deploy …`. Never use `@latest`.
 - **All secrets use `${VAR:?message}` syntax** in `docker-compose.triggerdev.yml` — Docker
   Compose exits on missing/empty values.
+
+## Agent Adapter Operational Constraints (`packages/core/src/adapters/`, `packages/testing/src/conformance/`)
+
+- **`AdapterRegistry.register` uses `INSERT ... ON CONFLICT (role, name) DO NOTHING`, never a
+  catch-and-requery pattern.** In PostgreSQL, a failed `INSERT` (unique-constraint violation)
+  aborts the enclosing transaction, so any later query in that same transaction fails with
+  "current transaction is aborted". `DO NOTHING` never errors, so re-selecting the winning row
+  and falling through to `UPDATE` stays inside a healthy transaction. Idempotent re-registration
+  replaces capabilities and increments `version`.
+- **Capability tokens are always runtime-validated via `parseCapabilities()`, never cast
+  directly.** Both `AdapterRegistry.register()` (caller-supplied input) and `toRecord()` (rows
+  read back from `agent_capabilities`) call it; an unrecognized token throws
+  `InvalidCapabilityError` rather than silently defeating `assertCapabilities`. It also dedupes
+  and **sorts the result by canonical `AgentCapabilitySchema` order** — not by insertion order,
+  `created_at`, or physical row order — because multiple capability rows written in the same
+  registration call share an identical `created_at` timestamp, so timestamp-based ordering alone
+  would not be reliably deterministic across storage engines.
+- **`agent_configurations` has two partial unique indexes (migration 0006), not a single
+  `UNIQUE(adapter_id, project_id)`.** A plain composite unique constraint would not catch
+  duplicate default rows, since SQL treats every `NULL` as distinct: `uq_agent_configurations_default`
+  on `(adapter_id) WHERE project_id IS NULL` (at most one default config per adapter) and
+  `uq_agent_configurations_project` on `(adapter_id, project_id) WHERE project_id IS NOT NULL`
+  (at most one config per adapter/project pair). `AdapterRegistry.getConfiguration()` still adds
+  a `version DESC, updated_at DESC` tiebreaker as defense-in-depth.
+- **SQLite migration preflight remediation comments use `ROW_NUMBER() OVER (PARTITION BY ...
+ORDER BY updated_at DESC, id DESC)`, never `MAX(rowid)`.** `rowid` reflects insertion order,
+  not `updated_at`, and does not match the stated "keep the most-recently-updated row" policy.
+  This applies to the dedup guidance in migrations `0003_unique_adapter_role_name.sqlite.sql` and
+  `0006_unique_agent_configurations.sqlite.sql`.
+- **`AgentRunRecorder.record()` resolves adapter provenance from the registry automatically —
+  callers never supply `adapterName`/`adapterImplementation`/`adapterVersion`.** It also validates
+  the caller-supplied `role` against the registry record (`RunRoleMismatchError` on mismatch) and
+  validates `capabilitiesUsed` is a subset of the adapter's declared capabilities
+  (`UndeclaredCapabilityError` otherwise). `capabilitiesUsed` is a **required** field on
+  `RecordRunOptions` (never defaulted to `[]`) so a capability-bearing run cannot silently
+  persist an empty provenance record — pass `[]` explicitly only for calls that genuinely
+  exercise no declared capability.
+- **`adapter_conformance_results` is append-only.** There is no unique key on
+  `(test_suite, adapter_id)` and `runConformanceSuite()` never upserts — every call inserts a
+  fresh row per adapter, even when re-run against the same DB with the same (idempotently
+  re-registered) adapters. It is a historical audit log, not a current-gate-state row; query
+  `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)` for "the current result".
+  The conformance runner's `configuration_resolution` scenario upserts (SELECT-then-UPDATE-or-
+  INSERT) its own default config row rather than using an unconditional `INSERT`, so
+  `runConformanceSuite()` is safe to re-run against a persistent DB.
+- **Phase 5 delivers smoke-level conformance only.** The 9-scenario suite verifies adapter
+  wiring (capability declaration, successful run, failure handling, invalid-output handling,
+  secret redaction, configuration resolution, state-transition sequence, output shape,
+  assertCapabilities) via direct invocation by the conformance runner and `AgentRunRecorder` —
+  not via Workflow Layer task wrappers. Timeout taxonomy, cost/token reporting, structured-output
+  normalization, and Workflow Layer wrapper invocation are deferred to the full canonical
+  adapter-contract gate in Phase 9+.
 
 ## Cross-Dialect Testing (Mandatory)
 
