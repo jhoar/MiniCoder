@@ -13,7 +13,7 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–5 implementation**:
+- The codebase currently contains the **Phase 1–6 implementation**:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -39,16 +39,34 @@ architecture requirements remain under `docs/`.
     normalized errors, and immutable Phase 5 adapter provenance snapshots
   - six-role smoke conformance framework with `HumanTestAdapter`, append-only results, skipped
     scenario accounting, and rerun-safe configuration setup
+  - `clarification_sessions`/`clarification_questions`/`clarification_answers`/`clarification_decisions`
+    schema persisting the `ClarificationStatus` machine, plus a nullable `clarification_session_id`
+    link on `planning_gaps`/`planning_assumptions`
+  - planning and clarification command handlers (`packages/core/src/commands/handlers/planning/`,
+    `.../clarification/`) covering specification ingestion, planner-adapter-backed readiness
+    assessment, plan/backlog generation and validation, approval, activation (creating
+    `feature_runs` rows), artifact export, backlog import, and the clarification circuit breaker
+  - all 15 canonical Trigger.dev task IDs registered, with the 9 planner/clarification tasks now
+    calling real Orchestrator Core commands instead of returning stub values
   - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
 - Do not describe the repository as specification-only.
-- Phase 6 and later remain target architecture. Do not assume later phases are implemented merely
+- Phase 7 and later remain target architecture. Do not assume later phases are implemented merely
   because their schemas, state machines, CLI scaffolds, task stubs, or types already exist.
-- Phase 3 task wrappers are a harness: the 9 initial task IDs and Trigger.dev metadata plumbing
-  exist, but real Orchestrator Core command wiring arrives in Phases 6–8.
+- Phase 3 delivered 9 initial task IDs as payload-validated stubs; Phase 6 wired the
+  planner/clarification tasks (`ingest-specification`, `planning-readiness-assessment`,
+  `start-clarification`, `record-clarification-answer`, `complete-clarification`,
+  `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
+  `request-plan-approval`, `activate-approved-backlog`, `export-plan`, `export-backlog`,
+  `import-backlog`) to real core commands. `start-next-feature` and `github-reconciliation` remain
+  stubs pending Phase 7/8.
 - Phase 5 is an adapter foundation and smoke conformance layer, not the full canonical provider
   adapter runtime. Provider-specific adapters, workflow task-wrapper invocation, richer
   provider/model/cost/token fields, and final canonical run metadata remain later-phase work unless
   the implementation plan says otherwise.
+- Phase 6's `planning-readiness-assessment` and `generate-implementation-plan` tasks never import a
+  concrete `PlannerAgentAdapter` implementation — the caller injects one. No reference/generic
+  planner adapter has shipped yet (docs/02 §7 names `GenericLLMPlannerAdapter` as future work), so a
+  live Trigger.dev deployment fails fast with an actionable error until one exists.
 - Before starting work, inspect the current branch, recent commits, and working tree:
 
 ```bash
@@ -105,7 +123,9 @@ Important files:
 - `packages/core/src/persistence/types.ts` defines database-neutral interfaces and concurrency
   errors.
 - `packages/core/src/statemachine/machines/` contains the eight implemented transition matrices.
-- `packages/core/src/commands/` contains the command registry, executor, contracts, and handlers.
+- `packages/core/src/commands/` contains the command registry, executor, and contracts.
+- `packages/core/src/commands/handlers/planning/` and `.../clarification/` contain the Phase 6
+  planning and clarification command handlers.
 - `packages/core/src/events/schemas.ts` owns versioned event payload validation.
 - `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
 - `packages/core/src/adapters/types.ts` defines provider-neutral role adapter interfaces and I/O
@@ -118,7 +138,7 @@ Important files:
   normalized errors, and Phase 5 adapter provenance snapshots.
 - `packages/workflow/src/locks/manager.ts` implements lease ownership and fencing.
 - `packages/workflow/src/outbox/dispatcher.ts` and `inbox/processor.ts` implement durable dispatch.
-- `packages/triggerdev/src/task-ids.ts` owns the 9 Phase 3 task ID constants.
+- `packages/triggerdev/src/task-ids.ts` owns all 15 canonical task ID constants (`ALL_TASK_IDS`).
 - `packages/triggerdev/src/triggerdev-tasks.ts` registers the Trigger.dev task wrappers.
 - `packages/triggerdev/src/db.ts` links Trigger.dev runs to `triggerdev_runs` and probes schema
   readiness.
@@ -205,8 +225,15 @@ fitness tests when introducing a new architectural restriction.
 
 - Treat Trigger.dev as the concrete Workflow Layer runtime, not a place for business rules.
 - Register only canonical task ID strings from `ALL_TASK_IDS`; no renames, aliases, or drift.
-- Keep Phase 3 `runImpl` functions as payload-validated stubs until Phases 6–8 wire real core
-  commands.
+- The 9 planner/clarification `runImpl` functions call real core commands as of Phase 6
+  (`packages/core/src/commands/handlers/{planning,clarification}/`); keep `start-next-feature` and
+  `github-reconciliation` as payload-validated stubs until Phase 7/8 wire real core commands.
+- Task files build `CommandEnvelope`s and call `TransactionalCommandExecutor` — never import
+  `StateTransitionValidator`/`TransitionError` or compare state enums directly
+  (`fitness/no-domain-logic-in-task-wrappers.test.ts` enforces this).
+- `makeTaskRunner` and `MockTriggerRunner.run()` pass the resolved `DbClient` through to `runImpl`;
+  tasks that invoke `PlannerAgentAdapter` receive the concrete adapter instance as an injected
+  parameter, never importing a mock or reference implementation themselves.
 - Preserve `assertSchemaReady()` so task containers fail fast on an unmigrated database.
 - Keep Trigger.dev run metadata idempotent: retries reuse the original `triggerdev_runs` row.
 - Deploy with `npx trigger.dev@4.4.6 deploy ...`; do not use `@latest`.
@@ -274,10 +301,12 @@ NNNN_description.postgres.sql
 - Feature IDs use `FR-<zero-padded-int>`, such as `FR-002`.
 - Feature branches use `minicoder/FR-<n>`.
 - The GitHub review-gate status check is `minicoder/review-gate`.
-- Phase 3 Trigger.dev task IDs are exact strings:
-  `planning-readiness-assessment`, `start-clarification`, `generate-implementation-plan`,
-  `generate-feature-backlog`, `activate-approved-backlog`, `start-next-feature`,
-  `github-reconciliation`, `export-plan`, and `export-backlog`.
+- All 15 canonical Trigger.dev task IDs are exact strings, no renaming/abbreviation permitted
+  (`ALL_TASK_IDS`): `ingest-specification`, `planning-readiness-assessment`,
+  `start-clarification`, `record-clarification-answer`, `complete-clarification`,
+  `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
+  `request-plan-approval`, `activate-approved-backlog`, `start-next-feature`,
+  `github-reconciliation`, `export-plan`, `export-backlog`, and `import-backlog`.
 - Persisted mutable entities use optimistic versions.
 - Locks use monotonically increasing fencing tokens; stale-fence writes must be rejected.
 - Outbox and inbox events contain both `payload` and `payload_schema_version`.
