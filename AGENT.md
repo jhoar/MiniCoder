@@ -13,7 +13,7 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–4 implementation**:
+- The codebase currently contains the **Phase 1–5 implementation**:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -31,12 +31,24 @@ architecture requirements remain under `docs/`.
   - Workflow Layer harness backed by Trigger.dev v4 task wrappers
   - 9-service self-hosted Trigger.dev Docker Compose stack
   - Trigger.dev deployment workflow and `minicoder trigger` CLI scaffold
+  - provider-neutral agent adapter role interfaces and shared role-specific I/O contracts
+  - canonical agent capability token parsing, validation, and deterministic ordering
+  - database-backed `AdapterRegistry` for `(role, name)` registration, capability validation,
+    configuration resolution, and source-of-truth lookup
+  - `AgentRunRecorder` lifecycle persistence with state-machine validation, redaction,
+    normalized errors, and immutable Phase 5 adapter provenance snapshots
+  - six-role smoke conformance framework with `HumanTestAdapter`, append-only results, skipped
+    scenario accounting, and rerun-safe configuration setup
   - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
 - Do not describe the repository as specification-only.
-- Phase 5 and later remain target architecture. Do not assume later phases are implemented merely
+- Phase 6 and later remain target architecture. Do not assume later phases are implemented merely
   because their schemas, state machines, CLI scaffolds, task stubs, or types already exist.
 - Phase 3 task wrappers are a harness: the 9 initial task IDs and Trigger.dev metadata plumbing
   exist, but real Orchestrator Core command wiring arrives in Phases 6–8.
+- Phase 5 is an adapter foundation and smoke conformance layer, not the full canonical provider
+  adapter runtime. Provider-specific adapters, workflow task-wrapper invocation, richer
+  provider/model/cost/token fields, and final canonical run metadata remain later-phase work unless
+  the implementation plan says otherwise.
 - Before starting work, inspect the current branch, recent commits, and working tree:
 
 ```bash
@@ -71,13 +83,13 @@ Read the documents in numeric order when a change crosses subsystem boundaries.
 
 ```text
 docs/                           Canonical product and architecture specifications
-packages/core/                  Provider-neutral domain, config, and persistence contracts
+packages/core/                  Provider-neutral domain, config, persistence, and adapter contracts
 packages/persistence-sqlite/    better-sqlite3 implementation of core persistence contracts
 packages/persistence-postgres/  pg implementation of core persistence contracts
 packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycle runner
 packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
 packages/triggerdev/            Trigger.dev Workflow Layer harness and task registrations
-packages/testing/               Deterministic fixtures, mock adapters, scenarios, and runner
+packages/testing/               Deterministic fixtures, mock adapters, conformance, scenarios, and runner
 packages/cli/                   Thin Commander-based CLI
 infra/docker-compose.triggerdev.yml  Self-hosted Trigger.dev v4 single-node stack
 infra/docker-compose.test.yml   Disposable PostgreSQL test stack
@@ -96,6 +108,14 @@ Important files:
 - `packages/core/src/commands/` contains the command registry, executor, contracts, and handlers.
 - `packages/core/src/events/schemas.ts` owns versioned event payload validation.
 - `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
+- `packages/core/src/adapters/types.ts` defines provider-neutral role adapter interfaces and I/O
+  contracts.
+- `packages/core/src/adapters/capabilities.ts` owns capability token schemas, validation, and
+  canonical ordering.
+- `packages/core/src/adapters/registry.ts` implements database-backed adapter registration,
+  capability validation, configuration resolution, and source-of-truth lookup.
+- `packages/core/src/adapters/run-recorder.ts` persists adapter run lifecycles, redacted summaries,
+  normalized errors, and Phase 5 adapter provenance snapshots.
 - `packages/workflow/src/locks/manager.ts` implements lease ownership and fencing.
 - `packages/workflow/src/outbox/dispatcher.ts` and `inbox/processor.ts` implement durable dispatch.
 - `packages/triggerdev/src/task-ids.ts` owns the 9 Phase 3 task ID constants.
@@ -107,6 +127,9 @@ Important files:
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
 - `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together.
 - `packages/testing/src/fixtures/` owns SQLite-only deterministic fixture setup for local/system scenarios.
+- `packages/testing/src/adapters/` owns mock role adapters and the test-only `HumanTestAdapter`.
+- `packages/testing/src/conformance/` owns the Phase 5 smoke conformance runner and append-only
+  result persistence.
 - `packages/testing/src/scenarios/` owns the registered scenario flows exercised by `minicoder test system`.
 - `infra/docker-compose.triggerdev.yml` owns the local self-hosted Trigger.dev stack.
 - `infra/docker-compose.test.yml` owns the disposable PostgreSQL service used by cross-dialect validation.
@@ -140,6 +163,11 @@ Do not contradict these rules without an explicit architecture change to the can
 - Keep domain logic independent of SQLite, PostgreSQL, Trigger.dev, GitHub SDKs, and LLM providers.
 - Import only abstractions into core.
 - Access environment configuration only through `src/config/`.
+- Keep adapter contracts provider-neutral and free of provider SDK imports.
+- Validate adapter capabilities through `AgentCapabilitySchema`; do not accept ad hoc capability
+  strings.
+- Treat the adapter registry as the source of truth for active adapter configuration and capability
+  matching.
 - Add canonical state literals to `docs/00-glossary-and-terms.md` before adding them to
   `states.ts`.
 - Export public contracts through `src/index.ts`.
@@ -200,6 +228,8 @@ NNNN_description.postgres.sql
   - `packages/migrations/src/index.ts`
   - `packages/migrations/src/runner.ts`
 - Add or update migration tests for constraints, indexes, idempotency, and validation.
+- When adding uniqueness constraints to existing tables, include dialect-appropriate duplicate
+  cleanup that matches the stated retention policy before creating the constraint.
 - Use portable identifiers generated by the application.
 - Store timestamps in UTC. Current SQLite migrations use ISO-8601 `TEXT`; PostgreSQL uses
   `TIMESTAMPTZ`.
@@ -255,6 +285,13 @@ NNNN_description.postgres.sql
   deduplicated.
 - Unknown event types are deferred with `next_retry_at`; they must not consume attempts or starve
   registered handlers.
+- Adapter roles are the canonical six-role set from the glossary: planner, coder, reviewer,
+  documentation, arbiter, and human.
+- Adapter capability tokens use the canonical `domain:name` shape and deterministic sorted order.
+- Agent run provenance is a Phase 5 immutable adapter/configuration snapshot; do not inflate it
+  into final provider/model/cost/token metadata without the corresponding later-phase design.
+- Adapter conformance results are append-only audit records. Read paths that need the latest result
+  must use an explicit deterministic tie-breaker.
 - Discovery work reuses `feature_requests` with `kind = "discovery"` and `executable = false`.
 - `resumed` is an event, not an automation state.
 - A CI failure never silently advances or merges.
