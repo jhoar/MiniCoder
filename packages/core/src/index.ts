@@ -31,3 +31,9 @@ export * from './commands/helpers.js';
 
 // Phase 2: events
 export * from './events/schemas.js';
+
+// Phase 5: agent adapters
+export * from './adapters/types.js';
+export * from './adapters/capabilities.js';
+export * from './adapters/registry.js';
+export * from './adapters/run-recorder.js';

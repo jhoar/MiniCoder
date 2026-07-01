@@ -94,6 +94,16 @@ successful run, timeout/failure, invalid output, secret redaction, cost/token re
 available, and structured-output normalization. Results are stored in `adapter_conformance_results`.
 Adapters must support deterministic test scenarios.
 
+**Phase 5 implements smoke-level conformance only.** The Phase 5 suite
+(`phase5-smoke-conformance`, 9 scenarios × 6 adapters) verifies adapter wiring against the mock
+implementations: capability declaration, successful run, failure handling, invalid-output handling
+(skipped for roles that have no deterministic invalid-output mock), secret redaction, configuration
+resolution, state-transition sequencing, output shape, and assertCapabilities. The full canonical
+adapter-contract gate — timeout taxonomy, cost/token reporting, structured-output normalization,
+and Workflow Layer wrapper invocation — is deferred to Phase 9+ when real provider adapters are
+connected. See [`docs/06-implementation-plan.md`](06-implementation-plan.md) §Phase 5 for the
+detailed scope.
+
 ## 9. Reference and Mock Adapters
 
 - **Roles (interfaces):** the six in §2.
@@ -105,6 +115,12 @@ Adapters must support deterministic test scenarios.
   architectural dependencies.
 
 ## 10. Acceptance
+
+These are the architecture's full end-state acceptance criteria, delivered incrementally across
+phases (see [`06-implementation-plan.md`](06-implementation-plan.md) for what each phase actually
+completes — Phase 5 delivers direct adapter invocation via the conformance runner and
+`AgentRunRecorder`; Workflow Layer task-wrapper invocation is not part of Phase 5's completed
+scope):
 
 - Core does not depend on provider SDKs.
 - Mock adapters run through Workflow Layer task wrappers and in `system_test` mode.

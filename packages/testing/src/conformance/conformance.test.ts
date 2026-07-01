@@ -1,0 +1,264 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { AdapterRegistry, AgentRunRecorder, generateId } from '@minicoder/core';
+import type { ConformanceSuiteResult } from './types.js';
+import { runConformanceSuite } from './runner.js';
+import { createTestDb } from '../db.js';
+import type { SqliteDbClient } from '@minicoder/persistence-sqlite';
+
+let db: SqliteDbClient;
+let registry: AdapterRegistry;
+let recorder: AgentRunRecorder;
+let results: ConformanceSuiteResult[];
+
+describe('Phase 5 smoke adapter conformance suite', () => {
+  beforeEach(async () => {
+    db = createTestDb();
+    registry = new AdapterRegistry(db);
+    recorder = new AgentRunRecorder(db, registry);
+    results = await runConformanceSuite({ db, registry, recorder });
+  });
+
+  it('runs conformance for all 6 adapters (one per role, including HumanTestAdapter)', () => {
+    expect(results).toHaveLength(6);
+    const names = results.map((r) => r.adapterName).sort();
+    expect(names).toEqual(
+      [
+        'HumanTestAdapter',
+        'MockArbiterAdapter',
+        'MockCoderAdapter',
+        'MockDocumentationAdapter',
+        'MockPlannerAdapter',
+        'MockReviewerAdapter',
+      ].sort(),
+    );
+  });
+
+  it('all adapters pass every non-skipped conformance scenario', () => {
+    const failures: string[] = [];
+    for (const suite of results) {
+      for (const scenario of suite.scenarios) {
+        if (!scenario.passed && !scenario.skipped) {
+          failures.push(
+            `${suite.adapterName}/${scenario.scenarioName}: ${scenario.details}${scenario.error ? ` (${scenario.error})` : ''}`,
+          );
+        }
+      }
+    }
+    expect(failures, `Conformance failures:\n${failures.join('\n')}`).toHaveLength(0);
+  });
+
+  it('skipped scenarios are not counted as passed', () => {
+    for (const suite of results) {
+      for (const scenario of suite.scenarios) {
+        if (scenario.skipped) {
+          expect(scenario.passed).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('MockCoderAdapter has 0 skipped scenarios; all other adapters skip invalid_output_handling', () => {
+    for (const suite of results) {
+      if (suite.adapterName === 'MockCoderAdapter') {
+        expect(suite.skippedCount).toBe(0);
+      } else {
+        expect(suite.skippedCount).toBe(1);
+        const skipped = suite.scenarios.find((s) => s.skipped);
+        expect(skipped?.scenarioName).toBe('invalid_output_handling');
+      }
+    }
+  });
+
+  it('writes adapter_conformance_results rows to the database for each adapter', async () => {
+    const rows = await db.query<{
+      id: string;
+      role: string;
+      passed: number;
+      total_tests: number;
+      skipped_tests: number;
+    }>(
+      `SELECT id, role, passed, total_tests, skipped_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
+      [],
+    );
+    expect(rows).toHaveLength(6);
+    for (const row of rows) {
+      expect(row.total_tests).toBe(9);
+    }
+  });
+
+  it('all written conformance results have passed=1', async () => {
+    const failedRows = await db.query<{ role: string; failed_tests: number }>(
+      `SELECT role, failed_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance' AND passed = 0`,
+      [],
+    );
+    expect(
+      failedRows,
+      `Adapters with failed conformance: ${failedRows.map((r) => r.role).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('adapter_conformance_results skipped_tests=0 for MockCoderAdapter and =1 for others', async () => {
+    const rows = await db.query<{ role: string; skipped_tests: number }>(
+      `SELECT role, skipped_tests FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
+      [],
+    );
+    for (const row of rows) {
+      if (row.role === 'CoderAgentAdapter') {
+        expect(row.skipped_tests).toBe(0);
+      } else {
+        expect(row.skipped_tests).toBe(1);
+      }
+    }
+  });
+
+  it('agent_runs rows are created and reach succeeded state for successful scenarios', async () => {
+    const succeededRuns = await db.query<{ id: string }>(
+      `SELECT id FROM agent_runs WHERE state = 'succeeded'`,
+      [],
+    );
+    expect(succeededRuns.length).toBeGreaterThan(0);
+  });
+
+  it('agent_runs rows store immutable adapter provenance snapshot', async () => {
+    const rows = await db.query<{
+      adapter_name: string;
+      adapter_implementation: string;
+      adapter_version: number;
+      capabilities_used: string;
+    }>(
+      `SELECT adapter_name, adapter_implementation, adapter_version, capabilities_used
+       FROM agent_runs WHERE adapter_name IS NOT NULL LIMIT 1`,
+      [],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    const row = rows[0]!;
+    expect(typeof row.adapter_name).toBe('string');
+    expect(typeof row.adapter_implementation).toBe('string');
+    expect(row.adapter_version).toBeGreaterThanOrEqual(1);
+    const caps = JSON.parse(row.capabilities_used) as unknown[];
+    expect(Array.isArray(caps)).toBe(true);
+  });
+
+  it('agent_runs.capabilities_used is non-empty for every conformance run that exercises the adapter', async () => {
+    // Every conformance scenario that invokes recorder.record() passes the adapter's
+    // requiredCapabilities (all 6 descriptors declare at least one). An empty array here would
+    // mean a run silently lost its capability provenance (HIGH-1 regression guard).
+    const rows = await db.query<{ id: string; role: string; capabilities_used: string }>(
+      `SELECT id, role, capabilities_used FROM agent_runs WHERE adapter_name IS NOT NULL`,
+      [],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    const empty = rows.filter((r) => {
+      const caps = JSON.parse(r.capabilities_used) as unknown[];
+      return caps.length === 0;
+    });
+    expect(
+      empty,
+      `agent_runs rows with empty capabilities_used: ${empty.map((r) => `${r.role}/${r.id}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('agent_errors rows are created for the CoderAgentAdapter failure scenario', async () => {
+    const errorRows = await db.query<{ error_type: string; message: string }>(
+      `SELECT ae.error_type, ae.message FROM agent_errors ae
+       JOIN agent_runs ar ON ae.agent_run_id = ar.id
+       WHERE ar.role = 'CoderAgentAdapter'`,
+      [],
+    );
+    expect(errorRows.length).toBeGreaterThan(0);
+    const types = errorRows.map((r) => r.error_type);
+    expect(types).toContain('provider_unavailable');
+  });
+
+  it('a failed conformance result row writes passed=0 to the database', async () => {
+    const now = new Date().toISOString();
+    const fakeAdapterId = results[0]!.adapterId;
+    const rowId = generateId();
+    await db.execute(
+      `INSERT INTO adapter_conformance_results
+         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, skipped_tests, details, run_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        rowId,
+        fakeAdapterId,
+        'PlannerAgentAdapter',
+        'phase5-smoke-conformance-failed',
+        0,
+        9,
+        3,
+        0,
+        '{}',
+        now,
+        now,
+      ],
+    );
+    const failedRows = await db.query<{ id: string; passed: number }>(
+      `SELECT id, passed FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance-failed' AND passed = 0`,
+      [],
+    );
+    expect(failedRows).toHaveLength(1);
+    expect(failedRows[0]!.passed).toBe(0);
+  });
+
+  it('is repeatable: running the suite twice against the same DB still passes every adapter', async () => {
+    // Regression guard: migration 0006 enforces at most one default agent_configurations row
+    // per adapter, and runConformanceSuite() re-registers the same (role, name) pairs on every
+    // call (idempotent registration keeps the same adapterId), so the configuration_resolution
+    // scenario must not use an unconditional INSERT.
+    const secondRunResults = await runConformanceSuite({ db, registry, recorder });
+
+    expect(secondRunResults).toHaveLength(6);
+    const failures: string[] = [];
+    for (const suite of secondRunResults) {
+      for (const scenario of suite.scenarios) {
+        if (!scenario.passed && !scenario.skipped) {
+          failures.push(
+            `${suite.adapterName}/${scenario.scenarioName}: ${scenario.details}${scenario.error ? ` (${scenario.error})` : ''}`,
+          );
+        }
+      }
+    }
+    expect(failures, `Second-run conformance failures:\n${failures.join('\n')}`).toHaveLength(0);
+
+    // The first beforeEach run already registered every adapter at version 1; re-registering
+    // with identical capabilities in this second run should still land on the same adapterId.
+    for (let i = 0; i < results.length; i++) {
+      expect(secondRunResults[i]!.adapterId).toBe(results[i]!.adapterId);
+    }
+  });
+
+  it('adapter_conformance_results is append-only: reruns add new rows rather than upserting', async () => {
+    const before = await db.query<{ id: string }>(
+      `SELECT id FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
+      [],
+    );
+    expect(before).toHaveLength(6);
+
+    await runConformanceSuite({ db, registry, recorder });
+
+    const after = await db.query<{ id: string }>(
+      `SELECT id FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
+      [],
+    );
+    // Every rerun inserts 6 fresh rows (one per adapter) rather than updating the existing 6 —
+    // this is the intended append-only audit-log semantics documented on runConformanceSuite().
+    expect(after).toHaveLength(12);
+    const beforeIds = new Set(before.map((r) => r.id));
+    const newRows = after.filter((r) => !beforeIds.has(r.id));
+    expect(newRows).toHaveLength(6);
+  });
+
+  it('the most recent adapter_conformance_results row per adapter is queryable via ORDER BY run_at DESC LIMIT 1', async () => {
+    await runConformanceSuite({ db, registry, recorder });
+
+    for (const suite of results) {
+      const rows = await db.query<{ id: string; run_at: string }>(
+        `SELECT id, run_at FROM adapter_conformance_results
+         WHERE test_suite = 'phase5-smoke-conformance' AND adapter_id = ?
+         ORDER BY run_at DESC LIMIT 1`,
+        [suite.adapterId],
+      );
+      expect(rows).toHaveLength(1);
+    }
+  });
+});

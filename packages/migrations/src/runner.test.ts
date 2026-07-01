@@ -188,6 +188,41 @@ describe('Migration runner (SQLite)', () => {
     }).toThrow();
   });
 
+  it('enforces at most one default (project_id IS NULL) agent_configurations row per adapter', () => {
+    applyMigrations(db);
+
+    db.prepare(
+      "INSERT INTO agent_adapters (id, role, name, implementation) VALUES ('adapter-1', 'CoderAgentAdapter', 'TestAdapter', 'mock')",
+    ).run();
+    db.prepare(
+      "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-1', 'adapter-1', NULL, '{}')",
+    ).run();
+
+    expect(() => {
+      db.prepare(
+        "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-2', 'adapter-1', NULL, '{}')",
+      ).run();
+    }).toThrow();
+  });
+
+  it('enforces at most one agent_configurations row per (adapter, project)', () => {
+    applyMigrations(db);
+
+    db.prepare("INSERT INTO projects (id, name) VALUES ('proj-cfg', 'Config Test')").run();
+    db.prepare(
+      "INSERT INTO agent_adapters (id, role, name, implementation) VALUES ('adapter-2', 'CoderAgentAdapter', 'TestAdapter2', 'mock')",
+    ).run();
+    db.prepare(
+      "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-3', 'adapter-2', 'proj-cfg', '{}')",
+    ).run();
+
+    expect(() => {
+      db.prepare(
+        "INSERT INTO agent_configurations (id, adapter_id, project_id, config) VALUES ('cfg-4', 'adapter-2', 'proj-cfg', '{}')",
+      ).run();
+    }).toThrow();
+  });
+
   it('enforces UNIQUE constraint on dedup_key in inbox_events', () => {
     applyMigrations(db);
 

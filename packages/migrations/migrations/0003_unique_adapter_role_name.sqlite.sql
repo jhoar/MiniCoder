@@ -1,0 +1,13 @@
+-- Preflight: if any duplicate (role, name) pairs exist this migration will fail with a
+-- "UNIQUE constraint failed" error. Before applying, identify duplicates with:
+--   SELECT role, name, COUNT(*) n FROM agent_adapters GROUP BY role, name HAVING COUNT(*) > 1;
+-- Keep the most-recently-updated row per pair and remove the others (MAX(rowid) is NOT
+-- equivalent to "most recently updated" — rowid reflects insertion order, not updated_at):
+--   DELETE FROM agent_adapters WHERE id NOT IN (
+--     SELECT id FROM (
+--       SELECT id, ROW_NUMBER() OVER (
+--         PARTITION BY role, name ORDER BY updated_at DESC, id DESC
+--       ) rn FROM agent_adapters
+--     ) WHERE rn = 1
+--   );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_adapters_role_name ON agent_adapters (role, name);

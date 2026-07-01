@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.3
-> Last-updated: 2026-06-29
+> Version: 1.0.6
+> Last-updated: 2026-06-30
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -208,17 +208,161 @@ matrix against both SQLite and PostgreSQL** (see [`04-testing-validation-state-l
 a Docker Compose scenario runs unattended; destructive commands are guarded; CI can run a system
 smoke scenario.
 
-## Phase 5 — Agent Adapter Foundation
+## Phase 5 — Agent Adapter Foundation ✓
 
-Deliver the six role interfaces, an adapter registry, the capability model, the mock adapters and
-`HumanTestAdapter`, adapter run records, and adapter conformance tests (see
+> **Status: Complete** (2026-06-30)
+
+Deliver the six role interfaces, an adapter registry, the capability model, the six role adapters
+(including `HumanTestAdapter`), adapter run records, and adapter conformance tests (see
 [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md)).
 
-Acceptance: core does not depend on provider SDKs; mock adapters run through Workflow Layer task
-wrappers; `agent_runs` records are created; capability validation works; and the conformance
-framework runs the six mock adapters and `HumanTestAdapter` to green, writing
-`adapter_conformance_results`. (Provider-adapter conformance fixtures for additional adapters are
+Acceptance: core does not depend on provider SDKs; mock adapters are invoked directly by the
+conformance runner and `AgentRunRecorder` (Workflow Layer task-wrapper invocation of adapters is
+architecturally scoped in `03-agent-adapter-architecture.md` §10 but is **not** part of Phase 5's
+completed scope — see "Smoke conformance scope" below); `agent_runs` records are created;
+capability validation works; and the conformance framework runs all six role adapters (including
+`HumanTestAdapter`) to green, writing `adapter_conformance_results`. (Provider-adapter conformance
+fixtures for additional adapters are
 Phase 18.)
+
+**Delivered modules:**
+
+- `packages/core/src/adapters/types.ts` — the six role interfaces (`PlannerAgentAdapter`,
+  `CoderAgentAdapter`, `ReviewerAgentAdapter`, `ArbiterAgentAdapter`,
+  `DocumentationAgentAdapter`, `HumanAgentAdapter`) + all per-role `Input`/`Output` types and
+  `AdapterCall<I, O>`, moved from `packages/testing` so that Phase-9+ reference adapters can
+  implement these interfaces without depending on the testing package.
+- `packages/core/src/adapters/capabilities.ts` — `AgentCapabilitySchema` (Zod enum of the 15
+  canonical tokens from `03` §3), `AgentCapabilityToken` type, `CapabilityError`,
+  `validateCapabilities(adapterId, declared, required)`. Named `AgentCapabilityToken` (not
+  `AgentCapability`) to avoid collision with the `AgentCapability` entity interface in
+  `domain/entities.ts`.
+- `packages/core/src/adapters/registry.ts` — `AdapterRegistry`: idempotent `register()` (upsert
+  on role + name, replacing capabilities on re-registration), `resolve(role, name)` (active adapters
+  only), `getById(adapterId)`, `assertCapabilities(adapterId, required)`, and
+  `getConfiguration(adapterId, projectId?)` (project-scoped row preferred over adapter-default).
+  All reads run against `agent_adapters`/`agent_capabilities`/`agent_configurations`.
+  `UnknownAdapterError` is thrown for missing or inactive entries.
+- `packages/core/src/adapters/run-recorder.ts` — `AgentRunRecorder.record<O>(opts, fn)`: drives
+  the `agent-run` state machine (QUEUED → RUNNING → SUCCEEDED / FAILED) using
+  `StateTransitionValidator` with `AGENT_RUN_MATRIX`; redacts secrets from input/output via
+  `SecretRedactor` before persisting; records `agent_errors` rows on failure with a normalized
+  `AgentRunErrorType`; re-throws the original error so callers can propagate. `AdapterRunError`
+  carries the typed `errorType` for normalized taxonomy dispatch.
+- `packages/core/src/adapters/test-helpers.ts` — `InMemoryAdapterDb`: lightweight in-memory
+  `DbClient` fake for unit tests in `packages/core` (which has no DB driver dependency).
+- `packages/core/src/adapters/*.test.ts` — unit tests for `capabilities.ts` (schema + validator),
+  `registry.ts` (register/resolve/assertCapabilities/getConfiguration), and `run-recorder.ts`
+  (succeeded run, failed run with error_type dispatch, secret redaction), all using
+  `InMemoryAdapterDb`.
+- `packages/testing/src/adapters/types.ts` — converted from a declaration file to a thin
+  re-export shim targeting `@minicoder/core`; all mock classes and scenario code continue to
+  `import from './types.js'` unchanged.
+- `packages/testing/src/conformance/` — new conformance-scenario runner:
+  `runConformanceSuite({ db, registry, recorder })` iterates over all six mock adapters
+  (one per role), runs 9 scenarios per adapter (capability declaration, successful run, failure
+  handling, invalid-output handling, secret redaction, configuration resolution, state-transition
+  sequence, output-shape validation, assertCapabilities), and writes one
+  `adapter_conformance_results` row per adapter. The `details` JSON snapshot includes
+  `adapterName`, `implementation`, `version`, and `capabilities` alongside the scenario results so
+  historical records remain attributable after adapter re-registration. All 6 adapters × 9
+  scenarios = 54 scenario executions total; 5 are skipped (`invalid_output_handling` for the 5
+  non-Coder adapters), 49 pass, 0 fail.
+- `packages/core/src/index.ts` — new `// Phase 5: agent adapters` export section.
+- `packages/migrations/migrations/0003_unique_adapter_role_name.*` — adds a unique index on
+  `agent_adapters(role, name)` for both SQLite and PostgreSQL, preventing concurrent duplicate
+  registrations. Each file includes a preflight comment with a diagnostic query to identify and
+  remove any duplicate rows before applying the migration.
+- `AdapterRegistry.register` uses `INSERT ... ON CONFLICT (role, name) DO NOTHING` rather than
+  catching a unique-constraint error inside the transaction: in PostgreSQL, a failed `INSERT`
+  aborts the enclosing transaction, so any later query in that same transaction fails with
+  "current transaction is aborted" — `DO NOTHING` never errors, keeping the transaction usable.
+  `packages/migrations/src/registry.postgres.test.ts` (gated on `MINICODER_TEST_PG_URL`, same as
+  `runner.postgres.test.ts`) registers the same `(role, name)` twice against a real PostgreSQL
+  connection and asserts the same adapter id is returned, `version` increments, capabilities are
+  replaced, and the connection remains usable afterward.
+- `packages/migrations/migrations/0004_agent_runs_provenance.*` — adds four immutable provenance
+  columns to `agent_runs`: `adapter_name TEXT`, `adapter_implementation TEXT`,
+  `adapter_version INTEGER`, and `capabilities_used TEXT`. `AgentRunRecorder` resolves these
+  automatically from the `AdapterRegistry` at invocation time — callers cannot supply or override
+  them — so historical records remain attributable after adapter re-registration. The recorder
+  also validates the caller-supplied `role` against the registry record (throwing
+  `RunRoleMismatchError` on mismatch) and validates `capabilitiesUsed` is a subset of the
+  adapter's declared capabilities (throwing `UndeclaredCapabilityError` otherwise), so a run row
+  can never misrepresent which role or capabilities were actually in play. `capabilitiesUsed` is a
+  **required** field on `RecordRunOptions` (not defaulted to `[]`) so a capability-bearing run
+  cannot silently persist an empty `capabilities_used` record; callers pass `[]` explicitly only
+  for calls that genuinely exercise no declared capability. The conformance runner passes each
+  descriptor's `requiredCapabilities` at every `recorder.record()` call site, and
+  `conformance.test.ts` asserts `agent_runs.capabilities_used` is non-empty for every run the
+  suite creates.
+- `packages/core/src/domain/entities.ts` — `AgentRun` gains `adapterName`, `adapterImplementation`,
+  `adapterVersion`, and `capabilitiesUsed` fields (all nullable, matching the additive migration
+  semantics for pre-migration rows), keeping the domain type in sync with the schema.
+  `AdapterConformanceResult` gains `skippedTests: number` matching migration 0005.
+- `packages/migrations/migrations/0005_conformance_skipped_tests.*` — adds `skipped_tests INTEGER
+NOT NULL DEFAULT 0` to `adapter_conformance_results`, tracking how many scenarios were
+  intentionally skipped (e.g. `invalid_output_handling` is N/A for non-Coder adapters).
+- `packages/core/src/adapters/capabilities.ts` — new `parseCapabilities(capabilities, source)`:
+  validates every entry against `AgentCapabilitySchema`, dedupes, and sorts the result by
+  canonical schema order (the token's position in `AgentCapabilitySchema`), throwing
+  `InvalidCapabilityError` (listing every offending value) rather than silently casting an
+  unrecognized string to `AgentCapabilityToken`. `AdapterRegistry.register()` calls it on
+  caller-supplied input before the transaction opens; `toRecord()` calls it on capability rows
+  read back from `agent_capabilities`, so a corrupted DB row fails loudly instead of defeating
+  `assertCapabilities` silently. Canonical-order sorting (rather than an `ORDER BY created_at,
+id` on the read query) makes the returned capability array deterministic across storage
+  engines and independent of physical row order — capability rows inserted in the same
+  registration call share an identical `created_at` timestamp, so timestamp-based ordering
+  alone would not have been reliably deterministic.
+- `packages/migrations/migrations/0006_unique_agent_configurations.*` — adds two partial unique
+  indexes on `agent_configurations`: `uq_agent_configurations_default` on `(adapter_id)` where
+  `project_id IS NULL` (at most one default config per adapter), and
+  `uq_agent_configurations_project` on `(adapter_id, project_id)` where `project_id IS NOT NULL`
+  (at most one config per adapter/project pair). Both dialects support partial/filtered unique
+  indexes; SQLite's plain `UNIQUE(adapter_id, project_id)` would not have caught duplicate
+  default rows since SQL treats every `NULL` as distinct. `AdapterRegistry.getConfiguration()`
+  adds a `version DESC, updated_at DESC` tiebreaker as defense-in-depth in case this invariant is
+  ever violated by a direct DB write.
+- The conformance runner's `configuration_resolution` scenario upserts (SELECT-then-UPDATE-or-
+  INSERT) its default config row instead of an unconditional INSERT, because migration 0006's
+  unique index makes a second unconditional INSERT for the same (idempotently re-registered)
+  adapter fail. `runConformanceSuite()` is safe to re-run against a persistent DB;
+  `conformance.test.ts` has a regression test asserting two consecutive runs both pass.
+- `adapter_conformance_results` is **append-only** — there is no unique key on
+  `(test_suite, adapter_id)` and `runConformanceSuite()` never upserts, so every call inserts a
+  fresh row per adapter even when re-run against the same DB with the same adapters. This is
+  intentional: the table is a historical audit log of every conformance run, not a single
+  current-gate-state row. Consumers that want "the current result for an adapter" must query
+  `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)`. `conformance.test.ts` has
+  tests asserting a rerun appends exactly 6 new rows (documenting the intended semantics as a
+  regression guard) and demonstrating the latest-row query pattern.
+- The SQLite preflight remediation comments in migrations `0003_unique_adapter_role_name.sqlite.sql`
+  and `0006_unique_agent_configurations.sqlite.sql` previously suggested `MAX(rowid)` to select
+  which duplicate row to keep, but `rowid` reflects insertion order, not `updated_at` — it did not
+  match the "keep the most-recently-updated row" policy the comment stated (the PostgreSQL
+  guidance already used `updated_at DESC` correctly). Both files now use a `ROW_NUMBER() OVER
+(PARTITION BY ... ORDER BY updated_at DESC, id DESC)` window-function query instead, matching
+  the stated policy with a stable tiebreaker.
+
+**Deferred to Phase 9–10.** Provider-level fields (`provider`, `model`, `triggerdev_run_id`,
+`prompt_template_version`, and artifact-reference columns) are **not** added to the schema in
+Phase 5. They will be introduced when real provider connections are established (Phase 9 —
+Reference Coder Adapter; Phase 10 — Reference Reviewer Adapter). Writing dummy values here would
+create misleading data in production runs.
+
+**Smoke conformance scope.** The Phase 5 conformance suite (`phase5-smoke-conformance`) verifies
+adapter wiring: capability declaration, successful run, failure handling, secret redaction,
+configuration resolution, state-transition sequence, output-shape validation, and
+assertCapabilities. The `invalid_output_handling` scenario runs only for `MockCoderAdapter`; the
+other five adapters skip it (skipped scenarios do not count as failures). Timeout taxonomy, cost
+and token reporting, and Workflow Layer wrapper invocation are deferred to the full canonical
+adapter contract in Phase 9+.
+
+**Existing tables.** The `agent_adapters`, `agent_capabilities`, `agent_configurations`,
+`agent_runs`, `agent_errors`, `agent_tool_operations`, `agent_context_packs`, and
+`adapter_conformance_results` tables were created in `0001_initial_schema.*` (Phase 1). Migrations
+0003–0006 extend them without recreating any tables.
 
 ## Phase 6 — Bootstrap Planner, Readiness, and Clarification
 
