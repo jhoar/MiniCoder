@@ -143,6 +143,17 @@ export class GenerateFeatureBacklogHandler
         }
       }
 
+      // A backlog change invalidates any prior ValidateBacklogCommand result — bump backlog_version
+      // and clear the validated_* columns so SubmitPlanForApprovalCommand's gate re-requires
+      // validation against the new backlog.
+      await tx.execute(
+        `UPDATE implementation_plans
+         SET backlog_version = backlog_version + 1, backlog_validated_at = NULL,
+             backlog_validated_state = NULL, backlog_validated_version = NULL, updated_at = ?
+         WHERE id = ?`,
+        [now, planId],
+      );
+
       const eventId = await writeWorkflowEvent(tx, {
         projectId,
         eventType: 'backlog.generated',

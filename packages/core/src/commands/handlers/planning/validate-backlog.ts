@@ -3,7 +3,13 @@ import { FeatureKind, UserRole } from '../../../domain/states.js';
 import { CommandError } from '../../types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
-import { writeWorkflowEvent, writeOutboxEvent, claimIdempotencyKey, fulfillIdempotencyKey } from '../../helpers.js';
+import {
+  isoNow,
+  writeWorkflowEvent,
+  writeOutboxEvent,
+  claimIdempotencyKey,
+  fulfillIdempotencyKey,
+} from '../../helpers.js';
 
 export const ValidateBacklogPayloadSchema = z.object({
   projectId: z.string(),
@@ -137,6 +143,18 @@ export class ValidateBacklogHandler
       }
 
       const resultingState: ValidateBacklogResultState = problems.length === 0 ? 'valid' : 'invalid';
+
+      // Record the outcome against the plan's current backlog_version so
+      // SubmitPlanForApprovalCommand can require a validation that is both 'valid' and current
+      // (backlog_validated_version self-references the just-updated backlog_version column).
+      const now = isoNow();
+      await tx.execute(
+        `UPDATE implementation_plans
+         SET backlog_validated_at = ?, backlog_validated_state = ?, backlog_validated_version = backlog_version,
+             updated_at = ?
+         WHERE id = ?`,
+        [now, resultingState, now, planId],
+      );
 
       const eventId = await writeWorkflowEvent(tx, {
         projectId,

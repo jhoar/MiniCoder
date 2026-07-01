@@ -29,9 +29,18 @@ interface PlanRow {
   id: string;
   state: string;
   version: number;
+  backlog_version: number;
+  backlog_validated_state: string | null;
+  backlog_validated_version: number | null;
 }
 
-/** plan-lifecycle draft -> pending_approval, gated on ValidateBacklogCommand having passed and no unresolved blocking planning_gaps. */
+/**
+ * plan-lifecycle draft -> pending_approval, gated on ValidateBacklogCommand having passed for the
+ * plan's *current* backlog (backlog_validated_state = 'valid' AND backlog_validated_version =
+ * backlog_version — a backlog regeneration resets those columns to NULL, so a stale validation
+ * from before the latest GenerateFeatureBacklogCommand/ImportBacklogCommand call does not count)
+ * and no unresolved blocking planning_gaps.
+ */
 export class SubmitPlanForApprovalHandler
   implements CommandHandler<SubmitPlanForApprovalPayload, PlanState>
 {
@@ -56,7 +65,8 @@ export class SubmitPlanForApprovalHandler
       if (!claim.owned) return claim.result;
 
       const rows = await tx.query<PlanRow>(
-        `SELECT id, state, version FROM implementation_plans WHERE id = ? AND project_id = ?`,
+        `SELECT id, state, version, backlog_version, backlog_validated_state, backlog_validated_version
+         FROM implementation_plans WHERE id = ? AND project_id = ?`,
         [planId, projectId],
       );
       const plan = rows[0];
@@ -71,6 +81,19 @@ export class SubmitPlanForApprovalHandler
       }
       assertVersion('implementation_plans', planId, plan, expectedVersion);
       validator.assertValid(plan.state as PlanState, PlanState.PENDING_APPROVAL);
+
+      if (
+        plan.backlog_validated_state !== 'valid' ||
+        plan.backlog_validated_version !== plan.backlog_version
+      ) {
+        throw new CommandError({
+          type: 'backlog-not-validated',
+          title: 'Backlog has not passed validation',
+          status: 409,
+          detail: `Plan ${planId} requires a passing ValidateBacklogCommand run against its current backlog (backlog_version=${plan.backlog_version}) before it can be submitted for approval`,
+          instance: envelope.correlationId,
+        });
+      }
 
       const unresolvedBlockingGaps = await tx.query<{ id: string }>(
         `SELECT pg.id FROM planning_gaps pg

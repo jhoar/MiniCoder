@@ -16,10 +16,6 @@ export async function runImpl(
   payload: GenerateFeatureBacklogPayload,
   db: DbClient,
 ): Promise<GenerateFeatureBacklogResult> {
-  if (payload.features.length === 0) {
-    return { projectId: payload.projectId, featureCount: 0 };
-  }
-
   const envelope: CommandEnvelope<typeof payload> = {
     commandId: generateId(),
     idempotencyKey: payload.idempotencyKey,

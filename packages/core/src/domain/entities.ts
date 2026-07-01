@@ -88,6 +88,7 @@ export interface PlanningAssumption extends Entity {
 export interface ClarificationSession extends Entity {
   projectId: string;
   specificationInputId: string | null;
+  assessmentId: string | null;
   status: ClarificationStatus;
   round: number;
   maxRounds: number;
@@ -125,6 +126,10 @@ export interface ImplementationPlan extends Entity {
   state: PlanState;
   title: string;
   summary: string | null;
+  backlogVersion: number;
+  backlogValidatedAt: string | null;
+  backlogValidatedState: 'valid' | 'invalid' | null;
+  backlogValidatedVersion: number | null;
 }
 
 export interface PlanSection extends Entity {

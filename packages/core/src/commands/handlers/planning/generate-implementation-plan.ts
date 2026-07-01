@@ -92,9 +92,11 @@ export class GenerateImplementationPlanHandler
         });
       }
 
+      // Scoped to the assessment being used, not "the project's most recent clarification
+      // session" — a project can have multiple assessments over time, each with its own session.
       const sessionRows = await tx.query<{ status: string }>(
-        `SELECT status FROM clarification_sessions WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`,
-        [projectId],
+        `SELECT status FROM clarification_sessions WHERE assessment_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [assessmentId],
       );
       const session = sessionRows[0];
       if (

@@ -143,6 +143,16 @@ export class ImportBacklogHandler
         [generateId(), projectId, planId, envelope.actor.id, envelope.actor.role, now, now],
       );
 
+      // A backlog change invalidates any prior ValidateBacklogCommand result — see
+      // GenerateFeatureBacklogHandler for the same pattern.
+      await tx.execute(
+        `UPDATE implementation_plans
+         SET backlog_version = backlog_version + 1, backlog_validated_at = NULL,
+             backlog_validated_state = NULL, backlog_validated_version = NULL, updated_at = ?
+         WHERE id = ?`,
+        [now, planId],
+      );
+
       const eventId = await writeWorkflowEvent(tx, {
         projectId,
         eventType: 'backlog.imported',

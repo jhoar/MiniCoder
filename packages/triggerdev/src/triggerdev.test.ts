@@ -7,6 +7,7 @@ import { getRunByTriggerdevId } from './metadata.js';
 import { ALL_TASK_IDS } from './task-ids.js';
 import { loadTriggerConfig } from './config.js';
 import { assertSchemaReady } from './db.js';
+import { GenerateFeatureBacklogPayload as GenerateFeatureBacklogPayloadSchema } from './tasks/types.js';
 
 import { runImpl as runIngestSpecification } from './tasks/ingest-specification.js';
 import { runImpl as runPlanningReadiness } from './tasks/planning-readiness-assessment.js';
@@ -243,9 +244,37 @@ describe('task runImpl — command-backed unit tests', () => {
     expect(result.planId).toBeTruthy();
   });
 
-  it('generate-feature-backlog returns a numeric feature count', async () => {
-    const result = await runGenerateBacklog({ ...BASE_PAYLOAD, planId: 'plan-missing', features: [] }, db);
-    expect(typeof result.featureCount).toBe('number');
+  it('generate-feature-backlog rejects when the plan does not exist', async () => {
+    await expect(
+      runGenerateBacklog(
+        {
+          ...BASE_PAYLOAD,
+          planId: 'plan-missing',
+          features: [
+            {
+              frId: 'FR-001',
+              title: 'Create todo',
+              description: 'Allow creating a todo item.',
+              kind: 'feature' as const,
+              priority: 0,
+              dependsOnFrIds: [],
+              acceptanceCriteria: [],
+              testExpectations: [],
+            },
+          ],
+        },
+        db,
+      ),
+    ).rejects.toThrow('not found');
+  });
+
+  it('generate-feature-backlog payload schema rejects an empty features array', () => {
+    const parsed = GenerateFeatureBacklogPayloadSchema.safeParse({
+      ...BASE_PAYLOAD,
+      planId: 'plan-001',
+      features: [],
+    });
+    expect(parsed.success).toBe(false);
   });
 
   it('start-next-feature returns started boolean', async () => {
@@ -257,6 +286,170 @@ describe('task runImpl — command-backed unit tests', () => {
     const result = await runGithubReconciliation(BASE_PAYLOAD, db);
     expect(typeof result.reconciled).toBe('number');
     expect(typeof result.humanRequired).toBe('number');
+  });
+});
+
+// ── Code-review regression tests (HIGH-1, HIGH-2, MEDIUM-2) ────────────────
+
+describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM-2)', () => {
+  let db: DbClient;
+
+  beforeEach(async () => {
+    const testDb = createTestDb();
+    insertTestProject(testDb);
+    db = testDb;
+    await registerMockPlanner(db);
+  });
+
+  /** Creates a draft plan with one feature request, returning its id/version. */
+  async function setupPlanWithBacklog(): Promise<{ planId: string; planVersion: number }> {
+    const assessment = await runPlanningReadiness(
+      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      db,
+      fakePlanner('sufficient'),
+    );
+    expect(assessment.readinessResult).toBe('sufficient');
+    const assessmentRows = await db.query<{ id: string }>(
+      `SELECT id FROM planning_readiness_assessments WHERE project_id = ?`,
+      ['proj-test-001'],
+    );
+    await runGeneratePlan(
+      {
+        ...BASE_PAYLOAD,
+        assessmentId: assessmentRows[0]!.id,
+        title: 'Todo App Plan',
+        sections: [{ title: 'Overview', content: 'Build CRUD endpoints.' }],
+      },
+      db,
+    );
+    const planRows = await db.query<{ id: string; version: number }>(
+      `SELECT id, version FROM implementation_plans WHERE project_id = ?`,
+      ['proj-test-001'],
+    );
+    const plan = planRows[0]!;
+    await runGenerateBacklog(
+      {
+        ...BASE_PAYLOAD,
+        planId: plan.id,
+        features: [
+          {
+            frId: 'FR-001',
+            title: 'Create todo',
+            description: 'Allow creating a todo item.',
+            kind: 'feature' as const,
+            priority: 0,
+            dependsOnFrIds: [],
+            acceptanceCriteria: ['A user can create a todo.'],
+            testExpectations: [{ description: 'Creating a todo persists it.', testType: 'unit' as const }],
+          },
+        ],
+      },
+      db,
+    );
+    return { planId: plan.id, planVersion: plan.version };
+  }
+
+  it('HIGH-1: request-plan-approval rejects a plan that was never validated', async () => {
+    const { planId, planVersion } = await setupPlanWithBacklog();
+    await expect(
+      runRequestPlanApproval(
+        { ...BASE_PAYLOAD, ...ACTOR, planId, expectedVersion: planVersion },
+        db,
+      ),
+    ).rejects.toThrow('backlog');
+  });
+
+  it('HIGH-1: request-plan-approval rejects a plan whose validation is stale (backlog regenerated after validating)', async () => {
+    const { planId, planVersion } = await setupPlanWithBacklog();
+    await runValidateBacklog({ ...BASE_PAYLOAD, planId }, db);
+
+    // Regenerating the backlog resets backlog_validated_state, invalidating the prior 'valid' result.
+    // Use a distinct idempotencyKey so this call re-executes instead of replaying the cached
+    // result from setupPlanWithBacklog()'s first generate-feature-backlog call.
+    await runGenerateBacklog(
+      {
+        ...BASE_PAYLOAD,
+        idempotencyKey: 'idem-test-001-regenerate',
+        planId,
+        features: [
+          {
+            frId: 'FR-002',
+            title: 'Delete todo',
+            description: 'Allow deleting a todo item.',
+            kind: 'feature' as const,
+            priority: 0,
+            dependsOnFrIds: [],
+            acceptanceCriteria: ['A user can delete a todo.'],
+            testExpectations: [{ description: 'Deleting removes the todo.', testType: 'unit' as const }],
+          },
+        ],
+      },
+      db,
+    );
+
+    await expect(
+      runRequestPlanApproval(
+        { ...BASE_PAYLOAD, ...ACTOR, planId, expectedVersion: planVersion },
+        db,
+      ),
+    ).rejects.toThrow('backlog');
+  });
+
+  it('HIGH-1: request-plan-approval accepts a plan validated against its current backlog', async () => {
+    const { planId, planVersion } = await setupPlanWithBacklog();
+    const validation = await runValidateBacklog({ ...BASE_PAYLOAD, planId }, db);
+    expect(validation.valid).toBe(true);
+
+    const result = await runRequestPlanApproval(
+      { ...BASE_PAYLOAD, ...ACTOR, planId, expectedVersion: planVersion },
+      db,
+    );
+    expect(result.planId).toBe(planId);
+  });
+
+  it('HIGH-2: validate-backlog task rethrows non-backlog-invalid errors instead of returning valid:false', async () => {
+    // A plan with no feature_requests throws a CommandError of type 'empty-backlog' (not
+    // 'backlog-invalid'), which the task must propagate rather than swallow as { valid: false }.
+    await expect(runValidateBacklog({ ...BASE_PAYLOAD, planId: 'plan-missing' }, db)).rejects.toThrow(
+      'no feature requests to validate',
+    );
+  });
+
+  it('MEDIUM-2: complete-clarification cannot reopen a round while current-round questions are unanswered', async () => {
+    const assessment = await runPlanningReadiness(
+      { ...BASE_PAYLOAD, specificationContent: 'Build something awesome.', plannerAdapterName: 'MockPlannerAdapter' },
+      db,
+      fakePlanner('insufficient'),
+    );
+    expect(assessment.readinessResult).toBe('insufficient');
+
+    const sessionRows = await db.query<{ id: string; version: number }>(
+      `SELECT id, version FROM clarification_sessions WHERE project_id = ?`,
+      ['proj-test-001'],
+    );
+    const session = sessionRows[0]!;
+    await runStartClarification(
+      { ...BASE_PAYLOAD, ...ACTOR, clarificationSessionId: session.id, expectedVersion: session.version },
+      db,
+    );
+
+    // Deliberately leave the round's question(s) unanswered, then try to reopen another round.
+    const updatedSessionRows = await db.query<{ version: number }>(
+      `SELECT version FROM clarification_sessions WHERE id = ?`,
+      [session.id],
+    );
+    await expect(
+      runCompleteClarification(
+        {
+          ...BASE_PAYLOAD,
+          ...ACTOR,
+          clarificationSessionId: session.id,
+          expectedVersion: updatedSessionRows[0]!.version,
+          readinessResult: 'insufficient',
+        },
+        db,
+      ),
+    ).rejects.toThrow('unanswered');
   });
 });
 

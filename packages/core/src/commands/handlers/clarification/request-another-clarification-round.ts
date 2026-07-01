@@ -91,6 +91,25 @@ export class RequestAnotherClarificationRoundHandler
         });
       }
 
+      // Mirrors CompleteClarificationHandler's guard: a round cannot be reopened while the
+      // current round still has unanswered questions — the caller must obtain answers (or let
+      // BlockClarificationCommand trip the circuit breaker) before advancing.
+      const unanswered = await tx.query<{ id: string }>(
+        `SELECT cq.id FROM clarification_questions cq
+         WHERE cq.clarification_session_id = ? AND cq.round = ?
+           AND NOT EXISTS (SELECT 1 FROM clarification_answers ca WHERE ca.clarification_question_id = cq.id)`,
+        [clarificationSessionId, session.round],
+      );
+      if (unanswered.length > 0) {
+        throw new CommandError({
+          type: 'unanswered-questions',
+          title: 'Clarification round has unanswered questions',
+          status: 409,
+          detail: `${unanswered.length} question(s) in round ${session.round} still unanswered`,
+          instance: envelope.correlationId,
+        });
+      }
+
       const now = isoNow();
       const affected = await tx.executeAffected(
         `UPDATE clarification_sessions SET status = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,

@@ -130,16 +130,16 @@ export class AssessPlanningReadinessHandler
         clarificationStatus = ClarificationStatus.REQUIRED;
         await tx.execute(
           `INSERT INTO clarification_sessions
-             (id, project_id, specification_input_id, status, round, max_rounds, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 0, 3, 1, ?, ?)`,
-          [clarificationSessionId, projectId, specificationInputId ?? null, clarificationStatus, now, now],
+             (id, project_id, specification_input_id, assessment_id, status, round, max_rounds, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 0, 3, 1, ?, ?)`,
+          [clarificationSessionId, projectId, specificationInputId ?? null, assessmentId, clarificationStatus, now, now],
         );
       } else {
         await tx.execute(
           `INSERT INTO clarification_sessions
-             (id, project_id, specification_input_id, status, round, max_rounds, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 0, 3, 1, ?, ?)`,
-          [clarificationSessionId, projectId, specificationInputId ?? null, ClarificationStatus.NOT_REQUIRED, now, now],
+             (id, project_id, specification_input_id, assessment_id, status, round, max_rounds, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 0, 3, 1, ?, ?)`,
+          [clarificationSessionId, projectId, specificationInputId ?? null, assessmentId, ClarificationStatus.NOT_REQUIRED, now, now],
         );
         clarificationValidator.assertValid(ClarificationStatus.NOT_REQUIRED, ClarificationStatus.COMPLETE);
         await tx.executeAffected(

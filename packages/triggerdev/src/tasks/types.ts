@@ -69,7 +69,9 @@ const FeatureBacklogEntry = z.object({
 
 export const GenerateFeatureBacklogPayload = BasePayload.extend({
   planId: z.string(),
-  features: z.array(FeatureBacklogEntry).default([]),
+  // Must match GenerateFeatureBacklogHandler's own schema (.min(1)) — an empty/missing array is a
+  // caller error, not a valid "nothing to generate" no-op.
+  features: z.array(FeatureBacklogEntry).min(1),
 });
 
 export const ValidateBacklogPayload = BasePayload.extend({

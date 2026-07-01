@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.7
+> Version: 1.0.8
 > Last-updated: 2026-07-01
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -442,6 +442,35 @@ questions; blocking gaps prevent activation; an approved plan activates features
   (`00-glossary-and-terms.md` §5) has no `minicoder plan`/`backlog` group; Phase 6 is driven
   through Workflow Layer tasks and `minicoder test scenario` only, consistent with the existing
   surface.
+
+**Post-implementation review fixes** (`packages/migrations/migrations/0008_backlog_validation_tracking.*`):
+
+- `implementation_plans` gains a version-scoped backlog-validation record —
+  `backlog_version` (incremented by `GenerateFeatureBacklogHandler`/`ImportBacklogHandler` every
+  time a plan's features are (re)written, which also clears the columns below),
+  `backlog_validated_at`, `backlog_validated_state`, and `backlog_validated_version` (written by
+  `ValidateBacklogHandler`). `SubmitPlanForApprovalHandler` now requires
+  `backlog_validated_state = 'valid' AND backlog_validated_version = backlog_version` before a plan
+  can leave `draft` — previously it only checked unresolved blocking `planning_gaps`, so a plan
+  could reach `pending_approval` with an empty, cyclic, or under-tested backlog.
+- `clarification_sessions` gains a nullable `assessment_id` column, set by
+  `AssessPlanningReadinessHandler` at creation time. `GenerateImplementationPlanHandler`'s
+  clarification-complete guard now looks up the session tied to the assessment being used instead
+  of "the project's most recent clarification session," which could wrongly block or wrongly allow
+  plan generation once a project has more than one readiness assessment.
+- `RequestAnotherClarificationRoundHandler` gained the same unanswered-current-round-questions
+  guard `CompleteClarificationHandler` already had, so `complete-clarification.ts`'s
+  insufficient-readiness path can no longer reopen a round while questions remain unanswered.
+  `BlockClarificationHandler` is intentionally exempt — it is the circuit-breaker/timeout escape
+  path and must stay usable precisely when answers did not arrive in time.
+- `packages/triggerdev/src/tasks/validate-backlog.ts` now narrows its `catch` to only the expected
+  `CommandError` (`type: 'backlog-invalid'`) and re-throws everything else, so infrastructure
+  failures and "plan not found" errors surface as real task failures (with Trigger.dev retry)
+  instead of being reported as a successful `{ valid: false }` run.
+- `GenerateFeatureBacklogPayload`'s Trigger.dev schema (`packages/triggerdev/src/tasks/types.ts`)
+  changed `features` from `.default([])` to `.min(1)`, matching
+  `GenerateFeatureBacklogHandler`'s own schema; the task no longer has an empty-payload no-op
+  short-circuit that silently "succeeded" with zero features written.
 
 ## Phase 7 — GitHub Webhooks, Integration, and Reconciliation
 

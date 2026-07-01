@@ -1,4 +1,9 @@
-import { ValidateBacklogHandler, TransactionalCommandExecutor, generateId } from '@minicoder/core';
+import {
+  ValidateBacklogHandler,
+  TransactionalCommandExecutor,
+  CommandError,
+  generateId,
+} from '@minicoder/core';
 import type { CommandEnvelope, DbClient } from '@minicoder/core';
 import type { ValidateBacklogPayload } from './types.js';
 import { systemActor } from './actor.js';
@@ -29,10 +34,16 @@ export async function runImpl(
   let valid = true;
   try {
     await executor.execute(handler, envelope);
-  } catch {
-    // ValidateBacklogHandler throws a 422 CommandError for an invalid backlog after persisting
-    // the failed workflow_event — surface that as a structured result rather than a task failure.
-    valid = false;
+  } catch (err) {
+    // ValidateBacklogHandler throws a 422 CommandError (type 'backlog-invalid') for an invalid
+    // backlog after persisting the failed workflow_event — surface only that expected outcome as
+    // a structured result. Every other error (DB failure, not-found, programmer error) must
+    // propagate so Trigger.dev's retry/failed-status handling in makeTaskRunner applies to it.
+    if (err instanceof CommandError && err.problem.type === 'backlog-invalid') {
+      valid = false;
+    } else {
+      throw err;
+    }
   }
 
   return { projectId: payload.projectId, planId: payload.planId, valid };
