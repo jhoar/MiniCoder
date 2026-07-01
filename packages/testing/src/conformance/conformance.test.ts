@@ -226,4 +226,39 @@ describe('Phase 5 smoke adapter conformance suite', () => {
       expect(secondRunResults[i]!.adapterId).toBe(results[i]!.adapterId);
     }
   });
+
+  it('adapter_conformance_results is append-only: reruns add new rows rather than upserting', async () => {
+    const before = await db.query<{ id: string }>(
+      `SELECT id FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
+      [],
+    );
+    expect(before).toHaveLength(6);
+
+    await runConformanceSuite({ db, registry, recorder });
+
+    const after = await db.query<{ id: string }>(
+      `SELECT id FROM adapter_conformance_results WHERE test_suite = 'phase5-smoke-conformance'`,
+      [],
+    );
+    // Every rerun inserts 6 fresh rows (one per adapter) rather than updating the existing 6 —
+    // this is the intended append-only audit-log semantics documented on runConformanceSuite().
+    expect(after).toHaveLength(12);
+    const beforeIds = new Set(before.map((r) => r.id));
+    const newRows = after.filter((r) => !beforeIds.has(r.id));
+    expect(newRows).toHaveLength(6);
+  });
+
+  it('the most recent adapter_conformance_results row per adapter is queryable via ORDER BY run_at DESC LIMIT 1', async () => {
+    await runConformanceSuite({ db, registry, recorder });
+
+    for (const suite of results) {
+      const rows = await db.query<{ id: string; run_at: string }>(
+        `SELECT id, run_at FROM adapter_conformance_results
+         WHERE test_suite = 'phase5-smoke-conformance' AND adapter_id = ?
+         ORDER BY run_at DESC LIMIT 1`,
+        [suite.adapterId],
+      );
+      expect(rows).toHaveLength(1);
+    }
+  });
 });

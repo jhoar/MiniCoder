@@ -329,6 +329,21 @@ id` on the read query) makes the returned capability array deterministic across 
   unique index makes a second unconditional INSERT for the same (idempotently re-registered)
   adapter fail. `runConformanceSuite()` is safe to re-run against a persistent DB;
   `conformance.test.ts` has a regression test asserting two consecutive runs both pass.
+- `adapter_conformance_results` is **append-only** — there is no unique key on
+  `(test_suite, adapter_id)` and `runConformanceSuite()` never upserts, so every call inserts a
+  fresh row per adapter even when re-run against the same DB with the same adapters. This is
+  intentional: the table is a historical audit log of every conformance run, not a single
+  current-gate-state row. Consumers that want "the current result for an adapter" must query
+  `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)`. `conformance.test.ts` has
+  tests asserting a rerun appends exactly 6 new rows (documenting the intended semantics as a
+  regression guard) and demonstrating the latest-row query pattern.
+- The SQLite preflight remediation comments in migrations `0003_unique_adapter_role_name.sqlite.sql`
+  and `0006_unique_agent_configurations.sqlite.sql` previously suggested `MAX(rowid)` to select
+  which duplicate row to keep, but `rowid` reflects insertion order, not `updated_at` — it did not
+  match the "keep the most-recently-updated row" policy the comment stated (the PostgreSQL
+  guidance already used `updated_at DESC` correctly). Both files now use a `ROW_NUMBER() OVER
+(PARTITION BY ... ORDER BY updated_at DESC, id DESC)` window-function query instead, matching
+  the stated policy with a stable tiebreaker.
 
 **Deferred to Phase 9–10.** Provider-level fields (`provider`, `model`, `triggerdev_run_id`,
 `prompt_template_version`, and artifact-reference columns) are **not** added to the schema in

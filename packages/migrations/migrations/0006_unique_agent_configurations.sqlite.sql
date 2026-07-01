@@ -6,11 +6,24 @@
 -- Identify duplicate project-scoped rows with:
 --   SELECT adapter_id, project_id, COUNT(*) n FROM agent_configurations
 --     WHERE project_id IS NOT NULL GROUP BY adapter_id, project_id HAVING COUNT(*) > 1;
--- Keep the most-recently-updated row per group and remove the others, e.g. for default rows:
---   DELETE FROM agent_configurations WHERE rowid NOT IN (
---     SELECT MAX(rowid) FROM agent_configurations WHERE project_id IS NULL GROUP BY adapter_id
+-- Keep the most-recently-updated row per group and remove the others (MAX(rowid) is NOT
+-- equivalent to "most recently updated" — rowid reflects insertion order, not updated_at).
+-- For default rows:
+--   DELETE FROM agent_configurations WHERE id NOT IN (
+--     SELECT id FROM (
+--       SELECT id, ROW_NUMBER() OVER (
+--         PARTITION BY adapter_id ORDER BY updated_at DESC, id DESC
+--       ) rn FROM agent_configurations WHERE project_id IS NULL
+--     ) WHERE rn = 1
 --   ) AND project_id IS NULL;
--- (repeat the analogous DELETE for project-scoped rows, grouping by adapter_id, project_id)
+-- For project-scoped rows (partition by adapter_id, project_id instead):
+--   DELETE FROM agent_configurations WHERE id NOT IN (
+--     SELECT id FROM (
+--       SELECT id, ROW_NUMBER() OVER (
+--         PARTITION BY adapter_id, project_id ORDER BY updated_at DESC, id DESC
+--       ) rn FROM agent_configurations WHERE project_id IS NOT NULL
+--     ) WHERE rn = 1
+--   ) AND project_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_configurations_default
   ON agent_configurations (adapter_id) WHERE project_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_configurations_project

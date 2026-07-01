@@ -555,6 +555,14 @@ async function runScenarios(
  * output shape validation, and assertCapabilities. Full canonical adapter-contract conformance
  * (timeout taxonomy, cost/token reporting, Workflow Layer wrapper invocation) is deferred to
  * Phase 9+ when real provider adapters are connected.
+ *
+ * `adapter_conformance_results` is **append-only**: every call inserts a fresh row per adapter
+ * (no unique key on `(test_suite, adapter_id)`, no upsert), even when re-run against the same DB
+ * with the same idempotently-registered adapters. This is intentional — the table is a
+ * historical audit log of every conformance run, not a single current-gate-state row. Callers
+ * that want "the current gate result for an adapter" must query
+ * `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)`; do not assume one row per
+ * adapter exists.
  */
 export async function runConformanceSuite(
   opts: ConformanceRunOptions,
