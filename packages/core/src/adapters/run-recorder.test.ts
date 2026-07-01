@@ -35,6 +35,7 @@ describe('AgentRunRecorder.record', () => {
         projectId: 'proj-1',
         featureRunId: 'fr-1',
         input: { featureTitle: 'Add widget' },
+        capabilitiesUsed: ['can_modify_files', 'can_commit'],
       },
       async () => ({ commitSha: 'abc123', branchName: 'minicoder/FR-001', filesChanged: 2 }),
     );
@@ -50,9 +51,12 @@ describe('AgentRunRecorder.record', () => {
 
   it('persists a failed run and records the normalized error taxonomy', async () => {
     await expect(
-      recorder.record({ adapterId, role: 'CoderAgentAdapter', input: {} }, async () => {
-        throw new AdapterRunError('rate_limited', 'too many requests');
-      }),
+      recorder.record(
+        { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: ['can_modify_files'] },
+        async () => {
+          throw new AdapterRunError('rate_limited', 'too many requests');
+        },
+      ),
     ).rejects.toThrow(AdapterRunError);
 
     expect(db.agentRuns).toHaveLength(1);
@@ -64,9 +68,12 @@ describe('AgentRunRecorder.record', () => {
 
   it('defaults non-AdapterRunError failures to provider_unavailable', async () => {
     await expect(
-      recorder.record({ adapterId, role: 'CoderAgentAdapter', input: {} }, async () => {
-        throw new Error('boom');
-      }),
+      recorder.record(
+        { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: ['can_modify_files'] },
+        async () => {
+          throw new Error('boom');
+        },
+      ),
     ).rejects.toThrow('boom');
 
     expect(db.agentErrors[0]?.error_type).toBe('provider_unavailable');
@@ -78,6 +85,7 @@ describe('AgentRunRecorder.record', () => {
         adapterId,
         role: 'CoderAgentAdapter',
         input: { apiKey: 'sk-should-not-be-stored-1234567890123456789012' },
+        capabilitiesUsed: ['can_modify_files'],
       },
       async () => ({ token: 'sk-should-not-be-stored-1234567890123456789012' }),
     );
@@ -102,7 +110,7 @@ describe('AgentRunRecorder.record', () => {
 
   it('snapshots registry state at invocation time so re-registration does not alter historical records', async () => {
     const { agentRunId: runId1 } = await recorder.record(
-      { adapterId, role: 'CoderAgentAdapter', input: {} },
+      { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: ['can_modify_files'] },
       async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
     );
 
@@ -115,7 +123,7 @@ describe('AgentRunRecorder.record', () => {
     });
 
     const { agentRunId: runId2 } = await recorder.record(
-      { adapterId, role: 'CoderAgentAdapter', input: {} },
+      { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: ['can_modify_files'] },
       async () => ({ commitSha: 'def', branchName: 'minicoder/FR-002', filesChanged: 2 }),
     );
 
@@ -129,11 +137,14 @@ describe('AgentRunRecorder.record', () => {
 
   it('rejects recording under a role that does not match the adapter registration', async () => {
     await expect(
-      recorder.record({ adapterId, role: 'ReviewerAgentAdapter', input: {} }, async () => ({
-        commitSha: 'abc',
-        branchName: 'minicoder/FR-001',
-        filesChanged: 1,
-      })),
+      recorder.record(
+        { adapterId, role: 'ReviewerAgentAdapter', input: {}, capabilitiesUsed: [] },
+        async () => ({
+          commitSha: 'abc',
+          branchName: 'minicoder/FR-001',
+          filesChanged: 1,
+        }),
+      ),
     ).rejects.toThrow(RunRoleMismatchError);
     expect(db.agentRuns).toHaveLength(0);
   });
@@ -160,5 +171,16 @@ describe('AgentRunRecorder.record', () => {
     );
     const row = db.agentRuns.find((r) => r.id === agentRunId);
     expect(JSON.parse(String(row?.capabilities_used))).toEqual(['can_modify_files', 'can_commit']);
+  });
+
+  it('capabilitiesUsed is a required field at the type level (compile-time guard)', () => {
+    // @ts-expect-error capabilitiesUsed is required; omitting it must be a type error so
+    // callers cannot silently produce a misleading empty capabilities_used record.
+    const missingCapabilities: import('./run-recorder.js').RecordRunOptions = {
+      adapterId,
+      role: 'CoderAgentAdapter',
+      input: {},
+    };
+    expect(missingCapabilities).toBeDefined();
   });
 });

@@ -71,13 +71,16 @@ export interface RecordRunOptions {
   readonly featureRunId?: string;
   readonly input: unknown;
   /**
-   * Which capabilities the run exercised. Must be a subset of the adapter's declared
-   * capabilities (validated against the registry); an undeclared capability throws
-   * UndeclaredCapabilityError. The recorder snapshots name/implementation/version from the
-   * registry automatically; only the exercised-capabilities subset is caller-supplied since
-   * the recorder cannot observe which subset was used during a run.
+   * Which capabilities the run exercised. Required — silently defaulting to an empty list
+   * would let a run that clearly used capabilities persist a misleading empty
+   * `capabilities_used` record. Pass `[]` only for calls that genuinely exercise no declared
+   * capability. Must be a subset of the adapter's declared capabilities (validated against the
+   * registry); an undeclared capability throws UndeclaredCapabilityError. The recorder
+   * snapshots name/implementation/version from the registry automatically; only the
+   * exercised-capabilities subset is caller-supplied since the recorder cannot observe which
+   * subset was used during a run.
    */
-  readonly capabilitiesUsed?: readonly string[];
+  readonly capabilitiesUsed: readonly string[];
 }
 
 export interface RecordRunResult<O> {
@@ -94,6 +97,8 @@ const validator = new StateTransitionValidator(AGENT_RUN_MATRIX, 'agent-run');
  * the injected registry at invocation time, so re-registration cannot alter historical records.
  * `role` and `capabilitiesUsed` are validated against the registry record — a role mismatch or
  * an undeclared capability throws rather than persisting a misleading provenance row.
+ * `capabilitiesUsed` is a required argument (not defaulted) so callers must make an explicit
+ * choice rather than silently producing an empty provenance record.
  * Private chain-of-thought must never be passed as `input`/output here — only structured I/O.
  */
 export class AgentRunRecorder {
@@ -116,7 +121,7 @@ export class AgentRunRecorder {
       throw new RunRoleMismatchError(opts.adapterId, opts.role, adapterRecord.role);
     }
 
-    const capabilitiesUsed = opts.capabilitiesUsed ?? [];
+    const capabilitiesUsed = opts.capabilitiesUsed;
     const declared = new Set(adapterRecord.capabilities);
     const undeclared = capabilitiesUsed.filter((c) => !declared.has(c as never));
     if (undeclared.length > 0) {

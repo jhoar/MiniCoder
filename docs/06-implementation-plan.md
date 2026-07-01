@@ -216,10 +216,13 @@ Deliver the six role interfaces, an adapter registry, the capability model, the 
 `HumanTestAdapter`, adapter run records, and adapter conformance tests (see
 [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md)).
 
-Acceptance: core does not depend on provider SDKs; mock adapters run through Workflow Layer task
-wrappers; `agent_runs` records are created; capability validation works; and the conformance
-framework runs the six mock adapters and `HumanTestAdapter` to green, writing
-`adapter_conformance_results`. (Provider-adapter conformance fixtures for additional adapters are
+Acceptance: core does not depend on provider SDKs; mock adapters are invoked directly by the
+conformance runner and `AgentRunRecorder` (Workflow Layer task-wrapper invocation of adapters is
+architecturally scoped in `03-agent-adapter-architecture.md` §10 but is **not** part of Phase 5's
+completed scope — see "Smoke conformance scope" below); `agent_runs` records are created;
+capability validation works; and the conformance framework runs the six mock adapters and
+`HumanTestAdapter` to green, writing `adapter_conformance_results`. (Provider-adapter conformance
+fixtures for additional adapters are
 Phase 18.)
 
 **Delivered modules:**
@@ -286,10 +289,17 @@ Phase 18.)
   also validates the caller-supplied `role` against the registry record (throwing
   `RunRoleMismatchError` on mismatch) and validates `capabilitiesUsed` is a subset of the
   adapter's declared capabilities (throwing `UndeclaredCapabilityError` otherwise), so a run row
-  can never misrepresent which role or capabilities were actually in play.
+  can never misrepresent which role or capabilities were actually in play. `capabilitiesUsed` is a
+  **required** field on `RecordRunOptions` (not defaulted to `[]`) so a capability-bearing run
+  cannot silently persist an empty `capabilities_used` record; callers pass `[]` explicitly only
+  for calls that genuinely exercise no declared capability. The conformance runner passes each
+  descriptor's `requiredCapabilities` at every `recorder.record()` call site, and
+  `conformance.test.ts` asserts `agent_runs.capabilities_used` is non-empty for every run the
+  suite creates.
 - `packages/core/src/domain/entities.ts` — `AgentRun` gains `adapterName`, `adapterImplementation`,
   `adapterVersion`, and `capabilitiesUsed` fields (all nullable, matching the additive migration
   semantics for pre-migration rows), keeping the domain type in sync with the schema.
+  `AdapterConformanceResult` gains `skippedTests: number` matching migration 0005.
 - `packages/migrations/migrations/0005_conformance_skipped_tests.*` — adds `skipped_tests INTEGER
 NOT NULL DEFAULT 0` to `adapter_conformance_results`, tracking how many scenarios were
   intentionally skipped (e.g. `invalid_output_handling` is N/A for non-Coder adapters).

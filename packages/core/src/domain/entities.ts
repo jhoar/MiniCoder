@@ -301,6 +301,8 @@ export interface AdapterConformanceResult {
   passed: boolean;
   totalTests: number;
   failedTests: number;
+  /** Scenarios intentionally not applicable to this adapter (migration 0005). */
+  skippedTests: number;
   details: string | null;
   runAt: string;
   createdAt: string;

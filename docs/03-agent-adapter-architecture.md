@@ -116,6 +116,12 @@ detailed scope.
 
 ## 10. Acceptance
 
+These are the architecture's full end-state acceptance criteria, delivered incrementally across
+phases (see [`06-implementation-plan.md`](06-implementation-plan.md) for what each phase actually
+completes — Phase 5 delivers direct adapter invocation via the conformance runner and
+`AgentRunRecorder`; Workflow Layer task-wrapper invocation is not part of Phase 5's completed
+scope):
+
 - Core does not depend on provider SDKs.
 - Mock adapters run through Workflow Layer task wrappers and in `system_test` mode.
 - AgentRun records are created and capabilities are validated before invocation.

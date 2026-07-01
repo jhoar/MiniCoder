@@ -261,7 +261,12 @@ async function runScenarios(
   // 2. Successful run — output is non-null and has expected fields; agent_runs row reaches succeeded
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+      {
+        adapterId,
+        role: descriptor.role,
+        input: descriptor.makeSuccessInput(),
+        capabilitiesUsed: descriptor.requiredCapabilities.slice(),
+      },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{ state: string }>(
@@ -282,7 +287,12 @@ async function runScenarios(
     let threw = false;
     try {
       await recorder.record(
-        { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+        {
+          adapterId,
+          role: descriptor.role,
+          input: descriptor.makeSuccessInput(),
+          capabilitiesUsed: descriptor.requiredCapabilities.slice(),
+        },
         () => {
           const adapted = descriptor.makeFailureAdapter();
           const input = descriptor.makeSuccessInput();
@@ -354,7 +364,12 @@ async function runScenarios(
       let threw = false;
       try {
         await recorder.record(
-          { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+          {
+            adapterId,
+            role: descriptor.role,
+            input: descriptor.makeSuccessInput(),
+            capabilitiesUsed: descriptor.requiredCapabilities.slice(),
+          },
           () =>
             runAdapter(invalidAdapter, descriptor.makeSuccessInput()).then(
               (out) => out,
@@ -401,7 +416,12 @@ async function runScenarios(
   };
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: secretInput },
+      {
+        adapterId,
+        role: descriptor.role,
+        input: secretInput,
+        capabilitiesUsed: descriptor.requiredCapabilities.slice(),
+      },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{ input_summary: string }>(
@@ -455,7 +475,12 @@ async function runScenarios(
   // 7. State transition sequence — verify queued→running→succeeded ordering via timestamps
   try {
     const { agentRunId } = await recorder.record(
-      { adapterId, role: descriptor.role, input: descriptor.makeSuccessInput() },
+      {
+        adapterId,
+        role: descriptor.role,
+        input: descriptor.makeSuccessInput(),
+        capabilitiesUsed: descriptor.requiredCapabilities.slice(),
+      },
       () => runAdapter(descriptor.makeSuccessAdapter(), descriptor.makeSuccessInput()),
     );
     const [runRow] = await opts.db.query<{

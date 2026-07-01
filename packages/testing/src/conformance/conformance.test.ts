@@ -139,6 +139,25 @@ describe('Phase 5 smoke adapter conformance suite', () => {
     expect(Array.isArray(caps)).toBe(true);
   });
 
+  it('agent_runs.capabilities_used is non-empty for every conformance run that exercises the adapter', async () => {
+    // Every conformance scenario that invokes recorder.record() passes the adapter's
+    // requiredCapabilities (all 6 descriptors declare at least one). An empty array here would
+    // mean a run silently lost its capability provenance (HIGH-1 regression guard).
+    const rows = await db.query<{ id: string; role: string; capabilities_used: string }>(
+      `SELECT id, role, capabilities_used FROM agent_runs WHERE adapter_name IS NOT NULL`,
+      [],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    const empty = rows.filter((r) => {
+      const caps = JSON.parse(r.capabilities_used) as unknown[];
+      return caps.length === 0;
+    });
+    expect(
+      empty,
+      `agent_runs rows with empty capabilities_used: ${empty.map((r) => `${r.role}/${r.id}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
   it('agent_errors rows are created for the CoderAgentAdapter failure scenario', async () => {
     const errorRows = await db.query<{ error_type: string; message: string }>(
       `SELECT ae.error_type, ae.message FROM agent_errors ae
