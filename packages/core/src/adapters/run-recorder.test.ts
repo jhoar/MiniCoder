@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { AgentRunRecorder, AdapterRunError } from './run-recorder.js';
+import {
+  AgentRunRecorder,
+  AdapterRunError,
+  RunRoleMismatchError,
+  UndeclaredCapabilityError,
+} from './run-recorder.js';
 import { AdapterRegistry } from './registry.js';
 import { InMemoryAdapterDb } from './test-helpers.js';
 import { AgentRunState } from '../domain/states.js';
@@ -120,5 +125,40 @@ describe('AgentRunRecorder.record', () => {
     expect(row1?.adapter_implementation).toBe('@minicoder/testing:TestAdapter');
     expect(row2?.adapter_version).toBe(2);
     expect(row2?.adapter_implementation).toBe('@minicoder/testing:TestAdapter-v2');
+  });
+
+  it('rejects recording under a role that does not match the adapter registration', async () => {
+    await expect(
+      recorder.record({ adapterId, role: 'ReviewerAgentAdapter', input: {} }, async () => ({
+        commitSha: 'abc',
+        branchName: 'minicoder/FR-001',
+        filesChanged: 1,
+      })),
+    ).rejects.toThrow(RunRoleMismatchError);
+    expect(db.agentRuns).toHaveLength(0);
+  });
+
+  it('rejects capabilitiesUsed containing a capability the adapter did not declare', async () => {
+    await expect(
+      recorder.record(
+        { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: ['can_push_branch'] },
+        async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+      ),
+    ).rejects.toThrow(UndeclaredCapabilityError);
+    expect(db.agentRuns).toHaveLength(0);
+  });
+
+  it('accepts capabilitiesUsed that is a subset of the adapter declared capabilities', async () => {
+    const { agentRunId } = await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        input: {},
+        capabilitiesUsed: ['can_modify_files', 'can_commit'],
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+    const row = db.agentRuns.find((r) => r.id === agentRunId);
+    expect(JSON.parse(String(row?.capabilities_used))).toEqual(['can_modify_files', 'can_commit']);
   });
 });

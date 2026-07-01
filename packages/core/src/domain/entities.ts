@@ -254,6 +254,15 @@ export interface AgentRun extends Entity {
   endedAt: string | null;
   tokensUsed: number | null;
   costUsd: number | null;
+  /**
+   * Immutable adapter provenance snapshot (migration 0004), null for rows written before the
+   * migration. Populated automatically by AgentRunRecorder from the registry at invocation time.
+   */
+  adapterName: string | null;
+  adapterImplementation: string | null;
+  adapterVersion: number | null;
+  /** JSON-encoded array of capability tokens exercised during the run. */
+  capabilitiesUsed: string | null;
 }
 
 export interface AgentError {

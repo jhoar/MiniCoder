@@ -6,6 +6,32 @@ import { StateTransitionValidator } from '../statemachine/validator.js';
 import { AGENT_RUN_MATRIX } from '../statemachine/machines/agent-run.js';
 import type { AdapterRegistry } from './registry.js';
 
+export class RunRoleMismatchError extends Error {
+  constructor(
+    public readonly adapterId: string,
+    public readonly requestedRole: string,
+    public readonly registeredRole: string,
+  ) {
+    super(
+      `Adapter ${adapterId} is registered under role "${registeredRole}", but the run was ` +
+        `requested for role "${requestedRole}"`,
+    );
+    this.name = 'RunRoleMismatchError';
+  }
+}
+
+export class UndeclaredCapabilityError extends Error {
+  constructor(
+    public readonly adapterId: string,
+    public readonly undeclared: readonly string[],
+  ) {
+    super(
+      `Adapter ${adapterId} exercised capabilities not in its declared set: ${undeclared.join(', ')}`,
+    );
+    this.name = 'UndeclaredCapabilityError';
+  }
+}
+
 /** Normalized provider-failure taxonomy (docs/03 §11.6). */
 export type AgentRunErrorType =
   | 'timeout'
@@ -39,14 +65,17 @@ export interface AdapterRunSnapshot {
 
 export interface RecordRunOptions {
   readonly adapterId: string;
+  /** Must match the adapter's registered role; a mismatch throws RunRoleMismatchError. */
   readonly role: string;
   readonly projectId?: string;
   readonly featureRunId?: string;
   readonly input: unknown;
   /**
-   * Which capabilities the run exercised. The recorder snapshots name/implementation/version
-   * from the registry automatically; only the exercised-capabilities list is caller-supplied
-   * since the recorder cannot observe which subset was used during a run.
+   * Which capabilities the run exercised. Must be a subset of the adapter's declared
+   * capabilities (validated against the registry); an undeclared capability throws
+   * UndeclaredCapabilityError. The recorder snapshots name/implementation/version from the
+   * registry automatically; only the exercised-capabilities subset is caller-supplied since
+   * the recorder cannot observe which subset was used during a run.
    */
   readonly capabilitiesUsed?: readonly string[];
 }
@@ -63,6 +92,8 @@ const validator = new StateTransitionValidator(AGENT_RUN_MATRIX, 'agent-run');
  * (queued -> running -> succeeded|failed), driven through the agent-run state matrix delivered
  * in Phase 2. Adapter provenance (name/implementation/version) is resolved automatically from
  * the injected registry at invocation time, so re-registration cannot alter historical records.
+ * `role` and `capabilitiesUsed` are validated against the registry record — a role mismatch or
+ * an undeclared capability throws rather than persisting a misleading provenance row.
  * Private chain-of-thought must never be passed as `input`/output here — only structured I/O.
  */
 export class AgentRunRecorder {
@@ -80,11 +111,23 @@ export class AgentRunRecorder {
     // UnknownAdapterError for an invalid adapterId, which is correct — recording a run
     // against an unknown adapter is a caller error.
     const adapterRecord = await this.registry.getById(opts.adapterId);
+
+    if (opts.role !== adapterRecord.role) {
+      throw new RunRoleMismatchError(opts.adapterId, opts.role, adapterRecord.role);
+    }
+
+    const capabilitiesUsed = opts.capabilitiesUsed ?? [];
+    const declared = new Set(adapterRecord.capabilities);
+    const undeclared = capabilitiesUsed.filter((c) => !declared.has(c as never));
+    if (undeclared.length > 0) {
+      throw new UndeclaredCapabilityError(opts.adapterId, undeclared);
+    }
+
     const snap: AdapterRunSnapshot = {
       name: adapterRecord.name,
       implementation: adapterRecord.implementation,
       version: adapterRecord.version,
-      capabilitiesUsed: opts.capabilitiesUsed ?? [],
+      capabilitiesUsed,
     };
 
     await this.db.execute(
@@ -98,7 +141,7 @@ export class AgentRunRecorder {
         opts.adapterId,
         opts.projectId ?? null,
         opts.featureRunId ?? null,
-        opts.role,
+        adapterRecord.role,
         AgentRunState.QUEUED,
         JSON.stringify(this.redactor.redactObject(opts.input)),
         snap.name,

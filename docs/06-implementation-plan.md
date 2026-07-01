@@ -270,11 +270,26 @@ Phase 18.)
   `agent_adapters(role, name)` for both SQLite and PostgreSQL, preventing concurrent duplicate
   registrations. Each file includes a preflight comment with a diagnostic query to identify and
   remove any duplicate rows before applying the migration.
+- `AdapterRegistry.register` uses `INSERT ... ON CONFLICT (role, name) DO NOTHING` rather than
+  catching a unique-constraint error inside the transaction: in PostgreSQL, a failed `INSERT`
+  aborts the enclosing transaction, so any later query in that same transaction fails with
+  "current transaction is aborted" — `DO NOTHING` never errors, keeping the transaction usable.
+  `packages/migrations/src/registry.postgres.test.ts` (gated on `MINICODER_TEST_PG_URL`, same as
+  `runner.postgres.test.ts`) registers the same `(role, name)` twice against a real PostgreSQL
+  connection and asserts the same adapter id is returned, `version` increments, capabilities are
+  replaced, and the connection remains usable afterward.
 - `packages/migrations/migrations/0004_agent_runs_provenance.*` — adds four immutable provenance
   columns to `agent_runs`: `adapter_name TEXT`, `adapter_implementation TEXT`,
-  `adapter_version INTEGER`, and `capabilities_used TEXT`. These are populated from an
-  `AdapterRunSnapshot` at invocation time and never updated, so historical records remain
-  attributable after adapter re-registration.
+  `adapter_version INTEGER`, and `capabilities_used TEXT`. `AgentRunRecorder` resolves these
+  automatically from the `AdapterRegistry` at invocation time — callers cannot supply or override
+  them — so historical records remain attributable after adapter re-registration. The recorder
+  also validates the caller-supplied `role` against the registry record (throwing
+  `RunRoleMismatchError` on mismatch) and validates `capabilitiesUsed` is a subset of the
+  adapter's declared capabilities (throwing `UndeclaredCapabilityError` otherwise), so a run row
+  can never misrepresent which role or capabilities were actually in play.
+- `packages/core/src/domain/entities.ts` — `AgentRun` gains `adapterName`, `adapterImplementation`,
+  `adapterVersion`, and `capabilitiesUsed` fields (all nullable, matching the additive migration
+  semantics for pre-migration rows), keeping the domain type in sync with the schema.
 - `packages/migrations/migrations/0005_conformance_skipped_tests.*` — adds `skipped_tests INTEGER
 NOT NULL DEFAULT 0` to `adapter_conformance_results`, tracking how many scenarios were
   intentionally skipped (e.g. `invalid_output_handling` is N/A for non-Coder adapters).
