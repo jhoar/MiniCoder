@@ -304,12 +304,17 @@ Phase 18.)
 NOT NULL DEFAULT 0` to `adapter_conformance_results`, tracking how many scenarios were
   intentionally skipped (e.g. `invalid_output_handling` is N/A for non-Coder adapters).
 - `packages/core/src/adapters/capabilities.ts` — new `parseCapabilities(capabilities, source)`:
-  validates every entry against `AgentCapabilitySchema` and dedupes (preserving first-seen
-  order), throwing `InvalidCapabilityError` (listing every offending value) rather than silently
-  casting an unrecognized string to `AgentCapabilityToken`. `AdapterRegistry.register()` calls it
-  on caller-supplied input before the transaction opens; `toRecord()` calls it on capability rows
+  validates every entry against `AgentCapabilitySchema`, dedupes, and sorts the result by
+  canonical schema order (the token's position in `AgentCapabilitySchema`), throwing
+  `InvalidCapabilityError` (listing every offending value) rather than silently casting an
+  unrecognized string to `AgentCapabilityToken`. `AdapterRegistry.register()` calls it on
+  caller-supplied input before the transaction opens; `toRecord()` calls it on capability rows
   read back from `agent_capabilities`, so a corrupted DB row fails loudly instead of defeating
-  `assertCapabilities` silently.
+  `assertCapabilities` silently. Canonical-order sorting (rather than an `ORDER BY created_at,
+id` on the read query) makes the returned capability array deterministic across storage
+  engines and independent of physical row order — capability rows inserted in the same
+  registration call share an identical `created_at` timestamp, so timestamp-based ordering
+  alone would not have been reliably deterministic.
 - `packages/migrations/migrations/0006_unique_agent_configurations.*` — adds two partial unique
   indexes on `agent_configurations`: `uq_agent_configurations_default` on `(adapter_id)` where
   `project_id IS NULL` (at most one default config per adapter), and

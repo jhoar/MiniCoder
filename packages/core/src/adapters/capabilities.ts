@@ -43,11 +43,22 @@ export class InvalidCapabilityError extends Error {
   }
 }
 
+/** Position of each token in AgentCapabilitySchema — the canonical ordering used by parseCapabilities. */
+const CANONICAL_ORDER: ReadonlyMap<AgentCapabilityToken, number> = new Map(
+  AgentCapabilitySchema.options.map((token, index) => [token, index]),
+);
+
 /**
- * Validates every entry against AgentCapabilitySchema and dedupes, preserving first-seen order.
- * Throws InvalidCapabilityError (not a raw ZodError) with every offending value listed, so both
- * caller-supplied registration input and rows read back from the database fail loudly rather
- * than silently casting an unrecognized string to AgentCapabilityToken (docs/03 §3).
+ * Validates every entry against AgentCapabilitySchema, dedupes, and sorts by canonical schema
+ * order (the token's position in AgentCapabilitySchema). Throws InvalidCapabilityError (not a
+ * raw ZodError) with every offending value listed, so both caller-supplied registration input
+ * and rows read back from the database fail loudly rather than silently casting an
+ * unrecognized string to AgentCapabilityToken (docs/03 §3).
+ *
+ * Sorting canonically — rather than relying on physical row order or an ORDER BY on
+ * created_at/id — makes the returned capability array deterministic across storage engines and
+ * independent of insertion timing, since multiple capability rows inserted in the same
+ * registration call share an identical `created_at` timestamp.
  */
 export function parseCapabilities(
   capabilities: readonly unknown[],
@@ -55,22 +66,18 @@ export function parseCapabilities(
 ): AgentCapabilityToken[] {
   const invalid: unknown[] = [];
   const seen = new Set<AgentCapabilityToken>();
-  const result: AgentCapabilityToken[] = [];
   for (const value of capabilities) {
     const parsed = AgentCapabilitySchema.safeParse(value);
     if (!parsed.success) {
       invalid.push(value);
       continue;
     }
-    if (!seen.has(parsed.data)) {
-      seen.add(parsed.data);
-      result.push(parsed.data);
-    }
+    seen.add(parsed.data);
   }
   if (invalid.length > 0) {
     throw new InvalidCapabilityError(source, invalid);
   }
-  return result;
+  return Array.from(seen).sort((a, b) => CANONICAL_ORDER.get(a)! - CANONICAL_ORDER.get(b)!);
 }
 
 /**

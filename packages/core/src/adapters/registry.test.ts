@@ -127,6 +127,26 @@ describe('AdapterRegistry.resolve', () => {
     await expect(registry.getById(adapterId)).rejects.toThrow(InvalidCapabilityError);
   });
 
+  it('returns capabilities in canonical schema order regardless of physical row insertion order', async () => {
+    const adapterId = await registry.register({
+      role: 'CoderAgentAdapter',
+      name: 'PhysicalOrderAdapter',
+      implementation: 'mock',
+      capabilities: [],
+    });
+    // Bypass the registry's own insertion order and write rows directly in reverse canonical
+    // order ('can_push_branch' precedes 'can_commit' precedes 'can_modify_files' physically).
+    // toRecord() must not depend on row order — it sorts by AgentCapabilitySchema position.
+    db.agentCapabilities.push(
+      { id: 'cap-1', adapter_id: adapterId, capability: 'can_push_branch' },
+      { id: 'cap-2', adapter_id: adapterId, capability: 'can_commit' },
+      { id: 'cap-3', adapter_id: adapterId, capability: 'can_modify_files' },
+    );
+
+    const record = await registry.getById(adapterId);
+    expect(record.capabilities).toEqual(['can_modify_files', 'can_commit', 'can_push_branch']);
+  });
+
   it('does not resolve an inactive adapter', async () => {
     await registry.register({
       role: 'CoderAgentAdapter',

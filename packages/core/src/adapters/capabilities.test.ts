@@ -61,17 +61,20 @@ describe('validateCapabilities', () => {
 });
 
 describe('parseCapabilities', () => {
-  it('returns validated tokens unchanged when all are valid', () => {
-    expect(parseCapabilities(['can_modify_files', 'can_commit'], 'test')).toEqual([
-      'can_modify_files',
+  it('returns validated tokens sorted by canonical AgentCapabilitySchema order', () => {
+    // 'can_commit' precedes 'can_push_branch' in AgentCapabilitySchema, so canonical order
+    // reorders this input even though no token is invalid or duplicated.
+    expect(parseCapabilities(['can_push_branch', 'can_commit'], 'test')).toEqual([
       'can_commit',
+      'can_push_branch',
     ]);
   });
 
-  it('dedupes repeated tokens, preserving first-seen order', () => {
+  it('dedupes repeated tokens and returns them in canonical schema order, not input order', () => {
+    // 'can_modify_files' precedes 'can_commit' in AgentCapabilitySchema.
     expect(parseCapabilities(['can_commit', 'can_modify_files', 'can_commit'], 'test')).toEqual([
-      'can_commit',
       'can_modify_files',
+      'can_commit',
     ]);
   });
 
