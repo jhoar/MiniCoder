@@ -442,19 +442,29 @@ async function runScenarios(
     results.push(fail('secret_redaction', 'Unexpected exception', String(e)));
   }
 
-  // 6. Configuration resolution — register a config row, verify it is returned
+  // 6. Configuration resolution — upsert a default config row, verify it is returned.
+  // Idempotent (SELECT-then-UPDATE-or-INSERT) rather than an unconditional INSERT: migration
+  // 0006 enforces at most one default (project_id IS NULL) row per adapter, and adapterId is
+  // stable across suite re-runs (idempotent registration), so a bare INSERT would violate that
+  // constraint on the second run against the same DB.
   try {
     const expectedConfig = { model: 'conformance-model', temperature: 0 };
-    await opts.db.execute(
-      `INSERT INTO agent_configurations (id, adapter_id, project_id, config, version, created_at, updated_at) VALUES (?, ?, NULL, ?, 1, ?, ?)`,
-      [
-        generateId(),
-        adapterId,
-        JSON.stringify(expectedConfig),
-        new Date().toISOString(),
-        new Date().toISOString(),
-      ],
+    const now = new Date().toISOString();
+    const existing = await opts.db.query<{ id: string }>(
+      `SELECT id FROM agent_configurations WHERE adapter_id = ? AND project_id IS NULL`,
+      [adapterId],
     );
+    if (existing[0]) {
+      await opts.db.execute(
+        `UPDATE agent_configurations SET config = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+        [JSON.stringify(expectedConfig), now, existing[0].id],
+      );
+    } else {
+      await opts.db.execute(
+        `INSERT INTO agent_configurations (id, adapter_id, project_id, config, version, created_at, updated_at) VALUES (?, ?, NULL, ?, 1, ?, ?)`,
+        [generateId(), adapterId, JSON.stringify(expectedConfig), now, now],
+      );
+    }
     const resolved = await registry.getConfiguration(adapterId);
     if (resolved?.model === 'conformance-model') {
       results.push(

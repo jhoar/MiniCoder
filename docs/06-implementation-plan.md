@@ -319,6 +319,11 @@ NOT NULL DEFAULT 0` to `adapter_conformance_results`, tracking how many scenario
   default rows since SQL treats every `NULL` as distinct. `AdapterRegistry.getConfiguration()`
   adds a `version DESC, updated_at DESC` tiebreaker as defense-in-depth in case this invariant is
   ever violated by a direct DB write.
+- The conformance runner's `configuration_resolution` scenario upserts (SELECT-then-UPDATE-or-
+  INSERT) its default config row instead of an unconditional INSERT, because migration 0006's
+  unique index makes a second unconditional INSERT for the same (idempotently re-registered)
+  adapter fail. `runConformanceSuite()` is safe to re-run against a persistent DB;
+  `conformance.test.ts` has a regression test asserting two consecutive runs both pass.
 
 **Deferred to Phase 9–10.** Provider-level fields (`provider`, `model`, `triggerdev_run_id`,
 `prompt_template_version`, and artifact-reference columns) are **not** added to the schema in
@@ -337,7 +342,7 @@ adapter contract in Phase 9+.
 **Existing tables.** The `agent_adapters`, `agent_capabilities`, `agent_configurations`,
 `agent_runs`, `agent_errors`, `agent_tool_operations`, `agent_context_packs`, and
 `adapter_conformance_results` tables were created in `0001_initial_schema.*` (Phase 1). Migrations
-0003–0005 extend them without recreating any tables.
+0003–0006 extend them without recreating any tables.
 
 ## Phase 6 — Bootstrap Planner, Readiness, and Clarification
 

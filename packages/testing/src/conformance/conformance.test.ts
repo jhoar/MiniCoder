@@ -199,4 +199,31 @@ describe('Phase 5 smoke adapter conformance suite', () => {
     expect(failedRows).toHaveLength(1);
     expect(failedRows[0]!.passed).toBe(0);
   });
+
+  it('is repeatable: running the suite twice against the same DB still passes every adapter', async () => {
+    // Regression guard: migration 0006 enforces at most one default agent_configurations row
+    // per adapter, and runConformanceSuite() re-registers the same (role, name) pairs on every
+    // call (idempotent registration keeps the same adapterId), so the configuration_resolution
+    // scenario must not use an unconditional INSERT.
+    const secondRunResults = await runConformanceSuite({ db, registry, recorder });
+
+    expect(secondRunResults).toHaveLength(6);
+    const failures: string[] = [];
+    for (const suite of secondRunResults) {
+      for (const scenario of suite.scenarios) {
+        if (!scenario.passed && !scenario.skipped) {
+          failures.push(
+            `${suite.adapterName}/${scenario.scenarioName}: ${scenario.details}${scenario.error ? ` (${scenario.error})` : ''}`,
+          );
+        }
+      }
+    }
+    expect(failures, `Second-run conformance failures:\n${failures.join('\n')}`).toHaveLength(0);
+
+    // The first beforeEach run already registered every adapter at version 1; re-registering
+    // with identical capabilities in this second run should still land on the same adapterId.
+    for (let i = 0; i < results.length; i++) {
+      expect(secondRunResults[i]!.adapterId).toBe(results[i]!.adapterId);
+    }
+  });
 });
