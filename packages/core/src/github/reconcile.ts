@@ -60,6 +60,20 @@ function systemActor(correlationId: string): ActorIdentity {
   return { id: SYSTEM_ACTOR_ID, role: UserRole.ADMIN, actorKind: 'system', correlationId };
 }
 
+/**
+ * `'lock_required'` (HIGH-3 code-review fix): a caller decided to skip acquiring the
+ * `execution-lane:<projectId>` `WorkflowLockManager` lock based on an earlier, cheap
+ * `feature_runs.current_execution_state` read (`requiresExecutionLock`), but by the time this
+ * call's *own* internal state read ran, a concurrent writer (a racing webhook delivery, or the
+ * scheduled fallback overlapping a webhook delivery) had already advanced the same feature run
+ * into `code_pushed`/`pr_opened` — a state whose next reconciliation action really does need the
+ * lock. Rather than hard-throwing a `CommandError` from inside a lock-gated handler (which
+ * `InboxProcessor` would catch and retry later with backoff), `runStep` reports `'lock_required'`
+ * and the loop in `reconcileGithubState` stops immediately without executing that step. The caller
+ * is expected to acquire the lock and call `reconcileGithubState` once more — see
+ * `packages/github/src/inbox-handlers.ts` and
+ * `packages/triggerdev/src/tasks/github-reconciliation.ts`.
+ */
 export type ReconciliationAction =
   | 'none'
   | 'pr_opened'
@@ -67,7 +81,8 @@ export type ReconciliationAction =
   | 'ci_passed'
   | 'ci_failed'
   | 'changes_requested'
-  | 'escalated';
+  | 'escalated'
+  | 'lock_required';
 
 export interface ReconcileGithubStateOptions {
   db: DbClient;
@@ -174,6 +189,13 @@ export async function reconcileGithubState(
     });
     if (!stepResult) break;
     actions.push(stepResult.action);
+    // HIGH-3: 'lock_required' means the step that would advance the feature run needs
+    // `lockContext` but none was supplied — stop the catch-up loop immediately rather than
+    // treating it as a completed action or continuing to a state read that's now known-stale.
+    // The caller (inbox handler / scheduled task) is responsible for re-invoking
+    // `reconcileGithubState` once more with a freshly acquired lock; that second call does its own
+    // fresh internal state read, so it naturally picks up whatever changed underneath this call.
+    if (stepResult.action === 'lock_required') break;
     resultingState = stepResult.resultingState;
     currentState = stepResult.resultingState ?? currentState;
     expectedVersion = nextVersion(expectedVersion);
@@ -247,6 +269,13 @@ async function runStep(
   }
 
   if (currentState === FeatureExecutionState.CODE_PUSHED) {
+    // HIGH-3: this branch dispatches RecordPrOpenedCommand, which is execution-lane lock-gated
+    // (requiresExecutionLock). Callers that determined no lock was needed based on an earlier,
+    // now-possibly-stale state read must not fall through to a hard-throwing lock-gated handler
+    // call here — report 'lock_required' so `reconcileGithubState`'s loop stops cleanly and the
+    // caller can retry once with a freshly acquired lock (see the `ReconciliationAction` doc
+    // comment on 'lock_required').
+    if (!lockContext) return { action: 'lock_required' };
     // HIGH-1: no longer gated on `!hasPrRow` — reconcileGithubState is only ever called with an
     // already-fetched `observed` (callers return early if GitHubClient.getPullRequest returned
     // null), so a PR is confirmed to exist by the time this branch runs regardless of whether a
@@ -275,6 +304,8 @@ async function runStep(
   }
 
   if (currentState === FeatureExecutionState.PR_OPENED && observed.ciStatus === 'running') {
+    // HIGH-3: see the CODE_PUSHED branch above — RecordCiRunningCommand is also lock-gated.
+    if (!lockContext) return { action: 'lock_required' };
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
       idempotencyKey: `record-ci-running:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
@@ -299,6 +330,8 @@ async function runStep(
     // A missed `ci_running` webhook: CI is already terminal by the time we observe it. Advance
     // through CI_RUNNING first so the next loop iteration can record the terminal outcome
     // (HIGH-2) — the matrix has no direct pr_opened -> under_review/ci_failed transition.
+    // HIGH-3: this also dispatches RecordCiRunningCommand — same lock-gated guard as above.
+    if (!lockContext) return { action: 'lock_required' };
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
       idempotencyKey: `record-ci-running:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,

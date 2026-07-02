@@ -474,6 +474,58 @@ describe('reconcileGithubState', () => {
     expect(prRows[0]?.conversations_resolved).toBe(0);
   });
 
+  it('HIGH-3: reports lock_required instead of throwing when a lock-gated step is reached without lockContext', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CODE_PUSHED);
+
+    // No lockContext supplied — simulates a caller that decided (based on an earlier state read)
+    // that no lock was needed, but by the time this call's own internal read ran, the feature run
+    // had already been advanced into a lock-gated state by a concurrent writer.
+    await expect(
+      reconcileGithubState({
+        db,
+        featureRunId,
+        projectId: PROJECT_ID,
+        observed: observed({ prNumber: 50 }),
+        correlationId: 'corr-high3-a',
+      }),
+    ).resolves.not.toThrow();
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 50 }),
+      correlationId: 'corr-high3-b',
+    });
+
+    expect(result.action).toBe('lock_required');
+    expect(result.actions).toEqual(['lock_required']);
+    expect(result.resultingState).toBeUndefined();
+
+    // The feature run must not have moved — the lock-gated step was never executed.
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.CODE_PUSHED);
+
+    // A caller's retry-with-lock succeeds and completes the transition, proving the narrow race
+    // this fix targets resolves into a clean single extra retry rather than a thrown error.
+    const lockContext = await seedLock(db);
+    const retryResult = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 50 }),
+      correlationId: 'corr-high3-c',
+      lockContext,
+    });
+    expect(retryResult.action).toBe('pr_opened');
+    expect(retryResult.resultingState).toBe(FeatureExecutionState.PR_OPENED);
+  });
+
   it('does not escalate an already-merged PR', async () => {
     const db = createTestDb();
     await seedProject(db);

@@ -201,6 +201,67 @@ describe('GitHub webhook → InboxProcessor → reconcileGithubState (end-to-end
     expect(resolved?.featureRunId).toBe(featureRunId);
   });
 
+  it('HIGH-3: retries with a freshly acquired lock and completes the transition when the no-lock fast path hits lock_required', async () => {
+    const db = createTestDb();
+    const { featureRunId } = await seed(db);
+    // `seed()` already leaves the feature run at CODE_PUSHED — a lock-gated state
+    // (`requiresExecutionLock`). Wrap `db.query` so the inbox handler's cheap `needsLock`
+    // pre-check (the simple `SELECT current_execution_state FROM feature_runs WHERE id = ?` in
+    // packages/github/src/inbox-handlers.ts) observes a stale, non-lock-gated snapshot exactly
+    // once — simulating the narrow race HIGH-3 targets: a concurrent writer advances the run into
+    // a lock-gated state between the handler's pre-check and `reconcileGithubState`'s own internal
+    // read (a different, JOIN-based query, left untouched here so it sees the *real* row).
+    let interceptedOnce = false;
+    // A transparent Proxy (not an object spread) — `query`/`execute`/`transaction` are prototype
+    // methods on `SqliteDbClient`, so a spread copy would silently drop them. The proxy forwards
+    // every property/method through to the real `db` unchanged except `query`, which is
+    // intercepted exactly once for the specific stale-snapshot read.
+    const racyDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === 'query') {
+          return async (sql: string, params?: unknown[]) => {
+            if (
+              !interceptedOnce &&
+              sql.includes('SELECT current_execution_state FROM feature_runs WHERE id = ?')
+            ) {
+              interceptedOnce = true;
+              return [{ current_execution_state: FeatureExecutionState.UNDER_REVIEW }];
+            }
+            return target.query(sql, params);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as typeof db;
+
+    const provider = new MockGitHubProvider();
+    provider.simulatePrOpened(106, featureRunId, 'sha-race');
+
+    const client = new MockGitHubClient(provider);
+    const handlers = createGithubInboxHandlers(racyDb, async () => client);
+    const processor = new InboxProcessor(db, handlers);
+
+    await insertInboxEvent(db, 'pr.opened', {
+      projectId: PROJECT_ID,
+      prNumber: 106,
+      branchName: 'minicoder/FR-001',
+      baseBranch: 'main',
+      headSha: 'sha-race',
+    });
+
+    const result = await processor.pollAndProcess();
+    expect(result.processed).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(interceptedOnce).toBe(true);
+
+    // The transition still completed via the retry-with-lock path, not left stuck.
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.PR_OPENED);
+  });
+
   it.each(['review.comment', 'push', 'branch.protection_ok'])(
     'HIGH-5: a %s inbox event ends up processed, not stuck pending',
     async (eventType) => {

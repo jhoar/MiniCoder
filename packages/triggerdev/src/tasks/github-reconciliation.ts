@@ -108,8 +108,12 @@ export async function runImpl(
 
   for (const candidate of candidates) {
     if (candidate.pr_number === null || candidate.pr_number === undefined) continue;
-    const observed = await client.getPullRequest(repo.owner, repo.name, candidate.pr_number);
-    if (!observed) continue;
+    const observedResult = await client.getPullRequest(repo.owner, repo.name, candidate.pr_number);
+    if (!observedResult) continue;
+    // Re-bound to a new const so TS's null-narrowing survives capture by the `reconcileWithLock`
+    // closure below (narrowing on the original `const` is lost once referenced from a nested
+    // function scope).
+    const observed: NonNullable<typeof observedResult> = observedResult;
 
     // MEDIUM-3: only pr_opened/ci_running (execution-lane lock-gated) actions ever need the
     // lock — skip acquire/release entirely when the candidate's current state can never dispatch
@@ -118,8 +122,34 @@ export async function runImpl(
       candidate.current_execution_state as FeatureExecutionState,
     );
 
+    async function reconcileWithLock(): Promise<Awaited<ReturnType<typeof reconcileGithubState>>> {
+      const acquired = await lockManager.acquire(
+        payload.projectId,
+        `execution-lane:${payload.projectId}`,
+        { holderId: 'github-reconciliation-task', ttlMs: 30_000 },
+      );
+      try {
+        return await reconcileGithubState({
+          db,
+          featureRunId: candidate.id,
+          projectId: payload.projectId,
+          observed,
+          correlationId: payload.correlationId,
+          lockContext: {
+            lockId: acquired.lockId,
+            fence: acquired.fence,
+            holderId: acquired.holderId,
+            projectId: payload.projectId,
+            resourceKey: `execution-lane:${payload.projectId}`,
+          },
+        });
+      } finally {
+        await lockManager.release(acquired);
+      }
+    }
+
     if (!needsLock) {
-      const result = await reconcileGithubState({
+      let result = await reconcileGithubState({
         db,
         featureRunId: candidate.id,
         projectId: payload.projectId,
@@ -127,36 +157,21 @@ export async function runImpl(
         correlationId: payload.correlationId,
         lockContext: undefined,
       });
+      // HIGH-3: the no-lock fast path raced with a concurrent writer (e.g. an overlapping webhook
+      // delivery) that advanced this feature run into a lock-gated state after `needsLock` was
+      // computed above. Retry once with the lock — its fresh internal state read picks up
+      // whatever changed underneath the first call.
+      if (result.action === 'lock_required') {
+        result = await reconcileWithLock();
+      }
       if (result.action !== 'none') reconciled++;
       if (result.action === 'escalated') humanRequired++;
       continue;
     }
 
-    const acquired = await lockManager.acquire(
-      payload.projectId,
-      `execution-lane:${payload.projectId}`,
-      { holderId: 'github-reconciliation-task', ttlMs: 30_000 },
-    );
-    try {
-      const result = await reconcileGithubState({
-        db,
-        featureRunId: candidate.id,
-        projectId: payload.projectId,
-        observed,
-        correlationId: payload.correlationId,
-        lockContext: {
-          lockId: acquired.lockId,
-          fence: acquired.fence,
-          holderId: acquired.holderId,
-          projectId: payload.projectId,
-          resourceKey: `execution-lane:${payload.projectId}`,
-        },
-      });
-      if (result.action !== 'none') reconciled++;
-      if (result.action === 'escalated') humanRequired++;
-    } finally {
-      await lockManager.release(acquired);
-    }
+    const result = await reconcileWithLock();
+    if (result.action !== 'none') reconciled++;
+    if (result.action === 'escalated') humanRequired++;
   }
 
   return { projectId: payload.projectId, reconciled, humanRequired };

@@ -217,8 +217,12 @@ export function createGithubInboxHandlers(
         if (!repo) return;
 
         const client = await githubClientFactory();
-        const observed = await client.getPullRequest(repo.owner, repo.name, prNumber);
-        if (!observed) return;
+        const observedResult = await client.getPullRequest(repo.owner, repo.name, prNumber);
+        if (!observedResult) return;
+        // Re-bound to a new const so TS's null-narrowing survives capture by the
+        // `reconcileWithLock` closure below (narrowing on the original `const` is lost once it's
+        // referenced from a nested function scope).
+        const observed: NonNullable<typeof observedResult> = observedResult;
 
         // MEDIUM-3: only pr_opened/ci_running (execution-lane lock-gated) ever need the lock —
         // look up the run's current state cheaply and skip acquire/release entirely otherwise.
@@ -231,8 +235,38 @@ export function createGithubInboxHandlers(
           | undefined;
         const needsLock = currentState !== undefined && requiresExecutionLock(currentState);
 
+        async function reconcileWithLock(): Promise<void> {
+          // A LockConflictError here (another execution-lane holder, e.g. an active Coder run,
+          // currently owns the lock) propagates to InboxProcessor, which marks the delivery
+          // 'failed' with backoff — it is retried on a later poll rather than dropped.
+          const acquired = await lockManager.acquire(
+            payload.projectId,
+            `execution-lane:${payload.projectId}`,
+            { holderId: LOCK_HOLDER_ID, ttlMs: LOCK_TTL_MS },
+          );
+
+          try {
+            await reconcileGithubState({
+              db,
+              featureRunId,
+              projectId: payload.projectId,
+              observed,
+              correlationId: `inbox-${eventType}-${featureRunId}`,
+              lockContext: {
+                lockId: acquired.lockId,
+                fence: acquired.fence,
+                holderId: acquired.holderId,
+                projectId: payload.projectId,
+                resourceKey: `execution-lane:${payload.projectId}`,
+              },
+            });
+          } finally {
+            await lockManager.release(acquired);
+          }
+        }
+
         if (!needsLock) {
-          await reconcileGithubState({
+          const result = await reconcileGithubState({
             db,
             featureRunId,
             projectId: payload.projectId,
@@ -240,36 +274,17 @@ export function createGithubInboxHandlers(
             correlationId: `inbox-${eventType}-${featureRunId}`,
             lockContext: undefined,
           });
+          // HIGH-3: the no-lock fast path's own internal state read raced with a concurrent
+          // writer that advanced this feature run into a lock-gated state after this handler's
+          // earlier `needsLock` check ran. Retry once, this time acquiring the lock — the retry's
+          // fresh internal state read naturally picks up whatever changed.
+          if (result.action === 'lock_required') {
+            await reconcileWithLock();
+          }
           return;
         }
 
-        // A LockConflictError here (another execution-lane holder, e.g. an active Coder run,
-        // currently owns the lock) propagates to InboxProcessor, which marks the delivery
-        // 'failed' with backoff — it is retried on a later poll rather than dropped.
-        const acquired = await lockManager.acquire(
-          payload.projectId,
-          `execution-lane:${payload.projectId}`,
-          { holderId: LOCK_HOLDER_ID, ttlMs: LOCK_TTL_MS },
-        );
-
-        try {
-          await reconcileGithubState({
-            db,
-            featureRunId,
-            projectId: payload.projectId,
-            observed,
-            correlationId: `inbox-${eventType}-${featureRunId}`,
-            lockContext: {
-              lockId: acquired.lockId,
-              fence: acquired.fence,
-              holderId: acquired.holderId,
-              projectId: payload.projectId,
-              resourceKey: `execution-lane:${payload.projectId}`,
-            },
-          });
-        } finally {
-          await lockManager.release(acquired);
-        }
+        await reconcileWithLock();
       },
     });
   }

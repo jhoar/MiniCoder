@@ -68,5 +68,7 @@ export {
   getPullRequestByFeatureRun,
   insertPullRequestRow,
   syncPullRequestObservedState,
+  labelsEqual,
+  timestampsEqual,
   type PullRequestRow,
 } from './commands/handlers/github/pull-request-row.js';

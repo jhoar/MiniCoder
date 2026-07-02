@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { insertPullRequestRow, syncPullRequestObservedState } from '@minicoder/core';
+import {
+  insertPullRequestRow,
+  syncPullRequestObservedState,
+  labelsEqual,
+  timestampsEqual,
+} from '@minicoder/core';
 import type { ObservedPullRequestState } from '@minicoder/core';
 import { createTestDb } from './db.js';
 
@@ -133,5 +138,104 @@ describe('syncPullRequestObservedState (MEDIUM-1 idempotency)', () => {
 
     const rows = await db.query(`SELECT 1 FROM pull_requests WHERE feature_run_id = 'run-1'`);
     expect(rows).toHaveLength(0);
+  });
+});
+
+/**
+ * MEDIUM-1 code-review fix: on PostgreSQL, `blocking_labels` (JSONB) round-trips through `pg` as
+ * an already-parsed JS array (not the JSON string SQLite's driver returns), and
+ * `merged_at`/`closed_at` (TIMESTAMPTZ) round-trip as `Date` objects (not ISO strings). A plain
+ * `existing === JSON.stringify(observed)` / `existing === observed` comparison — what
+ * `syncPullRequestObservedState`'s diff-check used before this fix — never matches on those
+ * Postgres-shaped values, so two consecutive reconciliations with identical observed state would
+ * churn `version`/`updated_at` forever on PostgreSQL even though the round-3 fix already made
+ * SQLite idempotent. `labelsEqual`/`timestampsEqual` are the normalizing comparators that fix
+ * this; exercised directly here against both SQLite-shaped and Postgres-shaped inputs.
+ */
+describe('labelsEqual / timestampsEqual (MEDIUM-1 cross-dialect normalization)', () => {
+  it('labelsEqual: matches a SQLite-shaped JSON string against the observed array', () => {
+    expect(labelsEqual('["wip","do-not-merge"]', ['wip', 'do-not-merge'])).toBe(true);
+  });
+
+  it('labelsEqual: matches a Postgres-shaped already-parsed array against the observed array', () => {
+    expect(labelsEqual(['wip', 'do-not-merge'], ['wip', 'do-not-merge'])).toBe(true);
+  });
+
+  it('labelsEqual: detects a genuine difference regardless of existing-value shape', () => {
+    expect(labelsEqual('["wip"]', ['wip', 'do-not-merge'])).toBe(false);
+    expect(labelsEqual(['wip'], ['wip', 'do-not-merge'])).toBe(false);
+  });
+
+  it('timestampsEqual: matches a SQLite-shaped ISO string against the observed ISO string', () => {
+    expect(timestampsEqual('2024-03-01T12:00:00.000Z', '2024-03-01T12:00:00.000Z')).toBe(true);
+  });
+
+  it('timestampsEqual: matches a Postgres-shaped Date object against the observed ISO string', () => {
+    expect(timestampsEqual(new Date('2024-03-01T12:00:00.000Z'), '2024-03-01T12:00:00.000Z')).toBe(
+      true,
+    );
+  });
+
+  it('timestampsEqual: both-null compares equal', () => {
+    expect(timestampsEqual(null, null)).toBe(true);
+  });
+
+  it('timestampsEqual: one-null-one-set compares unequal', () => {
+    expect(timestampsEqual(null, '2024-03-01T12:00:00.000Z')).toBe(false);
+    expect(timestampsEqual(new Date('2024-03-01T12:00:00.000Z'), null)).toBe(false);
+  });
+
+  it('timestampsEqual: detects a genuine difference regardless of existing-value shape', () => {
+    expect(timestampsEqual('2024-03-01T12:00:00.000Z', '2024-03-02T00:00:00.000Z')).toBe(false);
+    expect(timestampsEqual(new Date('2024-03-01T12:00:00.000Z'), '2024-03-02T00:00:00.000Z')).toBe(
+      false,
+    );
+  });
+});
+
+describe('syncPullRequestObservedState (MEDIUM-1 idempotency, Postgres-shaped-equivalent fields)', () => {
+  it('leaves version/updated_at unchanged on a second call after writing labels/mergedAt observed via the DB round trip', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    await db.transaction(async (tx) => {
+      await insertPullRequestRow(tx, {
+        id: 'pr-row-3',
+        featureRunId: 'run-1',
+        prNumber: 50,
+        branchName: 'minicoder/FR-001',
+        baseBranch: 'main',
+        headSha: 'sha1',
+      });
+    });
+
+    const state = observed({
+      mergedAt: '2024-03-01T12:00:00.000Z',
+      blockingLabels: ['do-not-merge', 'wip'],
+    });
+    await db.transaction(async (tx) => {
+      await syncPullRequestObservedState(tx, 'run-1', state);
+    });
+    const afterFirst = (
+      await db.query<{ version: number; updated_at: string }>(
+        `SELECT version, updated_at FROM pull_requests WHERE feature_run_id = 'run-1'`,
+      )
+    )[0]!;
+
+    // Second call with the exact same observed state — must be a true no-op even though this row
+    // now carries the JSONB/TIMESTAMPTZ-shaped fields MEDIUM-1 was about (SQLite's driver returns
+    // string-shaped values for both here; `labelsEqual`/`timestampsEqual`'s Postgres-shaped
+    // handling is covered directly in the describe block above since this test harness only runs
+    // against SQLite).
+    await db.transaction(async (tx) => {
+      await syncPullRequestObservedState(tx, 'run-1', state);
+    });
+    const afterSecond = (
+      await db.query<{ version: number; updated_at: string }>(
+        `SELECT version, updated_at FROM pull_requests WHERE feature_run_id = 'run-1'`,
+      )
+    )[0]!;
+
+    expect(afterSecond.version).toBe(afterFirst.version);
+    expect(afterSecond.updated_at).toBe(afterFirst.updated_at);
   });
 });

@@ -257,6 +257,16 @@ operation when policy permits.
   `closed_at`. `review_state`/`ci_status` are **observed mirrors of GitHub** overwritten directly
   on reconciliation — unlike the other canonical state machines, PR/review state has no
   `StateTransitionValidator` matrix; GitHub remains authoritative.
+  - `blocking_labels` mirrors **every** label GitHub reports on the PR, not a pre-filtered
+    "merge-blocking" subset — the name describes what the field is _for_, not what it currently
+    contains. Deciding which of these labels actually blocks merge is Merge Gate (§5.10/§12)
+    policy that has not been implemented yet (Phase 12); until then this column is an unfiltered
+    label mirror.
+  - `conversations_resolved` is currently a **hardcoded `false` placeholder**, not a real GitHub
+    observation: the REST API has no "conversations resolved" flag at all (only GraphQL's
+    `reviewThreads.nodes[].isResolved` exposes it), and `OctokitGitHubClient` fails closed rather
+    than guessing. A future merge-gate consumer must not treat this value as authoritative until
+    GraphQL review-thread-resolution support is added.
 - **Reconciliation algorithm:** `reconcileGithubState()` (`packages/core/src/github/reconcile.ts`)
   is the single implementation both the webhook-triggered inbox handlers
   (`packages/github/src/inbox-handlers.ts`) and the scheduled fallback
@@ -534,7 +544,13 @@ A pull request may be merged only when it belongs to the active feature, targets
 branch, matches the database branch record, CI checks pass, no unresolved blocking findings remain,
 no unresolved `requires_human_decision` findings remain, required conversations are resolved,
 review-cycle limits are not exceeded, the PR is mergeable, no blocking labels exist, budget gates
-pass, required human approvals exist, and GitHub branch protection permits merge.
+pass, required human approvals exist, and GitHub branch protection permits merge. **"Required
+conversations are resolved" and "no blocking labels exist" are not yet implemented as real
+evaluated preconditions** — `pull_requests.conversations_resolved` is currently a hardcoded
+`false` placeholder (REST has no such flag; GraphQL support is unimplemented — see §5.7/§8) and
+`pull_requests.blocking_labels` currently mirrors every observed PR label with no per-project
+"which labels actually block merge" policy defined anywhere yet. Both are Phase 12 (Merge Gate)
+implementation scope.
 
 **Merge-gate evidence.** Every merge-gate run writes a structured `merge_gate_evaluations` record
 capturing the inputs and outcome: CI result, review result, unresolved blocking-findings count,

@@ -13,11 +13,14 @@ export interface PullRequestRow {
   review_state: string;
   ci_status: string;
   mergeable: number | boolean | null;
-  blocking_labels: string;
+  /** JSON string on SQLite (`TEXT`); already-parsed array on PostgreSQL (`JSONB`) — see `labelsEqual`. */
+  blocking_labels: string | string[];
   conversations_resolved: number | boolean;
-  merged_at: string | null;
+  /** ISO string on SQLite (`TEXT`); `Date` on PostgreSQL (`TIMESTAMPTZ`) — see `timestampsEqual`. */
+  merged_at: string | Date | null;
   merge_sha: string | null;
-  closed_at: string | null;
+  /** ISO string on SQLite (`TEXT`); `Date` on PostgreSQL (`TIMESTAMPTZ`) — see `timestampsEqual`. */
+  closed_at: string | Date | null;
   version: number;
 }
 
@@ -113,6 +116,39 @@ function asBool(value: number | boolean | null): boolean {
 }
 
 /**
+ * MEDIUM-1 code-review fix: normalizes `blocking_labels` before comparing against the freshly
+ * observed labels. Migration 0009 declares `blocking_labels` `JSONB` on PostgreSQL and `TEXT` on
+ * SQLite; `packages/persistence-postgres/src/client.ts` does zero type coercion, so `pg` returns
+ * an already-parsed JS array for a JSONB column while the SQLite driver returns the raw JSON
+ * string. A plain `existing.blocking_labels === JSON.stringify(observed)` string comparison (the
+ * pre-fix code) therefore never matches on PostgreSQL, permanently churning `version`/`updated_at`
+ * on every reconciliation pass. Parses `existing` only when it's a string; uses it directly when
+ * it's already an array.
+ */
+function labelsEqual(existing: unknown, observed: string[]): boolean {
+  const existingLabels: unknown = typeof existing === 'string' ? JSON.parse(existing) : existing;
+  return JSON.stringify(existingLabels) === JSON.stringify(observed);
+}
+
+/**
+ * MEDIUM-1 code-review fix: normalizes timestamp comparison the same way `labelsEqual` normalizes
+ * labels. Migration 0009 declares `merged_at`/`closed_at` `TIMESTAMPTZ` on PostgreSQL; `pg` returns
+ * a `Date` object there (vs. a plain ISO string on SQLite), so a bare `===` string comparison (the
+ * pre-fix code) never matches on PostgreSQL. Compares via `Date.parse`/numeric equality instead,
+ * which also tolerates millisecond-formatting differences between what GitHub's API returns and
+ * what a round-tripped PostgreSQL `Date.toISOString()` would produce. `null === null` short-circuits
+ * without going through `Date.parse` (which would otherwise yield `NaN` for both sides and compare
+ * unequal to itself).
+ */
+function timestampsEqual(existing: string | Date | null, observed: string | null): boolean {
+  if (existing === null && observed === null) return true;
+  if (existing === null || observed === null) return false;
+  const existingMs = existing instanceof Date ? existing.getTime() : Date.parse(existing);
+  const observedMs = Date.parse(observed);
+  return existingMs === observedMs;
+}
+
+/**
  * Full observed-state mirror sync (HIGH-3 / MEDIUM-1 code-review fix): writes every
  * GitHub-observed column onto the existing `pull_requests` row for `featureRunId`, not just
  * `ci_status`/`review_state` — `head_sha`, `state`, `mergeable`, `blocking_labels`,
@@ -149,11 +185,11 @@ export async function syncPullRequestObservedState(
     existing.review_state === observed.reviewState &&
     existing.ci_status === observed.ciStatus &&
     mergeableUnchanged &&
-    existing.blocking_labels === observedBlockingLabels &&
+    labelsEqual(existing.blocking_labels, observed.blockingLabels) &&
     asBool(existing.conversations_resolved) === observed.conversationsResolved &&
-    existing.merged_at === observed.mergedAt &&
+    timestampsEqual(existing.merged_at, observed.mergedAt) &&
     existing.merge_sha === observed.mergeSha &&
-    existing.closed_at === observed.closedAt;
+    timestampsEqual(existing.closed_at, observed.closedAt);
   if (unchanged) return;
 
   await tx.execute(
@@ -178,5 +214,9 @@ export async function syncPullRequestObservedState(
     ],
   );
 }
+
+// Exported for direct unit testing of MEDIUM-1's cross-dialect normalization (see
+// packages/testing/src/pull-request-row.test.ts) — not otherwise part of this module's public API.
+export { labelsEqual, timestampsEqual };
 
 export { generateId };
