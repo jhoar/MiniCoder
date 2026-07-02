@@ -31,7 +31,12 @@ interface RawWebhookPayload {
     mergeable?: boolean | null;
   };
   review?: { state?: string; user?: { login?: string } };
-  check_run?: { id?: number; conclusion?: string | null; status?: string; pull_requests?: Array<{ number?: number }> };
+  check_run?: {
+    id?: number;
+    conclusion?: string | null;
+    status?: string;
+    pull_requests?: Array<{ number?: number }>;
+  };
   check_suite?: { conclusion?: string | null; pull_requests?: Array<{ number?: number }> };
   state?: string; // legacy commit `status` event
   sha?: string;
@@ -158,10 +163,20 @@ export function normalizeGithubWebhookEvent(
       const prNumber = payload.check_suite?.pull_requests?.[0]?.number ?? null;
       const conclusion = payload.check_suite?.conclusion ?? null;
       if (conclusion && PASSING_CONCLUSIONS.has(conclusion)) {
-        return { eventType: 'check.passed', repoFullName, prNumber, payload: { prNumber, conclusion } };
+        return {
+          eventType: 'check.passed',
+          repoFullName,
+          prNumber,
+          payload: { prNumber, conclusion },
+        };
       }
       if (conclusion && FAILING_CONCLUSIONS.has(conclusion)) {
-        return { eventType: 'check.failed', repoFullName, prNumber, payload: { prNumber, conclusion } };
+        return {
+          eventType: 'check.failed',
+          repoFullName,
+          prNumber,
+          payload: { prNumber, conclusion },
+        };
       }
       return null;
     }
@@ -169,10 +184,20 @@ export function normalizeGithubWebhookEvent(
     case 'status': {
       const state = payload.state;
       if (state === 'success') {
-        return { eventType: 'check.passed', repoFullName, prNumber: null, payload: { sha: payload.sha, state } };
+        return {
+          eventType: 'check.passed',
+          repoFullName,
+          prNumber: null,
+          payload: { sha: payload.sha, state },
+        };
       }
       if (state === 'failure' || state === 'error') {
-        return { eventType: 'check.failed', repoFullName, prNumber: null, payload: { sha: payload.sha, state } };
+        return {
+          eventType: 'check.failed',
+          repoFullName,
+          prNumber: null,
+          payload: { sha: payload.sha, state },
+        };
       }
       return null;
     }

@@ -13,7 +13,6 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
-import { updatePullRequestCiStatus } from './pull-request-row.js';
 
 export const RecordCiFailedPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -41,9 +40,10 @@ interface FeatureRunRow {
  * RequestChangesAfterCiFailCommand dispatch remain Phase 8/10 scope (start-next-feature /
  * review-fix loop), consistent with CLAUDE.md's Phase 7 scope boundary.
  */
-export class RecordCiFailedHandler
-  implements CommandHandler<RecordCiFailedPayload, FeatureExecutionState>
-{
+export class RecordCiFailedHandler implements CommandHandler<
+  RecordCiFailedPayload,
+  FeatureExecutionState
+> {
   readonly commandName = 'RecordCiFailedCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -88,7 +88,8 @@ export class RecordCiFailedHandler
       if (affected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
-      await updatePullRequestCiStatus(tx, featureRunId, 'failed');
+      // pull_requests.ci_status is written by reconcileGithubState's unconditional
+      // syncPullRequestObservedState() top-level mirror sync, not here (HIGH-3 fix).
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,
         projectId,
@@ -100,7 +101,13 @@ export class RecordCiFailedHandler
       });
       await writeOutboxEvent(tx, {
         eventType: 'feature.ci_failed',
-        payload: { featureRunId, projectId, checkRunId, reason: reason ?? null },
+        payload: {
+          featureRunId,
+          projectId,
+          checkRunId,
+          conclusion: 'failure',
+          reason: reason ?? null,
+        },
       });
       const result: CommandResult<FeatureExecutionState> = {
         commandId: envelope.commandId,

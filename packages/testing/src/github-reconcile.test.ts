@@ -240,6 +240,129 @@ describe('reconcileGithubState', () => {
     expect(result.action).toBe('none');
   });
 
+  it('HIGH-2: catches up pr_opened -> under_review in one call when ci_running was missed and CI is already passed', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.PR_OPENED);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 18 });
+    const lockContext = await seedLock(db);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 18, ciStatus: 'passed' }),
+      correlationId: 'corr-multi-1',
+      lockContext,
+    });
+
+    expect(result.actions).toEqual(['ci_running', 'ci_passed']);
+    expect(result.action).toBe('ci_passed');
+    expect(result.resultingState).toBe(FeatureExecutionState.UNDER_REVIEW);
+
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
+  });
+
+  it('HIGH-2: catches up pr_opened -> ci_failed in one call when ci_running was missed and CI already failed', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.PR_OPENED);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 19 });
+    const lockContext = await seedLock(db);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 19, ciStatus: 'failed' }),
+      correlationId: 'corr-multi-2',
+      lockContext,
+    });
+
+    expect(result.actions).toEqual(['ci_running', 'ci_failed']);
+    expect(result.action).toBe('ci_failed');
+    expect(result.resultingState).toBe(FeatureExecutionState.CI_FAILED);
+  });
+
+  it('HIGH-3: full observed-state mirror sync writes every column, not just ci_status/review_state', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 30, ciStatus: 'passed' });
+
+    await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({
+        prNumber: 30,
+        ciStatus: 'passed',
+        reviewState: 'approved',
+        headSha: 'sha-mirror',
+        mergeable: false,
+        blockingLabels: ['do-not-merge'],
+        conversationsResolved: false,
+        mergedAt: null,
+        mergeSha: null,
+        closedAt: null,
+      }),
+      correlationId: 'corr-mirror-1',
+    });
+
+    const rows = await db.query<{
+      head_sha: string;
+      mergeable: number | null;
+      blocking_labels: string;
+      conversations_resolved: number;
+      review_state: string;
+    }>(
+      `SELECT head_sha, mergeable, blocking_labels, conversations_resolved, review_state
+       FROM pull_requests WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(rows[0]?.head_sha).toBe('sha-mirror');
+    expect(rows[0]?.mergeable).toBe(0);
+    expect(JSON.parse(rows[0]?.blocking_labels ?? '[]')).toEqual(['do-not-merge']);
+    expect(rows[0]?.conversations_resolved).toBe(0);
+    expect(rows[0]?.review_state).toBe('approved');
+  });
+
+  it('MEDIUM-1: approved/commented/dismissed review states land in pull_requests.review_state without a feature-execution transition', async () => {
+    for (const reviewState of ['approved', 'commented', 'dismissed'] as const) {
+      const db = createTestDb();
+      await seedProject(db);
+      const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
+      await seedPullRequestRow(db, featureRunId, { prNumber: 31, ciStatus: 'passed' });
+
+      const result = await reconcileGithubState({
+        db,
+        featureRunId,
+        projectId: PROJECT_ID,
+        observed: observed({ prNumber: 31, ciStatus: 'passed', reviewState }),
+        correlationId: `corr-review-${reviewState}`,
+      });
+
+      // No feature-execution transition: the matrix only gates on 'changes_requested'.
+      expect(result.action).toBe('none');
+
+      const runRows = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
+
+      const prRows = await db.query<{ review_state: string }>(
+        `SELECT review_state FROM pull_requests WHERE feature_run_id = ?`,
+        [featureRunId],
+      );
+      expect(prRows[0]?.review_state).toBe(reviewState);
+    }
+  });
+
   it('does not escalate an already-merged PR', async () => {
     const db = createTestDb();
     await seedProject(db);

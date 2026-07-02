@@ -647,11 +647,11 @@ may be used instead of a GitHub App installation token (`OctokitGitHubClient` ac
 
 #### Required environment variables
 
-| Variable                         | Description                                                              |
-| --------------------------------- | ------------------------------------------------------------------------- |
-| `GITHUB_WEBHOOK_SECRET`           | Current webhook signing secret — required to start `minicoder github serve` |
-| `GITHUB_WEBHOOK_SECRET_PREVIOUS`  | Previous secret, set only during a rotation overlap window                |
-| `GITHUB_TOKEN`                    | PAT or installation token used by `OctokitGitHubClient` / `github-reconciliation` |
+| Variable                         | Description                                                                       |
+| -------------------------------- | --------------------------------------------------------------------------------- |
+| `GITHUB_WEBHOOK_SECRET`          | Current webhook signing secret — required to start `minicoder github serve`       |
+| `GITHUB_WEBHOOK_SECRET_PREVIOUS` | Previous secret, set only during a rotation overlap window                        |
+| `GITHUB_TOKEN`                   | PAT or installation token used by `OctokitGitHubClient` / `github-reconciliation` |
 
 #### Procedure: Start the webhook receiver
 
@@ -697,13 +697,13 @@ production/hosted deployments. Phase 13's Fastify orchestrator API mounts the sa
 
 #### Diagnostics and known failure modes
 
-| Symptom                                            | Likely cause                                         | Resolution                                                                 |
-| --------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
-| `minicoder github serve` exits immediately          | `GITHUB_WEBHOOK_SECRET` unset                          | Set `GITHUB_WEBHOOK_SECRET` before starting                                 |
-| Webhook returns `401`                                | Signature mismatch (secret rotated or misconfigured)   | Verify `GITHUB_WEBHOOK_SECRET` matches the GitHub App's configured secret   |
-| Webhook returns `202 unlinked-repository`             | No `repositories` row for the delivering repo          | Insert a `repositories` row linking `full_name` to the MiniCoder project    |
-| `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)        |
-| Feature run stuck, no `pull_requests` row             | PR never opened/observed yet (still `code_pushed`)     | Not a bug — the scheduled fallback only reconciles PRs it already tracks    |
+| Symptom                                                         | Likely cause                                         | Resolution                                                                |
+| --------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------- |
+| `minicoder github serve` exits immediately                      | `GITHUB_WEBHOOK_SECRET` unset                        | Set `GITHUB_WEBHOOK_SECRET` before starting                               |
+| Webhook returns `401`                                           | Signature mismatch (secret rotated or misconfigured) | Verify `GITHUB_WEBHOOK_SECRET` matches the GitHub App's configured secret |
+| Webhook returns `202 unlinked-repository`                       | No `repositories` row for the delivering repo        | Insert a `repositories` row linking `full_name` to the MiniCoder project  |
+| `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment         | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)      |
+| Feature run stuck, no `pull_requests` row                       | PR never opened/observed yet (still `code_pushed`)   | Not a bug — the scheduled fallback only reconciles PRs it already tracks  |
 
 ---
 

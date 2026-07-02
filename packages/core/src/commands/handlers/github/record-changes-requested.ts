@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FeatureExecutionState, PrReviewState, UserRole } from '../../../domain/states.js';
+import { FeatureExecutionState, UserRole } from '../../../domain/states.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { FEATURE_EXECUTION_MATRIX } from '../../../statemachine/machines/feature-execution.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
@@ -13,7 +13,6 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
-import { updatePullRequestReviewState } from './pull-request-row.js';
 
 export const RecordChangesRequestedPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -40,9 +39,10 @@ interface FeatureRunRow {
  * feature_runs has no fix-attempt-count column yet) — this Phase 7 handler only records the
  * GitHub-observed review outcome (pull_requests.review_state) and performs the state transition.
  */
-export class RecordChangesRequestedHandler
-  implements CommandHandler<RecordChangesRequestedPayload, FeatureExecutionState>
-{
+export class RecordChangesRequestedHandler implements CommandHandler<
+  RecordChangesRequestedPayload,
+  FeatureExecutionState
+> {
   readonly commandName = 'RecordChangesRequestedCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -87,7 +87,8 @@ export class RecordChangesRequestedHandler
       if (affected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
-      await updatePullRequestReviewState(tx, featureRunId, PrReviewState.CHANGES_REQUESTED);
+      // pull_requests.review_state is written by reconcileGithubState's unconditional
+      // syncPullRequestObservedState() top-level mirror sync, not here (HIGH-3 fix).
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,
         projectId,

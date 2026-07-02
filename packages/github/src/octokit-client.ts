@@ -68,9 +68,10 @@ export class OctokitGitHubClient implements GitHubClient {
       throw err;
     }
 
-    const [reviews, checkRuns] = await Promise.all([
+    const [reviews, checkRuns, combinedStatus] = await Promise.all([
       this.octokit.pulls.listReviews({ owner, repo, pull_number: prNumber }),
       this.octokit.checks.listForRef({ owner, repo, ref: pr.head.sha }),
+      this.octokit.repos.getCombinedStatusForRef({ owner, repo, ref: pr.head.sha }),
     ]);
 
     return {
@@ -80,7 +81,7 @@ export class OctokitGitHubClient implements GitHubClient {
       headSha: pr.head.sha,
       state: pr.merged ? 'merged' : (pr.state as 'open' | 'closed'),
       reviewState: deriveReviewState(reviews.data),
-      ciStatus: deriveCiStatus(checkRuns.data.check_runs),
+      ciStatus: deriveCiStatus(checkRuns.data.check_runs, combinedStatus.data),
       mergeable: pr.mergeable ?? null,
       blockingLabels: (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : (l.name ?? ''))),
       conversationsResolved: true, // GitHub's REST API has no direct "conversations resolved" flag; GraphQL is a future enhancement.
@@ -130,11 +131,35 @@ function deriveReviewState(
   }
 }
 
-function deriveCiStatus(
+/**
+ * Combines GitHub Checks (checkRuns) with the legacy combined commit-status API
+ * (`repos.getCombinedStatusForRef`) so `OctokitGitHubClient` derives correct CI status for repos
+ * using either signal, or both (HIGH-4 code-review fix — the `status` webhook event has no
+ * Checks-API equivalent). Precedence, evaluated across both sources together: a failure from
+ * either wins outright ('failed'); otherwise pending/in-progress from either wins next
+ * ('running'); otherwise a success from at least one (with neither failure nor pending present)
+ * is 'passed'; otherwise (no signal from either source) 'pending'.
+ */
+export function deriveCiStatus(
   checkRuns: Array<{ status: string; conclusion: string | null }>,
+  combinedStatus: { state: string; total_count?: number },
 ): ObservedPullRequestState['ciStatus'] {
-  if (checkRuns.length === 0) return 'pending';
-  if (checkRuns.some((c) => c.status !== 'completed')) return 'running';
-  if (checkRuns.some((c) => c.conclusion !== 'success')) return 'failed';
-  return 'passed';
+  const hasCheckRuns = checkRuns.length > 0;
+  const hasCommitStatuses = (combinedStatus.total_count ?? 0) > 0;
+  if (!hasCheckRuns && !hasCommitStatuses) return 'pending';
+
+  const checkFailed = checkRuns.some((c) => c.status === 'completed' && c.conclusion !== 'success');
+  const statusFailed =
+    hasCommitStatuses && (combinedStatus.state === 'failure' || combinedStatus.state === 'error');
+  if (checkFailed || statusFailed) return 'failed';
+
+  const checkRunning = checkRuns.some((c) => c.status !== 'completed');
+  const statusPending = hasCommitStatuses && combinedStatus.state === 'pending';
+  if (checkRunning || statusPending) return 'running';
+
+  const checkPassed = hasCheckRuns && checkRuns.every((c) => c.conclusion === 'success');
+  const statusPassed = hasCommitStatuses && combinedStatus.state === 'success';
+  if (checkPassed || statusPassed) return 'passed';
+
+  return 'pending';
 }

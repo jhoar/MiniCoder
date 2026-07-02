@@ -1,5 +1,6 @@
 import type { TxClient } from '../../../persistence/types.js';
 import { generateId, isoNow } from '../../helpers.js';
+import type { ObservedPullRequestState } from '../../../github/client.js';
 
 export interface PullRequestRow {
   id: string;
@@ -103,6 +104,47 @@ export async function updatePullRequestReviewState(
   await tx.execute(
     `UPDATE pull_requests SET review_state = ?, version = version + 1, updated_at = ? WHERE feature_run_id = ?`,
     [reviewState, isoNow(), featureRunId],
+  );
+}
+
+/**
+ * Full observed-state mirror sync (HIGH-3 / MEDIUM-1 code-review fix): writes every
+ * GitHub-observed column onto the existing `pull_requests` row for `featureRunId`, not just
+ * `ci_status`/`review_state` — `head_sha`, `state`, `mergeable`, `blocking_labels`,
+ * `conversations_resolved`, `merged_at`, `merge_sha`, `closed_at` all land here too, whatever
+ * `review_state` GitHub reports (`approved`/`commented`/`dismissed`/`changes_requested`/`none`),
+ * not just `changes_requested`. This is a no-op (0 rows affected) if no `pull_requests` row exists
+ * yet for `featureRunId` — `reconcileGithubState` calls this unconditionally before any action
+ * branch, and the `code_pushed -> pr_opened` branch is responsible for first creating the row via
+ * `insertPullRequestRow`. Superseded `updatePullRequestCiStatus`/`updatePullRequestReviewState`
+ * single-column writes remain exported for now but are no longer called by the Record* handlers,
+ * which rely on this full sync instead.
+ */
+export async function syncPullRequestObservedState(
+  tx: TxClient,
+  featureRunId: string,
+  observed: ObservedPullRequestState,
+): Promise<void> {
+  await tx.execute(
+    `UPDATE pull_requests
+       SET head_sha = ?, state = ?, review_state = ?, ci_status = ?, mergeable = ?,
+           blocking_labels = ?, conversations_resolved = ?, merged_at = ?, merge_sha = ?,
+           closed_at = ?, version = version + 1, updated_at = ?
+     WHERE feature_run_id = ?`,
+    [
+      observed.headSha,
+      observed.state,
+      observed.reviewState,
+      observed.ciStatus,
+      observed.mergeable === null ? null : observed.mergeable ? 1 : 0,
+      JSON.stringify(observed.blockingLabels),
+      observed.conversationsResolved ? 1 : 0,
+      observed.mergedAt,
+      observed.mergeSha,
+      observed.closedAt,
+      isoNow(),
+      featureRunId,
+    ],
   );
 }
 

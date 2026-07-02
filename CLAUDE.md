@@ -530,6 +530,13 @@ There are several distinct state machines — not one:
 | Web UI               | React / Next.js                     |
 | Security scanning    | pnpm audit/OSV + gitleaks + semgrep |
 
+**Local setup prerequisite:** the root `package.json`'s `build`/`typecheck`/`lint`/`test` scripts
+shell out to nested `pnpm -r ...`/`pnpm --filter ...` calls, so `pnpm` must be resolvable on
+`PATH` before running any of them — via `corepack enable` (one-time) or a global `pnpm` install.
+This is a documentation note, not a script change: swapping the scripts themselves to invoke
+`corepack pnpm` risks behaving differently under `pnpm/action-setup`-based CI, which is out of
+scope to verify here.
+
 ## Editing Guidelines for Documentation
 
 - Every `docs/` file must keep its `Status: Canonical`, `Supersedes:`, `Version:`, and

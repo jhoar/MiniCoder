@@ -1,5 +1,5 @@
-import type { DbClient, GitHubClient } from '@minicoder/core';
-import { reconcileGithubState } from '@minicoder/core';
+import type { DbClient, GitHubClient, FeatureExecutionState } from '@minicoder/core';
+import { reconcileGithubState, requiresExecutionLock } from '@minicoder/core';
 import { WorkflowLockManager } from '@minicoder/workflow';
 import type { GithubReconciliationPayload } from './types.js';
 
@@ -44,6 +44,7 @@ interface RepositoryRow {
 interface FeatureRunCandidateRow {
   id: string;
   pr_number: number | null;
+  current_execution_state: string;
 }
 
 // Terminal / not-yet-PR states are excluded from the scheduled fallback scan.
@@ -83,7 +84,7 @@ export async function runImpl(
 
   const candidates = payload.featureRunId
     ? await db.query<FeatureRunCandidateRow>(
-        `SELECT fr.id, pr.pr_number
+        `SELECT fr.id, pr.pr_number, fr.current_execution_state
          FROM feature_runs fr
          JOIN feature_requests freq ON fr.feature_request_id = freq.id
          LEFT JOIN pull_requests pr ON pr.feature_run_id = fr.id
@@ -91,7 +92,7 @@ export async function runImpl(
         [payload.featureRunId, payload.projectId],
       )
     : await db.query<FeatureRunCandidateRow>(
-        `SELECT fr.id, pr.pr_number
+        `SELECT fr.id, pr.pr_number, fr.current_execution_state
          FROM feature_runs fr
          JOIN feature_requests freq ON fr.feature_request_id = freq.id
          LEFT JOIN pull_requests pr ON pr.feature_run_id = fr.id
@@ -110,9 +111,27 @@ export async function runImpl(
     const observed = await client.getPullRequest(repo.owner, repo.name, candidate.pr_number);
     if (!observed) continue;
 
-    // Acquired unconditionally (like the webhook-triggered inbox handlers in packages/github) —
-    // only RecordPrOpenedCommand/RecordCiRunningCommand actually require it, but reconcile's
-    // dispatch decision isn't known until it runs, and a spurious acquire/release is cheap.
+    // MEDIUM-3: only pr_opened/ci_running (execution-lane lock-gated) actions ever need the
+    // lock — skip acquire/release entirely when the candidate's current state can never dispatch
+    // one of those two commands, instead of acquiring unconditionally on every candidate.
+    const needsLock = requiresExecutionLock(
+      candidate.current_execution_state as FeatureExecutionState,
+    );
+
+    if (!needsLock) {
+      const result = await reconcileGithubState({
+        db,
+        featureRunId: candidate.id,
+        projectId: payload.projectId,
+        observed,
+        correlationId: payload.correlationId,
+        lockContext: undefined,
+      });
+      if (result.action !== 'none') reconciled++;
+      if (result.action === 'escalated') humanRequired++;
+      continue;
+    }
+
     const acquired = await lockManager.acquire(
       payload.projectId,
       `execution-lane:${payload.projectId}`,

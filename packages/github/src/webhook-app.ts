@@ -71,62 +71,59 @@ export async function registerGithubWebhookRoute(
   app: FastifyInstance,
   options: CreateWebhookAppOptions,
 ): Promise<void> {
-  app.post(
-    '/webhooks/github',
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const rawBody = request.rawBody ?? JSON.stringify(request.body ?? {});
-      const signature = request.headers['x-hub-signature-256'] as string | undefined;
-      const deliveryId = request.headers['x-github-delivery'] as string | undefined;
-      const githubEvent = request.headers['x-github-event'] as string | undefined;
+  app.post('/webhooks/github', async (request: FastifyRequest, reply: FastifyReply) => {
+    const rawBody = request.rawBody ?? JSON.stringify(request.body ?? {});
+    const signature = request.headers['x-hub-signature-256'] as string | undefined;
+    const deliveryId = request.headers['x-github-delivery'] as string | undefined;
+    const githubEvent = request.headers['x-github-event'] as string | undefined;
 
-      const verified = await verifyWebhookSignature(rawBody, signature, options.secrets);
-      if (!verified) {
-        return reply.code(401).send({ error: 'invalid signature' });
-      }
-      if (!deliveryId) {
-        return reply.code(400).send({ error: 'missing X-GitHub-Delivery header' });
-      }
-      if (!githubEvent) {
-        return reply.code(400).send({ error: 'missing X-GitHub-Event header' });
-      }
+    const verified = await verifyWebhookSignature(rawBody, signature, options.secrets);
+    if (!verified) {
+      return reply.code(401).send({ error: 'invalid signature' });
+    }
+    if (!deliveryId) {
+      return reply.code(400).send({ error: 'missing X-GitHub-Delivery header' });
+    }
+    if (!githubEvent) {
+      return reply.code(400).send({ error: 'missing X-GitHub-Event header' });
+    }
 
-      const normalized = normalizeGithubWebhookEvent(githubEvent, request.body);
-      if (!normalized) {
-        // Event/action combination MiniCoder does not act on — acknowledge without persisting.
-        return reply.code(202).send({ status: 'ignored' });
-      }
+    const normalized = normalizeGithubWebhookEvent(githubEvent, request.body);
+    if (!normalized) {
+      // Event/action combination MiniCoder does not act on — acknowledge without persisting.
+      return reply.code(202).send({ status: 'ignored' });
+    }
 
-      const projectId = await resolveProjectId(options.db, normalized.repoFullName);
-      if (!projectId) {
-        // Repository not linked to a MiniCoder project — acknowledge without persisting.
-        return reply.code(202).send({ status: 'unlinked-repository' });
-      }
+    const projectId = await resolveProjectId(options.db, normalized.repoFullName);
+    if (!projectId) {
+      // Repository not linked to a MiniCoder project — acknowledge without persisting.
+      return reply.code(202).send({ status: 'unlinked-repository' });
+    }
 
-      const now = isoNow();
-      try {
-        await options.db.execute(
-          `INSERT INTO inbox_events
+    const now = isoNow();
+    try {
+      await options.db.execute(
+        `INSERT INTO inbox_events
              (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
            VALUES (?, ?, 'github', ?, ?, ?, 'pending', 1, ?, ?)`,
-          [
-            generateId(),
-            deliveryId,
-            normalized.eventType,
-            JSON.stringify({ ...normalized.payload, projectId }),
-            SCHEMA_VERSION,
-            now,
-            now,
-          ],
-        );
-      } catch (err) {
-        // dedup_key UNIQUE conflict = this delivery GUID was already recorded (GitHub retry).
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!/unique/i.test(msg)) throw err;
-      }
+        [
+          generateId(),
+          deliveryId,
+          normalized.eventType,
+          JSON.stringify({ ...normalized.payload, projectId }),
+          SCHEMA_VERSION,
+          now,
+          now,
+        ],
+      );
+    } catch (err) {
+      // dedup_key UNIQUE conflict = this delivery GUID was already recorded (GitHub retry).
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/unique/i.test(msg)) throw err;
+    }
 
-      return reply.code(200).send({ status: 'accepted', eventType: normalized.eventType });
-    },
-  );
+    return reply.code(200).send({ status: 'accepted', eventType: normalized.eventType });
+  });
 }
 
 export function createWebhookApp(options: CreateWebhookAppOptions): FastifyInstance {

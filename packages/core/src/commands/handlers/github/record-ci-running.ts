@@ -15,7 +15,6 @@ import {
   fulfillIdempotencyKey,
   assertLockFence,
 } from '../../helpers.js';
-import { updatePullRequestCiStatus } from './pull-request-row.js';
 
 export const RecordCiRunningPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -34,9 +33,10 @@ interface FeatureRunRow {
   version: number;
 }
 
-export class RecordCiRunningHandler
-  implements CommandHandler<RecordCiRunningPayload, FeatureExecutionState>
-{
+export class RecordCiRunningHandler implements CommandHandler<
+  RecordCiRunningPayload,
+  FeatureExecutionState
+> {
   readonly commandName = 'RecordCiRunningCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -95,7 +95,8 @@ export class RecordCiRunningHandler
       if (affected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
-      await updatePullRequestCiStatus(tx, featureRunId, 'running');
+      // pull_requests.ci_status is written by reconcileGithubState's unconditional
+      // syncPullRequestObservedState() top-level mirror sync, not here (HIGH-3 fix).
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,
         projectId,

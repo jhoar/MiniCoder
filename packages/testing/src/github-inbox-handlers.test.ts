@@ -89,10 +89,10 @@ describe('GitHub webhook → InboxProcessor → reconcileGithubState (end-to-end
   it('advances ci_running -> under_review via a check.passed inbox event resolved by tracked PR number', async () => {
     const db = createTestDb();
     const { featureRunId } = await seed(db);
-    await db.execute(
-      `UPDATE feature_runs SET current_execution_state = ? WHERE id = ?`,
-      [FeatureExecutionState.CI_RUNNING, featureRunId],
-    );
+    await db.execute(`UPDATE feature_runs SET current_execution_state = ? WHERE id = ?`, [
+      FeatureExecutionState.CI_RUNNING,
+      featureRunId,
+    ]);
     await db.execute(
       `INSERT INTO pull_requests
          (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
@@ -120,4 +120,76 @@ describe('GitHub webhook → InboxProcessor → reconcileGithubState (end-to-end
     );
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
   });
+
+  it('HIGH-4: a legacy status-derived check.passed event with prNumber: null resolves the run via head_sha', async () => {
+    const db = createTestDb();
+    const { featureRunId } = await seed(db);
+    await db.execute(`UPDATE feature_runs SET current_execution_state = ? WHERE id = ?`, [
+      FeatureExecutionState.CI_RUNNING,
+      featureRunId,
+    ]);
+    await db.execute(
+      `INSERT INTO pull_requests
+         (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
+          ci_status, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES ('pr-1', ?, 103, 'minicoder/FR-001', 'main', 'sha-status', 'open', 'none', 'running', '[]', 0, 1, datetime('now'), datetime('now'))`,
+      [featureRunId],
+    );
+
+    const provider = new MockGitHubProvider();
+    provider.simulatePrOpened(103, featureRunId, 'sha-status');
+    provider.simulateCheckPassed(103, 'legacy-status');
+
+    const client = new MockGitHubClient(provider);
+    const handlers = createGithubInboxHandlers(db, async () => client);
+    const processor = new InboxProcessor(db, handlers);
+
+    // Mirrors normalize.ts's `status` webhook case: prNumber is always null, only sha is known.
+    await insertInboxEvent(db, 'check.passed', {
+      projectId: PROJECT_ID,
+      prNumber: null,
+      sha: 'sha-status',
+    });
+
+    const result = await processor.pollAndProcess();
+    expect(result.processed).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
+  });
+
+  it.each(['review.comment', 'push', 'branch.protection_ok'])(
+    'HIGH-5: a %s inbox event ends up processed, not stuck pending',
+    async (eventType) => {
+      const db = createTestDb();
+      const { featureRunId } = await seed(db);
+
+      const provider = new MockGitHubProvider();
+      provider.simulatePrOpened(104, featureRunId, 'sha-branch');
+
+      const client = new MockGitHubClient(provider);
+      const handlers = createGithubInboxHandlers(db, async () => client);
+      const processor = new InboxProcessor(db, handlers);
+
+      await insertInboxEvent(db, eventType, {
+        projectId: PROJECT_ID,
+        prNumber: null,
+        branchName: 'minicoder/FR-001',
+      });
+
+      const result = await processor.pollAndProcess();
+      expect(result.processed).toBe(1);
+      expect(result.failed).toBe(0);
+
+      const rows = await db.query<{ status: string }>(
+        `SELECT status FROM inbox_events WHERE event_type = ?`,
+        [eventType],
+      );
+      expect(rows[0]?.status).toBe('processed');
+    },
+  );
 });

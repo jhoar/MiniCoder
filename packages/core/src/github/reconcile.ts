@@ -11,6 +11,14 @@
  * provider-SDK-free. Both the webhook-triggered path and the scheduled-fallback path
  * (packages/triggerdev/src/tasks/github-reconciliation.ts) call this same function so they can
  * never diverge in behavior.
+ *
+ * Multi-step catch-up (code-review HIGH-2): a single call re-evaluates the branch chain in a
+ * bounded loop (capped at MAX_RECONCILE_STEPS, mirroring the clarification-round/review-cycle
+ * circuit-breaker convention elsewhere in the codebase) after each executed action, so a missed
+ * intermediate webhook (e.g. `ci_running` never arrived but CI is already terminal by the time we
+ * observe it) doesn't strand the feature run — `PR_OPENED` + `observed.ciStatus === 'passed'` now
+ * applies RecordPrOpenedHandler-equivalent-skip then RecordCiRunningHandler then
+ * RecordCiPassedHandler in the same call instead of requiring two separate reconcile passes.
  */
 
 import { FeatureExecutionState, UserRole } from '../domain/states.js';
@@ -18,8 +26,10 @@ import type { ActorIdentity } from '../auth/types.js';
 import type { CommandEnvelope } from '../commands/types.js';
 import { TransactionalCommandExecutor } from '../commands/executor.js';
 import { generateId } from '../commands/helpers.js';
+import { nextVersion } from '../persistence/optimistic.js';
 import type { DbClient } from '../persistence/types.js';
 import type { ObservedPullRequestState } from './client.js';
+import { syncPullRequestObservedState } from '../commands/handlers/github/pull-request-row.js';
 
 import { RecordPrOpenedHandler } from '../commands/handlers/github/record-pr-opened.js';
 import { RecordCiRunningHandler } from '../commands/handlers/github/record-ci-running.js';
@@ -29,6 +39,9 @@ import { RecordChangesRequestedHandler } from '../commands/handlers/github/recor
 import { EscalateToHumanHandler } from '../commands/handlers/feature/escalate-to-human-required.js';
 
 const SYSTEM_ACTOR_ID = 'github-reconciliation';
+
+/** Bounded catch-up depth for a single reconcile call (HIGH-2). */
+const MAX_RECONCILE_STEPS = 5;
 
 function systemActor(correlationId: string): ActorIdentity {
   return { id: SYSTEM_ACTOR_ID, role: UserRole.ADMIN, actorKind: 'system', correlationId };
@@ -54,7 +67,10 @@ export interface ReconcileGithubStateOptions {
 }
 
 export interface ReconcileGithubStateResult {
+  /** The last action taken this call (`'none'` if nothing matched). */
   action: ReconciliationAction;
+  /** Every action taken this call, in order — usually one entry, more on multi-step catch-up. */
+  actions: ReconciliationAction[];
   resultingState?: FeatureExecutionState;
 }
 
@@ -67,6 +83,21 @@ interface FeatureRunSnapshot {
 interface PullRequestSnapshot {
   ci_status: string;
   review_state: string;
+}
+
+/**
+ * Feature-execution states whose GitHub-reconciliation actions (`RecordPrOpenedCommand`,
+ * `RecordCiRunningCommand`) are execution-lane lock-gated (code-review MEDIUM-3). Callers use this
+ * to decide whether acquiring the `execution-lane:<projectId>` `WorkflowLockManager` lock before
+ * calling `reconcileGithubState` is necessary at all — CI-outcome and review-outcome transitions
+ * (`RecordCiPassedCommand`/`RecordCiFailedCommand`/`RecordChangesRequestedCommand`) never require
+ * `envelope.lockContext`.
+ */
+export function requiresExecutionLock(currentState: FeatureExecutionState): boolean {
+  return (
+    currentState === FeatureExecutionState.CODE_PUSHED ||
+    currentState === FeatureExecutionState.PR_OPENED
+  );
 }
 
 export async function reconcileGithubState(
@@ -83,19 +114,98 @@ export async function reconcileGithubState(
   );
   const run = runRows[0];
   if (!run) {
-    throw new Error(`reconcileGithubState: feature run ${featureRunId} not found in project ${projectId}`);
+    throw new Error(
+      `reconcileGithubState: feature run ${featureRunId} not found in project ${projectId}`,
+    );
   }
 
   const prRows = await db.query<PullRequestSnapshot>(
     `SELECT ci_status, review_state FROM pull_requests WHERE feature_run_id = ?`,
     [featureRunId],
   );
-  const pr = prRows[0];
+  const hasPrRow = prRows.length > 0;
+  // Captured before the full-mirror sync below so the changes_requested branch can still tell a
+  // freshly-observed review verdict apart from one it already recorded on a prior reconcile call.
+  const priorReviewState = prRows[0]?.review_state;
 
-  const currentState = run.current_execution_state as FeatureExecutionState;
+  // Full observed-state mirror sync (HIGH-3 / MEDIUM-1): unconditionally writes every
+  // GitHub-observed column onto pull_requests, on every reconciliation pass, regardless of which
+  // action (if any) fires below. This is what makes pull_requests a true observed mirror per
+  // docs/01 §5.7/§8 — a review approved/commented/dismissed outcome lands in
+  // pull_requests.review_state even though only 'changes_requested' drives a feature-execution
+  // transition (the matrix only gates on that one outcome). No-ops if the row doesn't exist yet
+  // (e.g. currentState === CODE_PUSHED, before RecordPrOpenedHandler creates it below).
+  await db.transaction(async (tx) => {
+    await syncPullRequestObservedState(tx, featureRunId, observed);
+  });
+
   const executor = new TransactionalCommandExecutor(db);
   const actor = systemActor(correlationId);
-  const expectedVersion = run.version;
+
+  const actions: ReconciliationAction[] = [];
+  let currentState = run.current_execution_state as FeatureExecutionState;
+  let expectedVersion = run.version;
+  let resultingState: FeatureExecutionState | undefined;
+
+  for (let step = 0; step < MAX_RECONCILE_STEPS; step += 1) {
+    const stepResult = await runStep({
+      executor,
+      actor,
+      correlationId,
+      lockContext,
+      featureRunId,
+      projectId,
+      observed,
+      currentState,
+      expectedVersion,
+      priorReviewState,
+      hasPrRow: hasPrRow || actions.includes('pr_opened'),
+    });
+    if (!stepResult) break;
+    actions.push(stepResult.action);
+    resultingState = stepResult.resultingState;
+    currentState = stepResult.resultingState ?? currentState;
+    expectedVersion = nextVersion(expectedVersion);
+  }
+
+  return {
+    action: actions.length > 0 ? actions[actions.length - 1]! : 'none',
+    actions,
+    resultingState,
+  };
+}
+
+interface RunStepOptions {
+  executor: TransactionalCommandExecutor;
+  actor: ActorIdentity;
+  correlationId: string;
+  lockContext?: CommandEnvelope<unknown>['lockContext'];
+  featureRunId: string;
+  projectId: string;
+  observed: ObservedPullRequestState;
+  currentState: FeatureExecutionState;
+  expectedVersion: number;
+  priorReviewState: string | undefined;
+  hasPrRow: boolean;
+}
+
+/** Runs (at most) one reconciliation action for the current state; null if nothing matches. */
+async function runStep(
+  opts: RunStepOptions,
+): Promise<{ action: ReconciliationAction; resultingState?: FeatureExecutionState } | null> {
+  const {
+    executor,
+    actor,
+    correlationId,
+    lockContext,
+    featureRunId,
+    projectId,
+    observed,
+    currentState,
+    expectedVersion,
+    priorReviewState,
+    hasPrRow,
+  } = opts;
 
   const terminalStates: FeatureExecutionState[] = [
     FeatureExecutionState.MERGED,
@@ -115,7 +225,7 @@ export async function reconcileGithubState(
     });
   }
 
-  if (currentState === FeatureExecutionState.CODE_PUSHED && !pr) {
+  if (currentState === FeatureExecutionState.CODE_PUSHED && !hasPrRow) {
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
       idempotencyKey: `record-pr-opened:${featureRunId}:${observed.prNumber}`,
@@ -154,12 +264,41 @@ export async function reconcileGithubState(
     return { action: 'ci_running', resultingState: result.resultingState };
   }
 
+  if (
+    currentState === FeatureExecutionState.PR_OPENED &&
+    (observed.ciStatus === 'passed' || observed.ciStatus === 'failed')
+  ) {
+    // A missed `ci_running` webhook: CI is already terminal by the time we observe it. Advance
+    // through CI_RUNNING first so the next loop iteration can record the terminal outcome
+    // (HIGH-2) — the matrix has no direct pr_opened -> under_review/ci_failed transition.
+    const envelope: CommandEnvelope<Record<string, unknown>> = {
+      commandId: generateId(),
+      idempotencyKey: `record-ci-running:${featureRunId}:${observed.prNumber}`,
+      payload: {
+        featureRunId,
+        projectId,
+        expectedVersion,
+        checkRunId: `pr-${observed.prNumber}`,
+      },
+      actor,
+      correlationId,
+      lockContext,
+    };
+    const result = await executor.execute(new RecordCiRunningHandler(), envelope);
+    return { action: 'ci_running', resultingState: result.resultingState };
+  }
+
   if (currentState === FeatureExecutionState.CI_RUNNING) {
     if (observed.ciStatus === 'passed') {
       const envelope: CommandEnvelope<Record<string, unknown>> = {
         commandId: generateId(),
         idempotencyKey: `record-ci-passed:${featureRunId}:${observed.prNumber}`,
-        payload: { featureRunId, projectId, expectedVersion, checkRunId: `pr-${observed.prNumber}` },
+        payload: {
+          featureRunId,
+          projectId,
+          expectedVersion,
+          checkRunId: `pr-${observed.prNumber}`,
+        },
         actor,
         correlationId,
       };
@@ -170,7 +309,12 @@ export async function reconcileGithubState(
       const envelope: CommandEnvelope<Record<string, unknown>> = {
         commandId: generateId(),
         idempotencyKey: `record-ci-failed:${featureRunId}:${observed.prNumber}`,
-        payload: { featureRunId, projectId, expectedVersion, checkRunId: `pr-${observed.prNumber}` },
+        payload: {
+          featureRunId,
+          projectId,
+          expectedVersion,
+          checkRunId: `pr-${observed.prNumber}`,
+        },
         actor,
         correlationId,
       };
@@ -182,7 +326,7 @@ export async function reconcileGithubState(
   if (
     currentState === FeatureExecutionState.UNDER_REVIEW &&
     observed.reviewState === 'changes_requested' &&
-    pr?.review_state !== 'changes_requested'
+    priorReviewState !== 'changes_requested'
   ) {
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
@@ -200,7 +344,7 @@ export async function reconcileGithubState(
     return { action: 'changes_requested', resultingState: result.resultingState };
   }
 
-  return { action: 'none' };
+  return null;
 }
 
 async function escalate(
@@ -208,7 +352,7 @@ async function escalate(
   actor: ActorIdentity,
   correlationId: string,
   payload: { featureRunId: string; projectId: string; expectedVersion: number; reason: string },
-): Promise<ReconcileGithubStateResult> {
+): Promise<{ action: ReconciliationAction; resultingState?: FeatureExecutionState }> {
   const envelope: CommandEnvelope<Record<string, unknown>> = {
     commandId: generateId(),
     idempotencyKey: `escalate-human-github:${payload.featureRunId}`,

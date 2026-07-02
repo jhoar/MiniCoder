@@ -13,7 +13,6 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
-import { updatePullRequestCiStatus } from './pull-request-row.js';
 
 export const RecordCiPassedPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -38,9 +37,10 @@ interface FeatureRunRow {
  * matrix's guardDescription for ci_running -> under_review is "CI check run concluded with
  * success status", with no lock-fence guard listed (see FEATURE_EXECUTION_MATRIX).
  */
-export class RecordCiPassedHandler
-  implements CommandHandler<RecordCiPassedPayload, FeatureExecutionState>
-{
+export class RecordCiPassedHandler implements CommandHandler<
+  RecordCiPassedPayload,
+  FeatureExecutionState
+> {
   readonly commandName = 'RecordCiPassedCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -85,7 +85,8 @@ export class RecordCiPassedHandler
       if (affected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
-      await updatePullRequestCiStatus(tx, featureRunId, 'passed');
+      // pull_requests.ci_status is written by reconcileGithubState's unconditional
+      // syncPullRequestObservedState() top-level mirror sync, not here (HIGH-3 fix).
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,
         projectId,
@@ -97,7 +98,7 @@ export class RecordCiPassedHandler
       });
       await writeOutboxEvent(tx, {
         eventType: 'feature.ci_passed',
-        payload: { featureRunId, projectId, checkRunId },
+        payload: { featureRunId, projectId, checkRunId, conclusion: 'success' },
       });
       const result: CommandResult<FeatureExecutionState> = {
         commandId: envelope.commandId,

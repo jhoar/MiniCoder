@@ -223,6 +223,13 @@ operation when policy permits.
   testing — real webhook ingestion and the CLI simulators produce identical `inbox_events` shapes.
   Repository → project resolution uses the `repositories.full_name` column (`owner/repo`);
   webhooks for an unlinked repository are acknowledged (`202`) without being persisted.
+  `inbox_events.payload` for GitHub-sourced events is **this normalized internal projection**,
+  not the raw GitHub delivery body — signature verification and normalization both happen before
+  insertion, and the raw request body is not persisted. This is a deliberate choice, not a gap:
+  it keeps `inbox_events` shape-consistent across sources (`minicoder github simulate-*` and
+  `MockGitHubProvider` write/model the identical normalized shape for testing, per the previous
+  bullet), and no code path in this repository needs the raw GitHub JSON once it has been
+  normalized and verified.
 - **Signature verification:** HMAC-SHA256 over the raw request body
   (`X-Hub-Signature-256`), verified against the current secret first and, during a rotation
   window, the previous secret (`GITHUB_WEBHOOK_SECRET` / `GITHUB_WEBHOOK_SECRET_PREVIOUS`) — see
@@ -260,10 +267,10 @@ operation when policy permits.
      `RecordCiFailedCommand`, `RecordChangesRequestedCommand`) when observed GitHub state has
      progressed past the DB record.
   3. No-ops when the DB record already matches observed GitHub state.
-  The scheduled fallback only re-checks feature runs that already have a tracked `pull_requests`
-  row (i.e., it catches *missed* webhook deliveries); discovering a brand-new PR that no webhook
-  or `RecordPrOpenedCommand` has ever recorded is deferred (`GitHubClient` has no
-  "list PRs by branch" method yet).
+     The scheduled fallback only re-checks feature runs that already have a tracked `pull_requests`
+     row (i.e., it catches _missed_ webhook deliveries); discovering a brand-new PR that no webhook
+     or `RecordPrOpenedCommand` has ever recorded is deferred (`GitHubClient` has no
+     "list PRs by branch" method yet).
 - **Capacity pre-flight:** `GitHubClient.getRemainingRateLimit()` exposes the remaining GitHub API
   rate-limit budget for callers to check before a batch of reconciliation calls.
 

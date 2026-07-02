@@ -38,9 +38,10 @@ interface FeatureRunRow {
   version: number;
 }
 
-export class RecordPrOpenedHandler
-  implements CommandHandler<RecordPrOpenedPayload, FeatureExecutionState>
-{
+export class RecordPrOpenedHandler implements CommandHandler<
+  RecordPrOpenedPayload,
+  FeatureExecutionState
+> {
   readonly commandName = 'RecordPrOpenedCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -89,7 +90,13 @@ export class RecordPrOpenedHandler
       const now = isoNow();
       const affected = await tx.executeAffected(
         `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [FeatureExecutionState.PR_OPENED, nextVersion(run.version), now, featureRunId, expectedVersion],
+        [
+          FeatureExecutionState.PR_OPENED,
+          nextVersion(run.version),
+          now,
+          featureRunId,
+          expectedVersion,
+        ],
       );
       if (affected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);

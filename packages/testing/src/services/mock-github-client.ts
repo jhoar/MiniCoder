@@ -58,7 +58,9 @@ function toObservedState(pr: MockPrState): ObservedPullRequestState {
   };
 }
 
-function deriveReviewState(reviews: MockPrState['reviews']): ObservedPullRequestState['reviewState'] {
+function deriveReviewState(
+  reviews: MockPrState['reviews'],
+): ObservedPullRequestState['reviewState'] {
   if (reviews.length === 0) return PrReviewState.NONE;
   const last = reviews[reviews.length - 1];
   return last?.state === 'approved' ? PrReviewState.APPROVED : PrReviewState.CHANGES_REQUESTED;
