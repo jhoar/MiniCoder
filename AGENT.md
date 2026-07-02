@@ -40,12 +40,16 @@ architecture requirements remain under `docs/`.
   - six-role smoke conformance framework with `HumanTestAdapter`, append-only results, skipped
     scenario accounting, and rerun-safe configuration setup
   - `clarification_sessions`/`clarification_questions`/`clarification_answers`/`clarification_decisions`
-    schema persisting the `ClarificationStatus` machine, plus a nullable `clarification_session_id`
-    link on `planning_gaps`/`planning_assumptions`
+    schema persisting the `ClarificationStatus` machine, including assessment-scoped sessions and
+    nullable `clarification_session_id` links on `planning_gaps`/`planning_assumptions`
+  - backlog validation tracking on `implementation_plans` (`backlog_version`,
+    `backlog_validated_at`, `backlog_validated_state`, `backlog_validated_version`) so approval
+    requires validation evidence for the current backlog
   - planning and clarification command handlers (`packages/core/src/commands/handlers/planning/`,
     `.../clarification/`) covering specification ingestion, planner-adapter-backed readiness
-    assessment, plan/backlog generation and validation, approval, activation (creating
-    `feature_runs` rows), artifact export, backlog import, and the clarification circuit breaker
+    assessment, assessment-scoped plan/backlog generation and validation, approval, activation
+    (creating `feature_runs` rows), artifact export, backlog import, and the clarification circuit
+    breaker
   - all 15 canonical Trigger.dev task IDs registered, with the 9 planner/clarification tasks now
     calling real Orchestrator Core commands instead of returning stub values
   - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
@@ -125,7 +129,9 @@ Important files:
 - `packages/core/src/statemachine/machines/` contains the eight implemented transition matrices.
 - `packages/core/src/commands/` contains the command registry, executor, and contracts.
 - `packages/core/src/commands/handlers/planning/` and `.../clarification/` contain the Phase 6
-  planning and clarification command handlers.
+  planning and clarification command handlers. `ValidateBacklogHandler` owns backlog quality
+  evidence, and `SubmitPlanForApprovalHandler` must require current valid backlog evidence before
+  `pending_approval`.
 - `packages/core/src/events/schemas.ts` owns versioned event payload validation.
 - `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
 - `packages/core/src/adapters/types.ts` defines provider-neutral role adapter interfaces and I/O
@@ -145,7 +151,9 @@ Important files:
 - `packages/triggerdev/trigger.config.ts` configures Trigger.dev deployment.
 - `packages/migrations/src/index.ts` exports the expected table list.
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
-- `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together.
+- `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together. Current
+  Phase 6 planning schema is split across `0007_clarification_sessions.*` and
+  `0008_backlog_validation_tracking.*`.
 - `packages/testing/src/fixtures/` owns SQLite-only deterministic fixture setup for local/system scenarios.
 - `packages/testing/src/adapters/` owns mock role adapters and the test-only `HumanTestAdapter`.
 - `packages/testing/src/conformance/` owns the Phase 5 smoke conformance runner and append-only
@@ -228,6 +236,9 @@ fitness tests when introducing a new architectural restriction.
 - The 9 planner/clarification `runImpl` functions call real core commands as of Phase 6
   (`packages/core/src/commands/handlers/{planning,clarification}/`); keep `start-next-feature` and
   `github-reconciliation` as payload-validated stubs until Phase 7/8 wire real core commands.
+- Task wrappers may sequence commands but must not change command semantics. Only expected
+  domain-level invalid outcomes should be converted into structured task results; operational and
+  unexpected errors must propagate so Trigger.dev can mark failures and retry.
 - Task files build `CommandEnvelope`s and call `TransactionalCommandExecutor` — never import
   `StateTransitionValidator`/`TransitionError` or compare state enums directly
   (`fitness/no-domain-logic-in-task-wrappers.test.ts` enforces this).
@@ -321,6 +332,11 @@ NNNN_description.postgres.sql
   into final provider/model/cost/token metadata without the corresponding later-phase design.
 - Adapter conformance results are append-only audit records. Read paths that need the latest result
   must use an explicit deterministic tie-breaker.
+- Clarification sessions are assessment-scoped. Do not use "latest project clarification session"
+  as a proxy for whether a specific readiness assessment is complete.
+- Backlog validation is a hard planning gate: validation writes deterministic evidence to
+  `implementation_plans`, backlog mutations clear that evidence, and approval must require the
+  current evidence.
 - Discovery work reuses `feature_requests` with `kind = "discovery"` and `executable = false`.
 - `resumed` is an event, not an automation state.
 - A CI failure never silently advances or merges.
@@ -399,6 +415,7 @@ pnpm vitest run packages/workflow/src/outbox/dispatcher.test.ts
 pnpm vitest run packages/workflow/src/inbox/processor.test.ts
 pnpm vitest run packages/workflow/src/locks/manager.test.ts
 pnpm vitest run packages/testing/src/testing.test.ts
+pnpm vitest run packages/triggerdev/src/triggerdev.test.ts
 ```
 
 SQLite migration smoke test:
