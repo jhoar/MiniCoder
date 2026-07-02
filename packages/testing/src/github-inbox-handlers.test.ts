@@ -262,7 +262,7 @@ describe('GitHub webhook → InboxProcessor → reconcileGithubState (end-to-end
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.PR_OPENED);
   });
 
-  it.each(['review.comment', 'push', 'branch.protection_ok'])(
+  it.each(['review.comment', 'review.commented', 'push', 'branch.protection_ok'])(
     'HIGH-5: a %s inbox event ends up processed, not stuck pending',
     async (eventType) => {
       const db = createTestDb();

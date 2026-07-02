@@ -1,8 +1,8 @@
 /**
  * InboxHandler registrations for the normalized GitHub event taxonomy
  * (pr.opened | pr.synchronized | pr.closed | pr.merged | check.passed | check.failed |
- *  review.approved | review.changes_requested | review.dismissed | review.comment | push |
- *  branch.protection_ok).
+ *  review.approved | review.changes_requested | review.dismissed | review.commented |
+ *  review.comment | push | branch.protection_ok).
  *
  * Each handler resolves the affected feature_run, fetches *current* authoritative state via
  * GitHubClient, and delegates to the same `reconcileGithubState` function the scheduled
@@ -64,6 +64,11 @@ interface FeatureRunStateRow {
  *     already knows how to resolve, so no bespoke handler logic is needed — reconciling on them
  *     lets a review comment that resolves a conversation (conversations_resolved) or a
  *     mid-CI push get picked up promptly instead of waiting for the next event/scheduled pass.
+ *   - `review.commented` (round-5 HIGH-4 code-review fix) is a `pull_request_review` `submitted`
+ *     event with `state: 'commented'` — a review-level comment, distinct from `review.comment`'s
+ *     inline-code `pull_request_review_comment`. It reuses the same generic handler for the same
+ *     reason: reconciliation re-derives the PR's authoritative aggregate review state via
+ *     `deriveReviewState` regardless of which specific review event triggered the pass.
  */
 const HANDLED_EVENT_TYPES = [
   'pr.opened',
@@ -75,6 +80,7 @@ const HANDLED_EVENT_TYPES = [
   'review.approved',
   'review.changes_requested',
   'review.dismissed',
+  'review.commented',
   'review.comment',
   'push',
 ] as const;

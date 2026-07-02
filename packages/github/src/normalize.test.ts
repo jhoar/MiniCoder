@@ -98,6 +98,19 @@ describe('normalizeGithubWebhookEvent', () => {
     expect(result?.eventType).toBe('review.dismissed');
   });
 
+  // HIGH-4 code-review fix (round 5): a `submitted` review with `state: 'commented'` had no
+  // branch and was silently dropped (fell through to `return null`).
+  it('maps pull_request_review submitted+commented → review.commented', () => {
+    const result = normalizeGithubWebhookEvent('pull_request_review', {
+      action: 'submitted',
+      repository: repo,
+      pull_request: { number: 7 },
+      review: { state: 'commented', user: { login: 'carol' } },
+    });
+    expect(result?.eventType).toBe('review.commented');
+    expect(result?.payload).toMatchObject({ prNumber: 7, reviewer: 'carol', state: 'commented' });
+  });
+
   it('maps check_run completed+success → check.passed', () => {
     const result = normalizeGithubWebhookEvent('check_run', {
       action: 'completed',
@@ -124,6 +137,64 @@ describe('normalizeGithubWebhookEvent', () => {
       check_run: { id: 99, conclusion: null },
     });
     expect(result).toBeNull();
+  });
+
+  // HIGH-4 / MEDIUM-1 code-review fix (round 5): check_run/check_suite normalization now shares
+  // octokit-client.ts's classifier (via ./check-conclusion.ts) instead of its own
+  // never-updated PASSING_CONCLUSIONS/FAILING_CONCLUSIONS sets, so neutral/skipped/stale/
+  // startup_failure conclusions normalize instead of being silently dropped (returning null).
+  it('maps check_run completed+neutral → check.passed (previously dropped)', () => {
+    const result = normalizeGithubWebhookEvent('check_run', {
+      action: 'completed',
+      repository: repo,
+      check_run: { id: 99, conclusion: 'neutral', pull_requests: [{ number: 7 }] },
+    });
+    expect(result?.eventType).toBe('check.passed');
+  });
+
+  it('maps check_run completed+skipped → check.passed (previously dropped)', () => {
+    const result = normalizeGithubWebhookEvent('check_run', {
+      action: 'completed',
+      repository: repo,
+      check_run: { id: 99, conclusion: 'skipped', pull_requests: [{ number: 7 }] },
+    });
+    expect(result?.eventType).toBe('check.passed');
+  });
+
+  it('maps check_run completed+stale → check.passed (previously dropped)', () => {
+    const result = normalizeGithubWebhookEvent('check_run', {
+      action: 'completed',
+      repository: repo,
+      check_run: { id: 99, conclusion: 'stale', pull_requests: [{ number: 7 }] },
+    });
+    expect(result?.eventType).toBe('check.passed');
+  });
+
+  it('maps check_run completed+startup_failure → check.failed (previously dropped)', () => {
+    const result = normalizeGithubWebhookEvent('check_run', {
+      action: 'completed',
+      repository: repo,
+      check_run: { id: 99, conclusion: 'startup_failure', pull_requests: [{ number: 7 }] },
+    });
+    expect(result?.eventType).toBe('check.failed');
+  });
+
+  it('maps check_suite completed+neutral → check.passed (previously dropped)', () => {
+    const result = normalizeGithubWebhookEvent('check_suite', {
+      action: 'completed',
+      repository: repo,
+      check_suite: { conclusion: 'neutral', pull_requests: [{ number: 7 }] },
+    });
+    expect(result?.eventType).toBe('check.passed');
+  });
+
+  it('maps check_suite completed+startup_failure → check.failed (previously dropped)', () => {
+    const result = normalizeGithubWebhookEvent('check_suite', {
+      action: 'completed',
+      repository: repo,
+      check_suite: { conclusion: 'startup_failure', pull_requests: [{ number: 7 }] },
+    });
+    expect(result?.eventType).toBe('check.failed');
   });
 
   it('maps status success → check.passed', () => {

@@ -217,7 +217,11 @@ operation when policy permits.
   `registerGithubWebhookRoute()` in `packages/github`) normalizes each raw `(event, action)` pair
   into MiniCoder's internal event-type taxonomy before insertion into `inbox_events`: `pr.opened`,
   `pr.synchronized`, `pr.closed`, `pr.merged`, `check.passed`, `check.failed`, `review.approved`,
-  `review.changes_requested`, `review.dismissed`, `review.comment`, `push`. This is the same
+  `review.changes_requested`, `review.dismissed`, `review.commented`, `review.comment`, `push`.
+  `review.commented` (a `pull_request_review` `submitted` event with `state: 'commented'`) is
+  distinct from `review.comment` (the inline-code `pull_request_review_comment` event) — both
+  are surfaced so a reconciliation pass re-derives the PR's authoritative aggregate review state,
+  but they originate from different GitHub webhook events. This is the same
   taxonomy `minicoder github simulate-*` (`packages/cli/src/commands/github.ts`) and
   `MockGitHubProvider` already write/model for testing — real webhook ingestion and the CLI
   simulators produce identical `inbox_events` shapes. `branch.protection_ok` is **not** part of

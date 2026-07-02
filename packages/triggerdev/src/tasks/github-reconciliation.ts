@@ -47,12 +47,20 @@ interface FeatureRunCandidateRow {
   current_execution_state: string;
 }
 
-// Terminal / not-yet-PR states are excluded from the scheduled fallback scan.
+// Terminal / not-yet-possibly-PR states are excluded from the scheduled fallback scan.
+// HIGH-2 code-review fix: `code_pushed` is deliberately *not* excluded here (it was previously
+// filtered out at the SQL level, before the `candidate.pr_number === null` guard below ever ran).
+// A `code_pushed` row can have an already-tracked `pull_requests` row from a fix-cycle re-push
+// (`changes_requested -> fixing -> code_pushed`, same PR reused) whose `pr.opened` webhook was
+// missed — that candidate must reach `reconcileGithubState` so it can catch up. The
+// `candidate.pr_number === null` guard immediately below still `continue`s past a genuinely
+// brand-new `code_pushed` row with no tracked PR yet, which remains out of this task's scope
+// (discovering never-before-seen PRs requires a "list PRs by branch" GitHubClient method that
+// does not exist yet).
 const EXCLUDED_STATES = [
   'approved_pending_execution',
   'selected',
   'coding',
-  'code_pushed',
   'merged',
   'human_required',
   'blocked',
@@ -67,6 +75,8 @@ const EXCLUDED_STATES = [
  * brand-new PR that has never been observed via a webhook or RecordPrOpenedCommand is out of
  * scope here (GitHubClient has no "list PRs by branch" method yet); this task's job is to catch
  * *missed* webhook deliveries for PRs MiniCoder already knows about, not to discover new ones.
+ * (HIGH-2: this now includes `code_pushed` candidates that already have a tracked `pull_requests`
+ * row — a fix-cycle re-push whose `pr.opened` webhook never arrived.)
  */
 export async function runImpl(
   payload: GithubReconciliationPayload,
@@ -122,7 +132,13 @@ export async function runImpl(
       candidate.current_execution_state as FeatureExecutionState,
     );
 
-    async function reconcileWithLock(): Promise<Awaited<ReturnType<typeof reconcileGithubState>>> {
+    // HIGH-1 code-review fix: was a `function`-keyword declaration nested directly inside this
+    // `for` loop's block, which trips ESLint's `no-inner-declarations` (a block-scoped function
+    // declaration outside the top level of a function/program body). A `const` arrow function has
+    // identical closure semantics here and is not flagged.
+    const reconcileWithLock = async (): Promise<
+      Awaited<ReturnType<typeof reconcileGithubState>>
+    > => {
       const acquired = await lockManager.acquire(
         payload.projectId,
         `execution-lane:${payload.projectId}`,
@@ -146,7 +162,7 @@ export async function runImpl(
       } finally {
         await lockManager.release(acquired);
       }
-    }
+    };
 
     if (!needsLock) {
       let result = await reconcileGithubState({

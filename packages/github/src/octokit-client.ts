@@ -16,6 +16,7 @@ import type {
   PublishStatusCheckOptions,
 } from '@minicoder/core';
 import { PrReviewState } from '@minicoder/core';
+import { classifyCheckConclusion } from './check-conclusion.js';
 
 export interface OctokitGitHubClientOptions {
   /** Installation token (preferred) or PAT. */
@@ -228,26 +229,18 @@ export function deriveReviewState(
  * failure alongside `failure`/`timed_out`/`cancelled`/`action_required`. Classifying any
  * non-`success` conclusion as a failure (the prior `!== 'success'` check) incorrectly forced
  * `ci_status: 'failed'` for e.g. a `skipped` check run that has no bearing on merge readiness.
+ *
+ * MEDIUM-1 code-review fix (round 5): the classification itself now lives in the shared
+ * `classifyCheckConclusion()` (`./check-conclusion.ts`), also imported by `normalize.ts`'s
+ * `check_run`/`check_suite` webhook normalization — this was previously duplicated between the
+ * two files and had drifted apart (`normalize.ts` never picked up this file's round-4 fix).
  */
-const FAILURE_CONCLUSIONS = new Set([
-  'failure',
-  'timed_out',
-  'cancelled',
-  'action_required',
-  'startup_failure',
-]);
-const NON_BLOCKING_CONCLUSIONS = new Set(['neutral', 'skipped', 'stale']);
-
 function checkFailed(c: { status: string; conclusion: string | null }): boolean {
-  return c.status === 'completed' && c.conclusion !== null && FAILURE_CONCLUSIONS.has(c.conclusion);
+  return c.status === 'completed' && classifyCheckConclusion(c.conclusion) === 'failed';
 }
 
 function checkPassed(c: { status: string; conclusion: string | null }): boolean {
-  return (
-    c.status === 'completed' &&
-    c.conclusion !== null &&
-    (c.conclusion === 'success' || NON_BLOCKING_CONCLUSIONS.has(c.conclusion))
-  );
+  return c.status === 'completed' && classifyCheckConclusion(c.conclusion) === 'passed';
 }
 
 /**
