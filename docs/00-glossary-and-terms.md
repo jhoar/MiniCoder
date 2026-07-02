@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.4
-> Last-updated: 2026-06-30
+> Version: 1.0.5
+> Last-updated: 2026-07-01
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -349,14 +349,14 @@ export-plan
 export-backlog
 ```
 
-**Phase 6 additions** (Bootstrap Planner tasks — arrive with Phase 6):
+**Phase 6 additions** (Bootstrap Planner tasks — shipped with Phase 6):
 
 ```text
-ingest
-record-answer
+ingest-specification
+record-clarification-answer
 complete-clarification
 validate-backlog
-request-approval
+request-plan-approval
 import-backlog
 ```
 

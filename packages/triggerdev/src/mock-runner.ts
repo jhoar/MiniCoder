@@ -1,7 +1,8 @@
 import type { DbClient } from '@minicoder/core';
 import { linkRunToDb, updateRunStatus } from './metadata.js';
 
-export type TaskRunFn<P, R> = (payload: P) => Promise<R>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type TaskRunFn<P, R> = (payload: P, db: DbClient, extra?: any) => Promise<R>;
 
 export interface MockRunResult<R> {
   runId: string;
@@ -29,8 +30,11 @@ export class MockTriggerRunner {
   async run<P extends { projectId?: string }, R>(
     taskId: string,
     payload: P,
-    impl: TaskRunFn<P, R>,
+    // NoInfer forces P to be inferred solely from `payload`, not from `impl` — callers passing a
+    // loosely-typed inline closure (e.g. `async (_payload: unknown) => ...`) must not widen P.
+    impl: TaskRunFn<NoInfer<P>, R>,
     runId?: string,
+    extra?: unknown,
   ): Promise<MockRunResult<R>> {
     this.runCounter += 1;
     const resolvedRunId = runId ?? `mock-run-${taskId}-${this.runCounter}-${Date.now()}`;
@@ -44,7 +48,7 @@ export class MockTriggerRunner {
 
     let result: R;
     try {
-      result = await impl(payload);
+      result = await impl(payload, this.db, extra);
       await updateRunStatus(this.db, resolvedRunId, 'succeeded');
     } catch (err) {
       await updateRunStatus(this.db, resolvedRunId, 'failed');

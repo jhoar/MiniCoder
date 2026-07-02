@@ -1,3 +1,4 @@
+import type { DbClient } from '@minicoder/core';
 import type { StartNextFeaturePayload } from './types.js';
 
 export type { StartNextFeaturePayload };
@@ -9,7 +10,10 @@ export interface StartNextFeatureResult {
 }
 
 /** Orchestrator Core command invocation wired in Phase 8. */
-export async function runImpl(payload: StartNextFeaturePayload): Promise<StartNextFeatureResult> {
+export async function runImpl(
+  payload: StartNextFeaturePayload,
+  _db?: DbClient,
+): Promise<StartNextFeatureResult> {
   return {
     projectId: payload.projectId,
     featureRunId: payload.featureRunId ?? null,

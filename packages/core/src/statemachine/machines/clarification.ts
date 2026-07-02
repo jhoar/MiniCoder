@@ -1,13 +1,7 @@
-import { UserRole } from '../../domain/states.js';
+import { ClarificationStatus, UserRole } from '../../domain/states.js';
 import type { StateMatrix } from '../types.js';
 
-// Clarification uses status strings (not a separate enum in states.ts)
-export type ClarificationStatus =
-  | 'clarification_not_required'
-  | 'clarification_required'
-  | 'clarification_in_progress'
-  | 'clarification_complete'
-  | 'clarification_blocked';
+export type { ClarificationStatus };
 
 export const CLARIFICATION_MATRIX: StateMatrix<ClarificationStatus> = [
   {

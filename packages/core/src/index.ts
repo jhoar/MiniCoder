@@ -37,3 +37,20 @@ export * from './adapters/types.js';
 export * from './adapters/capabilities.js';
 export * from './adapters/registry.js';
 export * from './adapters/run-recorder.js';
+
+// Phase 6: planning / clarification command handlers
+export * from './commands/handlers/planning/ingest-specification.js';
+export * from './commands/handlers/planning/assess-planning-readiness.js';
+export * from './commands/handlers/planning/generate-implementation-plan.js';
+export * from './commands/handlers/planning/generate-feature-backlog.js';
+export * from './commands/handlers/planning/validate-backlog.js';
+export * from './commands/handlers/planning/submit-plan-for-approval.js';
+export * from './commands/handlers/planning/activate-plan.js';
+export * from './commands/handlers/planning/export-plan.js';
+export * from './commands/handlers/planning/export-backlog.js';
+export * from './commands/handlers/planning/import-backlog.js';
+export * from './commands/handlers/clarification/start-clarification.js';
+export * from './commands/handlers/clarification/record-clarification-answer.js';
+export * from './commands/handlers/clarification/complete-clarification.js';
+export * from './commands/handlers/clarification/request-another-clarification-round.js';
+export * from './commands/handlers/clarification/block-clarification.js';

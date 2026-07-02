@@ -1,3 +1,4 @@
+import { runPlanningReadinessAssessment, runStartClarification } from '@minicoder/triggerdev';
 import type { Scenario, ScenarioContext } from './types.js';
 
 export const clarificationRequiredScenario: Scenario = {
@@ -12,19 +13,49 @@ export const clarificationRequiredScenario: Scenario = {
     // Override planner behavior to return insufficient
     planner.behavior = 'insufficient';
 
-    await runner.run('planning-readiness-assessment', { projectId }, async (_payload: unknown) => {
-      const result = await planner.run({
+    await runner.run(
+      'planning-readiness-assessment',
+      {
         projectId,
-        specificationContent: 'Build something awesome.',
         correlationId: `corr-clarification-${projectId}`,
-      });
-      return result;
-    });
+        idempotencyKey: `idem-clarification-assess-${projectId}`,
+        specificationContent: 'Build something awesome.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
+      runPlanningReadinessAssessment,
+      undefined,
+      planner,
+    );
 
-    await runner.run('start-clarification', { projectId }, async (_payload: unknown) => {
-      // Simulate clarification task: ensure unanswered questions remain
-      return { started: true };
-    });
+    const assessment = await db.query<{ status: string }>(
+      `SELECT status FROM planning_readiness_assessments WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`,
+      [projectId],
+    );
+    if (assessment[0]?.status !== 'insufficient') {
+      throw new Error(`Expected assessment status 'insufficient', got '${assessment[0]?.status}'`);
+    }
+
+    const session = await db.query<{ id: string; version: number }>(
+      `SELECT id, version FROM clarification_sessions WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`,
+      [projectId],
+    );
+    if (!session[0]) {
+      throw new Error('Expected a clarification_sessions row to be created');
+    }
+
+    await runner.run(
+      'start-clarification',
+      {
+        projectId,
+        correlationId: `corr-clarification-start-${projectId}`,
+        idempotencyKey: `idem-clarification-start-${projectId}`,
+        actorId: 'test-operator',
+        actorRole: 'operator' as const,
+        clarificationSessionId: session[0].id,
+        expectedVersion: session[0].version,
+      },
+      runStartClarification,
+    );
 
     const questions = await db.query<{ id: string; answer: string | null }>(
       `SELECT pq.id, pq.answer FROM planning_questions pq
@@ -39,13 +70,12 @@ export const clarificationRequiredScenario: Scenario = {
       );
     }
 
-    const assessment = await db.query<{ status: string }>(
-      `SELECT status FROM planning_readiness_assessments WHERE project_id = ?`,
-      [projectId],
+    const clarificationQuestions = await db.query<{ id: string }>(
+      `SELECT id FROM clarification_questions WHERE clarification_session_id = ?`,
+      [session[0].id],
     );
-
-    if (assessment[0]?.status !== 'insufficient') {
-      throw new Error(`Expected assessment status 'insufficient', got '${assessment[0]?.status}'`);
+    if (clarificationQuestions.length < 1) {
+      throw new Error('Expected clarification_questions to be created for the round');
     }
   },
 };

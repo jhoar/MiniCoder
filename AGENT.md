@@ -13,7 +13,7 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–4 implementation**:
+- The codebase currently contains the **Phase 1–6 implementation**:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -31,12 +31,51 @@ architecture requirements remain under `docs/`.
   - Workflow Layer harness backed by Trigger.dev v4 task wrappers
   - 9-service self-hosted Trigger.dev Docker Compose stack
   - Trigger.dev deployment workflow and `minicoder trigger` CLI scaffold
+  - provider-neutral agent adapter role interfaces and shared role-specific I/O contracts
+  - canonical agent capability token parsing, validation, and deterministic ordering
+  - database-backed `AdapterRegistry` for `(role, name)` registration, capability validation,
+    configuration resolution, and source-of-truth lookup
+  - `AgentRunRecorder` lifecycle persistence with state-machine validation, redaction,
+    normalized errors, and immutable Phase 5 adapter provenance snapshots
+  - six-role smoke conformance framework with `HumanTestAdapter`, append-only results, skipped
+    scenario accounting, and rerun-safe configuration setup
+  - `clarification_sessions`/`clarification_questions`/`clarification_answers`/`clarification_decisions`
+    schema persisting the `ClarificationStatus` machine, including assessment-scoped sessions and
+    nullable `clarification_session_id` links on `planning_gaps`/`planning_assumptions`
+  - backlog validation tracking on `implementation_plans` (`backlog_version`,
+    `backlog_validated_at`, `backlog_validated_state`, `backlog_validated_version`) so approval
+    requires validation evidence for the current backlog
+  - planning and clarification command handlers (`packages/core/src/commands/handlers/planning/`,
+    `.../clarification/`) covering specification ingestion, planner-adapter-backed readiness
+    assessment, assessment-scoped plan/backlog generation and validation, approval, activation
+    (creating `feature_runs` rows), artifact export, backlog import, and the clarification circuit
+    breaker
+  - all 15 canonical Trigger.dev task IDs registered, with the 9 planner/clarification tasks now
+    calling real Orchestrator Core commands instead of returning stub values
+  - version-scoped backlog-validation tracking on `implementation_plans`
+    (`backlog_version`/`backlog_validated_at`/`backlog_validated_state`/`backlog_validated_version`)
+    and an `assessment_id` link on `clarification_sessions`, gating plan submission on a passing,
+    current `ValidateBacklogCommand` result and scoping the clarification-complete guard to the
+    assessment in use
   - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
 - Do not describe the repository as specification-only.
-- Phase 5 and later remain target architecture. Do not assume later phases are implemented merely
+- Phase 7 and later remain target architecture. Do not assume later phases are implemented merely
   because their schemas, state machines, CLI scaffolds, task stubs, or types already exist.
-- Phase 3 task wrappers are a harness: the 9 initial task IDs and Trigger.dev metadata plumbing
-  exist, but real Orchestrator Core command wiring arrives in Phases 6–8.
+- Phase 3 delivered 9 initial task IDs as payload-validated stubs; Phase 6 wired the
+  planner/clarification tasks (`ingest-specification`, `planning-readiness-assessment`,
+  `start-clarification`, `record-clarification-answer`, `complete-clarification`,
+  `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
+  `request-plan-approval`, `activate-approved-backlog`, `export-plan`, `export-backlog`,
+  `import-backlog`) to real core commands. `start-next-feature` and `github-reconciliation` remain
+  stubs pending Phase 7/8.
+- Phase 5 is an adapter foundation and smoke conformance layer, not the full canonical provider
+  adapter runtime. Provider-specific adapters, workflow task-wrapper invocation, richer
+  provider/model/cost/token fields, and final canonical run metadata remain later-phase work unless
+  the implementation plan says otherwise.
+- Phase 6's `planning-readiness-assessment` and `generate-implementation-plan` tasks never import a
+  concrete `PlannerAgentAdapter` implementation — the caller injects one. No reference/generic
+  planner adapter has shipped yet (docs/02 §7 names `GenericLLMPlannerAdapter` as future work), so a
+  live Trigger.dev deployment fails fast with an actionable error until one exists.
 - Before starting work, inspect the current branch, recent commits, and working tree:
 
 ```bash
@@ -71,13 +110,13 @@ Read the documents in numeric order when a change crosses subsystem boundaries.
 
 ```text
 docs/                           Canonical product and architecture specifications
-packages/core/                  Provider-neutral domain, config, and persistence contracts
+packages/core/                  Provider-neutral domain, config, persistence, and adapter contracts
 packages/persistence-sqlite/    better-sqlite3 implementation of core persistence contracts
 packages/persistence-postgres/  pg implementation of core persistence contracts
 packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycle runner
 packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
 packages/triggerdev/            Trigger.dev Workflow Layer harness and task registrations
-packages/testing/               Deterministic fixtures, mock adapters, scenarios, and runner
+packages/testing/               Deterministic fixtures, mock adapters, conformance, scenarios, and runner
 packages/cli/                   Thin Commander-based CLI
 infra/docker-compose.triggerdev.yml  Self-hosted Trigger.dev v4 single-node stack
 infra/docker-compose.test.yml   Disposable PostgreSQL test stack
@@ -93,20 +132,37 @@ Important files:
 - `packages/core/src/persistence/types.ts` defines database-neutral interfaces and concurrency
   errors.
 - `packages/core/src/statemachine/machines/` contains the eight implemented transition matrices.
-- `packages/core/src/commands/` contains the command registry, executor, contracts, and handlers.
+- `packages/core/src/commands/` contains the command registry, executor, and contracts.
+- `packages/core/src/commands/handlers/planning/` and `.../clarification/` contain the Phase 6
+  planning and clarification command handlers. `ValidateBacklogHandler` owns backlog quality
+  evidence, and `SubmitPlanForApprovalHandler` must require current valid backlog evidence before
+  `pending_approval`.
 - `packages/core/src/events/schemas.ts` owns versioned event payload validation.
 - `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
+- `packages/core/src/adapters/types.ts` defines provider-neutral role adapter interfaces and I/O
+  contracts.
+- `packages/core/src/adapters/capabilities.ts` owns capability token schemas, validation, and
+  canonical ordering.
+- `packages/core/src/adapters/registry.ts` implements database-backed adapter registration,
+  capability validation, configuration resolution, and source-of-truth lookup.
+- `packages/core/src/adapters/run-recorder.ts` persists adapter run lifecycles, redacted summaries,
+  normalized errors, and Phase 5 adapter provenance snapshots.
 - `packages/workflow/src/locks/manager.ts` implements lease ownership and fencing.
 - `packages/workflow/src/outbox/dispatcher.ts` and `inbox/processor.ts` implement durable dispatch.
-- `packages/triggerdev/src/task-ids.ts` owns the 9 Phase 3 task ID constants.
+- `packages/triggerdev/src/task-ids.ts` owns all 15 canonical task ID constants (`ALL_TASK_IDS`).
 - `packages/triggerdev/src/triggerdev-tasks.ts` registers the Trigger.dev task wrappers.
 - `packages/triggerdev/src/db.ts` links Trigger.dev runs to `triggerdev_runs` and probes schema
   readiness.
 - `packages/triggerdev/trigger.config.ts` configures Trigger.dev deployment.
 - `packages/migrations/src/index.ts` exports the expected table list.
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
-- `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together.
+- `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together. Current
+  Phase 6 planning schema is split across `0007_clarification_sessions.*` and
+  `0008_backlog_validation_tracking.*`.
 - `packages/testing/src/fixtures/` owns SQLite-only deterministic fixture setup for local/system scenarios.
+- `packages/testing/src/adapters/` owns mock role adapters and the test-only `HumanTestAdapter`.
+- `packages/testing/src/conformance/` owns the Phase 5 smoke conformance runner and append-only
+  result persistence.
 - `packages/testing/src/scenarios/` owns the registered scenario flows exercised by `minicoder test system`.
 - `infra/docker-compose.triggerdev.yml` owns the local self-hosted Trigger.dev stack.
 - `infra/docker-compose.test.yml` owns the disposable PostgreSQL service used by cross-dialect validation.
@@ -140,12 +196,42 @@ Do not contradict these rules without an explicit architecture change to the can
 - Keep domain logic independent of SQLite, PostgreSQL, Trigger.dev, GitHub SDKs, and LLM providers.
 - Import only abstractions into core.
 - Access environment configuration only through `src/config/`.
+- Keep adapter contracts provider-neutral and free of provider SDK imports.
+- Validate adapter capabilities through `AgentCapabilitySchema`; do not accept ad hoc capability
+  strings.
+- Treat the adapter registry as the source of truth for active adapter configuration and capability
+  matching.
 - Add canonical state literals to `docs/00-glossary-and-terms.md` before adding them to
   `states.ts`.
 - Export public contracts through `src/index.ts`.
 
 The ESLint rules and `fitness/no-provider-imports.test.ts` enforce part of this boundary. Extend
 fitness tests when introducing a new architectural restriction.
+
+### Planning and clarification (`packages/core/src/commands/handlers/{planning,clarification}/`)
+
+- `feature_requests.state` is a static label set once at backlog generation — it is never updated
+  by transitions. The real execution-readiness gate is `feature_runs` rows, which
+  `ActivatePlanHandler` inserts (one per `kind='feature'` request) when a plan activates.
+- A `clarification_sessions` row's genesis is an `INSERT`, not a matrix transition — like
+  `implementation_plans` starting at `draft`. `AssessPlanningReadinessHandler` creates it directly
+  at `clarification_required` (insufficient) or `clarification_not_required` → immediately
+  transitioned to `clarification_complete` (sufficient), and stamps `assessment_id` so later
+  lookups (e.g. `GenerateImplementationPlanHandler`'s clarification-complete guard) can scope to
+  the assessment in use instead of "the project's most recent session."
+- `SubmitPlanForApprovalHandler` requires `backlog_validated_state = 'valid' AND
+backlog_validated_version = backlog_version` on `implementation_plans` before a plan can leave
+  `draft`. `GenerateFeatureBacklogHandler`/`ImportBacklogHandler` increment `backlog_version` and
+  reset the `backlog_validated_*` columns to `NULL` every time they write features, so a stale
+  validation from before the latest backlog change never counts.
+- `RequestAnotherClarificationRoundHandler` requires every question in the current round to have an
+  answer before reopening — the same guard `CompleteClarificationHandler` uses.
+  `BlockClarificationHandler` is exempt: it is the circuit-breaker/timeout escape path and must stay
+  usable precisely when answers did not arrive in time.
+- `packages/triggerdev/src/tasks/validate-backlog.ts` must only catch the `CommandError` with
+  `type: 'backlog-invalid'` and re-throw everything else — a bare `catch` that reports every error
+  as `{ valid: false }` hides real infrastructure/programmer failures from Trigger.dev's
+  retry/failed-status handling.
 
 ### `@minicoder/workflow`
 
@@ -177,8 +263,18 @@ fitness tests when introducing a new architectural restriction.
 
 - Treat Trigger.dev as the concrete Workflow Layer runtime, not a place for business rules.
 - Register only canonical task ID strings from `ALL_TASK_IDS`; no renames, aliases, or drift.
-- Keep Phase 3 `runImpl` functions as payload-validated stubs until Phases 6–8 wire real core
-  commands.
+- The 9 planner/clarification `runImpl` functions call real core commands as of Phase 6
+  (`packages/core/src/commands/handlers/{planning,clarification}/`); keep `start-next-feature` and
+  `github-reconciliation` as payload-validated stubs until Phase 7/8 wire real core commands.
+- Task wrappers may sequence commands but must not change command semantics. Only expected
+  domain-level invalid outcomes should be converted into structured task results; operational and
+  unexpected errors must propagate so Trigger.dev can mark failures and retry.
+- Task files build `CommandEnvelope`s and call `TransactionalCommandExecutor` — never import
+  `StateTransitionValidator`/`TransitionError` or compare state enums directly
+  (`fitness/no-domain-logic-in-task-wrappers.test.ts` enforces this).
+- `makeTaskRunner` and `MockTriggerRunner.run()` pass the resolved `DbClient` through to `runImpl`;
+  tasks that invoke `PlannerAgentAdapter` receive the concrete adapter instance as an injected
+  parameter, never importing a mock or reference implementation themselves.
 - Preserve `assertSchemaReady()` so task containers fail fast on an unmigrated database.
 - Keep Trigger.dev run metadata idempotent: retries reuse the original `triggerdev_runs` row.
 - Deploy with `npx trigger.dev@4.4.6 deploy ...`; do not use `@latest`.
@@ -200,6 +296,8 @@ NNNN_description.postgres.sql
   - `packages/migrations/src/index.ts`
   - `packages/migrations/src/runner.ts`
 - Add or update migration tests for constraints, indexes, idempotency, and validation.
+- When adding uniqueness constraints to existing tables, include dialect-appropriate duplicate
+  cleanup that matches the stated retention policy before creating the constraint.
 - Use portable identifiers generated by the application.
 - Store timestamps in UTC. Current SQLite migrations use ISO-8601 `TEXT`; PostgreSQL uses
   `TIMESTAMPTZ`.
@@ -244,10 +342,12 @@ NNNN_description.postgres.sql
 - Feature IDs use `FR-<zero-padded-int>`, such as `FR-002`.
 - Feature branches use `minicoder/FR-<n>`.
 - The GitHub review-gate status check is `minicoder/review-gate`.
-- Phase 3 Trigger.dev task IDs are exact strings:
-  `planning-readiness-assessment`, `start-clarification`, `generate-implementation-plan`,
-  `generate-feature-backlog`, `activate-approved-backlog`, `start-next-feature`,
-  `github-reconciliation`, `export-plan`, and `export-backlog`.
+- All 15 canonical Trigger.dev task IDs are exact strings, no renaming/abbreviation permitted
+  (`ALL_TASK_IDS`): `ingest-specification`, `planning-readiness-assessment`,
+  `start-clarification`, `record-clarification-answer`, `complete-clarification`,
+  `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
+  `request-plan-approval`, `activate-approved-backlog`, `start-next-feature`,
+  `github-reconciliation`, `export-plan`, `export-backlog`, and `import-backlog`.
 - Persisted mutable entities use optimistic versions.
 - Locks use monotonically increasing fencing tokens; stale-fence writes must be rejected.
 - Outbox and inbox events contain both `payload` and `payload_schema_version`.
@@ -255,6 +355,18 @@ NNNN_description.postgres.sql
   deduplicated.
 - Unknown event types are deferred with `next_retry_at`; they must not consume attempts or starve
   registered handlers.
+- Adapter roles are the canonical six-role set from the glossary: planner, coder, reviewer,
+  documentation, arbiter, and human.
+- Adapter capability tokens use the canonical `domain:name` shape and deterministic sorted order.
+- Agent run provenance is a Phase 5 immutable adapter/configuration snapshot; do not inflate it
+  into final provider/model/cost/token metadata without the corresponding later-phase design.
+- Adapter conformance results are append-only audit records. Read paths that need the latest result
+  must use an explicit deterministic tie-breaker.
+- Clarification sessions are assessment-scoped. Do not use "latest project clarification session"
+  as a proxy for whether a specific readiness assessment is complete.
+- Backlog validation is a hard planning gate: validation writes deterministic evidence to
+  `implementation_plans`, backlog mutations clear that evidence, and approval must require the
+  current evidence.
 - Discovery work reuses `feature_requests` with `kind = "discovery"` and `executable = false`.
 - `resumed` is an event, not an automation state.
 - A CI failure never silently advances or merges.
@@ -333,6 +445,7 @@ pnpm vitest run packages/workflow/src/outbox/dispatcher.test.ts
 pnpm vitest run packages/workflow/src/inbox/processor.test.ts
 pnpm vitest run packages/workflow/src/locks/manager.test.ts
 pnpm vitest run packages/testing/src/testing.test.ts
+pnpm vitest run packages/triggerdev/src/triggerdev.test.ts
 ```
 
 SQLite migration smoke test:

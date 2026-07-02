@@ -107,6 +107,16 @@ export const ReadinessStatus = {
 } as const;
 export type ReadinessStatus = (typeof ReadinessStatus)[keyof typeof ReadinessStatus];
 
+// §3.6 Clarification statuses
+export const ClarificationStatus = {
+  NOT_REQUIRED: 'clarification_not_required',
+  REQUIRED: 'clarification_required',
+  IN_PROGRESS: 'clarification_in_progress',
+  COMPLETE: 'clarification_complete',
+  BLOCKED: 'clarification_blocked',
+} as const;
+export type ClarificationStatus = (typeof ClarificationStatus)[keyof typeof ClarificationStatus];
+
 // §3.7 Review finding severities
 export const FindingSeverity = {
   BLOCKING: 'blocking',
@@ -198,14 +208,20 @@ export type GapSeverity = (typeof GapSeverity)[keyof typeof GapSeverity];
 
 // Workflow task IDs — exact canonical token strings from docs/02-bootstrap-planner-clarification.md §6
 export const WorkflowTaskId = {
+  INGEST_SPECIFICATION: 'ingest-specification',
   PLANNING_READINESS_ASSESSMENT: 'planning-readiness-assessment',
   START_CLARIFICATION: 'start-clarification',
+  RECORD_CLARIFICATION_ANSWER: 'record-clarification-answer',
+  COMPLETE_CLARIFICATION: 'complete-clarification',
   GENERATE_IMPLEMENTATION_PLAN: 'generate-implementation-plan',
   GENERATE_FEATURE_BACKLOG: 'generate-feature-backlog',
+  VALIDATE_BACKLOG: 'validate-backlog',
+  REQUEST_PLAN_APPROVAL: 'request-plan-approval',
   ACTIVATE_APPROVED_BACKLOG: 'activate-approved-backlog',
   START_NEXT_FEATURE: 'start-next-feature',
   GITHUB_RECONCILIATION: 'github-reconciliation',
   EXPORT_PLAN: 'export-plan',
   EXPORT_BACKLOG: 'export-backlog',
+  IMPORT_BACKLOG: 'import-backlog',
 } as const;
 export type WorkflowTaskId = (typeof WorkflowTaskId)[keyof typeof WorkflowTaskId];

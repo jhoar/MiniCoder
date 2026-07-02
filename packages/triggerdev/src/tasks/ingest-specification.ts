@@ -1,26 +1,26 @@
 import {
-  StartClarificationHandler,
+  IngestSpecificationHandler,
   TransactionalCommandExecutor,
   generateId,
 } from '@minicoder/core';
 import type { CommandEnvelope, DbClient } from '@minicoder/core';
-import type { StartClarificationPayload } from './types.js';
+import type { IngestSpecificationPayload } from './types.js';
 import { humanActor } from './actor.js';
 
-export type { StartClarificationPayload };
+export type { IngestSpecificationPayload };
 
-export interface StartClarificationResult {
+export interface IngestSpecificationResult {
   projectId: string;
-  clarificationSessionId: string;
+  specificationInputId: string | null;
 }
 
-const handler = new StartClarificationHandler();
+const handler = new IngestSpecificationHandler();
 
 export async function runImpl(
-  payload: StartClarificationPayload,
+  payload: IngestSpecificationPayload,
   db: DbClient,
-): Promise<StartClarificationResult> {
-  const envelope: CommandEnvelope<typeof payload> = {
+): Promise<IngestSpecificationResult> {
+  const envelope: CommandEnvelope<IngestSpecificationPayload> = {
     commandId: generateId(),
     idempotencyKey: payload.idempotencyKey,
     payload,
@@ -35,5 +35,5 @@ export async function runImpl(
   const executor = new TransactionalCommandExecutor(db);
   await executor.execute(handler, envelope);
 
-  return { projectId: payload.projectId, clarificationSessionId: payload.clarificationSessionId };
+  return { projectId: payload.projectId, specificationInputId: null };
 }
