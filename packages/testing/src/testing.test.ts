@@ -12,8 +12,8 @@ describe('createTestDb', () => {
 });
 
 describe('FIXTURE_REGISTRY', () => {
-  it('contains all 9 fixtures', () => {
-    expect(FIXTURE_REGISTRY.size).toBe(9);
+  it('contains all 10 fixtures', () => {
+    expect(FIXTURE_REGISTRY.size).toBe(10);
   });
 
   for (const [name, fixture] of FIXTURE_REGISTRY) {

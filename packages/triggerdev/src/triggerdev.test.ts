@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { DbClient, ConfigBackend, SecretBackend, PlannerAgentAdapter } from '@minicoder/core';
-import { MissingSecretError } from '@minicoder/core';
+import { MissingSecretError, FeatureExecutionState } from '@minicoder/core';
 import { createTestDb, insertTestProject } from './test-helpers.js';
 import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
@@ -297,15 +297,101 @@ describe('task runImpl — command-backed unit tests', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('start-next-feature returns started boolean', async () => {
+  it('start-next-feature returns started boolean and no-ops when no candidate exists', async () => {
     const result = await runStartNextFeature(BASE_PAYLOAD, db);
     expect(typeof result.started).toBe('boolean');
+    expect(result.started).toBe(false);
+    expect(result.featureRunId).toBeNull();
   });
 
   it('github-reconciliation returns numeric reconciled and humanRequired counts', async () => {
     const result = await runGithubReconciliation(BASE_PAYLOAD, db);
     expect(typeof result.reconciled).toBe('number');
     expect(typeof result.humanRequired).toBe('number');
+  });
+});
+
+// ── start-next-feature real wiring (Phase 8) ────────────────────────────────
+
+async function seedExecutionOrchestratorFixture(db: DbClient, projectId: string): Promise<void> {
+  const planId = `plan-${projectId}`;
+  const frId = `fr-${projectId}-1`;
+  const runId = `run-${projectId}-1`;
+
+  await db.execute(
+    `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+     VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+    [planId, projectId],
+  );
+  await db.execute(
+    `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'FR-001', 'Feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+    [frId, planId, projectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+  );
+  await db.execute(
+    `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+     VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+    [runId, frId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+  );
+  await db.execute(
+    `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+     VALUES (?, ?, NULL, 'running', 1, datetime('now'), datetime('now'))`,
+    [`ws-${projectId}`, projectId],
+  );
+}
+
+describe('start-next-feature real wiring', () => {
+  let db: DbClient;
+  const projectId = 'proj-snf-wiring';
+
+  beforeEach(async () => {
+    const testDb = createTestDb();
+    insertTestProject(testDb, projectId);
+    db = testDb;
+    await seedExecutionOrchestratorFixture(db, projectId);
+  });
+
+  it('selects the eligible feature run and starts coding', async () => {
+    const result = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-1' },
+      db,
+    );
+    expect(result.started).toBe(true);
+    expect(result.featureRunId).toBe(`run-${projectId}-1`);
+
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [`run-${projectId}-1`],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+  });
+
+  it('does not start a second feature while one is already active', async () => {
+    await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-1' },
+      db,
+    );
+    const second = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-2' },
+      db,
+    );
+    expect(second.started).toBe(false);
+  });
+
+  it('no-ops without mutating state when automation is paused', async () => {
+    await db.execute(`UPDATE workflow_states SET automation_state = 'paused_by_operator' WHERE project_id = ?`, [
+      projectId,
+    ]);
+    const result = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-3' },
+      db,
+    );
+    expect(result.started).toBe(false);
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [`run-${projectId}-1`],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.APPROVED_PENDING_EXECUTION);
   });
 });
 

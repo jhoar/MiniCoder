@@ -137,6 +137,38 @@ export async function writeOutboxEvent(
   return id;
 }
 
+export async function insertPolicyDecision(
+  tx: TxClient,
+  opts: {
+    projectId: string;
+    featureRunId?: string;
+    policyType: string;
+    decision: string;
+    context?: Record<string, unknown>;
+    actor: string;
+  },
+): Promise<string> {
+  const id = generateId();
+  const now = isoNow();
+  await tx.execute(
+    `INSERT INTO policy_decisions (id, project_id, feature_run_id, policy_type, decision, context, actor, decided_at, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    [
+      id,
+      opts.projectId,
+      opts.featureRunId ?? null,
+      opts.policyType,
+      opts.decision,
+      opts.context ? JSON.stringify(opts.context) : null,
+      opts.actor,
+      now,
+      now,
+      now,
+    ],
+  );
+  return id;
+}
+
 export async function assertLockFence(
   tx: TxClient,
   lockContext: {

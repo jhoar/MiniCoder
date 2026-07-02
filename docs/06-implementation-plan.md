@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.8
-> Last-updated: 2026-07-01
+> Version: 1.0.9
+> Last-updated: 2026-07-02
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -593,7 +593,9 @@ GitHubClient`, wrapping `MockGitHubProvider` so scenario tests drive GitHub stat
   (`packages/core/src/fitness/no-conversations-resolved-gate.test.ts`) guards against a future
   consumer wiring this field into a real gate without a deliberate, reviewed decision.
 
-## Phase 8 — Execution Orchestrator
+## Phase 8 — Execution Orchestrator ✓
+
+> **Status: Complete** (2026-07-02)
 
 Deliver the select-next-feature and start-feature commands, active-feature run records
 (`feature_runs`), PR/CI tracking, the Workflow Layer execution flow, feature-progress events,
@@ -605,6 +607,125 @@ dashboards, forecasting, and export remain Phase 16.
 Acceptance: only one feature is active at a time (by policy); eligible features are selected in
 sequence; dependencies are enforced; a soft/hard budget breach pauses automation and records a
 `policy_decision`/`cost_record`; mock execution progresses through the happy path.
+
+**Delivered modules:**
+
+- `packages/core/src/commands/handlers/feature/select-feature.ts`,
+  `start-coding.ts`, `record-code-pushed.ts`, and
+  `packages/core/src/commands/handlers/automation/pause-automation.ts` — these four handlers were
+  fully implemented in Phase 6/7 (idempotency, optimistic locking, `StateTransitionValidator`,
+  workflow/outbox events) but never exported from `packages/core/src/index.ts` or called by any
+  Trigger.dev task. Phase 8 exports them and gives `select-feature.ts`/`start-coding.ts` a real
+  caller (`start-next-feature.ts`, below); `pause-automation.ts` remains reachable for a future
+  operator-facing surface (Phase 13's API).
+- `packages/core/src/commands/handlers/automation/resume-automation.ts` —
+  `ResumeAutomationHandler` (`paused_by_operator → running`, operator actor, records a
+  `policy_decisions` row via the new `insertPolicyDecision` helper).
+- `packages/core/src/commands/handlers/automation/record-budget-exceeded.ts` —
+  `RecordBudgetExceededHandler` (`running → paused_budget_exceeded`, system actor; no
+  `policy_decisions` write — the matrix reserves that for the human override, not the breach
+  itself).
+- `packages/core/src/commands/handlers/automation/record-budget-approval-waiting.ts` —
+  `RecordBudgetApprovalWaitingHandler` (`running → waiting_for_budget_approval`, system actor).
+- `packages/core/src/commands/handlers/automation/approve-budget-override.ts` —
+  `ApproveBudgetOverrideHandler`, serving **both** matrix edges that land on
+  `ApproveBudgetOverrideCommand` (`paused_budget_exceeded → running` and
+  `waiting_for_budget_approval → running`) from a single handler — the
+  `StateTransitionValidator` resolves the correct matrix row from `(fromState, commandName)`.
+  Writes a `policy_decisions` row and emits **two** `workflow_events`
+  (`automation.budget_override_approved` and `automation.resumed`), matching the matrix's two
+  declared `emittedEvents` — the first multi-event handler in the codebase. Callers must select
+  the idempotency-key template matching the origin state they observed
+  (`budget-override:{projectId}` vs `budget-override-waiting:{projectId}`), documented on the
+  handler as the one command in the codebase without a single fixed template.
+- `packages/core/src/commands/handlers/feature/start-fixing.ts` — `StartFixingHandler`
+  (`changes_requested → fixing`, lock-fence-gated like `StartCodingHandler`). Built and exported,
+  but intentionally has **no caller in Phase 8** — the review/fix loop that decides when a
+  feature re-enters fixing is Phase 10 scope.
+- `packages/core/src/commands/handlers/feature/unblock-feature.ts` — `UnblockFeatureHandler`
+  (`blocked → approved_pending_execution`, reusing `SelectFeatureHandler`'s unmet-dependency
+  guard query). Built and exported; also has no caller yet — nothing in Phase 8 ever transitions
+  a feature run to `blocked` in the first place.
+- `packages/core/src/commands/handlers/feature/find-next-eligible-feature.ts` —
+  `findNextEligibleFeatureRun(db, projectId)`, a plain read function (not a `CommandHandler`)
+  that picks the next `approved_pending_execution` feature run whose `feature_dependencies` are
+  all `merged`, ordered by `feature_requests.created_at ASC, id ASC` for deterministic
+  sequencing. It is a candidate-picker only — `SelectFeatureHandler` remains the sole transition
+  authority and re-checks the dependency guard itself, so a stale candidate is simply rejected.
+- `packages/core/src/commands/helpers.ts` — new `insertPolicyDecision(tx, {...})`, writing to
+  `policy_decisions`; used by `ResumeAutomationHandler` and `ApproveBudgetOverrideHandler`.
+- `packages/core/src/cost/` (new directory) — Phase 8's minimal Cost Manager (docs/01 §5.11:
+  threshold evaluation only, forecasting/dashboards are Phase 16):
+  `budget-evaluator.ts` (`evaluateBudget(db, { projectId, featureRequestId?, scope })` — reads
+  the active `budget_policies` row for the scope, sums `cost_records.amount` live respecting
+  `window_days`, and returns `ok` / `soft_breach` / `hard_breach`, hard checked before soft; no
+  denormalized running-total column) and `apply-budget-decision.ts`
+  (`applyBudgetDecision(db, evaluation, {...})` — dispatches `RecordBudgetExceededCommand` or
+  `RecordBudgetApprovalWaitingCommand` via `TransactionalCommandExecutor` on a breach, no-ops on
+  `ok`; kept separate from the handlers so they stay pure state-transition logic). Both exported
+  from `packages/core/src/index.ts`. `budget-evaluator.test.ts` is a genuine per-file unit test
+  (a pure function over rows, not a state transition) — an intentional exception to the
+  no-per-handler-test convention below.
+- `packages/triggerdev/src/tasks/start-next-feature.ts` — real `runImpl`: resolves
+  `payload.featureRunId` or calls `findNextEligibleFeatureRun`; pre-checks
+  `workflow_states.automation_state`; dispatches `SelectFeatureCommand` (operator actor) then, in
+  the same task invocation, acquires the project's `ExecutionLane` and dispatches
+  `StartCodingCommand` (system actor), releasing the lane lock in a `finally`. One task, two
+  commands — `selected → coding` has no human/webhook gate between them, unlike the genuinely
+  event-driven `pr_opened → ci_running`. Expected races (`feature-already-active`,
+  `automation-paused`, `unmet-dependencies`, `not-found`) are caught and reported as
+  `{ started: false }` rather than thrown, matching `github-reconciliation.ts`'s treatment of
+  per-candidate failures as non-fatal.
+- `packages/triggerdev/src/tasks/actor.ts` — new `automationOperatorActor(correlationId)`,
+  a fixed "automation operator" human identity used for `SelectFeatureCommand` (which requires an
+  operator/human actor per its matrix row) since `start-next-feature` has no real authenticated
+  session to attribute the run to. Documented as a known Phase 13 placeholder, consistent with
+  `ActorPayload`'s existing doc comment; `StartCodingCommand` continues to use the existing
+  `systemActor()` (it requires a system actor per its matrix row).
+- **Two-mechanism sequential-enforcement story, now wired end to end but unchanged in design:**
+  `workflow_states.active_feature_run_id`'s conditional `UPDATE` inside `SelectFeatureHandler`
+  (a durable, crash-surviving compare-and-swap — the single-active-feature-per-project invariant)
+  and `packages/workflow`'s `ExecutionLane` fence-token lock (a short-lived, heartbeat-able
+  mutual-exclusion guard for handlers mutating an already-selected `feature_runs` row). Both
+  already existed from Phase 6/7; Phase 8's only change was making `start-next-feature.ts`
+  actually acquire the lane lock around `StartCodingCommand`.
+- `packages/testing/src/scenarios/execution-orchestrator.ts` +
+  `packages/testing/src/fixtures/execution-orchestrator.ts` — new scenario covering the full
+  acceptance path: dependency-ordered selection (`start-next-feature` skips a
+  dependency-blocked feature and picks the eligible one), single-active-feature enforcement (a
+  second `start-next-feature` call while one is active is a clean no-op), the budget gate (a
+  soft breach reaches `waiting_for_budget_approval`, an approver override returns to `running`, a
+  subsequent hard breach reaches `paused_budget_exceeded`, another override returns to `running`
+  and both overrides are recorded in `policy_decisions`), and sequencing continuation (once the
+  first feature is simulated as `merged`, the second, previously-blocked feature is selected
+  next). Registered in `packages/testing/src/scenarios/index.ts` and
+  `packages/testing/src/fixtures/index.ts`.
+- `packages/triggerdev/src/triggerdev.test.ts` — the previously trivial `start-next-feature`
+  stub-shape test is now split into a no-candidate-no-op assertion plus a new "start-next-feature
+  real wiring" describe block (select-and-start-coding, single-active-feature enforcement, and a
+  paused-automation no-op that leaves state untouched).
+
+**Deviations from the original plan:**
+
+- No new migration was needed — `feature_runs`, `workflow_states`, `budget_policies`,
+  `cost_records`, and `policy_decisions` all already existed in migration `0001` with every
+  column Phase 8 required. `feature_requests` already carries `idx_feature_requests_project_id`
+  and `idx_feature_requests_state`, adequate at Phase 8 data volumes, so no ordering index was
+  added either.
+- `start-fixing.ts` and `unblock-feature.ts` are built and exported but intentionally have no
+  caller in Phase 8 (see above) — the same "handler exists, caller lands later" posture Phase 7
+  left `StartCodingHandler`/`RecordCodePushedHandler` in before this phase gave them one.
+- Per-handler unit tests were not added, consistent with the precedent set in Phase 7 ("Deviations
+  from the original plan" there notes no Phase 2/6/7 command handler has one); coverage comes from
+  the `execution-orchestrator` scenario and the `triggerdev.test.ts` wiring tests instead. The one
+  exception is `budget-evaluator.test.ts`, which is a pure function over rows (not a
+  state-machine transition) and genuinely fits unit testing the way handlers do not.
+- `RecordApprovedByPolicyCommand`, `MergeIfReadyCommand`, `RecordMergedCommand`,
+  `RecordMergeFailedCommand`, `ReconcileMergeFailedCommand` (Phase 12 — Merge Gate) and
+  `RequestChangesAfterCiFailCommand` and fix-attempt counting (Phase 10 — Review/Fix Loop; no
+  fix-attempt-count column exists on `feature_runs` yet) remain unbuilt, as scoped. The
+  scenario's "sequencing continuation" step simulates a feature reaching `merged` with a direct
+  SQL update rather than a real merge command, standing in for the not-yet-built Phase 12 path.
 
 ## Phase 9 — Reference Coder Adapter
 

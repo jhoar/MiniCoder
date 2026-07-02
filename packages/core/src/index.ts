@@ -72,3 +72,18 @@ export {
   timestampsEqual,
   type PullRequestRow,
 } from './commands/handlers/github/pull-request-row.js';
+
+// Phase 8: Execution Orchestrator
+export * from './commands/handlers/feature/select-feature.js';
+export * from './commands/handlers/feature/start-coding.js';
+export * from './commands/handlers/feature/record-code-pushed.js';
+export * from './commands/handlers/feature/start-fixing.js';
+export * from './commands/handlers/feature/unblock-feature.js';
+export * from './commands/handlers/feature/find-next-eligible-feature.js';
+export * from './commands/handlers/automation/pause-automation.js';
+export * from './commands/handlers/automation/resume-automation.js';
+export * from './commands/handlers/automation/record-budget-exceeded.js';
+export * from './commands/handlers/automation/record-budget-approval-waiting.js';
+export * from './commands/handlers/automation/approve-budget-override.js';
+export * from './cost/budget-evaluator.js';
+export * from './cost/apply-budget-decision.js';

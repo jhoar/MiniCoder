@@ -9,7 +9,8 @@ export type FixtureName =
   | 'merge-gate'
   | 'trigger-retry'
   | 'github-race'
-  | 'final-design-document';
+  | 'final-design-document'
+  | 'execution-orchestrator';
 
 export interface Fixture {
   name: FixtureName;
