@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.2
-> Last-updated: 2026-06-30
+> Version: 1.3.3
+> Last-updated: 2026-07-02
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -770,6 +770,26 @@ This is documented as an interim, manual operator procedure, not a polished feat
 find a never-tracked PR on its own and eliminate the need for step 1–3 above) remains explicitly
 out of scope here — it is a larger, separate capability than this runbook gap warrants and is
 already called out as unbuilt in the code's own comments.
+
+**Alternatives considered and deferred (reaffirmed, round 8):** automated discovery for this gap
+has been raised across multiple review rounds; the decision to defer it stands, for these reasons:
+
+- **`GitHubClient.listPullRequestsForBranch`-style discovery** — the most direct fix, but a
+  genuinely new capability (a paginated GitHub API surface plus a scheduled-task call site), not a
+  bug fix to the existing reconciliation path; deferred to a future phase alongside the rest of
+  Phase 13's manual-recovery-API scope noted above.
+- **A `state doctor` check** — not currently feasible without giving the CLI a live GitHub
+  credential and making a per-run API call; none of `state doctor`'s existing checks call out to
+  GitHub today, they only compare already-persisted local tables against each other.
+- **An alerting mechanism** — would need a staleness heuristic (how long is "stuck too long" for a
+  branch that might legitimately sit at `code_pushed` for a while) and a notification channel,
+  neither of which exists in the current operational tooling.
+- **A guarded repair command** — closest in spirit to the manual SQL insert above, but formalizing
+  it as a `minicoder` subcommand is exactly the Phase 13 API-command scope already deferred.
+
+This is Medium-severity operational-completeness scope, not a correctness bug: reconciliation
+behaves correctly for every PR it knows about, and the manual runbook above (introduced in round 6,
+corrected in round 7) is the accepted interim mitigation until one of the above is built.
 
 ---
 

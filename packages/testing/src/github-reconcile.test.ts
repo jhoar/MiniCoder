@@ -598,6 +598,39 @@ describe('reconcileGithubState', () => {
     expect(finalRunRows[0]?.current_execution_state).toBe(FeatureExecutionState.CHANGES_REQUESTED);
   });
 
+  it.each([
+    FeatureExecutionState.CODE_PUSHED,
+    FeatureExecutionState.CHANGES_REQUESTED,
+    FeatureExecutionState.FIXING,
+    FeatureExecutionState.APPROVED_BY_POLICY,
+    FeatureExecutionState.MERGE_READY,
+  ])(
+    'round-8 HIGH-1: escalates to human_required when the PR closes unmerged while the feature run is in %s',
+    async (fromState) => {
+      const db = createTestDb();
+      await seedProject(db);
+      const { featureRunId } = await seedFeatureRun(db, fromState);
+      await seedPullRequestRow(db, featureRunId, { prNumber: 70 });
+
+      const result = await reconcileGithubState({
+        db,
+        featureRunId,
+        projectId: PROJECT_ID,
+        observed: observed({ prNumber: 70, state: 'closed', mergedAt: null }),
+        correlationId: `corr-round8-${fromState}`,
+      });
+
+      expect(result.action).toBe('escalated');
+      expect(result.resultingState).toBe(FeatureExecutionState.HUMAN_REQUIRED);
+
+      const runRows = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.HUMAN_REQUIRED);
+    },
+  );
+
   it('does not escalate an already-merged PR', async () => {
     const db = createTestDb();
     await seedProject(db);

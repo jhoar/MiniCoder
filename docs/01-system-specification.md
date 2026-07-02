@@ -278,8 +278,15 @@ operation when policy permits.
   already-fetched `ObservedPullRequestState` (core never calls GitHub directly — the caller fetches
   via `GitHubClient` first, keeping Orchestrator Core provider-SDK-free), it:
   1. Escalates to `human_required` (`EscalateToHumanCommand`) when the PR closed without merging
-     while the feature run was still in `pr_opened` or `ci_running` — an irreconcilable
-     divergence.
+     while the feature run was still in any non-terminal state (`approved_pending_execution`,
+     `selected`, `coding`, `code_pushed`, `pr_opened`, `ci_running`, `changes_requested`, `fixing`,
+     `approved_by_policy`, `merge_ready`) — an irreconcilable divergence. `FEATURE_EXECUTION_MATRIX`
+     (`packages/core/src/statemachine/machines/feature-execution.ts`) carries one
+     `EscalateToHumanCommand` entry per one of these states so the guard's actual coverage
+     (`reconcile.ts`'s `irreconcilablyClosed` check) and the matrix's declared coverage stay in
+     sync — a mid-flight PR close (e.g. during a fix-cycle re-push at `code_pushed`, or while
+     `changes_requested`/`fixing`/`approved_by_policy`/`merge_ready`) is just as irreconcilable as
+     one observed at `pr_opened`/`ci_running`.
   2. Advances the feature-execution matrix one step at a time via the matching `Record*Command`
      (`RecordPrOpenedCommand`, `RecordCiRunningCommand`, `RecordCiPassedCommand`,
      `RecordCiFailedCommand`, `RecordChangesRequestedCommand`) when observed GitHub state has
