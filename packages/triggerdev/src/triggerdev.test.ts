@@ -35,13 +35,16 @@ const ACTOR = { actorId: 'test-operator', actorRole: 'operator' as const };
 const APPROVER = { actorId: 'test-approver', actorRole: 'approver' as const };
 
 /** Deterministic fake planner used for wiring tests — never imports @minicoder/testing (see resolveDefaultPlannerAdapter). */
-function fakePlanner(readinessResult: 'sufficient' | 'insufficient' = 'sufficient'): PlannerAgentAdapter {
+function fakePlanner(
+  readinessResult: 'sufficient' | 'insufficient' = 'sufficient',
+): PlannerAgentAdapter {
   return {
     role: 'PlannerAgentAdapter',
     async run() {
       return {
         readinessResult,
-        questions: readinessResult === 'insufficient' ? [{ question: 'What is the scope?', round: 1 }] : [],
+        questions:
+          readinessResult === 'insufficient' ? [{ question: 'What is the scope?', round: 1 }] : [],
         assumptions: [],
         gaps: [],
       };
@@ -103,7 +106,11 @@ describe('MockTriggerRunner', () => {
   it('writes triggerdev_runs row and updates status to completed on success', async () => {
     const { runId } = await runner.run(
       'planning-readiness-assessment',
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       runPlanningReadiness,
       undefined,
       fakePlanner(),
@@ -132,7 +139,12 @@ describe('MockTriggerRunner', () => {
 
   it('retry: same runId upserts the row and succeeds on re-attempt', async () => {
     const runId = 'mock-run-retry-001';
-    const payload = { ...BASE_PAYLOAD, ...ACTOR, content: 'Build a todo app.', contentType: 'text/plain' };
+    const payload = {
+      ...BASE_PAYLOAD,
+      ...ACTOR,
+      content: 'Build a todo app.',
+      contentType: 'text/plain',
+    };
     // First attempt
     await runner.run('ingest-specification', payload, runIngestSpecification, runId);
     let row = await getRunByTriggerdevId(db, runId);
@@ -207,7 +219,11 @@ describe('task runImpl — command-backed unit tests', () => {
 
   it('planning-readiness-assessment returns a valid readiness result', async () => {
     const result = await runPlanningReadiness(
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       db,
       fakePlanner('sufficient'),
     );
@@ -219,7 +235,11 @@ describe('task runImpl — command-backed unit tests', () => {
 
   it('generate-implementation-plan returns a plan id once the assessment is sufficient', async () => {
     const assessment = await runPlanningReadiness(
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       db,
       fakePlanner('sufficient'),
     );
@@ -304,7 +324,11 @@ describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM
   /** Creates a draft plan with one feature request, returning its id/version. */
   async function setupPlanWithBacklog(): Promise<{ planId: string; planVersion: number }> {
     const assessment = await runPlanningReadiness(
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       db,
       fakePlanner('sufficient'),
     );
@@ -340,7 +364,9 @@ describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM
             priority: 0,
             dependsOnFrIds: [],
             acceptanceCriteria: ['A user can create a todo.'],
-            testExpectations: [{ description: 'Creating a todo persists it.', testType: 'unit' as const }],
+            testExpectations: [
+              { description: 'Creating a todo persists it.', testType: 'unit' as const },
+            ],
           },
         ],
       },
@@ -380,7 +406,9 @@ describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM
             priority: 0,
             dependsOnFrIds: [],
             acceptanceCriteria: ['A user can delete a todo.'],
-            testExpectations: [{ description: 'Deleting removes the todo.', testType: 'unit' as const }],
+            testExpectations: [
+              { description: 'Deleting removes the todo.', testType: 'unit' as const },
+            ],
           },
         ],
       },
@@ -410,14 +438,18 @@ describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM
   it('HIGH-2: validate-backlog task rethrows non-backlog-invalid errors instead of returning valid:false', async () => {
     // A plan with no feature_requests throws a CommandError of type 'empty-backlog' (not
     // 'backlog-invalid'), which the task must propagate rather than swallow as { valid: false }.
-    await expect(runValidateBacklog({ ...BASE_PAYLOAD, planId: 'plan-missing' }, db)).rejects.toThrow(
-      'no feature requests to validate',
-    );
+    await expect(
+      runValidateBacklog({ ...BASE_PAYLOAD, planId: 'plan-missing' }, db),
+    ).rejects.toThrow('no feature requests to validate');
   });
 
   it('MEDIUM-2: complete-clarification cannot reopen a round while current-round questions are unanswered', async () => {
     const assessment = await runPlanningReadiness(
-      { ...BASE_PAYLOAD, specificationContent: 'Build something awesome.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build something awesome.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       db,
       fakePlanner('insufficient'),
     );
@@ -429,7 +461,12 @@ describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM
     );
     const session = sessionRows[0]!;
     await runStartClarification(
-      { ...BASE_PAYLOAD, ...ACTOR, clarificationSessionId: session.id, expectedVersion: session.version },
+      {
+        ...BASE_PAYLOAD,
+        ...ACTOR,
+        clarificationSessionId: session.id,
+        expectedVersion: session.version,
+      },
       db,
     );
 
@@ -481,7 +518,11 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
   it('planning-readiness-assessment', async () => {
     const { runId } = await runner.run(
       'planning-readiness-assessment',
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       runPlanningReadiness,
       undefined,
       fakePlanner(),
@@ -493,7 +534,11 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
 
   it('start-clarification, record-clarification-answer, complete-clarification', async () => {
     const assessment = await runPlanningReadiness(
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       db,
       fakePlanner('insufficient'),
     );
@@ -507,7 +552,12 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
 
     const { runId: startRunId } = await runner.run(
       'start-clarification',
-      { ...BASE_PAYLOAD, ...ACTOR, clarificationSessionId: session.id, expectedVersion: session.version },
+      {
+        ...BASE_PAYLOAD,
+        ...ACTOR,
+        clarificationSessionId: session.id,
+        expectedVersion: session.version,
+      },
       runStartClarification,
     );
     const startRow = await getRunByTriggerdevId(db, startRunId);
@@ -555,7 +605,11 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
 
   it('generate-implementation-plan, generate-feature-backlog, validate-backlog, request-plan-approval, activate-approved-backlog', async () => {
     await runPlanningReadiness(
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       db,
       fakePlanner('sufficient'),
     );
@@ -599,7 +653,9 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
             priority: 0,
             dependsOnFrIds: [],
             acceptanceCriteria: ['A user can create a todo.'],
-            testExpectations: [{ description: 'Creating a todo persists it.', testType: 'unit' as const }],
+            testExpectations: [
+              { description: 'Creating a todo persists it.', testType: 'unit' as const },
+            ],
           },
         ],
       },
@@ -638,7 +694,12 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
 
     const { runId: activateRunId } = await runner.run(
       'activate-approved-backlog',
-      { ...BASE_PAYLOAD, ...APPROVER, planId: plan.id, expectedVersion: approvedPlanRows[0]!.version },
+      {
+        ...BASE_PAYLOAD,
+        ...APPROVER,
+        planId: plan.id,
+        expectedVersion: approvedPlanRows[0]!.version,
+      },
       runActivateBacklog,
     );
     const activateRow = await getRunByTriggerdevId(db, activateRunId);
@@ -666,7 +727,11 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
 
   it('export-plan, export-backlog, import-backlog', async () => {
     await runPlanningReadiness(
-      { ...BASE_PAYLOAD, specificationContent: 'Build a todo app.', plannerAdapterName: 'MockPlannerAdapter' },
+      {
+        ...BASE_PAYLOAD,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
       db,
       fakePlanner('sufficient'),
     );

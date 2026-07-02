@@ -66,9 +66,10 @@ function hasCycle(features: readonly FeatureRow[], deps: readonly DependencyRow[
  * has at least one acceptance criterion and one test expectation. Writes a workflow_events row
  * recording the outcome; never mutates plan/feature state itself.
  */
-export class ValidateBacklogHandler
-  implements CommandHandler<ValidateBacklogPayload, ValidateBacklogResultState>
-{
+export class ValidateBacklogHandler implements CommandHandler<
+  ValidateBacklogPayload,
+  ValidateBacklogResultState
+> {
   readonly commandName = 'ValidateBacklogCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -142,7 +143,8 @@ export class ValidateBacklogHandler
         }
       }
 
-      const resultingState: ValidateBacklogResultState = problems.length === 0 ? 'valid' : 'invalid';
+      const resultingState: ValidateBacklogResultState =
+        problems.length === 0 ? 'valid' : 'invalid';
 
       // Record the outcome against the plan's current backlog_version so
       // SubmitPlanForApprovalCommand can require a validation that is both 'valid' and current

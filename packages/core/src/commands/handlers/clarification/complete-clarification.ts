@@ -34,9 +34,10 @@ interface SessionRow {
 }
 
 /** clarification_in_progress -> clarification_complete, once every question in the current round has an answer. */
-export class CompleteClarificationHandler
-  implements CommandHandler<CompleteClarificationPayload, ClarificationStatus>
-{
+export class CompleteClarificationHandler implements CommandHandler<
+  CompleteClarificationPayload,
+  ClarificationStatus
+> {
   readonly commandName = 'CompleteClarificationCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly requiredActorKind = 'human' as const;
@@ -93,17 +94,36 @@ export class CompleteClarificationHandler
       const now = isoNow();
       const affected = await tx.executeAffected(
         `UPDATE clarification_sessions SET status = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [ClarificationStatus.COMPLETE, nextVersion(session.version), now, clarificationSessionId, expectedVersion],
+        [
+          ClarificationStatus.COMPLETE,
+          nextVersion(session.version),
+          now,
+          clarificationSessionId,
+          expectedVersion,
+        ],
       );
       if (affected === 0) {
-        throw new OptimisticLockError('clarification_sessions', clarificationSessionId, expectedVersion, -1);
+        throw new OptimisticLockError(
+          'clarification_sessions',
+          clarificationSessionId,
+          expectedVersion,
+          -1,
+        );
       }
 
       await tx.execute(
         `INSERT INTO clarification_decisions
            (id, clarification_session_id, decision_type, actor, actor_role, notes, decided_at, version, created_at, updated_at)
          VALUES (?, ?, 'proceed', ?, ?, NULL, ?, 1, ?, ?)`,
-        [generateId(), clarificationSessionId, envelope.actor.id, envelope.actor.role, now, now, now],
+        [
+          generateId(),
+          clarificationSessionId,
+          envelope.actor.id,
+          envelope.actor.role,
+          now,
+          now,
+          now,
+        ],
       );
 
       const eventId = await writeWorkflowEvent(tx, {

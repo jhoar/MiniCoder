@@ -41,9 +41,10 @@ interface PlanRow {
  * from before the latest GenerateFeatureBacklogCommand/ImportBacklogCommand call does not count)
  * and no unresolved blocking planning_gaps.
  */
-export class SubmitPlanForApprovalHandler
-  implements CommandHandler<SubmitPlanForApprovalPayload, PlanState>
-{
+export class SubmitPlanForApprovalHandler implements CommandHandler<
+  SubmitPlanForApprovalPayload,
+  PlanState
+> {
   readonly commandName = 'SubmitPlanForApprovalCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly requiredActorKind = 'human' as const;

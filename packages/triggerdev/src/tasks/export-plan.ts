@@ -34,5 +34,9 @@ export async function runImpl(payload: ExportPlanPayload, db: DbClient): Promise
     [payload.projectId],
   );
 
-  return { projectId: payload.projectId, planId: payload.planId, artifactExportId: rows[0]?.id ?? null };
+  return {
+    projectId: payload.projectId,
+    planId: payload.planId,
+    artifactExportId: rows[0]?.id ?? null,
+  };
 }

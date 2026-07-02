@@ -63,7 +63,12 @@ const FeatureBacklogEntry = z.object({
   dependsOnFrIds: z.array(z.string()).default([]),
   acceptanceCriteria: z.array(z.string()).default([]),
   testExpectations: z
-    .array(z.object({ description: z.string(), testType: z.enum(['unit', 'integration', 'system']).nullable() }))
+    .array(
+      z.object({
+        description: z.string(),
+        testType: z.enum(['unit', 'integration', 'system']).nullable(),
+      }),
+    )
     .default([]),
 });
 

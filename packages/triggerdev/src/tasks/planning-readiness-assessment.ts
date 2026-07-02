@@ -30,7 +30,12 @@ export async function runImpl(
 ): Promise<PlanningReadinessResult> {
   const registry = new AdapterRegistry(db);
   const recorder = new AgentRunRecorder(db, registry);
-  const handler = new AssessPlanningReadinessHandler(registry, recorder, planner, payload.plannerAdapterName);
+  const handler = new AssessPlanningReadinessHandler(
+    registry,
+    recorder,
+    planner,
+    payload.plannerAdapterName,
+  );
 
   const envelope: CommandEnvelope<typeof payload> = {
     commandId: generateId(),

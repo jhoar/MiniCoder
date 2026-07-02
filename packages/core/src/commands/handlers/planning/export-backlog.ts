@@ -32,9 +32,10 @@ interface FeatureRow {
 }
 
 /** Renders `backlog.md`-equivalent markdown from feature_requests, driving the same artifact-export matrix as ExportPlanCommand. */
-export class ExportBacklogHandler
-  implements CommandHandler<ExportBacklogPayload, ArtifactExportState>
-{
+export class ExportBacklogHandler implements CommandHandler<
+  ExportBacklogPayload,
+  ArtifactExportState
+> {
   readonly commandName = 'ExportBacklogCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly requiredActorKind = 'human' as const;

@@ -82,7 +82,13 @@ export class ActivatePlanHandler implements CommandHandler<ActivatePlanPayload, 
       const now = isoNow();
       const affected = await tx.executeAffected(
         `UPDATE implementation_plans SET state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [PlanState.ACTIVATED_FOR_EXECUTION, nextVersion(plan.version), now, planId, expectedVersion],
+        [
+          PlanState.ACTIVATED_FOR_EXECUTION,
+          nextVersion(plan.version),
+          now,
+          planId,
+          expectedVersion,
+        ],
       );
       if (affected === 0) {
         throw new OptimisticLockError('implementation_plans', planId, expectedVersion, -1);

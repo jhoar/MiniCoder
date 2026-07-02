@@ -41,9 +41,10 @@ const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
  * unless `dryRun`, performs the transactional import plus a human_approvals record for the import
  * decision.
  */
-export class ImportBacklogHandler
-  implements CommandHandler<ImportBacklogPayload, ImportBacklogResultState>
-{
+export class ImportBacklogHandler implements CommandHandler<
+  ImportBacklogPayload,
+  ImportBacklogResultState
+> {
   readonly commandName = 'ImportBacklogCommand';
   readonly requiredRole = UserRole.APPROVER;
   readonly requiredActorKind = 'human' as const;

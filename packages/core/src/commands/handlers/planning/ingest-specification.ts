@@ -23,9 +23,10 @@ export type IngestSpecificationResultState = 'ingested';
 const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Insert-only: records a specification_inputs row. No state matrix — a specification has no lifecycle of its own. */
-export class IngestSpecificationHandler
-  implements CommandHandler<IngestSpecificationPayload, IngestSpecificationResultState>
-{
+export class IngestSpecificationHandler implements CommandHandler<
+  IngestSpecificationPayload,
+  IngestSpecificationResultState
+> {
   readonly commandName = 'IngestSpecificationCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly requiredActorKind = 'human' as const;

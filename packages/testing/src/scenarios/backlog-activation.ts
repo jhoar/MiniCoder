@@ -42,7 +42,10 @@ export const backlogActivationScenario: Scenario = {
       throw new Error(`Expected 3 features, found ${features.length}`);
     }
 
-    const featureRuns = await db.query<{ feature_request_id: string; current_execution_state: string }>(
+    const featureRuns = await db.query<{
+      feature_request_id: string;
+      current_execution_state: string;
+    }>(
       `SELECT fr.feature_request_id, fr.current_execution_state
        FROM feature_runs fr
        JOIN feature_requests freq ON fr.feature_request_id = freq.id
@@ -54,7 +57,9 @@ export const backlogActivationScenario: Scenario = {
       throw new Error(`Expected 3 feature_runs rows, found ${featureRuns.length}`);
     }
 
-    const notPending = featureRuns.filter((r) => r.current_execution_state !== 'approved_pending_execution');
+    const notPending = featureRuns.filter(
+      (r) => r.current_execution_state !== 'approved_pending_execution',
+    );
     if (notPending.length > 0) {
       throw new Error(
         `Expected all feature_runs at approved_pending_execution, but ${notPending.length} are not`,

@@ -42,9 +42,10 @@ interface SessionRow {
  * transition clarification_sessions.status — that only happens via CompleteClarificationCommand
  * once every question in the current round has an answer.
  */
-export class RecordClarificationAnswerHandler
-  implements CommandHandler<RecordClarificationAnswerPayload, ClarificationStatus>
-{
+export class RecordClarificationAnswerHandler implements CommandHandler<
+  RecordClarificationAnswerPayload,
+  ClarificationStatus
+> {
   readonly commandName = 'RecordClarificationAnswerCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly requiredActorKind = 'human' as const;
@@ -54,8 +55,13 @@ export class RecordClarificationAnswerHandler
     envelope: CommandEnvelope<RecordClarificationAnswerPayload>,
     db: DbClient,
   ): Promise<CommandResult<ClarificationStatus>> {
-    const { clarificationQuestionId, clarificationSessionId, projectId, answer, expectedQuestionVersion } =
-      envelope.payload;
+    const {
+      clarificationQuestionId,
+      clarificationSessionId,
+      projectId,
+      answer,
+      expectedQuestionVersion,
+    } = envelope.payload;
 
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<ClarificationStatus>(
@@ -96,7 +102,12 @@ export class RecordClarificationAnswerHandler
           instance: envelope.correlationId,
         });
       }
-      assertVersion('clarification_questions', clarificationQuestionId, question, expectedQuestionVersion);
+      assertVersion(
+        'clarification_questions',
+        clarificationQuestionId,
+        question,
+        expectedQuestionVersion,
+      );
       if (question.answered_at !== null) {
         throw new CommandError({
           type: 'already-answered',
@@ -127,7 +138,16 @@ export class RecordClarificationAnswerHandler
         `INSERT INTO clarification_answers
            (id, clarification_question_id, answer, actor, actor_role, answered_at, version, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-        [generateId(), clarificationQuestionId, answer, envelope.actor.id, envelope.actor.role, now, now, now],
+        [
+          generateId(),
+          clarificationQuestionId,
+          answer,
+          envelope.actor.id,
+          envelope.actor.role,
+          now,
+          now,
+          now,
+        ],
       );
 
       const eventId = await writeWorkflowEvent(tx, {

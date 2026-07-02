@@ -7,19 +7,24 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–3 and Phase 5 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–3, 5, and 6 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
 backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
 workflow locks with fencing tokens, execution lanes, local auth, secret-redaction tests, and the
 `minicoder state` CLI (Phase 2); the Workflow Layer harness with a 9-service Trigger.dev v4
-Docker Compose stack (`infra/docker-compose.triggerdev.yml`), 9 task stubs registered via
+Docker Compose stack (`infra/docker-compose.triggerdev.yml`), 9 initial task stubs registered via
 `@trigger.dev/sdk/v3`, `assertSchemaReady()` post-connect schema probe, CI/CD deploy workflow
-(`.github/workflows/trigger-deploy.yml`), and `minicoder trigger` CLI scaffold (Phase 3); and the
+(`.github/workflows/trigger-deploy.yml`), and `minicoder trigger` CLI scaffold (Phase 3); the
 Agent Adapter Foundation — the six role interfaces, `AdapterRegistry`, the capability model with
 runtime validation, `AgentRunRecorder` with automatic provenance snapshotting, six deterministic
 mock adapters (including `HumanTestAdapter`), and the Phase 5 smoke conformance suite (Phase 5,
-migrations 0003–0006).
+migrations 0003–0006); and the Bootstrap Planner, Readiness, and Clarification implementation —
+specification ingestion, planner-adapter-backed readiness assessment, the clarification workflow
+and its circuit breaker, plan and feature-backlog generation and validation (with a
+backlog-version-scoped validation gate before approval), approval and activation, and artifact
+export/import, with all 15 canonical Trigger.dev task IDs wired to real Orchestrator Core commands
+(Phase 6, migrations 0007–0008).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -162,11 +167,21 @@ merge-if-ready, final design-document approval, and guarded/destructive lifecycl
 
 ### Workflow Layer task IDs (exact strings, no drift)
 
+All 15 canonical task IDs (`ALL_TASK_IDS` in `packages/triggerdev/src/task-ids.ts`). The 9 Phase 3
+tasks and the 6 Phase 6 additions are listed together — there is no "initial vs. later" distinction
+in the token set itself, only in when each task's `runImpl` was wired to a real core command:
+
 ```
-planning-readiness-assessment | start-clarification | generate-implementation-plan
-generate-feature-backlog | activate-approved-backlog | start-next-feature
-github-reconciliation | export-plan | export-backlog
+ingest-specification | planning-readiness-assessment | start-clarification
+record-clarification-answer | complete-clarification | generate-implementation-plan
+generate-feature-backlog | validate-backlog | request-plan-approval
+activate-approved-backlog | start-next-feature | github-reconciliation
+export-plan | export-backlog | import-backlog
 ```
+
+`start-next-feature` and `github-reconciliation` remain payload-validated stubs pending Phase 7/8;
+every other task now calls a real Orchestrator Core command through
+`TransactionalCommandExecutor`.
 
 ### Review finding severities (§3.7)
 
@@ -274,6 +289,50 @@ ORDER BY updated_at DESC, id DESC)`, never `MAX(rowid)`.** `rowid` reflects inse
   not via Workflow Layer task wrappers. Timeout taxonomy, cost/token reporting, structured-output
   normalization, and Workflow Layer wrapper invocation are deferred to the full canonical
   adapter-contract gate in Phase 9+.
+
+## Bootstrap Planner and Clarification Operational Constraints (`packages/core/src/commands/handlers/{planning,clarification}/`, migrations 0007–0008)
+
+- **`clarification_sessions`/`clarification_questions`/`clarification_answers`/`clarification_decisions`
+  (migration 0007) persist the `ClarificationStatus` machine.** Gaps and assumptions raised or
+  resolved during clarification reuse `planning_gaps`/`planning_assumptions` via a nullable
+  `clarification_session_id` — there are no separate `clarification_gaps`/`clarification_assumptions`
+  tables (docs/02 §4).
+- **A `clarification_sessions` row's genesis is an `INSERT`, not a matrix transition** — like
+  `implementation_plans` starting at `draft`. `AssessPlanningReadinessHandler` inserts it directly at
+  `clarification_required` (insufficient) or at `clarification_not_required` then immediately
+  transitions it to `clarification_complete` (sufficient/sufficient_with_assumptions), all inside
+  one transaction, and stamps `assessment_id` (migration 0008) for exact provenance.
+- **`GenerateImplementationPlanHandler`'s clarification guard is scoped to the assessment in use,
+  not "the project's most recent clarification session."** Multiple assessments in one project each
+  have their own session; querying by `assessment_id` (not `project_id`) avoids an unrelated
+  newer/older session wrongly blocking or wrongly allowing plan generation.
+- **`feature_requests.state` is a static label — never updated by transitions.** It is set once at
+  backlog generation (`GenerateFeatureBacklogHandler`/`ImportBacklogHandler`) and never touched
+  again. The real execution-readiness gate is `feature_runs`: `ActivatePlanHandler` inserts one row
+  per `kind='feature'` request (`attempt_no=1`, `current_execution_state=approved_pending_execution`)
+  when a plan activates; `kind='discovery'` rows never get one (docs/02 §5).
+- **Plan submission requires a current, passing backlog validation (migration 0008).**
+  `implementation_plans.backlog_version` increments every time
+  `GenerateFeatureBacklogHandler`/`ImportBacklogHandler` (re)writes features for a plan, which also
+  resets `backlog_validated_at`/`backlog_validated_state`/`backlog_validated_version` to `NULL`.
+  `ValidateBacklogHandler` records its outcome against the plan's current `backlog_version`.
+  `SubmitPlanForApprovalHandler` requires `backlog_validated_state = 'valid' AND
+backlog_validated_version = backlog_version` — checking unresolved blocking `planning_gaps` alone
+  is not sufficient; a stale validation from before the latest backlog change must not count.
+- **`RequestAnotherClarificationRoundHandler` requires every question in the current round to be
+  answered before reopening** — the same unanswered-question guard
+  `CompleteClarificationHandler` uses. `BlockClarificationHandler` is intentionally exempt: it is
+  the circuit-breaker/timeout escape path (docs/02 §4) and must stay usable precisely when answers
+  did not arrive in time.
+- **`packages/triggerdev/src/tasks/validate-backlog.ts` must only catch the `CommandError` with
+  `type: 'backlog-invalid'`.** A bare `catch` that reports every error as `{ valid: false }` hides
+  real DB/infrastructure/programmer failures from Trigger.dev's retry/failed-status handling —
+  every other error type must re-throw.
+- **`planning-readiness-assessment` and `generate-implementation-plan` never import a concrete
+  `PlannerAgentAdapter` implementation.** The caller injects one (test scenarios pass
+  `MockPlannerAdapter`); no reference/generic planner adapter has shipped yet (docs/02 §7 names
+  `GenericLLMPlannerAdapter` as future work), so a live Trigger.dev deployment fails fast with an
+  actionable error until one exists.
 
 ## Cross-Dialect Testing (Mandatory)
 

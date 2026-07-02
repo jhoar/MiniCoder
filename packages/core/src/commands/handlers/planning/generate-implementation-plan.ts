@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { ClarificationStatus, PlanState, ReadinessStatus, UserRole } from '../../../domain/states.js';
+import {
+  ClarificationStatus,
+  PlanState,
+  ReadinessStatus,
+  UserRole,
+} from '../../../domain/states.js';
 import { CommandError } from '../../types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
@@ -24,7 +29,9 @@ export const GenerateImplementationPlanPayloadSchema = z.object({
     }),
   ),
 });
-export type GenerateImplementationPlanPayload = z.infer<typeof GenerateImplementationPlanPayloadSchema>;
+export type GenerateImplementationPlanPayload = z.infer<
+  typeof GenerateImplementationPlanPayloadSchema
+>;
 
 const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -42,9 +49,10 @@ interface AssessmentRow {
  * Guard: the readiness assessment must be sufficient or sufficient_with_assumptions, and
  * clarification must not still be open (clarification_not_required or clarification_complete).
  */
-export class GenerateImplementationPlanHandler
-  implements CommandHandler<GenerateImplementationPlanPayload, PlanState>
-{
+export class GenerateImplementationPlanHandler implements CommandHandler<
+  GenerateImplementationPlanPayload,
+  PlanState
+> {
   readonly commandName = 'GenerateImplementationPlanCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;

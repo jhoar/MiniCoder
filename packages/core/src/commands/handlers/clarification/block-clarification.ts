@@ -42,9 +42,10 @@ interface SessionRow {
  * is exceeded. Trips a human_required escalation by recording a clarification_decisions row —
  * surfacing it to an operator is an API/UI concern (Phase 13+).
  */
-export class BlockClarificationHandler
-  implements CommandHandler<BlockClarificationPayload, ClarificationStatus>
-{
+export class BlockClarificationHandler implements CommandHandler<
+  BlockClarificationPayload,
+  ClarificationStatus
+> {
   readonly commandName = 'BlockClarificationCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -94,7 +95,10 @@ export class BlockClarificationHandler
           instance: envelope.correlationId,
         });
       }
-      if (reason === 'round_timeout' && (!session.round_timeout_at || session.round_timeout_at > now)) {
+      if (
+        reason === 'round_timeout' &&
+        (!session.round_timeout_at || session.round_timeout_at > now)
+      ) {
         throw new CommandError({
           type: 'timeout-not-exceeded',
           title: 'Round timeout not yet exceeded',
@@ -106,17 +110,37 @@ export class BlockClarificationHandler
 
       const affected = await tx.executeAffected(
         `UPDATE clarification_sessions SET status = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [ClarificationStatus.BLOCKED, nextVersion(session.version), now, clarificationSessionId, expectedVersion],
+        [
+          ClarificationStatus.BLOCKED,
+          nextVersion(session.version),
+          now,
+          clarificationSessionId,
+          expectedVersion,
+        ],
       );
       if (affected === 0) {
-        throw new OptimisticLockError('clarification_sessions', clarificationSessionId, expectedVersion, -1);
+        throw new OptimisticLockError(
+          'clarification_sessions',
+          clarificationSessionId,
+          expectedVersion,
+          -1,
+        );
       }
 
       await tx.execute(
         `INSERT INTO clarification_decisions
            (id, clarification_session_id, decision_type, actor, actor_role, notes, decided_at, version, created_at, updated_at)
          VALUES (?, ?, 'block', ?, ?, ?, ?, 1, ?, ?)`,
-        [generateId(), clarificationSessionId, envelope.actor.id, envelope.actor.role, reason, now, now, now],
+        [
+          generateId(),
+          clarificationSessionId,
+          envelope.actor.id,
+          envelope.actor.role,
+          reason,
+          now,
+          now,
+          now,
+        ],
       );
 
       const eventId = await writeWorkflowEvent(tx, {

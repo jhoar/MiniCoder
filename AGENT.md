@@ -52,6 +52,11 @@ architecture requirements remain under `docs/`.
     breaker
   - all 15 canonical Trigger.dev task IDs registered, with the 9 planner/clarification tasks now
     calling real Orchestrator Core commands instead of returning stub values
+  - version-scoped backlog-validation tracking on `implementation_plans`
+    (`backlog_version`/`backlog_validated_at`/`backlog_validated_state`/`backlog_validated_version`)
+    and an `assessment_id` link on `clarification_sessions`, gating plan submission on a passing,
+    current `ValidateBacklogCommand` result and scoping the clarification-complete guard to the
+    assessment in use
   - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
 - Do not describe the repository as specification-only.
 - Phase 7 and later remain target architecture. Do not assume later phases are implemented merely
@@ -202,6 +207,31 @@ Do not contradict these rules without an explicit architecture change to the can
 
 The ESLint rules and `fitness/no-provider-imports.test.ts` enforce part of this boundary. Extend
 fitness tests when introducing a new architectural restriction.
+
+### Planning and clarification (`packages/core/src/commands/handlers/{planning,clarification}/`)
+
+- `feature_requests.state` is a static label set once at backlog generation — it is never updated
+  by transitions. The real execution-readiness gate is `feature_runs` rows, which
+  `ActivatePlanHandler` inserts (one per `kind='feature'` request) when a plan activates.
+- A `clarification_sessions` row's genesis is an `INSERT`, not a matrix transition — like
+  `implementation_plans` starting at `draft`. `AssessPlanningReadinessHandler` creates it directly
+  at `clarification_required` (insufficient) or `clarification_not_required` → immediately
+  transitioned to `clarification_complete` (sufficient), and stamps `assessment_id` so later
+  lookups (e.g. `GenerateImplementationPlanHandler`'s clarification-complete guard) can scope to
+  the assessment in use instead of "the project's most recent session."
+- `SubmitPlanForApprovalHandler` requires `backlog_validated_state = 'valid' AND
+backlog_validated_version = backlog_version` on `implementation_plans` before a plan can leave
+  `draft`. `GenerateFeatureBacklogHandler`/`ImportBacklogHandler` increment `backlog_version` and
+  reset the `backlog_validated_*` columns to `NULL` every time they write features, so a stale
+  validation from before the latest backlog change never counts.
+- `RequestAnotherClarificationRoundHandler` requires every question in the current round to have an
+  answer before reopening — the same guard `CompleteClarificationHandler` uses.
+  `BlockClarificationHandler` is exempt: it is the circuit-breaker/timeout escape path and must stay
+  usable precisely when answers did not arrive in time.
+- `packages/triggerdev/src/tasks/validate-backlog.ts` must only catch the `CommandError` with
+  `type: 'backlog-invalid'` and re-throw everything else — a bare `catch` that reports every error
+  as `{ valid: false }` hides real infrastructure/programmer failures from Trigger.dev's
+  retry/failed-status handling.
 
 ### `@minicoder/workflow`
 

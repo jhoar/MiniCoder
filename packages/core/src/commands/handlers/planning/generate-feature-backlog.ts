@@ -21,7 +21,12 @@ const FeatureInputSchema = z.object({
   dependsOnFrIds: z.array(z.string()).default([]),
   acceptanceCriteria: z.array(z.string()).default([]),
   testExpectations: z
-    .array(z.object({ description: z.string(), testType: z.enum(['unit', 'integration', 'system']).nullable() }))
+    .array(
+      z.object({
+        description: z.string(),
+        testType: z.enum(['unit', 'integration', 'system']).nullable(),
+      }),
+    )
     .default([]),
 });
 
@@ -43,9 +48,10 @@ const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * backlog. `feature_requests.state` is a static label (see ActivatePlanCommand) — the real
  * execution readiness gate is the `feature_runs` rows ActivatePlanCommand creates.
  */
-export class GenerateFeatureBacklogHandler
-  implements CommandHandler<GenerateFeatureBacklogPayload, GenerateFeatureBacklogResultState>
-{
+export class GenerateFeatureBacklogHandler implements CommandHandler<
+  GenerateFeatureBacklogPayload,
+  GenerateFeatureBacklogResultState
+> {
   readonly commandName = 'GenerateFeatureBacklogCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;

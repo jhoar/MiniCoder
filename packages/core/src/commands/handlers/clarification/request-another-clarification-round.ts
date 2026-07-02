@@ -41,9 +41,10 @@ interface SessionRow {
  * StartClarificationCommand (the point a new round of questions is actually asked); this
  * transition only re-opens the session for the next StartClarificationCommand call.
  */
-export class RequestAnotherClarificationRoundHandler
-  implements CommandHandler<RequestAnotherClarificationRoundPayload, ClarificationStatus>
-{
+export class RequestAnotherClarificationRoundHandler implements CommandHandler<
+  RequestAnotherClarificationRoundPayload,
+  ClarificationStatus
+> {
   readonly commandName = 'RequestAnotherClarificationRoundCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -113,10 +114,21 @@ export class RequestAnotherClarificationRoundHandler
       const now = isoNow();
       const affected = await tx.executeAffected(
         `UPDATE clarification_sessions SET status = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [ClarificationStatus.REQUIRED, nextVersion(session.version), now, clarificationSessionId, expectedVersion],
+        [
+          ClarificationStatus.REQUIRED,
+          nextVersion(session.version),
+          now,
+          clarificationSessionId,
+          expectedVersion,
+        ],
       );
       if (affected === 0) {
-        throw new OptimisticLockError('clarification_sessions', clarificationSessionId, expectedVersion, -1);
+        throw new OptimisticLockError(
+          'clarification_sessions',
+          clarificationSessionId,
+          expectedVersion,
+          -1,
+        );
       }
 
       const eventId = await writeWorkflowEvent(tx, {

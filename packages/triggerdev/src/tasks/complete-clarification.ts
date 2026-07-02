@@ -77,10 +77,11 @@ export async function runImpl(
     return { projectId, clarificationSessionId, status: 'clarification_required' };
   }
 
-  const blockEnvelope: CommandEnvelope<typeof systemPayload & { reason: 'round_limit_exceeded' }> = {
-    ...envelope,
-    payload: { ...systemPayload, reason: 'round_limit_exceeded' },
-  };
+  const blockEnvelope: CommandEnvelope<typeof systemPayload & { reason: 'round_limit_exceeded' }> =
+    {
+      ...envelope,
+      payload: { ...systemPayload, reason: 'round_limit_exceeded' },
+    };
   await executor.execute(blockHandler, blockEnvelope);
   return { projectId, clarificationSessionId, status: 'clarification_blocked' };
 }

@@ -1,4 +1,8 @@
-import { GenerateFeatureBacklogHandler, TransactionalCommandExecutor, generateId } from '@minicoder/core';
+import {
+  GenerateFeatureBacklogHandler,
+  TransactionalCommandExecutor,
+  generateId,
+} from '@minicoder/core';
 import type { CommandEnvelope, DbClient } from '@minicoder/core';
 import type { GenerateFeatureBacklogPayload } from './types.js';
 import { systemActor } from './actor.js';

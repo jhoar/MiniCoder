@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { AgentRole, ClarificationStatus, ReadinessStatus, UserRole } from '../../../domain/states.js';
+import {
+  AgentRole,
+  ClarificationStatus,
+  ReadinessStatus,
+  UserRole,
+} from '../../../domain/states.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { CLARIFICATION_MATRIX } from '../../../statemachine/machines/clarification.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
@@ -43,9 +48,10 @@ const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * hits the idempotency cache after the domain write already committed will still re-invoke the
  * adapter, producing an extra (but harmless) agent_runs audit row.
  */
-export class AssessPlanningReadinessHandler
-  implements CommandHandler<AssessPlanningReadinessPayload, ReadinessStatus>
-{
+export class AssessPlanningReadinessHandler implements CommandHandler<
+  AssessPlanningReadinessPayload,
+  ReadinessStatus
+> {
   readonly commandName = 'AssessPlanningReadinessCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
@@ -132,16 +138,35 @@ export class AssessPlanningReadinessHandler
           `INSERT INTO clarification_sessions
              (id, project_id, specification_input_id, assessment_id, status, round, max_rounds, version, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, 0, 3, 1, ?, ?)`,
-          [clarificationSessionId, projectId, specificationInputId ?? null, assessmentId, clarificationStatus, now, now],
+          [
+            clarificationSessionId,
+            projectId,
+            specificationInputId ?? null,
+            assessmentId,
+            clarificationStatus,
+            now,
+            now,
+          ],
         );
       } else {
         await tx.execute(
           `INSERT INTO clarification_sessions
              (id, project_id, specification_input_id, assessment_id, status, round, max_rounds, version, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, 0, 3, 1, ?, ?)`,
-          [clarificationSessionId, projectId, specificationInputId ?? null, assessmentId, ClarificationStatus.NOT_REQUIRED, now, now],
+          [
+            clarificationSessionId,
+            projectId,
+            specificationInputId ?? null,
+            assessmentId,
+            ClarificationStatus.NOT_REQUIRED,
+            now,
+            now,
+          ],
         );
-        clarificationValidator.assertValid(ClarificationStatus.NOT_REQUIRED, ClarificationStatus.COMPLETE);
+        clarificationValidator.assertValid(
+          ClarificationStatus.NOT_REQUIRED,
+          ClarificationStatus.COMPLETE,
+        );
         await tx.executeAffected(
           `UPDATE clarification_sessions SET status = ?, version = 2, updated_at = ? WHERE id = ?`,
           [ClarificationStatus.COMPLETE, now, clarificationSessionId],

@@ -46,9 +46,10 @@ interface OpenQuestionRow {
  * so the round counter reflects rounds consumed, matching the "round count < max_rounds" guard
  * text used by both this transition and BlockClarificationCommand.
  */
-export class StartClarificationHandler
-  implements CommandHandler<StartClarificationPayload, ClarificationStatus>
-{
+export class StartClarificationHandler implements CommandHandler<
+  StartClarificationPayload,
+  ClarificationStatus
+> {
   readonly commandName = 'StartClarificationCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly requiredActorKind = 'human' as const;
@@ -84,10 +85,7 @@ export class StartClarificationHandler
         });
       }
       assertVersion('clarification_sessions', clarificationSessionId, session, expectedVersion);
-      validator.assertValid(
-        session.status as ClarificationStatus,
-        ClarificationStatus.IN_PROGRESS,
-      );
+      validator.assertValid(session.status as ClarificationStatus, ClarificationStatus.IN_PROGRESS);
 
       if (session.round >= session.max_rounds) {
         throw new CommandError({
@@ -105,10 +103,22 @@ export class StartClarificationHandler
 
       const affected = await tx.executeAffected(
         `UPDATE clarification_sessions SET status = ?, round = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [ClarificationStatus.IN_PROGRESS, newRound, newVersion, now, clarificationSessionId, expectedVersion],
+        [
+          ClarificationStatus.IN_PROGRESS,
+          newRound,
+          newVersion,
+          now,
+          clarificationSessionId,
+          expectedVersion,
+        ],
       );
       if (affected === 0) {
-        throw new OptimisticLockError('clarification_sessions', clarificationSessionId, expectedVersion, -1);
+        throw new OptimisticLockError(
+          'clarification_sessions',
+          clarificationSessionId,
+          expectedVersion,
+          -1,
+        );
       }
 
       // Prioritized open planning_questions (recommended 3-7 per round, docs/02 §4) become this

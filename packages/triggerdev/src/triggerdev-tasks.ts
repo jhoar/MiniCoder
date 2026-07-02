@@ -143,7 +143,11 @@ export const completeClarificationTask = task({
   id: 'complete-clarification',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: makeTaskRunner('complete-clarification', CompleteClarificationSchema, runCompleteClarification),
+  run: makeTaskRunner(
+    'complete-clarification',
+    CompleteClarificationSchema,
+    runCompleteClarification,
+  ),
 });
 
 export const generateImplementationPlanTask = task({
