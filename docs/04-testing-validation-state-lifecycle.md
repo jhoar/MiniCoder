@@ -735,10 +735,29 @@ client under the same access controls), using the real values from the GitHub PR
 
 1. Confirm the real PR's `pr_number`, `head.ref` (→ `branch_name`), `base.ref` (→ `base_branch`),
    and `head.sha` (→ `head_sha`) from the GitHub UI or `gh pr view <number> --json number,headRefName,baseRefName,headRefOid`.
-2. Insert one row into `pull_requests` with `feature_run_id` set to the affected feature run's ID,
-   `state = 'open'`, `review_state = 'none'`, `ci_status = 'pending'` (reconciliation will correct
-   these on its next pass), `blocking_labels = '[]'`, `conversations_resolved = 0`, and
-   `version = 1` — matching the column set in migration `0009_pull_requests`.
+2. Insert one row into `pull_requests`. `id` is a plain `TEXT PRIMARY KEY` with **no default** (see
+   migration `0009_pull_requests` — unlike `created_at`/`updated_at`, which default to the current
+   timestamp) and no format constraint: any unique string works, matching what the application's
+   own `generateId()` helper produces at runtime (`` `${Date.now()}-${randomBase36}` ``, e.g.
+   `1783020000000-a1b2c3d4` — not a UUID, despite superficially looking like one). Use the exact
+   column set below (`conversations_resolved` is `BOOLEAN` on PostgreSQL, `INTEGER` 0/1 on SQLite —
+   use whichever your deployment's `minicoder db` backend expects):
+
+   ```sql
+   INSERT INTO pull_requests
+     (id, feature_run_id, pr_number, branch_name, base_branch, head_sha,
+      state, review_state, ci_status, blocking_labels, conversations_resolved, version)
+   VALUES
+     ('<generate-a-unique-id>', '<feature_run_id>', <pr_number>, '<branch_name>', '<base_branch>',
+      '<head_sha>', 'open', 'none', 'pending', '[]', false, 1);
+   ```
+
+   `created_at`/`updated_at` can be omitted — both default to the current timestamp (migration
+   `0009_pull_requests`) — or set explicitly if your SQL client requires listing every column.
+   `review_state`/`ci_status` are seeded at their neutral defaults deliberately: reconciliation
+   corrects both to GitHub's real observed values on its next pass, so there is no need (and no
+   need to query GitHub twice) to pre-populate them accurately here.
+
 3. Do not set `feature_runs.current_execution_state` directly; leave it at whatever it currently is
    (typically `code_pushed`). The next scheduled `github-reconciliation` pass (or the next webhook
    delivery for this PR, e.g. a subsequent `check_suite`/`pull_request_review` event) picks the run
