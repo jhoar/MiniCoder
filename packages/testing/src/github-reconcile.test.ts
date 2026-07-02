@@ -599,6 +599,9 @@ describe('reconcileGithubState', () => {
   });
 
   it.each([
+    FeatureExecutionState.APPROVED_PENDING_EXECUTION,
+    FeatureExecutionState.SELECTED,
+    FeatureExecutionState.CODING,
     FeatureExecutionState.CODE_PUSHED,
     FeatureExecutionState.CHANGES_REQUESTED,
     FeatureExecutionState.FIXING,

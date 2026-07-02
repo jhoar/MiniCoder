@@ -279,8 +279,9 @@ operation when policy permits.
   via `GitHubClient` first, keeping Orchestrator Core provider-SDK-free), it:
   1. Escalates to `human_required` (`EscalateToHumanCommand`) when the PR closed without merging
      while the feature run was still in any non-terminal state (`approved_pending_execution`,
-     `selected`, `coding`, `code_pushed`, `pr_opened`, `ci_running`, `changes_requested`, `fixing`,
-     `approved_by_policy`, `merge_ready`) — an irreconcilable divergence. `FEATURE_EXECUTION_MATRIX`
+     `selected`, `coding`, `code_pushed`, `pr_opened`, `ci_running`, `under_review`,
+     `changes_requested`, `fixing`, `approved_by_policy`, `merge_ready`, `ci_failed`,
+     `merge_failed`, `system_failed`) — an irreconcilable divergence. `FEATURE_EXECUTION_MATRIX`
      (`packages/core/src/statemachine/machines/feature-execution.ts`) carries one
      `EscalateToHumanCommand` entry per one of these states so the guard's actual coverage
      (`reconcile.ts`'s `irreconcilablyClosed` check) and the matrix's declared coverage stay in
