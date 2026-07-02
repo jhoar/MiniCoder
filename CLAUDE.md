@@ -7,7 +7,7 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–3, 5, and 6 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–3 and 5–7 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
 backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
@@ -24,7 +24,13 @@ specification ingestion, planner-adapter-backed readiness assessment, the clarif
 and its circuit breaker, plan and feature-backlog generation and validation (with a
 backlog-version-scoped validation gate before approval), approval and activation, and artifact
 export/import, with all 15 canonical Trigger.dev task IDs wired to real Orchestrator Core commands
-(Phase 6, migrations 0007–0008).
+(Phase 6, migrations 0007–0008); and the GitHub Webhooks, Integration, and Reconciliation
+implementation — the `packages/github` webhook receiver (HMAC signature verification with
+current+previous secret rotation, event normalization, `minicoder github serve`), the
+provider-SDK-free `GitHubClient` seam and `OctokitGitHubClient`, the `pull_requests` table, five
+new GitHub-facing feature-execution commands, and the shared `reconcileGithubState()` algorithm
+driving both webhook-triggered inbox handlers and the scheduled `github-reconciliation` fallback
+(Phase 7, migration 0009).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -179,8 +185,8 @@ activate-approved-backlog | start-next-feature | github-reconciliation
 export-plan | export-backlog | import-backlog
 ```
 
-`start-next-feature` and `github-reconciliation` remain payload-validated stubs pending Phase 7/8;
-every other task now calls a real Orchestrator Core command through
+`start-next-feature` remains a payload-validated stub pending Phase 8; every other task, including
+`github-reconciliation` (Phase 7), now calls a real Orchestrator Core command through
 `TransactionalCommandExecutor`.
 
 ### Review finding severities (§3.7)
@@ -334,6 +340,52 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   `GenericLLMPlannerAdapter` as future work), so a live Trigger.dev deployment fails fast with an
   actionable error until one exists.
 
+## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/github/`, migration 0009)
+
+- **`GitHubClient` is an interface in `packages/core/src/github/client.ts`; the Octokit
+  implementation lives only in `packages/github`.** Orchestrator Core never imports Octokit
+  (enforced by the `no-provider-imports` fitness test's `@octokit`/`octokit` banned-import
+  entries) — the same "interface in core, implementation elsewhere" pattern Phase 5 used for
+  adapter roles.
+- **`packages/github` pins `@octokit/rest@^19` and `@octokit/webhooks-methods@^3`, not the
+  current majors.** Current Octokit majors (`@octokit/rest@22`, `@octokit/webhooks-methods@6`)
+  ship `"type": "module"` with no CommonJS export condition; this repo's TypeScript output target
+  is CommonJS (`module: "CommonJS"` in `tsconfig.base.json`). Upgrading either package requires
+  either moving the whole build to ESM or using dynamic `import()` at the call site — do not bump
+  past a CJS-compatible major without one of those changes.
+- **`reconcileGithubState()` (`packages/core/src/github/reconcile.ts`) is the single
+  reconciliation algorithm** — both `packages/github`'s webhook-triggered `InboxHandler`s and the
+  scheduled `github-reconciliation` Trigger.dev task call it with an already-fetched
+  `ObservedPullRequestState`. Core never calls `GitHubClient` itself; the caller (inbox handler or
+  task) fetches observed state first. Do not duplicate the compare/dispatch logic in either
+  caller.
+- **`pull_requests.review_state`/`ci_status` are observed mirrors of GitHub, not
+  state-machine-governed columns.** They are overwritten directly by `reconcileGithubState()`'s
+  dispatched commands; there is no `StateTransitionValidator` matrix for them (GitHub remains
+  authoritative — glossary §3.10).
+- **`FEATURE_EXECUTION_MATRIX` carries an `EscalateToHumanCommand` transition to `human_required`
+  from every non-terminal feature-execution state (14 states: `approved_pending_execution`,
+  `selected`, `coding`, `code_pushed`, `pr_opened`, `ci_running`, `under_review`,
+  `changes_requested`, `fixing`, `approved_by_policy`, `merge_ready`, `ci_failed`,
+  `merge_failed`, `system_failed`) for GitHub-reconciliation irreconcilable divergence** (PR
+  closed without merging while MiniCoder still expected it open) — `reconcileGithubState()`'s
+  `irreconcilablyClosed` check targets any state not in `{merged, human_required, blocked,
+failed}`, so the matrix must cover every state that check can reach; a mid-flight PR close
+  during a fix-cycle re-push (`code_pushed`) or review loop (`changes_requested`/`fixing`) is
+  just as irreconcilable as one observed at `pr_opened`/`ci_running`. These transitions are
+  dispatched exclusively by `reconcileGithubState()`'s escalation path, not by any other caller.
+- **`RecordCiFailedHandler`/`RecordChangesRequestedHandler` do not increment a fix-attempt
+  counter or write `review_findings`.** `feature_runs` has no fix-attempt-count column yet — that
+  counter and the blocking-findings write path are Phase 10 (review/fix loop) scope. Do not add
+  ad hoc fix-attempt tracking to these handlers before Phase 10 lands the real column.
+- **`github-reconciliation`'s scheduled fallback only re-checks feature runs that already have a
+  `pull_requests` row.** Discovering a brand-new PR that no webhook has ever reported requires a
+  `GitHubClient.listPullRequestsForBranch`-style method that does not exist yet — do not assume
+  the scheduled task will self-heal a completely missed `pr.opened` webhook.
+- **`minicoder github serve` is intentionally not gated by `guardEnv()`** (unlike
+  `github simulate-*`), since it is the real webhook receiver and must run in production/hosted
+  deployments. Do not add the dev/test/ci environment guard to it.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
@@ -376,7 +428,13 @@ calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do no
 The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
 running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
 appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
-Current order: `core → persistence-sqlite → persistence-postgres → triggerdev → testing → (rest --noEmit)`.
+Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → triggerdev → testing → (rest --noEmit)`.
+`workflow` moved ahead of `github`/`triggerdev` in Phase 7: `packages/github`'s inbox handlers and
+`packages/triggerdev`'s `github-reconciliation` task both acquire a `WorkflowLockManager` lock
+before dispatching a lock-gated reconciliation command (`RecordPrOpenedCommand`/
+`RecordCiRunningCommand`), so both now depend on `@minicoder/workflow` for its type. `github` was
+also added ahead of `triggerdev` (`github-reconciliation.ts` imports `OctokitGitHubClient` from
+`@minicoder/github`).
 
 When adding a new workspace package that others import for types, add it to this chain.
 
@@ -478,6 +536,13 @@ There are several distinct state machines — not one:
 | Text UI              | Ink                                 |
 | Web UI               | React / Next.js                     |
 | Security scanning    | pnpm audit/OSV + gitleaks + semgrep |
+
+**Local setup prerequisite:** the root `package.json`'s `build`/`typecheck`/`lint`/`test` scripts
+shell out to nested `pnpm -r ...`/`pnpm --filter ...` calls, so `pnpm` must be resolvable on
+`PATH` before running any of them — via `corepack enable` (one-time) or a global `pnpm` install.
+This is a documentation note, not a script change: swapping the scripts themselves to invoke
+`corepack pnpm` risks behaving differently under `pnpm/action-setup`-based CI, which is out of
+scope to verify here.
 
 ## Editing Guidelines for Documentation
 

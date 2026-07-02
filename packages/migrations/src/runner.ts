@@ -3,6 +3,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import Database from 'better-sqlite3';
 import { Pool } from 'pg';
+// Single source of truth for the expected table list: this used to be a second, hand-maintained
+// copy that silently drifted out of sync with EXPECTED_TABLES here (it was missing every Phase 6
+// clarification_* table) because `db validate`/`db migrate` logging imports this file, not
+// index.ts directly. Importing from index.ts guarantees `minicoder db validate`'s printed count
+// and drop-order list can never diverge from the canonical, unit-tested table list again.
+import { EXPECTED_TABLES } from './index.js';
 
 type Dialect = 'sqlite' | 'postgres';
 
@@ -12,53 +18,6 @@ interface MigrationRecord {
 }
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../migrations');
-
-// All tables created by the initial schema — used by validate command
-const EXPECTED_TABLES = [
-  'projects',
-  'repositories',
-  'github_links',
-  'specification_inputs',
-  'planning_readiness_assessments',
-  'planning_gaps',
-  'planning_questions',
-  'planning_assumptions',
-  'implementation_plans',
-  'plan_sections',
-  'feature_requests',
-  'feature_dependencies',
-  'acceptance_criteria',
-  'test_expectations',
-  'workflow_states',
-  'feature_runs',
-  'workflow_events',
-  'workflow_locks',
-  'idempotency_keys',
-  'outbox_events',
-  'inbox_events',
-  'human_approvals',
-  'policy_decisions',
-  'agent_adapters',
-  'agent_capabilities',
-  'agent_configurations',
-  'agent_runs',
-  'agent_errors',
-  'agent_tool_operations',
-  'agent_context_packs',
-  'adapter_conformance_results',
-  'review_findings',
-  'coder_responses',
-  'disagreement_records',
-  'budget_policies',
-  'cost_records',
-  'artifact_exports',
-  'design_documents',
-  'design_document_sections',
-  'design_decisions',
-  'glossary_terms',
-  'triggerdev_runs',
-  'merge_gate_evaluations',
-];
 
 // Tables owned by MiniCoder — reset only drops these, never foreign tables.
 // Order matters: EXPECTED_TABLES is in parent-first creation order; reversing

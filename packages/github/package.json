@@ -1,5 +1,5 @@
 {
-  "name": "@minicoder/testing",
+  "name": "@minicoder/github",
   "version": "0.1.0",
   "private": true,
   "main": "./dist/index.js",
@@ -7,19 +7,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "cd ../.. && vitest run packages/github/src/"
   },
   "dependencies": {
     "@minicoder/core": "workspace:*",
-    "@minicoder/github": "workspace:*",
-    "@minicoder/migrations": "workspace:*",
-    "@minicoder/persistence-sqlite": "workspace:*",
-    "@minicoder/triggerdev": "workspace:*",
     "@minicoder/workflow": "workspace:*",
+    "@octokit/rest": "^19.0.13",
+    "@octokit/webhooks-methods": "^3.0.3",
+    "fastify": "^5.9.0",
     "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "*",
-    "better-sqlite3": "*"
   }
 }

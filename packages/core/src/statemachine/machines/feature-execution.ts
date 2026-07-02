@@ -61,6 +61,137 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     idempotencyKeyTemplate: 'record-ci-running:{featureRunId}:{checkRunId}',
     recoveryPath: 'Idempotent: same checkRunId returns cached result',
   },
+  // ── GitHub reconciliation divergence (Phase 7) ───────────────────────────────
+  {
+    fromState: FeatureExecutionState.PR_OPENED,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      'GitHub reconciliation observed the pull request closed without merging while the feature run was pr_opened — irreconcilable divergence (docs/01 §5.7)',
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.CI_RUNNING,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      'GitHub reconciliation observed the pull request closed without merging while CI was running — irreconcilable divergence (docs/01 §5.7)',
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  // round-8 HIGH-1: reconcile.ts's `irreconcilablyClosed` check fires for *every* non-terminal
+  // feature-execution state (MERGED/HUMAN_REQUIRED/BLOCKED/FAILED are the only states it treats as
+  // terminal), not just pr_opened/ci_running — a maintainer can close a PR without merging while a
+  // feature run is anywhere mid-flight (e.g. a fix-cycle re-push has it back at code_pushed, or a
+  // reviewer's findings have it at changes_requested/fixing while GitHub closes the PR out from
+  // under it). Before this round, EscalateToHumanHandler's unconditional
+  // `validator.assertValid(fromState, HUMAN_REQUIRED)` threw TransitionError for all 8 of these
+  // states, so the escalation reconcile.ts intends to make would crash instead. The 8 entries below
+  // cover every non-terminal state that lacked one, so the matrix's coverage now matches
+  // reconcile.ts's actual guard rather than narrowing the guard to fit an incomplete matrix.
+  {
+    fromState: FeatureExecutionState.APPROVED_PENDING_EXECUTION,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'approved_pending_execution' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.SELECTED,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'selected' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.CODING,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'coding' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.CODE_PUSHED,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'code_pushed' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.CHANGES_REQUESTED,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'changes_requested' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.FIXING,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'fixing' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.APPROVED_BY_POLICY,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'approved_by_policy' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.MERGE_READY,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      "GitHub reconciliation observed the pull request closed without merging while the feature run was in state 'merge_ready' — irreconcilable divergence (docs/01 §5.7)",
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
   // ── CI outcomes ───────────────────────────────────────────────────────────
   {
     fromState: FeatureExecutionState.CI_RUNNING,

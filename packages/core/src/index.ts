@@ -54,3 +54,21 @@ export * from './commands/handlers/clarification/record-clarification-answer.js'
 export * from './commands/handlers/clarification/complete-clarification.js';
 export * from './commands/handlers/clarification/request-another-clarification-round.js';
 export * from './commands/handlers/clarification/block-clarification.js';
+
+// Phase 7: GitHub webhooks, integration, and reconciliation
+export * from './github/client.js';
+export * from './github/reconcile.js';
+export * from './commands/handlers/feature/escalate-to-human-required.js';
+export * from './commands/handlers/github/record-pr-opened.js';
+export * from './commands/handlers/github/record-ci-running.js';
+export * from './commands/handlers/github/record-ci-passed.js';
+export * from './commands/handlers/github/record-ci-failed.js';
+export * from './commands/handlers/github/record-changes-requested.js';
+export {
+  getPullRequestByFeatureRun,
+  insertPullRequestRow,
+  syncPullRequestObservedState,
+  labelsEqual,
+  timestampsEqual,
+  type PullRequestRow,
+} from './commands/handlers/github/pull-request-row.js';

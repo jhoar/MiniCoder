@@ -1,21 +1,30 @@
 import type { DbClient } from '@minicoder/core';
+import { FeatureExecutionState } from '@minicoder/core';
 import type { Fixture } from './types.js';
+
+export const GITHUB_RACE_PR_NUMBER = 42;
 
 export const githubRaceFixture: Fixture = {
   name: 'github-race',
   description:
-    'Feature at ci_running state with a pr.closed inbox_events row, simulating a GitHub race condition',
+    'Feature at ci_running with a tracked pull_requests row, simulating a GitHub PR-closed race condition during CI',
 
   async setup(db: DbClient, projectId = 'proj-github-race'): Promise<void> {
     const planId = `plan-${projectId}`;
     const frId = `fr-${projectId}-1`;
     const featureRunId = `run-${projectId}-1`;
-    const prNumber = 42;
+    const pullRequestId = `pr-${projectId}-1`;
 
     await db.execute(
       `INSERT OR IGNORE INTO projects (id, name, description, state, version, created_at, updated_at)
        VALUES (?, 'GitHub Race Project', 'Fixture for github-race scenario', 'active', 1, datetime('now'), datetime('now'))`,
       [projectId],
+    );
+
+    await db.execute(
+      `INSERT OR IGNORE INTO repositories (id, project_id, owner, name, full_name, default_branch, version, created_at, updated_at)
+       VALUES (?, ?, 'minicoder-test', 'race-repo', 'minicoder-test/race-repo', 'main', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
     );
 
     await db.execute(
@@ -26,8 +35,8 @@ export const githubRaceFixture: Fixture = {
 
     await db.execute(
       `INSERT OR IGNORE INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
-       VALUES (?, ?, ?, 'FR-001', 'Race Feature', 'Feature with concurrent CI and PR close', 'feature', 1, 'ci_running', 0, 1, datetime('now'), datetime('now'))`,
-      [frId, planId, projectId],
+       VALUES (?, ?, ?, 'FR-001', 'Race Feature', 'Feature with concurrent CI and PR close', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
     );
 
     await db.execute(
@@ -42,21 +51,15 @@ export const githubRaceFixture: Fixture = {
       [`ws-${projectId}`, projectId, featureRunId],
     );
 
-    // Inbox event: PR closed while CI was still running
-    const payload = JSON.stringify({
-      projectId,
-      featureRunId,
-      prNumber,
-      action: 'closed',
-      merged: false,
-    });
-
+    // Tracked pull request row: PR is open and CI is running at fixture setup time. The scenario
+    // then simulates the race by closing the PR (without merging) on the MockGitHubProvider while
+    // the DB record still says ci_running.
     await db.execute(
-      `INSERT OR IGNORE INTO inbox_events
-         (id, dedup_key, source, event_type, payload, payload_schema_version,
-          status, version, created_at, updated_at)
-       VALUES (?, ?, 'github', 'pr.closed', ?, '1.0', 'pending', 1, datetime('now'), datetime('now'))`,
-      [`inbox-${projectId}-pr-closed`, `github:pr.closed:${projectId}:${prNumber}`, payload],
+      `INSERT OR IGNORE INTO pull_requests
+         (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
+          ci_status, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'minicoder/FR-001', 'main', 'abc0000000', 'open', 'none', 'running', '[]', 0, 1, datetime('now'), datetime('now'))`,
+      [pullRequestId, featureRunId, GITHUB_RACE_PR_NUMBER],
     );
   },
 };

@@ -40,6 +40,7 @@ export type {
 
 // Services
 export { MockGitHubProvider } from './services/mock-github-provider.js';
+export { MockGitHubClient } from './services/mock-github-client.js';
 export { MockCostProvider } from './services/mock-cost-provider.js';
 export { MockArtifactStorage } from './services/mock-artifact-storage.js';
 export type { MockPrState, SimulatedEvent, CostRecord } from './services/index.js';

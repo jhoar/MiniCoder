@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@minicoder/core": "workspace:*",
+    "@minicoder/github": "workspace:*",
     "@minicoder/migrations": "workspace:*",
     "@minicoder/testing": "workspace:*",
     "@minicoder/triggerdev": "workspace:*",

@@ -205,24 +205,100 @@ lookup/creation, PR lookup/creation, PR state reading, review reading, check/sta
 mergeability reading, status check publication, webhook ingestion into the inbox, and the merge
 operation when policy permits.
 
-**GitHub integration contract** (full specification authored in implementation Phase 7):
+**GitHub integration contract** (finalized in implementation Phase 7 against
+`packages/github`, `packages/core/src/github/`, and migration `0009_pull_requests`):
 
 - **Webhook events consumed:** `pull_request`, `pull_request_review`,
   `pull_request_review_comment`, `check_suite`, `check_run`, `status`, `push`. Each delivery is
   persisted to `inbox_events` keyed by a **dedup key** = GitHub delivery GUID (`X-GitHub-Delivery`),
-  with idempotent processing.
+  with idempotent processing (a redelivered GUID hits the `dedup_key UNIQUE` constraint and is
+  acknowledged without a second insert).
+- **Normalization:** the webhook receiver (`createWebhookApp()` /
+  `registerGithubWebhookRoute()` in `packages/github`) normalizes each raw `(event, action)` pair
+  into MiniCoder's internal event-type taxonomy before insertion into `inbox_events`: `pr.opened`,
+  `pr.synchronized`, `pr.closed`, `pr.merged`, `check.passed`, `check.failed`, `review.approved`,
+  `review.changes_requested`, `review.dismissed`, `review.commented`, `review.comment`, `push`.
+  `review.commented` (a `pull_request_review` `submitted` event with `state: 'commented'`) is
+  distinct from `review.comment` (the inline-code `pull_request_review_comment` event) — both
+  are surfaced so a reconciliation pass re-derives the PR's authoritative aggregate review state,
+  but they originate from different GitHub webhook events. This is the same
+  taxonomy `minicoder github simulate-*` (`packages/cli/src/commands/github.ts`) and
+  `MockGitHubProvider` already write/model for testing — real webhook ingestion and the CLI
+  simulators produce identical `inbox_events` shapes. `branch.protection_ok` is **not** part of
+  this real-webhook normalization taxonomy — it is `minicoder github simulate-*` dev-tooling only
+  (there is no GitHub webhook event it is normalized from); `packages/github`'s inbox handlers
+  register a no-op handler for it purely so simulate-driven inbox rows resolve to `processed`
+  instead of requeuing forever.
+  Repository → project resolution uses the `repositories.full_name` column (`owner/repo`);
+  webhooks for an unlinked repository are acknowledged (`202`) without being persisted.
+  `inbox_events.payload` for GitHub-sourced events is **this normalized internal projection**,
+  not the raw GitHub delivery body — signature verification and normalization both happen before
+  insertion, and the raw request body is not persisted. This is a deliberate choice, not a gap:
+  it keeps `inbox_events` shape-consistent across sources (`minicoder github simulate-*` and
+  `MockGitHubProvider` write/model the identical normalized shape for testing, per the previous
+  bullet), and no code path in this repository needs the raw GitHub JSON once it has been
+  normalized and verified.
+- **Signature verification:** HMAC-SHA256 over the raw request body
+  (`X-Hub-Signature-256`), verified against the current secret first and, during a rotation
+  window, the previous secret (`GITHUB_WEBHOOK_SECRET` / `GITHUB_WEBHOOK_SECRET_PREVIOUS`) — see
+  `07-security-and-secrets.md` §5. Deliveries with a missing or non-matching signature are
+  rejected with `401` and never reach `inbox_events`.
 - **Auth model:** a **GitHub App** (installation token, least-privilege) is preferred over a PAT;
   required permissions: contents (read/write), pull requests (read/write), checks (read/write),
   statuses (read/write), metadata (read), webhooks. See `07-security-and-secrets.md`.
+  `OctokitGitHubClient` (`packages/github`) accepts either an installation token or a PAT via its
+  `auth` option; local/single-node development typically uses `GITHUB_TOKEN` (a PAT).
 - **Branch naming:** `minicoder/<feature-request-id>` (e.g., `minicoder/FR-002`); one branch per
   feature, owned by the active Coder run.
 - **PR labels / status check:** MiniCoder publishes the status check `minicoder/review-gate`;
   blocking labels prevent merge (see §12).
 - **Merge method:** squash by default (configurable); **force-push to MiniCoder branches is
   disallowed** once a PR is open.
-- **Reconciliation algorithm:** on each relevant webhook (or on the scheduled fallback), fetch
-  authoritative GitHub state, compare against the database record, and either advance the workflow,
-  mark it `human_required` on irreconcilable divergence, or no-op when already consistent.
+- **Branch/PR/CI/review-state persistence:** the `pull_requests` table (migration `0009`, one row
+  per `feature_run_id`) mirrors GitHub-observed state: `pr_number`, `branch_name`, `base_branch`,
+  `head_sha`, `state` (open/closed/merged), `review_state` (mirrors `PrReviewState`, §3.10),
+  `ci_status`, `mergeable`, `blocking_labels`, `conversations_resolved`, `merged_at`, `merge_sha`,
+  `closed_at`. `review_state`/`ci_status` are **observed mirrors of GitHub** overwritten directly
+  on reconciliation — unlike the other canonical state machines, PR/review state has no
+  `StateTransitionValidator` matrix; GitHub remains authoritative.
+  - `blocking_labels` mirrors **every** label GitHub reports on the PR, not a pre-filtered
+    "merge-blocking" subset — the name describes what the field is _for_, not what it currently
+    contains. Deciding which of these labels actually blocks merge is Merge Gate (§5.10/§12)
+    policy that has not been implemented yet (Phase 12); until then this column is an unfiltered
+    label mirror.
+  - `conversations_resolved` is currently a **hardcoded `false` placeholder**, not a real GitHub
+    observation: the REST API has no "conversations resolved" flag at all (only GraphQL's
+    `reviewThreads.nodes[].isResolved` exposes it), and `OctokitGitHubClient` fails closed rather
+    than guessing. A future merge-gate consumer must not treat this value as authoritative until
+    GraphQL review-thread-resolution support is added.
+- **Reconciliation algorithm:** `reconcileGithubState()` (`packages/core/src/github/reconcile.ts`)
+  is the single implementation both the webhook-triggered inbox handlers
+  (`packages/github/src/inbox-handlers.ts`) and the scheduled fallback
+  (`github-reconciliation` Trigger.dev task) call — they can never diverge in behavior. Given an
+  already-fetched `ObservedPullRequestState` (core never calls GitHub directly — the caller fetches
+  via `GitHubClient` first, keeping Orchestrator Core provider-SDK-free), it:
+  1. Escalates to `human_required` (`EscalateToHumanCommand`) when the PR closed without merging
+     while the feature run was still in any non-terminal state (`approved_pending_execution`,
+     `selected`, `coding`, `code_pushed`, `pr_opened`, `ci_running`, `under_review`,
+     `changes_requested`, `fixing`, `approved_by_policy`, `merge_ready`, `ci_failed`,
+     `merge_failed`, `system_failed`) — an irreconcilable divergence. `FEATURE_EXECUTION_MATRIX`
+     (`packages/core/src/statemachine/machines/feature-execution.ts`) carries one
+     `EscalateToHumanCommand` entry per one of these states so the guard's actual coverage
+     (`reconcile.ts`'s `irreconcilablyClosed` check) and the matrix's declared coverage stay in
+     sync — a mid-flight PR close (e.g. during a fix-cycle re-push at `code_pushed`, or while
+     `changes_requested`/`fixing`/`approved_by_policy`/`merge_ready`) is just as irreconcilable as
+     one observed at `pr_opened`/`ci_running`.
+  2. Advances the feature-execution matrix one step at a time via the matching `Record*Command`
+     (`RecordPrOpenedCommand`, `RecordCiRunningCommand`, `RecordCiPassedCommand`,
+     `RecordCiFailedCommand`, `RecordChangesRequestedCommand`) when observed GitHub state has
+     progressed past the DB record.
+  3. No-ops when the DB record already matches observed GitHub state.
+     The scheduled fallback only re-checks feature runs that already have a tracked `pull_requests`
+     row (i.e., it catches _missed_ webhook deliveries); discovering a brand-new PR that no webhook
+     or `RecordPrOpenedCommand` has ever recorded is deferred (`GitHubClient` has no
+     "list PRs by branch" method yet).
+- **Capacity pre-flight:** `GitHubClient.getRemainingRateLimit()` exposes the remaining GitHub API
+  rate-limit budget for callers to check before a batch of reconciliation calls.
 
 ### 5.8 Review/Fix Loop Controller
 
@@ -327,10 +403,12 @@ transactional integrity between a database write and its downstream effects (eve
 webhook/inbox processing). Drain progress is observable, and stuck or failed records are surfaced
 and recoverable via state-doctor tooling.
 
-Each `outbox_events` / `inbox_events` row stores the raw JSON payload **and** the **Zod schema
+Each `outbox_events` / `inbox_events` row stores a JSON payload **and** the **Zod schema
 version** that produced it, so consumers validate against the correct schema version (parity with
 the versioned adapter I/O schemas in
-[`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md) §11.4).
+[`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md) §11.4). For GitHub-sourced
+`inbox_events`, that payload is specifically the normalized internal projection, not the raw
+GitHub delivery body — see §5.7.
 
 Sequential execution is enforced by policy (locks/lanes), not schema.
 
@@ -478,7 +556,13 @@ A pull request may be merged only when it belongs to the active feature, targets
 branch, matches the database branch record, CI checks pass, no unresolved blocking findings remain,
 no unresolved `requires_human_decision` findings remain, required conversations are resolved,
 review-cycle limits are not exceeded, the PR is mergeable, no blocking labels exist, budget gates
-pass, required human approvals exist, and GitHub branch protection permits merge.
+pass, required human approvals exist, and GitHub branch protection permits merge. **"Required
+conversations are resolved" and "no blocking labels exist" are not yet implemented as real
+evaluated preconditions** — `pull_requests.conversations_resolved` is currently a hardcoded
+`false` placeholder (REST has no such flag; GraphQL support is unimplemented — see §5.7/§8) and
+`pull_requests.blocking_labels` currently mirrors every observed PR label with no per-project
+"which labels actually block merge" policy defined anywhere yet. Both are Phase 12 (Merge Gate)
+implementation scope.
 
 **Merge-gate evidence.** Every merge-gate run writes a structured `merge_gate_evaluations` record
 capturing the inputs and outcome: CI result, review result, unresolved blocking-findings count,

@@ -1,5 +1,7 @@
 import { Command } from 'commander';
 import { createDbClientFromEnv } from '../db-client.js';
+import { createWebhookApp } from '@minicoder/github';
+import { SCHEMA_VERSION } from '@minicoder/core';
 
 const ALLOWED_ENVS = new Set(['development', 'test', 'ci']);
 
@@ -36,8 +38,8 @@ async function insertInboxEvent(
   const now = isoNow();
   await db.execute(
     `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-     VALUES (?, ?, 'github', ?, ?, '1.0', 'pending', 1, ?, ?)`,
-    [id, dedupKey, eventType, payload, now, now],
+     VALUES (?, ?, 'github', ?, ?, ?, 'pending', 1, ?, ?)`,
+    [id, dedupKey, eventType, payload, SCHEMA_VERSION, now, now],
   );
 }
 
@@ -361,6 +363,38 @@ export function createGithubCommand(): Command {
       } finally {
         await db.close();
       }
+    });
+
+  // Not guarded by guardEnv(): unlike simulate-*, `serve` is the real webhook receiver and is
+  // meant to run in local/single-node production deployments (Phase 13's Fastify API mounts the
+  // same `registerGithubWebhookRoute()` handler instead of re-implementing it).
+  github
+    .command('serve')
+    .description('Start the standalone GitHub webhook receiver (POST /webhooks/github)')
+    .option('--port <number>', 'Port to listen on', (v) => parseInt(v, 10), 3100)
+    .option('--host <host>', 'Host to bind to', '0.0.0.0')
+    .action(async (opts: { port: number; host: string }) => {
+      const secret = process.env['GITHUB_WEBHOOK_SECRET'];
+      if (!secret) {
+        console.error('Error: GITHUB_WEBHOOK_SECRET must be set to run minicoder github serve.');
+        process.exit(1);
+      }
+      // Dual-secret rotation window (docs/07-security-and-secrets.md §5).
+      const previousSecret = process.env['GITHUB_WEBHOOK_SECRET_PREVIOUS'];
+      const secrets = previousSecret ? [secret, previousSecret] : [secret];
+
+      const db = await createDbClientFromEnv();
+      const app = createWebhookApp({ db, secrets });
+      try {
+        const address = await app.listen({ port: opts.port, host: opts.host });
+        console.log(`minicoder github webhook receiver listening at ${address}`);
+      } catch (err) {
+        console.error('Error: failed to start webhook receiver:', err);
+        process.exit(1);
+      }
+      // Intentionally does not close `db` — the process stays alive serving webhooks until
+      // terminated (SIGINT/SIGTERM), matching a long-running server command, not a one-shot CLI
+      // action like the simulate-* commands above.
     });
 
   return github;
