@@ -107,24 +107,55 @@ export async function updatePullRequestReviewState(
   );
 }
 
+/** Normalizes SQLite's 0/1 and PostgreSQL's boolean representations to a plain boolean. */
+function asBool(value: number | boolean | null): boolean {
+  return value === true || value === 1;
+}
+
 /**
  * Full observed-state mirror sync (HIGH-3 / MEDIUM-1 code-review fix): writes every
  * GitHub-observed column onto the existing `pull_requests` row for `featureRunId`, not just
  * `ci_status`/`review_state` — `head_sha`, `state`, `mergeable`, `blocking_labels`,
  * `conversations_resolved`, `merged_at`, `merge_sha`, `closed_at` all land here too, whatever
  * `review_state` GitHub reports (`approved`/`commented`/`dismissed`/`changes_requested`/`none`),
- * not just `changes_requested`. This is a no-op (0 rows affected) if no `pull_requests` row exists
- * yet for `featureRunId` — `reconcileGithubState` calls this unconditionally before any action
- * branch, and the `code_pushed -> pr_opened` branch is responsible for first creating the row via
+ * not just `changes_requested`. This is a no-op if no `pull_requests` row exists yet for
+ * `featureRunId` — `reconcileGithubState` calls this unconditionally before any action branch, and
+ * the `code_pushed -> pr_opened` branch is responsible for first creating the row via
  * `insertPullRequestRow`. Superseded `updatePullRequestCiStatus`/`updatePullRequestReviewState`
  * single-column writes remain exported for now but are no longer called by the Record* handlers,
  * which rely on this full sync instead.
+ *
+ * MEDIUM-1: reads the current row first and skips the `UPDATE` entirely when every observed field
+ * already matches what's stored, so two consecutive reconciliations with identical observed state
+ * don't churn `version`/`updated_at` on the second call — this also makes HIGH-2's second
+ * post-loop sync call free in the common case where the pre-loop sync already captured everything.
  */
 export async function syncPullRequestObservedState(
   tx: TxClient,
   featureRunId: string,
   observed: ObservedPullRequestState,
 ): Promise<void> {
+  const existing = await getPullRequestByFeatureRun(tx, featureRunId);
+  if (!existing) return;
+
+  const observedBlockingLabels = JSON.stringify(observed.blockingLabels);
+  const mergeableUnchanged =
+    existing.mergeable === null
+      ? observed.mergeable === null
+      : observed.mergeable !== null && asBool(existing.mergeable) === observed.mergeable;
+  const unchanged =
+    existing.head_sha === observed.headSha &&
+    existing.state === observed.state &&
+    existing.review_state === observed.reviewState &&
+    existing.ci_status === observed.ciStatus &&
+    mergeableUnchanged &&
+    existing.blocking_labels === observedBlockingLabels &&
+    asBool(existing.conversations_resolved) === observed.conversationsResolved &&
+    existing.merged_at === observed.mergedAt &&
+    existing.merge_sha === observed.mergeSha &&
+    existing.closed_at === observed.closedAt;
+  if (unchanged) return;
+
   await tx.execute(
     `UPDATE pull_requests
        SET head_sha = ?, state = ?, review_state = ?, ci_status = ?, mergeable = ?,
@@ -137,7 +168,7 @@ export async function syncPullRequestObservedState(
       observed.reviewState,
       observed.ciStatus,
       observed.mergeable === null ? null : observed.mergeable ? 1 : 0,
-      JSON.stringify(observed.blockingLabels),
+      observedBlockingLabels,
       observed.conversationsResolved ? 1 : 0,
       observed.mergedAt,
       observed.mergeSha,

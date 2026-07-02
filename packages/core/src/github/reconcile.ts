@@ -18,7 +18,20 @@
  * intermediate webhook (e.g. `ci_running` never arrived but CI is already terminal by the time we
  * observe it) doesn't strand the feature run — `PR_OPENED` + `observed.ciStatus === 'passed'` now
  * applies RecordPrOpenedHandler-equivalent-skip then RecordCiRunningHandler then
- * RecordCiPassedHandler in the same call instead of requiring two separate reconcile passes.
+ * RecordCiPassedHandler in the same call instead of requiring two separate reconcile passes. HIGH-2
+ * also runs `syncPullRequestObservedState` a second time after the loop so a `pull_requests` row
+ * created mid-loop (by the CODE_PUSHED -> pr_opened branch below) still ends up with real observed
+ * `mergeable`/`blockingLabels`/`conversationsResolved`, not `insertPullRequestRow`'s defaults.
+ *
+ * Fix-cycle re-entry (code-review HIGH-1): the `CODE_PUSHED -> pr_opened` branch is not gated on
+ * whether a `pull_requests` row already exists — a fix-cycle re-push
+ * (`changes_requested -> fixing -> code_pushed`) reuses the *same* GitHub PR, so a prior PR-open
+ * having already created the row must not block reconciliation from advancing again. Every
+ * idempotency key in this module includes `observed.headSha`, not just `featureRunId`/`prNumber`,
+ * so a second pass through the same PR after a new commit gets a fresh key and actually executes,
+ * while repeated deliveries for the *same* commit still collapse to the same key (true idempotency
+ * preserved) — the same pattern `RecordCodePushedCommand` already uses
+ * (`record-code-pushed:{featureRunId}:{commitSha}`).
  */
 
 import { FeatureExecutionState, UserRole } from '../domain/states.js';
@@ -123,7 +136,6 @@ export async function reconcileGithubState(
     `SELECT ci_status, review_state FROM pull_requests WHERE feature_run_id = ?`,
     [featureRunId],
   );
-  const hasPrRow = prRows.length > 0;
   // Captured before the full-mirror sync below so the changes_requested branch can still tell a
   // freshly-observed review verdict apart from one it already recorded on a prior reconcile call.
   const priorReviewState = prRows[0]?.review_state;
@@ -159,7 +171,6 @@ export async function reconcileGithubState(
       currentState,
       expectedVersion,
       priorReviewState,
-      hasPrRow: hasPrRow || actions.includes('pr_opened'),
     });
     if (!stepResult) break;
     actions.push(stepResult.action);
@@ -167,6 +178,18 @@ export async function reconcileGithubState(
     currentState = stepResult.resultingState ?? currentState;
     expectedVersion = nextVersion(expectedVersion);
   }
+
+  // HIGH-2: a second full mirror-sync pass after the action loop. The pre-loop sync above no-ops
+  // when no pull_requests row exists yet (e.g. currentState === CODE_PUSHED); if the loop then
+  // creates the row via RecordPrOpenedHandler and keeps catching up further in the same call, the
+  // freshly-inserted row would otherwise be stuck with insertPullRequestRow's hardcoded defaults
+  // (mergeable=NULL, blocking_labels='[]', conversations_resolved=0) instead of the real observed
+  // values. Unconditional (not gated on which action fired) — MEDIUM-1's diff-check inside
+  // syncPullRequestObservedState makes this a cheap no-op write when the pre-loop sync already
+  // captured everything.
+  await db.transaction(async (tx) => {
+    await syncPullRequestObservedState(tx, featureRunId, observed);
+  });
 
   return {
     action: actions.length > 0 ? actions[actions.length - 1]! : 'none',
@@ -186,7 +209,6 @@ interface RunStepOptions {
   currentState: FeatureExecutionState;
   expectedVersion: number;
   priorReviewState: string | undefined;
-  hasPrRow: boolean;
 }
 
 /** Runs (at most) one reconciliation action for the current state; null if nothing matches. */
@@ -204,7 +226,6 @@ async function runStep(
     currentState,
     expectedVersion,
     priorReviewState,
-    hasPrRow,
   } = opts;
 
   const terminalStates: FeatureExecutionState[] = [
@@ -225,10 +246,17 @@ async function runStep(
     });
   }
 
-  if (currentState === FeatureExecutionState.CODE_PUSHED && !hasPrRow) {
+  if (currentState === FeatureExecutionState.CODE_PUSHED) {
+    // HIGH-1: no longer gated on `!hasPrRow` — reconcileGithubState is only ever called with an
+    // already-fetched `observed` (callers return early if GitHubClient.getPullRequest returned
+    // null), so a PR is confirmed to exist by the time this branch runs regardless of whether a
+    // local pull_requests row exists yet. This also makes a fix-cycle re-push
+    // (changes_requested -> fixing -> code_pushed, reusing the *same* PR) reachable again — the
+    // matrix guard below (assertValid) is the real transition gate, not PR row history.
+    // insertPullRequestRow UPDATEs in place when a row already exists.
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `record-pr-opened:${featureRunId}:${observed.prNumber}`,
+      idempotencyKey: `record-pr-opened:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
       payload: {
         featureRunId,
         projectId,
@@ -249,7 +277,7 @@ async function runStep(
   if (currentState === FeatureExecutionState.PR_OPENED && observed.ciStatus === 'running') {
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `record-ci-running:${featureRunId}:${observed.prNumber}`,
+      idempotencyKey: `record-ci-running:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
       payload: {
         featureRunId,
         projectId,
@@ -273,7 +301,7 @@ async function runStep(
     // (HIGH-2) — the matrix has no direct pr_opened -> under_review/ci_failed transition.
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `record-ci-running:${featureRunId}:${observed.prNumber}`,
+      idempotencyKey: `record-ci-running:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
       payload: {
         featureRunId,
         projectId,
@@ -292,7 +320,7 @@ async function runStep(
     if (observed.ciStatus === 'passed') {
       const envelope: CommandEnvelope<Record<string, unknown>> = {
         commandId: generateId(),
-        idempotencyKey: `record-ci-passed:${featureRunId}:${observed.prNumber}`,
+        idempotencyKey: `record-ci-passed:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
         payload: {
           featureRunId,
           projectId,
@@ -308,7 +336,7 @@ async function runStep(
     if (observed.ciStatus === 'failed') {
       const envelope: CommandEnvelope<Record<string, unknown>> = {
         commandId: generateId(),
-        idempotencyKey: `record-ci-failed:${featureRunId}:${observed.prNumber}`,
+        idempotencyKey: `record-ci-failed:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
         payload: {
           featureRunId,
           projectId,
@@ -330,7 +358,7 @@ async function runStep(
   ) {
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `changes-requested:${featureRunId}:${observed.prNumber}`,
+      idempotencyKey: `changes-requested:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
       payload: {
         featureRunId,
         projectId,

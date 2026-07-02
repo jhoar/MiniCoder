@@ -41,6 +41,8 @@ interface RawWebhookPayload {
   state?: string; // legacy commit `status` event
   sha?: string;
   ref?: string;
+  /** New commit SHA on a `push` webhook — GitHub carries it here, not under `sha`. */
+  after?: string;
   [key: string]: unknown;
 }
 
@@ -203,11 +205,19 @@ export function normalizeGithubWebhookEvent(
     }
 
     case 'push': {
+      // HIGH-5 code-review fix: a real GitHub push webhook has no `sha` field at all — the new
+      // commit is carried under `after` — and `resolveFeatureRunId` (packages/github/src/
+      // inbox-handlers.ts) has no branch that reads a raw `ref` field, only the already-stripped
+      // `branchName` its step-3 lookup expects (mirroring the format `pr.opened`'s `branchName`
+      // already uses). Strip the `refs/heads/` prefix here so the normalized payload resolves to
+      // a tracked feature run instead of silently going unmatched.
+      const ref = payload.ref ?? null;
+      const branchName = ref?.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
       return {
         eventType: 'push',
         repoFullName,
         prNumber: null,
-        payload: { ref: payload.ref ?? null, sha: payload.sha ?? null },
+        payload: { branchName, sha: payload.after ?? null },
       };
     }
 

@@ -64,3 +64,9 @@ export * from './commands/handlers/github/record-ci-running.js';
 export * from './commands/handlers/github/record-ci-passed.js';
 export * from './commands/handlers/github/record-ci-failed.js';
 export * from './commands/handlers/github/record-changes-requested.js';
+export {
+  getPullRequestByFeatureRun,
+  insertPullRequestRow,
+  syncPullRequestObservedState,
+  type PullRequestRow,
+} from './commands/handlers/github/pull-request-row.js';

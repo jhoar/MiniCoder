@@ -34,7 +34,7 @@ export interface GithubInboxHandler {
   handle(payload: unknown, schemaVersion: string): Promise<void>;
 }
 
-interface NormalizedInboxPayload {
+export interface NormalizedInboxPayload {
   projectId: string;
   prNumber: number | null;
   featureRunId?: string;
@@ -116,7 +116,7 @@ export interface ResolvedFeatureRun {
  * Returns null (and, distinctly, a resolved run with `prNumber` unset) only when no PR number can
  * be determined at all — the caller needs a concrete PR number to call GitHubClient.getPullRequest.
  */
-async function resolveFeatureRunId(
+export async function resolveFeatureRunId(
   db: DbClient,
   payload: NormalizedInboxPayload,
 ): Promise<ResolvedFeatureRun | null> {

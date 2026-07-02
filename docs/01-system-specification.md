@@ -217,10 +217,14 @@ operation when policy permits.
   `registerGithubWebhookRoute()` in `packages/github`) normalizes each raw `(event, action)` pair
   into MiniCoder's internal event-type taxonomy before insertion into `inbox_events`: `pr.opened`,
   `pr.synchronized`, `pr.closed`, `pr.merged`, `check.passed`, `check.failed`, `review.approved`,
-  `review.changes_requested`, `review.dismissed`, `review.comment`, `push`,
-  `branch.protection_ok`. This is the same taxonomy `minicoder github simulate-*`
-  (`packages/cli/src/commands/github.ts`) and `MockGitHubProvider` already write/model for
-  testing — real webhook ingestion and the CLI simulators produce identical `inbox_events` shapes.
+  `review.changes_requested`, `review.dismissed`, `review.comment`, `push`. This is the same
+  taxonomy `minicoder github simulate-*` (`packages/cli/src/commands/github.ts`) and
+  `MockGitHubProvider` already write/model for testing — real webhook ingestion and the CLI
+  simulators produce identical `inbox_events` shapes. `branch.protection_ok` is **not** part of
+  this real-webhook normalization taxonomy — it is `minicoder github simulate-*` dev-tooling only
+  (there is no GitHub webhook event it is normalized from); `packages/github`'s inbox handlers
+  register a no-op handler for it purely so simulate-driven inbox rows resolve to `processed`
+  instead of requeuing forever.
   Repository → project resolution uses the `repositories.full_name` column (`owner/repo`);
   webhooks for an unlinked repository are acknowledged (`202`) without being persisted.
   `inbox_events.payload` for GitHub-sourced events is **this normalized internal projection**,
@@ -377,10 +381,12 @@ transactional integrity between a database write and its downstream effects (eve
 webhook/inbox processing). Drain progress is observable, and stuck or failed records are surfaced
 and recoverable via state-doctor tooling.
 
-Each `outbox_events` / `inbox_events` row stores the raw JSON payload **and** the **Zod schema
+Each `outbox_events` / `inbox_events` row stores a JSON payload **and** the **Zod schema
 version** that produced it, so consumers validate against the correct schema version (parity with
 the versioned adapter I/O schemas in
-[`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md) §11.4).
+[`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md) §11.4). For GitHub-sourced
+`inbox_events`, that payload is specifically the normalized internal projection, not the raw
+GitHub delivery body — see §5.7.
 
 Sequential execution is enforced by policy (locks/lanes), not schema.
 

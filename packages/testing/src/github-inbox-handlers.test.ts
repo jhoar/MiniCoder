@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { InboxProcessor } from '@minicoder/workflow';
-import { createGithubInboxHandlers } from '@minicoder/github';
+import {
+  createGithubInboxHandlers,
+  normalizeGithubWebhookEvent,
+  resolveFeatureRunId,
+} from '@minicoder/github';
 import { FeatureExecutionState, SCHEMA_VERSION } from '@minicoder/core';
 import { MockGitHubProvider } from './services/mock-github-provider.js';
 import { MockGitHubClient } from './services/mock-github-client.js';
@@ -160,6 +164,41 @@ describe('GitHub webhook → InboxProcessor → reconcileGithubState (end-to-end
       [featureRunId],
     );
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
+  });
+
+  it('code-review round 3 HIGH-5: a realistic push webhook (ref + after) normalizes and resolves to the tracked feature run end-to-end', async () => {
+    const db = createTestDb();
+    const { featureRunId } = await seed(db);
+    // A push mid-fix-cycle lands on a PR already tracked by pull_requests — resolveFeatureRunId's
+    // branch-name lookup pairs the resolved feature run with its already-known PR number.
+    await db.execute(
+      `INSERT INTO pull_requests
+         (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
+          ci_status, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES ('pr-1', ?, 105, 'minicoder/FR-001', 'main', 'sha-push-0', 'open', 'none', 'passed', '[]', 0, 1, datetime('now'), datetime('now'))`,
+      [featureRunId],
+    );
+
+    // A realistic raw GitHub push webhook body: no `sha` field, only `ref` and `after`. The
+    // normalizer must strip `refs/heads/` and emit `branchName`/`sha`, and resolveFeatureRunId
+    // must resolve that branchName to the tracked feature run (existing behavior for
+    // pr.opened's branchName field, now exercised for a normalizer-produced push payload too).
+    const normalized = normalizeGithubWebhookEvent('push', {
+      repository: { full_name: 'acme/widgets' },
+      ref: 'refs/heads/minicoder/FR-001',
+      after: 'sha-push-1',
+    });
+    expect(normalized?.eventType).toBe('push');
+    expect(normalized?.payload).toEqual({ branchName: 'minicoder/FR-001', sha: 'sha-push-1' });
+
+    const resolved = await resolveFeatureRunId(db, {
+      projectId: PROJECT_ID,
+      prNumber: normalized!.payload.prNumber as number | null,
+      branchName: normalized!.payload.branchName as string,
+      sha: normalized!.payload.sha as string,
+    });
+
+    expect(resolved?.featureRunId).toBe(featureRunId);
   });
 
   it.each(['review.comment', 'push', 'branch.protection_ok'])(

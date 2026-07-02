@@ -153,6 +153,17 @@ describe('normalizeGithubWebhookEvent', () => {
     expect(result?.eventType).toBe('push');
   });
 
+  it('HIGH-5: a realistic push payload (ref + after, no sha field) normalizes to a bare branchName and the after SHA', () => {
+    const result = normalizeGithubWebhookEvent('push', {
+      repository: repo,
+      ref: 'refs/heads/minicoder/FR-002',
+      after: 'deadbeef',
+      // Real GitHub push webhooks have no top-level `sha` field at all.
+    });
+    expect(result?.eventType).toBe('push');
+    expect(result?.payload).toEqual({ branchName: 'minicoder/FR-002', sha: 'deadbeef' });
+  });
+
   it('returns null for unrecognized event names', () => {
     const result = normalizeGithubWebhookEvent('deployment', { repository: repo });
     expect(result).toBeNull();

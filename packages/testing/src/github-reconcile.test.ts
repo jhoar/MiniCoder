@@ -363,6 +363,117 @@ describe('reconcileGithubState', () => {
     }
   });
 
+  it('HIGH-1: fix-cycle re-push (code_pushed with an existing pull_requests row) advances past pr_opened instead of getting stuck', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CODE_PUSHED);
+    // Simulate a prior PR-open on this same PR (fix-cycle re-push reuses the same PR — GitHub
+    // doesn't close and reopen a PR on a new commit) so a pull_requests row already exists.
+    await seedPullRequestRow(db, featureRunId, { prNumber: 40, ciStatus: 'pending' });
+    const lockContext = await seedLock(db);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 40, headSha: 'sha-fix-1', ciStatus: 'pending' }),
+      correlationId: 'corr-high1-a',
+      lockContext,
+    });
+
+    expect(result.action).toBe('pr_opened');
+    expect(result.resultingState).toBe(FeatureExecutionState.PR_OPENED);
+
+    const runRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.PR_OPENED);
+    const versionAfterFirstPass = runRows[0]?.version;
+
+    // A second reconcile pass for the *same* commit (no new headSha) must not re-fire pr_opened —
+    // true idempotency is preserved because the idempotency key is unchanged for the same commit.
+    const secondPass = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 40, headSha: 'sha-fix-1', ciStatus: 'pending' }),
+      correlationId: 'corr-high1-b',
+      lockContext,
+    });
+    expect(secondPass.action).toBe('none');
+
+    // Now simulate a *new* commit landing on the same PR (the defining event of a fix cycle) —
+    // reconciliation must actually execute again, not short-circuit on the first pr-open's cached
+    // idempotency claim, and the feature run's current_execution_state must genuinely reflect it
+    // (not just a stale reported resultingState).
+    await db.execute(`UPDATE feature_runs SET current_execution_state = ? WHERE id = ?`, [
+      FeatureExecutionState.CODE_PUSHED,
+      featureRunId,
+    ]);
+    const thirdPass = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 40, headSha: 'sha-fix-2', ciStatus: 'pending' }),
+      correlationId: 'corr-high1-c',
+      lockContext,
+    });
+    expect(thirdPass.action).toBe('pr_opened');
+    expect(thirdPass.resultingState).toBe(FeatureExecutionState.PR_OPENED);
+
+    const finalRunRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(finalRunRows[0]?.current_execution_state).toBe(FeatureExecutionState.PR_OPENED);
+    expect(finalRunRows[0]?.version).toBeGreaterThan(versionAfterFirstPass ?? 0);
+
+    const prRows = await db.query<{ head_sha: string }>(
+      `SELECT head_sha FROM pull_requests WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(prRows[0]?.head_sha).toBe('sha-fix-2');
+  });
+
+  it('HIGH-2: a pull_requests row created mid-loop ends up with real observed mergeable/blockingLabels/conversationsResolved, not insertPullRequestRow defaults', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CODE_PUSHED);
+    const lockContext = await seedLock(db);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({
+        prNumber: 41,
+        ciStatus: 'passed',
+        reviewState: 'approved',
+        mergeable: false,
+        blockingLabels: ['do-not-merge'],
+        conversationsResolved: false,
+      }),
+      correlationId: 'corr-high2-a',
+      lockContext,
+    });
+
+    // Single call catches up code_pushed -> pr_opened -> ci_running -> under_review.
+    expect(result.resultingState).toBe(FeatureExecutionState.UNDER_REVIEW);
+
+    const prRows = await db.query<{
+      mergeable: number | null;
+      blocking_labels: string;
+      conversations_resolved: number;
+    }>(
+      `SELECT mergeable, blocking_labels, conversations_resolved FROM pull_requests WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(prRows[0]?.mergeable).toBe(0);
+    expect(JSON.parse(prRows[0]?.blocking_labels ?? '[]')).toEqual(['do-not-merge']);
+    expect(prRows[0]?.conversations_resolved).toBe(0);
+  });
+
   it('does not escalate an already-merged PR', async () => {
     const db = createTestDb();
     await seedProject(db);

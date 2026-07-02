@@ -84,7 +84,13 @@ export class OctokitGitHubClient implements GitHubClient {
       ciStatus: deriveCiStatus(checkRuns.data.check_runs, combinedStatus.data),
       mergeable: pr.mergeable ?? null,
       blockingLabels: (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : (l.name ?? ''))),
-      conversationsResolved: true, // GitHub's REST API has no direct "conversations resolved" flag; GraphQL is a future enhancement.
+      // HIGH-4 code-review fix: GitHub's REST API has no "conversations resolved" flag at all —
+      // only GraphQL's `reviewThreads.nodes[].isResolved` exposes it, and implementing GraphQL
+      // support is out of proportion for this fix. This is a conservative fail-closed placeholder
+      // (nothing in the codebase currently gates a merge/review decision on this field), not a
+      // real observation — a future merge-gate consumer (Phase 12) must not treat "unknown" as
+      // "resolved" by relying on this value until GraphQL support lands.
+      conversationsResolved: false,
       mergedAt: pr.merged_at ?? null,
       mergeSha: pr.merge_commit_sha ?? null,
       closedAt: pr.closed_at ?? null,
@@ -109,19 +115,51 @@ export class OctokitGitHubClient implements GitHubClient {
   }
 }
 
-function deriveReviewState(
-  reviews: Array<{ state: string; submitted_at?: string | null }>,
+/**
+ * HIGH-3 code-review fix: reduces to each reviewer's *latest* review first (grouped by
+ * `user.login`), then applies per-reviewer blocking semantics, instead of sorting all reviews
+ * globally and taking the single latest review across all reviewers. The prior global-latest
+ * approach let a later APPROVED from one reviewer (e.g. Bob) silently clear an earlier, still
+ * outstanding CHANGES_REQUESTED from another reviewer (e.g. Alice) — incorrectly reporting the PR
+ * as approved. Precedence, once reduced to one verdict per reviewer: any reviewer whose latest
+ * review is still CHANGES_REQUESTED blocks the whole PR; else APPROVED if any reviewer's latest is
+ * APPROVED; else COMMENTED / DISMISSED / PENDING in that fallback order (matching the existing
+ * per-state mapping), based on the single most recent review overall when no reviewer is currently
+ * blocking or approving.
+ */
+export function deriveReviewState(
+  reviews: Array<{
+    state: string;
+    submitted_at?: string | null;
+    user?: { login?: string | null } | null;
+  }>,
 ): ObservedPullRequestState['reviewState'] {
   if (reviews.length === 0) return PrReviewState.NONE;
+
   const sorted = [...reviews].sort(
     (a, b) => new Date(a.submitted_at ?? 0).getTime() - new Date(b.submitted_at ?? 0).getTime(),
   );
+
+  // Reduce to each reviewer's latest review (later entries in `sorted` overwrite earlier ones for
+  // the same login). Reviews with no identifiable reviewer login each count as their own
+  // "reviewer" (keyed by array index) so they still participate in the fallback ordering below
+  // without colliding with each other.
+  const latestByReviewer = new Map<string, { state: string; submitted_at?: string | null }>();
+  sorted.forEach((review, index) => {
+    const key = review.user?.login ?? `__unknown_${index}`;
+    latestByReviewer.set(key, review);
+  });
+  const latestReviews = [...latestByReviewer.values()];
+
+  if (latestReviews.some((r) => r.state === 'CHANGES_REQUESTED')) {
+    return PrReviewState.CHANGES_REQUESTED;
+  }
+  if (latestReviews.some((r) => r.state === 'APPROVED')) {
+    return PrReviewState.APPROVED;
+  }
+
   const last = sorted[sorted.length - 1];
   switch (last?.state) {
-    case 'APPROVED':
-      return PrReviewState.APPROVED;
-    case 'CHANGES_REQUESTED':
-      return PrReviewState.CHANGES_REQUESTED;
     case 'COMMENTED':
       return PrReviewState.COMMENTED;
     case 'DISMISSED':
