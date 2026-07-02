@@ -705,6 +705,53 @@ production/hosted deployments. Phase 13's Fastify orchestrator API mounts the sa
 | `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment         | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)      |
 | Feature run stuck, no `pull_requests` row                       | PR never opened/observed yet (still `code_pushed`)   | Not a bug — the scheduled fallback only reconciles PRs it already tracks  |
 
+#### Procedure: Recovering from a permanently-lost initial `pr.opened` webhook
+
+The scheduled `github-reconciliation` fallback only re-checks feature runs that already have a
+`pull_requests` row (see the "Feature run stuck, no `pull_requests` row" diagnostic above, and the
+`GitHubClient.listPullRequestsForBranch`-scope note in `github-reconciliation.ts`'s JSDoc and
+docs/01 §5.7). If the _initial_ `pr.opened` webhook delivery for a feature run is permanently lost
+— not merely delayed — and the repository's GitHub App/webhook delivery history confirms it never
+arrived, there is currently no automated self-heal path. This is a narrower situation than a
+generic "reconciliation didn't run" symptom: the run is not diverging from a tracked PR, it simply
+has no tracked PR at all.
+
+**Detection**: a `minicoder/FR-*` branch has an open pull request on GitHub, but
+`SELECT * FROM pull_requests WHERE feature_run_id = '<id>'` returns no row, and the feature run's
+`feature_runs.current_execution_state` has remained at `code_pushed` (or `pr_opened`, if a
+different, still-tracked PR ever briefly matched) for longer than the branch/PR has visibly existed
+on GitHub. `minicoder state doctor`'s existing checks do not catch this specific case — none of its
+checks compare local `feature_runs` state against GitHub's actual PR list, only against already-
+tracked `pull_requests` rows — so this requires operator inspection (GitHub UI or `gh pr list`
+against the branch), not automated detection.
+
+**Recovery (interim, manual)**: as of Phase 7, no Orchestrator API command for this exists yet
+(deferred to Phase 13), and `minicoder github simulate-pr-opened` is a dev/test/CI-only command —
+it calls `guardEnv()`, which hard-rejects when `APP_ENV`/`NODE_ENV` is `production` regardless of
+any `--env` flag (see CLAUDE.md's dev/test-only command safety guards), so it cannot be used to
+repair a production deployment. The only currently-available production-safe recovery is a direct,
+careful manual insert into `pull_requests` via `minicoder db` tooling (or an equivalent scoped SQL
+client under the same access controls), using the real values from the GitHub PR:
+
+1. Confirm the real PR's `pr_number`, `head.ref` (→ `branch_name`), `base.ref` (→ `base_branch`),
+   and `head.sha` (→ `head_sha`) from the GitHub UI or `gh pr view <number> --json number,headRefName,baseRefName,headRefOid`.
+2. Insert one row into `pull_requests` with `feature_run_id` set to the affected feature run's ID,
+   `state = 'open'`, `review_state = 'none'`, `ci_status = 'pending'` (reconciliation will correct
+   these on its next pass), `blocking_labels = '[]'`, `conversations_resolved = 0`, and
+   `version = 1` — matching the column set in migration `0009_pull_requests`.
+3. Do not set `feature_runs.current_execution_state` directly; leave it at whatever it currently is
+   (typically `code_pushed`). The next scheduled `github-reconciliation` pass (or the next webhook
+   delivery for this PR, e.g. a subsequent `check_suite`/`pull_request_review` event) picks the run
+   up normally via the now-existing `pull_requests` row and reconciles state forward through the
+   ordinary `reconcileGithubState()` path — this manual insert only creates the tracking row, it
+   never substitutes for a real reconciliation pass.
+
+This is documented as an interim, manual operator procedure, not a polished feature. Building a
+`GitHubClient.listPullRequestsForBranch`-style discovery method (so the scheduled fallback could
+find a never-tracked PR on its own and eliminate the need for step 1–3 above) remains explicitly
+out of scope here — it is a larger, separate capability than this runbook gap warrants and is
+already called out as unbuilt in the code's own comments.
+
 ---
 
 ## 12. Phase 4 Runbook — Test Harness and State Lifecycle Tooling

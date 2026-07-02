@@ -32,6 +32,22 @@
  * while repeated deliveries for the *same* commit still collapse to the same key (true idempotency
  * preserved) — the same pattern `RecordCodePushedCommand` already uses
  * (`record-code-pushed:{featureRunId}:{commitSha}`).
+ *
+ * `changes_requested` re-entry (code-review round-6 HIGH-1): the `UNDER_REVIEW` branch used to
+ * additionally gate on `priorReviewState !== 'changes_requested'`, reading `pull_requests
+ * .review_state` *before* the mirror sync as an "already reacted to this" guard. That guard broke
+ * down across a fix cycle: `syncPullRequestObservedState` runs unconditionally on *every*
+ * reconcile pass, including passes where `currentState` is `PR_OPENED`/`CI_RUNNING` mid-fix-cycle
+ * — and GitHub review decisions persist until dismissed or freshly re-reviewed, so if the reviewer
+ * never re-reviewed the new commit, every one of those intermediate passes re-wrote
+ * `review_state = 'changes_requested'`, overwriting `insertPullRequestRow`'s UPDATE-branch reset
+ * long before the run ever reached `UNDER_REVIEW` again. `priorReviewState` then reflected
+ * GitHub's stale, unchanged verdict rather than "has this run already reacted to this occurrence",
+ * and the feature run could get stuck in `UNDER_REVIEW` while GitHub was still blocking. The guard
+ * is removed; the branch now matches every other branch in this file — its idempotency key already
+ * includes `observed.headSha`, so repeated calls for the *same* unresolved review on the *same*
+ * commit collapse to the same key (true idempotency preserved), while fix-cycle re-entry with a
+ * *new* `headSha` correctly gets a fresh key and fires again.
  */
 
 import { FeatureExecutionState, UserRole } from '../domain/states.js';
@@ -108,11 +124,6 @@ interface FeatureRunSnapshot {
   version: number;
 }
 
-interface PullRequestSnapshot {
-  ci_status: string;
-  review_state: string;
-}
-
 /**
  * Feature-execution states whose GitHub-reconciliation actions (`RecordPrOpenedCommand`,
  * `RecordCiRunningCommand`) are execution-lane lock-gated (code-review MEDIUM-3). Callers use this
@@ -147,14 +158,6 @@ export async function reconcileGithubState(
     );
   }
 
-  const prRows = await db.query<PullRequestSnapshot>(
-    `SELECT ci_status, review_state FROM pull_requests WHERE feature_run_id = ?`,
-    [featureRunId],
-  );
-  // Captured before the full-mirror sync below so the changes_requested branch can still tell a
-  // freshly-observed review verdict apart from one it already recorded on a prior reconcile call.
-  const priorReviewState = prRows[0]?.review_state;
-
   // Full observed-state mirror sync (HIGH-3 / MEDIUM-1): unconditionally writes every
   // GitHub-observed column onto pull_requests, on every reconciliation pass, regardless of which
   // action (if any) fires below. This is what makes pull_requests a true observed mirror per
@@ -185,7 +188,6 @@ export async function reconcileGithubState(
       observed,
       currentState,
       expectedVersion,
-      priorReviewState,
     });
     if (!stepResult) break;
     actions.push(stepResult.action);
@@ -230,7 +232,6 @@ interface RunStepOptions {
   observed: ObservedPullRequestState;
   currentState: FeatureExecutionState;
   expectedVersion: number;
-  priorReviewState: string | undefined;
 }
 
 /** Runs (at most) one reconciliation action for the current state; null if nothing matches. */
@@ -247,7 +248,6 @@ async function runStep(
     observed,
     currentState,
     expectedVersion,
-    priorReviewState,
   } = opts;
 
   const terminalStates: FeatureExecutionState[] = [
@@ -386,9 +386,11 @@ async function runStep(
 
   if (
     currentState === FeatureExecutionState.UNDER_REVIEW &&
-    observed.reviewState === 'changes_requested' &&
-    priorReviewState !== 'changes_requested'
+    observed.reviewState === 'changes_requested'
   ) {
+    // round-6 HIGH-1: no `priorReviewState` pre-check here — see the module doc comment above.
+    // Idempotency is entirely carried by the key below (includes `observed.headSha`), matching
+    // every other branch in this file.
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
       idempotencyKey: `changes-requested:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,

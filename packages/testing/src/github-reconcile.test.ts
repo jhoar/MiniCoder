@@ -526,6 +526,78 @@ describe('reconcileGithubState', () => {
     expect(retryResult.resultingState).toBe(FeatureExecutionState.PR_OPENED);
   });
 
+  it('round-6 HIGH-1: a stale changes_requested mirror value (left over from an intermediate mid-fix-cycle sync) no longer blocks changes_requested from firing on a genuinely new occurrence', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
+    // review_state is pre-seeded to 'changes_requested' *before* reconcileGithubState has ever
+    // recorded a changes_requested transition for this run — simulating the exact state left
+    // behind once syncPullRequestObservedState has already re-written review_state on an earlier,
+    // intermediate reconcile pass (e.g. while the run was still at pr_opened/ci_running
+    // mid-fix-cycle, well before UNDER_REVIEW was reached again). This is precisely the condition
+    // round-6's investigation found the old `priorReviewState` guard misread as "already reacted
+    // to this occurrence" — it would have wrongly returned 'none' here instead of transitioning.
+    await seedPullRequestRow(db, featureRunId, {
+      prNumber: 60,
+      ciStatus: 'passed',
+      reviewState: 'changes_requested',
+    });
+
+    const firstPass = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 60, headSha: 'sha1', reviewState: 'changes_requested' }),
+      correlationId: 'corr-high1r6-a',
+    });
+    expect(firstPass.action).toBe('changes_requested');
+    expect(firstPass.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+
+    const midRunRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(midRunRows[0]?.current_execution_state).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+
+    // A duplicate delivery for the exact same occurrence (same headSha, run already advanced past
+    // UNDER_REVIEW) naturally no-ops — the branch only matches currentState === UNDER_REVIEW, so
+    // no idempotency-key replay is even needed to prevent a second RecordChangesRequestedCommand.
+    const duplicatePass = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 60, headSha: 'sha1', reviewState: 'changes_requested' }),
+      correlationId: 'corr-high1r6-b',
+    });
+    expect(duplicatePass.action).toBe('none');
+
+    // Fix cycle: the run genuinely re-enters UNDER_REVIEW after a new commit (fixing ->
+    // code_pushed -> pr_opened -> ci_running -> under_review). The reviewer never re-reviewed the
+    // new commit, so GitHub's review verdict — and therefore the mirrored review_state column,
+    // continuously re-written by every intermediate pass — is still 'changes_requested'. This must
+    // be treated as a fresh occurrence (new headSha) and transition the run again, not get stuck
+    // because the mirror column never read anything other than 'changes_requested' throughout.
+    await db.execute(`UPDATE feature_runs SET current_execution_state = ? WHERE id = ?`, [
+      FeatureExecutionState.UNDER_REVIEW,
+      featureRunId,
+    ]);
+    const fixCyclePass = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 60, headSha: 'sha2', reviewState: 'changes_requested' }),
+      correlationId: 'corr-high1r6-c',
+    });
+    expect(fixCyclePass.action).toBe('changes_requested');
+    expect(fixCyclePass.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+
+    const finalRunRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(finalRunRows[0]?.current_execution_state).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+  });
+
   it('does not escalate an already-merged PR', async () => {
     const db = createTestDb();
     await seedProject(db);
