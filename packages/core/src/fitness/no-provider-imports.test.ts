@@ -17,6 +17,8 @@ const BANNED_IMPORTS = [
   'openai',
   '@anthropic-ai',
   '@google-ai',
+  '@octokit',
+  'octokit',
   'cohere',
   'replicate',
   'langchain',

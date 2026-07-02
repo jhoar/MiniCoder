@@ -189,8 +189,8 @@ alternative backend (HA cluster or Cloud) selected by configuration only.
 
 - A task `runImpl` must call a real Orchestrator Core command and update domain state in the
   database (not just the `triggerdev_runs` metadata table). **Done for the 9 planner/clarification
-  tasks as of Phase 6** (Bootstrap Planner); `start-next-feature` and `github-reconciliation`
-  remain stubs pending Phase 7/8.
+  tasks as of Phase 6** (Bootstrap Planner) **and for `github-reconciliation` as of Phase 7**;
+  `start-next-feature` remains a stub pending Phase 8.
 - The waitpoint pattern is proven at the in-process level (deferred Promise / external signal); a
   durable Trigger.dev waitpoint test requires a live Trigger.dev environment and is deferred to
   Phase 4's dedicated Trigger.dev integration test job.
@@ -472,7 +472,9 @@ questions; blocking gaps prevent activation; an approved plan activates features
   `GenerateFeatureBacklogHandler`'s own schema; the task no longer has an empty-payload no-op
   short-circuit that silently "succeeded" with zero features written.
 
-## Phase 7 — GitHub Webhooks, Integration, and Reconciliation
+## Phase 7 — GitHub Webhooks, Integration, and Reconciliation ✓
+
+> **Status: Complete** (2026-07-02)
 
 Deliver a GitHub webhook receiver with signature verification, inbox processing, the GitHub API
 client, branch/PR operations, review/check/mergeability reading, status-check publication, a
@@ -485,6 +487,93 @@ check, merge method, force-push policy, and the reconciliation algorithm — see
 Acceptance: webhook deliveries are persisted to the inbox and processed durably; MiniCoder can
 detect/create branches and PRs; database/GitHub mismatches are reconciled or marked `human_required`;
 GitHub operations are evented.
+
+**Delivered modules:**
+
+- `packages/migrations/migrations/0009_pull_requests.*` — new `pull_requests` table (one row per
+  `feature_run_id`): `pr_number`, `branch_name`, `base_branch`, `head_sha`, `state` (open/closed/
+  merged), `review_state` (mirrors `PrReviewState`), `ci_status`, `mergeable`, `blocking_labels`
+  (JSON), `conversations_resolved`, `merged_at`, `merge_sha`, `closed_at`. `review_state`/
+  `ci_status` are observed GitHub mirrors with no `StateTransitionValidator` matrix — GitHub
+  remains authoritative. `EXPECTED_TABLES` grows from 47 to 48.
+- `packages/core/src/github/client.ts` — the provider-SDK-free `GitHubClient` interface
+  (`createBranch`, `createPullRequest`, `getPullRequest`, `publishStatusCheck`,
+  `getRemainingRateLimit`) and `ObservedPullRequestState`; Orchestrator Core never imports
+  Octokit.
+- `packages/core/src/github/reconcile.ts` — `reconcileGithubState()`, the single reconciliation
+  algorithm (docs/01 §5.7) both the webhook-triggered inbox handlers and the scheduled
+  `github-reconciliation` fallback call, so they can never diverge. Given an already-fetched
+  `ObservedPullRequestState`, it advances the feature-execution matrix one `Record*Command` at a
+  time, escalates to `human_required` on irreconcilable divergence (PR closed unmerged while
+  `pr_opened`/`ci_running`), or no-ops when consistent.
+- `packages/core/src/commands/handlers/github/` — five new command handlers:
+  `RecordPrOpenedHandler`, `RecordCiRunningHandler` (both lock-fence-gated, matching
+  `RecordCodePushedHandler`'s pattern), `RecordCiPassedHandler` (→ `under_review`),
+  `RecordCiFailedHandler` (→ `ci_failed`), `RecordChangesRequestedHandler`. Each upserts the
+  matching `pull_requests` row alongside the `feature_runs` state transition.
+- `packages/core/src/statemachine/machines/feature-execution.ts` — two new matrix transitions,
+  `pr_opened → human_required` and `ci_running → human_required` (both via
+  `EscalateToHumanCommand`), covering the GitHub-reconciliation irreconcilable-divergence path
+  that previously had no matrix entry.
+- `packages/github` (new package) — `OctokitGitHubClient` (the sole Octokit import site in the
+  repo; pinned to `@octokit/rest@^19`/`@octokit/webhooks-methods@^3`, the last CJS-compatible
+  majors, since the repo's TypeScript output target is CommonJS and current Octokit majors are
+  ESM-only), `verifyWebhookSignature()` (current + previous secret rotation window, via
+  `@octokit/webhooks-methods`), `normalizeGithubWebhookEvent()` (raw GitHub `(event, action)` →
+  the internal taxonomy `minicoder github simulate-*`/`MockGitHubProvider` already use),
+  `createWebhookApp()` / `registerGithubWebhookRoute()` (a minimal Fastify app exposing
+  `POST /webhooks/github`, reused as-is by Phase 13's future orchestrator API instead of being
+  reimplemented), and `createGithubInboxHandlers()` (the `InboxHandler` registrations for
+  `pr.opened`, `pr.synchronized`, `pr.closed`, `pr.merged`, `check.passed`, `check.failed`,
+  `review.approved`, `review.changes_requested`, `review.dismissed`, resolving the affected
+  feature run via an existing `pull_requests` row or via the `minicoder/<frId>` branch-naming
+  convention, then delegating to `reconcileGithubState()`).
+- `packages/triggerdev/src/tasks/github-reconciliation.ts` — real `runImpl`: for the requested
+  project (or single feature run), resolves the linked repository, fetches current
+  `ObservedPullRequestState` for every feature run that already has a tracked `pull_requests` row,
+  and calls `reconcileGithubState()`. GitHub credentials are resolved from `GITHUB_TOKEN` at
+  runtime (fails fast with an actionable error if unset) rather than injected the way
+  `PlannerAgentAdapter` is, since a GitHub credential is a single deployment-wide secret, not a
+  per-call dependency. Discovering a brand-new PR with no prior webhook/`pull_requests` row is
+  deferred — `GitHubClient` has no "list PRs by branch" method yet.
+- `packages/cli/src/commands/github.ts` — new `minicoder github serve` command (added to
+  `00-glossary-and-terms.md` §5), a thin wrapper around `createWebhookApp()`; unlike
+  `simulate-*`, it is **not** gated by the dev/test/ci `guardEnv()` check, since it is the real
+  webhook receiver and is expected to run in production/hosted deployments. Also fixed a latent
+  bug where `simulate-*` wrote `payload_schema_version = '1.0'` instead of the actual
+  `SCHEMA_VERSION` (`'1.0.0'`), which would have made every simulated event fail
+  `InboxProcessor`'s schema-version check.
+- `packages/testing/src/services/mock-github-client.ts` — `MockGitHubClient implements
+GitHubClient`, wrapping `MockGitHubProvider` so scenario tests drive GitHub state via the
+  existing `simulate*` surface while `reconcileGithubState()` observes it through the same
+  interface `OctokitGitHubClient` implements.
+- `packages/testing/src/scenarios/github-race.ts` / `fixtures/github-race.ts` — rewritten to
+  invoke the real `github-reconciliation` task (via `MockTriggerRunner`, injecting
+  `MockGitHubClient` as the client-factory `extra` argument) and assert on the resulting
+  `feature_runs`/`pull_requests` rows, instead of inlining raw SQL; no longer writes
+  `feature_requests.state` (the earlier placeholder violated the static-label rule).
+- New unit tests: `packages/github/src/webhook-signature.test.ts`,
+  `packages/github/src/normalize.test.ts`, `packages/testing/src/github-reconcile.test.ts`
+  (8 cases covering every `reconcileGithubState()` branch: PR-opened creation, CI running/passed/
+  failed, changes-requested, irreconcilable escalation, and both no-op cases). The
+  `no-provider-imports` fitness test's banned-import list now includes `@octokit`/`octokit` to
+  keep Orchestrator Core provider-SDK-free going forward.
+
+**Deviations from the original plan:**
+
+- Per-handler unit tests (à la a hypothetical `record-pr-opened.test.ts`) were not added — no
+  Phase 2/6 command handler has one either (`record-code-pushed.ts`, `escalate-to-human-required.ts`,
+  every `planning`/`clarification` handler); handler behavior is instead covered end-to-end through
+  `reconcileGithubState()`'s 8 unit tests plus the `github-race` scenario, consistent with the
+  established convention.
+- `RecordCiFailedHandler`/`RecordChangesRequestedHandler` do not implement the matrix's
+  `record_blocking_finding` / `increment_fix_attempt_count` side effects — `review_findings`
+  writes and the fix-attempt-threshold counter are Phase 10 (review/fix loop) scope;
+  `feature_runs` has no fix-attempt-count column yet. These handlers perform the state transition
+  and the `pull_requests` mirror update only.
+- `OctokitGitHubClient.getPullRequest()`'s `conversationsResolved` is hardcoded `true` — GitHub's
+  REST API has no direct "conversations resolved" field (only GraphQL exposes
+  `reviewThreads.nodes.isResolved`); wiring the GraphQL client is deferred.
 
 ## Phase 8 — Execution Orchestrator
 

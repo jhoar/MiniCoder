@@ -205,24 +205,67 @@ lookup/creation, PR lookup/creation, PR state reading, review reading, check/sta
 mergeability reading, status check publication, webhook ingestion into the inbox, and the merge
 operation when policy permits.
 
-**GitHub integration contract** (full specification authored in implementation Phase 7):
+**GitHub integration contract** (finalized in implementation Phase 7 against
+`packages/github`, `packages/core/src/github/`, and migration `0009_pull_requests`):
 
 - **Webhook events consumed:** `pull_request`, `pull_request_review`,
   `pull_request_review_comment`, `check_suite`, `check_run`, `status`, `push`. Each delivery is
   persisted to `inbox_events` keyed by a **dedup key** = GitHub delivery GUID (`X-GitHub-Delivery`),
-  with idempotent processing.
+  with idempotent processing (a redelivered GUID hits the `dedup_key UNIQUE` constraint and is
+  acknowledged without a second insert).
+- **Normalization:** the webhook receiver (`createWebhookApp()` /
+  `registerGithubWebhookRoute()` in `packages/github`) normalizes each raw `(event, action)` pair
+  into MiniCoder's internal event-type taxonomy before insertion into `inbox_events`: `pr.opened`,
+  `pr.synchronized`, `pr.closed`, `pr.merged`, `check.passed`, `check.failed`, `review.approved`,
+  `review.changes_requested`, `review.dismissed`, `review.comment`, `push`,
+  `branch.protection_ok`. This is the same taxonomy `minicoder github simulate-*`
+  (`packages/cli/src/commands/github.ts`) and `MockGitHubProvider` already write/model for
+  testing — real webhook ingestion and the CLI simulators produce identical `inbox_events` shapes.
+  Repository → project resolution uses the `repositories.full_name` column (`owner/repo`);
+  webhooks for an unlinked repository are acknowledged (`202`) without being persisted.
+- **Signature verification:** HMAC-SHA256 over the raw request body
+  (`X-Hub-Signature-256`), verified against the current secret first and, during a rotation
+  window, the previous secret (`GITHUB_WEBHOOK_SECRET` / `GITHUB_WEBHOOK_SECRET_PREVIOUS`) — see
+  `07-security-and-secrets.md` §5. Deliveries with a missing or non-matching signature are
+  rejected with `401` and never reach `inbox_events`.
 - **Auth model:** a **GitHub App** (installation token, least-privilege) is preferred over a PAT;
   required permissions: contents (read/write), pull requests (read/write), checks (read/write),
   statuses (read/write), metadata (read), webhooks. See `07-security-and-secrets.md`.
+  `OctokitGitHubClient` (`packages/github`) accepts either an installation token or a PAT via its
+  `auth` option; local/single-node development typically uses `GITHUB_TOKEN` (a PAT).
 - **Branch naming:** `minicoder/<feature-request-id>` (e.g., `minicoder/FR-002`); one branch per
   feature, owned by the active Coder run.
 - **PR labels / status check:** MiniCoder publishes the status check `minicoder/review-gate`;
   blocking labels prevent merge (see §12).
 - **Merge method:** squash by default (configurable); **force-push to MiniCoder branches is
   disallowed** once a PR is open.
-- **Reconciliation algorithm:** on each relevant webhook (or on the scheduled fallback), fetch
-  authoritative GitHub state, compare against the database record, and either advance the workflow,
-  mark it `human_required` on irreconcilable divergence, or no-op when already consistent.
+- **Branch/PR/CI/review-state persistence:** the `pull_requests` table (migration `0009`, one row
+  per `feature_run_id`) mirrors GitHub-observed state: `pr_number`, `branch_name`, `base_branch`,
+  `head_sha`, `state` (open/closed/merged), `review_state` (mirrors `PrReviewState`, §3.10),
+  `ci_status`, `mergeable`, `blocking_labels`, `conversations_resolved`, `merged_at`, `merge_sha`,
+  `closed_at`. `review_state`/`ci_status` are **observed mirrors of GitHub** overwritten directly
+  on reconciliation — unlike the other canonical state machines, PR/review state has no
+  `StateTransitionValidator` matrix; GitHub remains authoritative.
+- **Reconciliation algorithm:** `reconcileGithubState()` (`packages/core/src/github/reconcile.ts`)
+  is the single implementation both the webhook-triggered inbox handlers
+  (`packages/github/src/inbox-handlers.ts`) and the scheduled fallback
+  (`github-reconciliation` Trigger.dev task) call — they can never diverge in behavior. Given an
+  already-fetched `ObservedPullRequestState` (core never calls GitHub directly — the caller fetches
+  via `GitHubClient` first, keeping Orchestrator Core provider-SDK-free), it:
+  1. Escalates to `human_required` (`EscalateToHumanCommand`) when the PR closed without merging
+     while the feature run was still in `pr_opened` or `ci_running` — an irreconcilable
+     divergence.
+  2. Advances the feature-execution matrix one step at a time via the matching `Record*Command`
+     (`RecordPrOpenedCommand`, `RecordCiRunningCommand`, `RecordCiPassedCommand`,
+     `RecordCiFailedCommand`, `RecordChangesRequestedCommand`) when observed GitHub state has
+     progressed past the DB record.
+  3. No-ops when the DB record already matches observed GitHub state.
+  The scheduled fallback only re-checks feature runs that already have a tracked `pull_requests`
+  row (i.e., it catches *missed* webhook deliveries); discovering a brand-new PR that no webhook
+  or `RecordPrOpenedCommand` has ever recorded is deferred (`GitHubClient` has no
+  "list PRs by branch" method yet).
+- **Capacity pre-flight:** `GitHubClient.getRemainingRateLimit()` exposes the remaining GitHub API
+  rate-limit budget for callers to check before a batch of reconciliation calls.
 
 ### 5.8 Review/Fix Loop Controller
 

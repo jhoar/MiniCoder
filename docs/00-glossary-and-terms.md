@@ -448,13 +448,16 @@ minicoder state repair --project <id> --apply --confirmation <token>  # guarded 
 
 # GitHub simulation (test/dev only)
 minicoder github simulate-pr-opened
-minicoder github simulate-pr-synchronized
+minicoder github simulate-pr-closed
+minicoder github simulate-pr-merged
 minicoder github simulate-check-passed
 minicoder github simulate-check-failed
 minicoder github simulate-review-approved
-minicoder github simulate-review-requested-changes
-minicoder github simulate-pr-merged
-minicoder github simulate-pr-closed
+minicoder github simulate-review-changes-requested
+minicoder github simulate-branch-protection-ok
+
+# GitHub webhook receiver (Phase 7; not env-guarded — intended for real deployments)
+minicoder github serve                                  # POST /webhooks/github; standalone Fastify app
 
 # Test scenario runner (non-zero exit on failure)
 minicoder test unit

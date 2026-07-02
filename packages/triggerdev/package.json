@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@minicoder/core": "workspace:*",
+    "@minicoder/github": "workspace:*",
     "@minicoder/migrations": "workspace:*",
     "@minicoder/persistence-postgres": "workspace:*",
     "@minicoder/persistence-sqlite": "workspace:*",
+    "@minicoder/workflow": "workspace:*",
     "@trigger.dev/sdk": "^4.4.6",
     "zod": "^3.23.8"
   },

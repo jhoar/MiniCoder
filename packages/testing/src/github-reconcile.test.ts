@@ -1,0 +1,264 @@
+import { describe, it, expect } from 'vitest';
+import { reconcileGithubState, FeatureExecutionState } from '@minicoder/core';
+import type { ObservedPullRequestState } from '@minicoder/core';
+import { createTestDb } from './db.js';
+
+const PROJECT_ID = 'proj-reconcile-test';
+
+async function seedProject(db: ReturnType<typeof createTestDb>): Promise<void> {
+  await db.execute(
+    `INSERT INTO projects (id, name, description, state, version, created_at, updated_at)
+     VALUES (?, 'Reconcile Test Project', 'x', 'active', 1, datetime('now'), datetime('now'))`,
+    [PROJECT_ID],
+  );
+  await db.execute(
+    `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, version, created_at, updated_at)
+     VALUES ('repo-1', ?, 'acme', 'widgets', 'acme/widgets', 'main', 1, datetime('now'), datetime('now'))`,
+    [PROJECT_ID],
+  );
+  await db.execute(
+    `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+     VALUES ('plan-1', ?, NULL, 'activated_for_execution', 'Plan', 'x', 1, datetime('now'), datetime('now'))`,
+    [PROJECT_ID],
+  );
+}
+
+let frCounter = 0;
+let runCounter = 0;
+
+async function seedFeatureRun(
+  db: ReturnType<typeof createTestDb>,
+  currentState: FeatureExecutionState,
+): Promise<{ featureRequestId: string; featureRunId: string }> {
+  frCounter += 1;
+  runCounter += 1;
+  const featureRequestId = `fr-${frCounter}`;
+  const featureRunId = `run-${runCounter}`;
+  await db.execute(
+    `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+     VALUES (?, 'plan-1', ?, ?, 'Feature', 'x', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
+    [featureRequestId, PROJECT_ID, `FR-${String(frCounter).padStart(3, '0')}`],
+  );
+  await db.execute(
+    `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, started_at, version, created_at, updated_at)
+     VALUES (?, ?, 1, ?, datetime('now'), 1, datetime('now'), datetime('now'))`,
+    [featureRunId, featureRequestId, currentState],
+  );
+  return { featureRequestId, featureRunId };
+}
+
+async function seedPullRequestRow(
+  db: ReturnType<typeof createTestDb>,
+  featureRunId: string,
+  opts: { prNumber: number; ciStatus?: string; reviewState?: string; state?: string },
+): Promise<void> {
+  await db.execute(
+    `INSERT INTO pull_requests
+       (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
+        ci_status, blocking_labels, conversations_resolved, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'minicoder/FR-001', 'main', 'sha1', ?, ?, ?, '[]', 0, 1, datetime('now'), datetime('now'))`,
+    [
+      `pr-${featureRunId}`,
+      featureRunId,
+      opts.prNumber,
+      opts.state ?? 'open',
+      opts.reviewState ?? 'none',
+      opts.ciStatus ?? 'pending',
+    ],
+  );
+}
+
+async function seedLock(
+  db: ReturnType<typeof createTestDb>,
+): Promise<{ lockId: string; fence: number; holderId: string; resourceKey: string }> {
+  const lockId = `lock-${PROJECT_ID}`;
+  const holderId = 'test-holder';
+  const resourceKey = `execution-lane:${PROJECT_ID}`;
+  await db.execute(
+    `INSERT INTO workflow_locks (id, project_id, resource_key, holder_id, fence, expires_at, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+    [lockId, PROJECT_ID, resourceKey, holderId, new Date(Date.now() + 60_000).toISOString()],
+  );
+  return { lockId, fence: 1, holderId, resourceKey };
+}
+
+function observed(overrides: Partial<ObservedPullRequestState> = {}): ObservedPullRequestState {
+  return {
+    prNumber: 10,
+    branchName: 'minicoder/FR-001',
+    baseBranch: 'main',
+    headSha: 'sha1',
+    state: 'open',
+    reviewState: 'none',
+    ciStatus: 'pending',
+    mergeable: true,
+    blockingLabels: [],
+    conversationsResolved: true,
+    mergedAt: null,
+    mergeSha: null,
+    closedAt: null,
+    ...overrides,
+  };
+}
+
+describe('reconcileGithubState', () => {
+  it('opens a pull_requests row and transitions code_pushed -> pr_opened', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CODE_PUSHED);
+    const lockContext = await seedLock(db);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 10 }),
+      correlationId: 'corr-1',
+      lockContext,
+    });
+
+    expect(result.action).toBe('pr_opened');
+    expect(result.resultingState).toBe(FeatureExecutionState.PR_OPENED);
+
+    const rows = await db.query<{ pr_number: number }>(
+      `SELECT pr_number FROM pull_requests WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(rows[0]?.pr_number).toBe(10);
+  });
+
+  it('transitions pr_opened -> ci_running when CI starts', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.PR_OPENED);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 11 });
+    const lockContext = await seedLock(db);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 11, ciStatus: 'running' }),
+      correlationId: 'corr-2',
+      lockContext,
+    });
+
+    expect(result.action).toBe('ci_running');
+    expect(result.resultingState).toBe(FeatureExecutionState.CI_RUNNING);
+  });
+
+  it('transitions ci_running -> under_review when CI passes', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CI_RUNNING);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 12, ciStatus: 'running' });
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 12, ciStatus: 'passed' }),
+      correlationId: 'corr-3',
+    });
+
+    expect(result.action).toBe('ci_passed');
+    expect(result.resultingState).toBe(FeatureExecutionState.UNDER_REVIEW);
+  });
+
+  it('transitions ci_running -> ci_failed when CI fails', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CI_RUNNING);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 13, ciStatus: 'running' });
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 13, ciStatus: 'failed' }),
+      correlationId: 'corr-4',
+    });
+
+    expect(result.action).toBe('ci_failed');
+    expect(result.resultingState).toBe(FeatureExecutionState.CI_FAILED);
+  });
+
+  it('transitions under_review -> changes_requested on a changes-requested review', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 14, ciStatus: 'passed' });
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 14, ciStatus: 'passed', reviewState: 'changes_requested' }),
+      correlationId: 'corr-5',
+    });
+
+    expect(result.action).toBe('changes_requested');
+    expect(result.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+  });
+
+  it('escalates to human_required when the PR closes unmerged while CI is running', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CI_RUNNING);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 15, ciStatus: 'running' });
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 15, state: 'closed', mergedAt: null }),
+      correlationId: 'corr-6',
+    });
+
+    expect(result.action).toBe('escalated');
+    expect(result.resultingState).toBe(FeatureExecutionState.HUMAN_REQUIRED);
+  });
+
+  it('no-ops when the DB record already matches observed GitHub state', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
+    await seedPullRequestRow(db, featureRunId, {
+      prNumber: 16,
+      ciStatus: 'passed',
+      reviewState: 'approved',
+    });
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 16, ciStatus: 'passed', reviewState: 'approved' }),
+      correlationId: 'corr-7',
+    });
+
+    expect(result.action).toBe('none');
+  });
+
+  it('does not escalate an already-merged PR', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.MERGED);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 17, state: 'merged' });
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({
+        prNumber: 17,
+        state: 'merged',
+        mergedAt: new Date().toISOString(),
+        mergeSha: 'mergesha1',
+      }),
+      correlationId: 'corr-8',
+    });
+
+    expect(result.action).toBe('none');
+  });
+});

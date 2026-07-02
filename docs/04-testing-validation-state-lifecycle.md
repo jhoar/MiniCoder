@@ -173,11 +173,15 @@ orphaned waitpoints, queue backlog, and retry storms. Database correlation recor
 orphaned waitpoints, stale locks, stuck `human_required` states, failed outbox events, unprocessed
 inbox events, stale artifact exports, and inconsistent cost records.
 
-### 5.4 GitHub Simulation (test/dev only)
+### 5.4 GitHub Simulation (test/dev only) and Webhook Receiver
 
-`minicoder github simulate-pr-opened | simulate-pr-synchronized | simulate-check-passed |
-simulate-check-failed | simulate-review-approved | simulate-review-requested-changes |
-simulate-pr-merged | simulate-pr-closed`.
+`minicoder github simulate-pr-opened | simulate-pr-closed | simulate-pr-merged |
+simulate-check-passed | simulate-check-failed | simulate-review-approved |
+simulate-review-changes-requested | simulate-branch-protection-ok`.
+
+`minicoder github serve` (Phase 7) starts the real GitHub webhook receiver
+(`POST /webhooks/github`); unlike `simulate-*`, it is not environment-guarded — see
+[`01-system-specification.md`](01-system-specification.md) §5.7 and the Phase 7 runbook in §11.
 
 ### 5.5 Test Scenario Runner
 
@@ -332,14 +336,14 @@ Rollback/abort: if the migration fails mid-run, the transaction rolls back atomi
 
 #### Procedure: Validate schema
 
-Confirms all 43 expected tables are present. Run after every migration and in CI.
+Confirms all expected tables are present (48 as of Phase 7; the count grows as later phases add migrations — see `EXPECTED_TABLES` in `packages/migrations/src/index.ts` for the authoritative current count). Run after every migration and in CI.
 
 ```bash
 DB_DIALECT=sqlite DB_PATH=./minicoder.db \
   tsx packages/migrations/src/runner.ts validate
 ```
 
-Expected output: `Validation PASSED. All 43 tables present.`
+Expected output: `Validation PASSED. All 48 tables present.` (Phase 7)
 Exits non-zero if any table is missing; safe to run at any time.
 
 #### Procedure: Migration status
@@ -362,7 +366,7 @@ DB_DIALECT=sqlite DB_PATH=./minicoder.db \
 ```
 
 Expected output: `Rolled back: 0001_initial_schema`.
-Drops all 43 tables; run `migrate` to re-apply.
+Drops the last-applied migration's tables; run `migrate` to re-apply.
 
 #### Procedure: Destructive reset (dev/CI only)
 
@@ -610,6 +614,96 @@ see `07-security-and-secrets.md` for the overlap procedure.
 | DB row status `running` but no live run | Orphaned row from crash             | Manually update the `triggerdev_runs` row; `minicoder trigger reconcile` pending Ph 13 |
 | `TRIGGER_SECRET_KEY not set`            | Env var missing                     | Set `TRIGGERDEV_API_KEY` and call `applyTriggerEnv`                                    |
 | Webhook signature mismatch              | `TRIGGERDEV_WEBHOOK_SECRET` rotated | Update secret in all services simultaneously                                           |
+
+---
+
+### Phase 7 — GitHub Integration and Reconciliation Runbook
+
+This runbook covers the GitHub App/webhook setup, the standalone webhook receiver
+(`minicoder github serve`), webhook-secret rotation, and reconciliation diagnostics delivered in
+Phase 7 (`packages/github`, `packages/core/src/github/`, migration `0009_pull_requests`). This is
+distinct from the Trigger.dev webhook-secret rotation runbook above (§Phase 3) — the two secrets
+protect different webhook endpoints and rotate independently.
+
+#### GitHub App setup
+
+1. Create a GitHub App (Settings → Developer settings → GitHub Apps → New GitHub App).
+2. Required repository permissions: **Contents** (read/write), **Pull requests** (read/write),
+   **Checks** (read/write), **Commit statuses** (read/write), **Metadata** (read).
+3. Subscribe to webhook events: `Pull request`, `Pull request review`,
+   `Pull request review comment`, `Check suite`, `Check run`, `Status`, `Push`.
+4. Set the webhook URL to the deployed `minicoder github serve` endpoint:
+   `https://<host>/webhooks/github`.
+5. Generate a webhook secret (`openssl rand -hex 32`) and set it as the GitHub App's webhook
+   secret **and** as `GITHUB_WEBHOOK_SECRET` in the MiniCoder deployment environment.
+6. Install the App on the target repository/organization and record the installation ID.
+7. Link the repository to a MiniCoder project: insert a `repositories` row
+   (`owner`, `name`, `full_name`) — the webhook receiver resolves the internal `projectId` via
+   `repositories.full_name`; webhooks for unlinked repositories are acknowledged (`202`) without
+   being persisted.
+
+For local/single-node development, a personal access token (`GITHUB_TOKEN`) with the same scopes
+may be used instead of a GitHub App installation token (`OctokitGitHubClient` accepts either).
+
+#### Required environment variables
+
+| Variable                         | Description                                                              |
+| --------------------------------- | ------------------------------------------------------------------------- |
+| `GITHUB_WEBHOOK_SECRET`           | Current webhook signing secret — required to start `minicoder github serve` |
+| `GITHUB_WEBHOOK_SECRET_PREVIOUS`  | Previous secret, set only during a rotation overlap window                |
+| `GITHUB_TOKEN`                    | PAT or installation token used by `OctokitGitHubClient` / `github-reconciliation` |
+
+#### Procedure: Start the webhook receiver
+
+```bash
+GITHUB_WEBHOOK_SECRET=<secret> \
+DB_DIALECT=sqlite DB_PATH=./minicoder.db \
+minicoder github serve --port 3100 --host 0.0.0.0
+```
+
+`minicoder github serve` is **not** gated by the dev/test/ci environment guard that
+`minicoder github simulate-*` uses — it is the real webhook receiver and is expected to run in
+production/hosted deployments. Phase 13's Fastify orchestrator API mounts the same
+`registerGithubWebhookRoute()` handler instead of re-implementing it.
+
+#### Procedure: Webhook-secret rotation
+
+1. Generate a new secret: `openssl rand -hex 32`.
+2. Set `GITHUB_WEBHOOK_SECRET_PREVIOUS` to the current (soon-to-be-old) value of
+   `GITHUB_WEBHOOK_SECRET`.
+3. Set `GITHUB_WEBHOOK_SECRET` to the newly generated secret.
+4. Restart `minicoder github serve` (or the Phase 13 API process hosting the route) — during this
+   window `verifyWebhookSignature()` accepts either secret.
+5. Update the webhook secret on the GitHub App itself to match the new `GITHUB_WEBHOOK_SECRET`.
+6. Once no more deliveries are observed signed with the old secret, unset
+   `GITHUB_WEBHOOK_SECRET_PREVIOUS` and restart.
+
+#### Procedure: Reconciliation diagnostics
+
+- **Force a reconciliation pass** for a project: invoke the `github-reconciliation` Trigger.dev
+  task with `{ projectId }` (omit `featureRunId` to sweep every active feature run in the
+  project that already has a tracked `pull_requests` row).
+- **Force a reconciliation pass** for a single feature run: invoke `github-reconciliation` with
+  `{ projectId, featureRunId }`.
+- **Inspect current GitHub-observed state** for a feature run:
+  `SELECT * FROM pull_requests WHERE feature_run_id = '<id>'`.
+- **Confirm no divergence**: `minicoder state doctor` / `minicoder state inspect` should show the
+  feature run's `feature_runs.current_execution_state` consistent with `pull_requests.ci_status` /
+  `pull_requests.review_state` for its current phase (e.g. `ci_running` ↔ `ci_status='running'`).
+- A feature run stuck at `human_required` with a `pull_requests.state = 'closed'` and
+  `merged_at IS NULL` indicates the irreconcilable-divergence escalation path fired (PR closed
+  without merging while MiniCoder still expected it open) — this requires a human disposition,
+  not a reconciliation retry.
+
+#### Diagnostics and known failure modes
+
+| Symptom                                            | Likely cause                                         | Resolution                                                                 |
+| --------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| `minicoder github serve` exits immediately          | `GITHUB_WEBHOOK_SECRET` unset                          | Set `GITHUB_WEBHOOK_SECRET` before starting                                 |
+| Webhook returns `401`                                | Signature mismatch (secret rotated or misconfigured)   | Verify `GITHUB_WEBHOOK_SECRET` matches the GitHub App's configured secret   |
+| Webhook returns `202 unlinked-repository`             | No `repositories` row for the delivering repo          | Insert a `repositories` row linking `full_name` to the MiniCoder project    |
+| `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)        |
+| Feature run stuck, no `pull_requests` row             | PR never opened/observed yet (still `code_pushed`)     | Not a bug — the scheduled fallback only reconciles PRs it already tracks    |
 
 ---
 

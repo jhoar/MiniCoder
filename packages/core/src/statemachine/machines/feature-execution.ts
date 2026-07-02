@@ -61,6 +61,31 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     idempotencyKeyTemplate: 'record-ci-running:{featureRunId}:{checkRunId}',
     recoveryPath: 'Idempotent: same checkRunId returns cached result',
   },
+  // ── GitHub reconciliation divergence (Phase 7) ───────────────────────────────
+  {
+    fromState: FeatureExecutionState.PR_OPENED,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      'GitHub reconciliation observed the pull request closed without merging while the feature run was pr_opened — irreconcilable divergence (docs/01 §5.7)',
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
+  {
+    fromState: FeatureExecutionState.CI_RUNNING,
+    toState: FeatureExecutionState.HUMAN_REQUIRED,
+    triggeringCommand: 'EscalateToHumanCommand',
+    actor: 'system',
+    guardDescription:
+      'GitHub reconciliation observed the pull request closed without merging while CI was running — irreconcilable divergence (docs/01 §5.7)',
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.human_required'],
+    idempotencyKeyTemplate: 'escalate-human-github:{featureRunId}',
+    recoveryPath: 'Human resolves via human_required disposition',
+  },
   // ── CI outcomes ───────────────────────────────────────────────────────────
   {
     fromState: FeatureExecutionState.CI_RUNNING,
