@@ -514,7 +514,16 @@ GitHub operations are evented.
 - `packages/core/src/statemachine/machines/feature-execution.ts` — two new matrix transitions,
   `pr_opened → human_required` and `ci_running → human_required` (both via
   `EscalateToHumanCommand`), covering the GitHub-reconciliation irreconcilable-divergence path
-  that previously had no matrix entry.
+  that previously had no matrix entry. **Post-implementation review fix:** a later review round
+  found `reconcileGithubState()`'s `irreconcilablyClosed` check targets _every_ non-terminal
+  feature-execution state, not just `pr_opened`/`ci_running` — the matrix was extended with
+  `EscalateToHumanCommand` entries for the remaining 12 non-terminal states (some, like
+  `ci_failed`/`under_review`/`merge_failed`/`system_failed`, already had an entry for a different
+  guard reason and gained GitHub-reconciliation as an additional trigger; the rest —
+  `approved_pending_execution`, `selected`, `coding`, `code_pushed`, `changes_requested`, `fixing`,
+  `approved_by_policy`, `merge_ready` — were new), so all 14 non-terminal states now correctly
+  escalate. See `docs/01-system-specification.md` §5.7 and `docs/00-glossary-and-terms.md` §3.9
+  for the current, authoritative list.
 - `packages/github` (new package) — `OctokitGitHubClient` (the sole Octokit import site in the
   repo; pinned to `@octokit/rest@^19`/`@octokit/webhooks-methods@^3`, the last CJS-compatible
   majors, since the repo's TypeScript output target is CommonJS and current Octokit majors are
@@ -535,7 +544,9 @@ GitHub operations are evented.
   runtime (fails fast with an actionable error if unset) rather than injected the way
   `PlannerAgentAdapter` is, since a GitHub credential is a single deployment-wide secret, not a
   per-call dependency. Discovering a brand-new PR with no prior webhook/`pull_requests` row is
-  deferred — `GitHubClient` has no "list PRs by branch" method yet.
+  deferred — `GitHubClient` has no "list PRs by branch" method yet (tracked in
+  [issue #35](https://github.com/jhoar/MiniCoder/issues/35); an interim manual-recovery runbook
+  exists in `docs/04-testing-validation-state-lifecycle.md`'s Phase 7 runbook section).
 - `packages/cli/src/commands/github.ts` — new `minicoder github serve` command (added to
   `00-glossary-and-terms.md` §5), a thin wrapper around `createWebhookApp()`; unlike
   `simulate-*`, it is **not** gated by the dev/test/ci `guardEnv()` check, since it is the real
@@ -571,9 +582,16 @@ GitHubClient`, wrapping `MockGitHubProvider` so scenario tests drive GitHub stat
   writes and the fix-attempt-threshold counter are Phase 10 (review/fix loop) scope;
   `feature_runs` has no fix-attempt-count column yet. These handlers perform the state transition
   and the `pull_requests` mirror update only.
-- `OctokitGitHubClient.getPullRequest()`'s `conversationsResolved` is hardcoded `true` — GitHub's
+- `OctokitGitHubClient.getPullRequest()`'s `conversationsResolved` is hardcoded — GitHub's
   REST API has no direct "conversations resolved" field (only GraphQL exposes
-  `reviewThreads.nodes.isResolved`); wiring the GraphQL client is deferred.
+  `reviewThreads.nodes.isResolved`); wiring the GraphQL client is deferred (tracked in
+  [issue #36](https://github.com/jhoar/MiniCoder/issues/36)). **Post-implementation review fix:**
+  the placeholder was originally hardcoded `true`; a later review round flipped it to a
+  conservative fail-closed `false`, since nothing in the codebase gates a decision on this field
+  yet and treating "unknown" as "resolved" is the more dangerous default for a future merge-gate
+  consumer to inherit accidentally. An architectural fitness test
+  (`packages/core/src/fitness/no-conversations-resolved-gate.test.ts`) guards against a future
+  consumer wiring this field into a real gate without a deliberate, reviewed decision.
 
 ## Phase 8 — Execution Orchestrator
 

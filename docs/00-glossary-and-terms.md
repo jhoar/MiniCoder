@@ -239,40 +239,40 @@ The canonical TypeScript source for all 8 machines lives in
 
 #### Feature execution matrix (primary orchestration machine)
 
-| from_state                   | to_state                     | command                            | actor    | guard                                                    |
-| ---------------------------- | ---------------------------- | ---------------------------------- | -------- | -------------------------------------------------------- |
-| `approved_pending_execution` | `selected`                   | `SelectFeatureCommand`             | operator | automation=running; no active run; dependencies merged   |
-| `selected`                   | `coding`                     | `StartCodingCommand`               | system   | lock held; valid fence                                   |
-| `coding`                     | `code_pushed`                | `RecordCodePushedCommand`          | system   | lock held; commitSha provided                            |
-| `fixing`                     | `code_pushed`                | `RecordCodePushedCommand`          | system   | lock held; commitSha provided                            |
-| `code_pushed`                | `pr_opened`                  | `RecordPrOpenedCommand`            | system   | lock held; prNumber provided                             |
-| `pr_opened`                  | `ci_running`                 | `RecordCiRunningCommand`           | system   | lock held; checkRunId provided                           |
-| `ci_running`                 | `under_review`               | `RecordCiPassedCommand`            | system   | CI success                                               |
-| `ci_running`                 | `ci_failed`                  | `RecordCiFailedCommand`            | system   | CI failure                                               |
-| `ci_failed`                  | `changes_requested`          | `RequestChangesAfterCiFailCommand` | system   | fix-attempt < threshold                                  |
-| `ci_failed`                  | `human_required`             | `EscalateToHumanCommand`           | system   | fix-attempt >= threshold                                 |
-| `under_review`               | `changes_requested`          | `RecordChangesRequestedCommand`    | system   | blocking findings; fix-attempt < threshold               |
-| `under_review`               | `human_required`             | `EscalateToHumanCommand`           | system   | requires_human_decision finding or limit exceeded        |
-| `under_review`               | `approved_by_policy`         | `RecordApprovedByPolicyCommand`    | system   | merge gate passes                                        |
-| `changes_requested`          | `fixing`                     | `StartFixingCommand`               | system   | lock held; valid fence                                   |
-| `approved_by_policy`         | `merge_ready`                | `MergeIfReadyCommand`              | approver | merge gate re-evaluated and passes                       |
-| `merge_ready`                | `merged`                     | `RecordMergedCommand`              | system   | GitHub merge confirmed                                   |
-| `merge_ready`                | `merge_failed`               | `RecordMergeFailedCommand`         | system   | GitHub merge rejected                                    |
-| `merge_failed`               | `under_review`               | `ReconcileMergeFailedCommand`      | system   | auto-clearable failure                                   |
-| `merge_failed`               | `human_required`             | `EscalateToHumanCommand`           | system   | cannot auto-clear                                        |
-| `failed`                     | `human_required`             | `EscalateToHumanCommand`           | system   | retries exhausted                                        |
-| `system_failed`              | `human_required`             | `EscalateToHumanCommand`           | system   | infra failure; locks released                            |
-| `blocked`                    | `approved_pending_execution` | `UnblockFeatureCommand`            | system   | all dependencies merged                                  |
-| `approved_pending_execution` | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `selected`                   | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `coding`                     | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `code_pushed`                | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `pr_opened`                  | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `ci_running`                 | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `changes_requested`          | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `fixing`                     | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `approved_by_policy`         | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
-| `merge_ready`                | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
+| from_state                   | to_state                     | command                            | actor    | guard                                                                                                            |
+| ---------------------------- | ---------------------------- | ---------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `approved_pending_execution` | `selected`                   | `SelectFeatureCommand`             | operator | automation=running; no active run; dependencies merged                                                           |
+| `selected`                   | `coding`                     | `StartCodingCommand`               | system   | lock held; valid fence                                                                                           |
+| `coding`                     | `code_pushed`                | `RecordCodePushedCommand`          | system   | lock held; commitSha provided                                                                                    |
+| `fixing`                     | `code_pushed`                | `RecordCodePushedCommand`          | system   | lock held; commitSha provided                                                                                    |
+| `code_pushed`                | `pr_opened`                  | `RecordPrOpenedCommand`            | system   | lock held; prNumber provided                                                                                     |
+| `pr_opened`                  | `ci_running`                 | `RecordCiRunningCommand`           | system   | lock held; checkRunId provided                                                                                   |
+| `ci_running`                 | `under_review`               | `RecordCiPassedCommand`            | system   | CI success                                                                                                       |
+| `ci_running`                 | `ci_failed`                  | `RecordCiFailedCommand`            | system   | CI failure                                                                                                       |
+| `ci_failed`                  | `changes_requested`          | `RequestChangesAfterCiFailCommand` | system   | fix-attempt < threshold                                                                                          |
+| `ci_failed`                  | `human_required`             | `EscalateToHumanCommand`           | system   | fix-attempt >= threshold; also GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                          |
+| `under_review`               | `changes_requested`          | `RecordChangesRequestedCommand`    | system   | blocking findings; fix-attempt < threshold                                                                       |
+| `under_review`               | `human_required`             | `EscalateToHumanCommand`           | system   | requires_human_decision finding or limit exceeded; also GitHub reconciliation: PR closed unmerged (docs/01 §5.7) |
+| `under_review`               | `approved_by_policy`         | `RecordApprovedByPolicyCommand`    | system   | merge gate passes                                                                                                |
+| `changes_requested`          | `fixing`                     | `StartFixingCommand`               | system   | lock held; valid fence                                                                                           |
+| `approved_by_policy`         | `merge_ready`                | `MergeIfReadyCommand`              | approver | merge gate re-evaluated and passes                                                                               |
+| `merge_ready`                | `merged`                     | `RecordMergedCommand`              | system   | GitHub merge confirmed                                                                                           |
+| `merge_ready`                | `merge_failed`               | `RecordMergeFailedCommand`         | system   | GitHub merge rejected                                                                                            |
+| `merge_failed`               | `under_review`               | `ReconcileMergeFailedCommand`      | system   | auto-clearable failure                                                                                           |
+| `merge_failed`               | `human_required`             | `EscalateToHumanCommand`           | system   | cannot auto-clear; also GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                 |
+| `failed`                     | `human_required`             | `EscalateToHumanCommand`           | system   | retries exhausted                                                                                                |
+| `system_failed`              | `human_required`             | `EscalateToHumanCommand`           | system   | infra failure; locks released; also GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                     |
+| `blocked`                    | `approved_pending_execution` | `UnblockFeatureCommand`            | system   | all dependencies merged                                                                                          |
+| `approved_pending_execution` | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `selected`                   | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `coding`                     | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `code_pushed`                | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `pr_opened`                  | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `ci_running`                 | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `changes_requested`          | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `fixing`                     | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `approved_by_policy`         | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `merge_ready`                | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
 
 #### Plan lifecycle matrix
 

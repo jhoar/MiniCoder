@@ -363,10 +363,17 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   state-machine-governed columns.** They are overwritten directly by `reconcileGithubState()`'s
   dispatched commands; there is no `StateTransitionValidator` matrix for them (GitHub remains
   authoritative — glossary §3.10).
-- **The `pr_opened → human_required` and `ci_running → human_required` transitions in
-  `FEATURE_EXECUTION_MATRIX` exist only for GitHub-reconciliation irreconcilable divergence**
-  (PR closed without merging while MiniCoder still expected it open) — they are dispatched
-  exclusively by `reconcileGithubState()`'s escalation path, not by any other caller.
+- **`FEATURE_EXECUTION_MATRIX` carries an `EscalateToHumanCommand` transition to `human_required`
+  from every non-terminal feature-execution state (14 states: `approved_pending_execution`,
+  `selected`, `coding`, `code_pushed`, `pr_opened`, `ci_running`, `under_review`,
+  `changes_requested`, `fixing`, `approved_by_policy`, `merge_ready`, `ci_failed`,
+  `merge_failed`, `system_failed`) for GitHub-reconciliation irreconcilable divergence** (PR
+  closed without merging while MiniCoder still expected it open) — `reconcileGithubState()`'s
+  `irreconcilablyClosed` check targets any state not in `{merged, human_required, blocked,
+failed}`, so the matrix must cover every state that check can reach; a mid-flight PR close
+  during a fix-cycle re-push (`code_pushed`) or review loop (`changes_requested`/`fixing`) is
+  just as irreconcilable as one observed at `pr_opened`/`ci_running`. These transitions are
+  dispatched exclusively by `reconcileGithubState()`'s escalation path, not by any other caller.
 - **`RecordCiFailedHandler`/`RecordChangesRequestedHandler` do not increment a fix-attempt
   counter or write `review_findings`.** `feature_runs` has no fix-attempt-count column yet — that
   counter and the blocking-findings write path are Phase 10 (review/fix loop) scope. Do not add
