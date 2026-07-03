@@ -1,14 +1,17 @@
 import {
   CommandError,
   FeatureExecutionState,
+  OptimisticLockError,
   SelectFeatureHandler,
+  StaleFenceError,
   StartCodingHandler,
   TransactionalCommandExecutor,
   findNextEligibleFeatureRun,
   generateId,
 } from '@minicoder/core';
 import type { CommandEnvelope, DbClient } from '@minicoder/core';
-import { ExecutionLane } from '@minicoder/workflow';
+import { ExecutionLane, LockConflictError } from '@minicoder/workflow';
+import type { AcquiredLock } from '@minicoder/workflow';
 import type { StartNextFeaturePayload } from './types.js';
 import { automationOperatorActor, systemActor } from './actor.js';
 
@@ -29,19 +32,40 @@ interface FeatureRunVersionRow {
   version: number;
 }
 
-// CommandErrors that represent an expected race for an opportunistically/scheduled-invoked
-// task (another worker already selected a feature, automation is paused, or the candidate's
-// dependencies changed underneath us) — these are reported as `started: false`, not thrown,
-// mirroring how github-reconciliation.ts treats per-candidate failures as non-fatal.
-const EXPECTED_ERROR_TYPES = new Set([
+// CommandError `problem.type`s that represent an expected race for an opportunistically/
+// scheduled-invoked task: another worker already selected a feature, automation was paused/
+// budget-paused in the meantime, the candidate's dependencies changed underneath us, the row
+// vanished, or two invocations raced on the same idempotency key in-flight.
+const EXPECTED_COMMAND_ERROR_TYPES = new Set([
   'feature-already-active',
   'automation-paused',
   'unmet-dependencies',
   'not-found',
+  'concurrent-command',
 ]);
 
-function isExpectedRace(err: unknown): boolean {
-  return err instanceof CommandError && EXPECTED_ERROR_TYPES.has(err.problem.type);
+/**
+ * A transient concurrency loss that a later invocation will simply retry past — reported as
+ * `started: false`, not thrown, mirroring how github-reconciliation.ts treats per-candidate
+ * failures as non-fatal. This task is scheduled/opportunistic and idempotent, so any "another
+ * actor moved state under us" condition should defer to the next tick rather than surface a
+ * spurious Trigger.dev task failure:
+ *   - LockConflictError: another holder (a concurrent start-next-feature retry, a
+ *     github-reconciliation pass acquiring the same `execution-lane:{projectId}` lock, or an
+ *     HA-cluster peer) owns the project's execution lane;
+ *   - OptimisticLockError: a concurrent writer bumped feature_runs.version between this task's
+ *     fresh read and the command's compare-and-swap (the version is always read immediately
+ *     before each dispatch, so a mismatch here is a race, not a stale-version bug);
+ *   - StaleFenceError: the execution-lane lease was reclaimed mid-operation;
+ *   - an expected CommandError type (see the set above).
+ * A genuine infrastructure failure (DB down, etc.) is none of these and still throws, correctly
+ * triggering Trigger.dev's retry/failed-status handling.
+ */
+function isTransientRace(err: unknown): boolean {
+  if (err instanceof LockConflictError) return true;
+  if (err instanceof OptimisticLockError) return true;
+  if (err instanceof StaleFenceError) return true;
+  return err instanceof CommandError && EXPECTED_COMMAND_ERROR_TYPES.has(err.problem.type);
 }
 
 /**
@@ -115,6 +139,12 @@ export async function runImpl(
   const codingActor = systemActor(correlationId);
   const executor = new TransactionalCommandExecutor(db);
 
+  // The idempotency keys here are scoped to featureRunId, not {featureRunId}:{expectedVersion},
+  // and that is correct: a feature_runs row is a single execution attempt that transitions
+  // ->selected and ->coding at most once in its lifetime, so the run id is already an
+  // occurrence-unique discriminator (unlike the recurring project-scoped pause/resume/budget
+  // keys). A failed attempt rolls back its idempotency claim inside the handler's transaction, so
+  // a retry re-executes rather than replaying a stale result.
   if (!skipSelection) {
     const selectPayload = { featureRunId, projectId, expectedVersion: currentVersion };
     const selectEnvelope: CommandEnvelope<typeof selectPayload> = {
@@ -127,19 +157,33 @@ export async function runImpl(
     try {
       await executor.execute(selectFeatureHandler, selectEnvelope);
     } catch (err) {
-      if (isExpectedRace(err)) {
+      if (isTransientRace(err)) {
         return { projectId, featureRunId, started: false };
       }
       throw err;
     }
   }
 
+  // The execution lane is contended (concurrent start-next-feature retries, github-reconciliation
+  // passes on the same `execution-lane:{projectId}` lock, HA-cluster peers) — a lost acquire is
+  // an expected race, not a failure. Acquire in its own try so a LockConflictError returns
+  // `started: false` (the feature run stays at `selected`; the next tick recovers it via the
+  // stranded-selected path above) without entering the release-in-finally block below.
   const lane = new ExecutionLane(db);
-  const lock = await lane.acquireForProject(
-    projectId,
-    'start-next-feature-task',
-    EXECUTION_LANE_TTL_MS,
-  );
+  let lock: AcquiredLock;
+  try {
+    lock = await lane.acquireForProject(
+      projectId,
+      'start-next-feature-task',
+      EXECUTION_LANE_TTL_MS,
+    );
+  } catch (err) {
+    if (isTransientRace(err)) {
+      return { projectId, featureRunId, started: false };
+    }
+    throw err;
+  }
+
   try {
     const selectedRows = await db.query<FeatureRunVersionRow>(
       `SELECT version FROM feature_runs WHERE id = ?`,
@@ -164,7 +208,7 @@ export async function runImpl(
     };
     await executor.execute(startCodingHandler, startCodingEnvelope);
   } catch (err) {
-    if (isExpectedRace(err)) {
+    if (isTransientRace(err)) {
       return { projectId, featureRunId, started: false };
     }
     throw err;

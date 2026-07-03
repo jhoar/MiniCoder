@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.12
+> Version: 1.0.13
 > Last-updated: 2026-07-03
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -812,6 +812,39 @@ progresses through the happy path.
   repo-wide grep sweep (per CLAUDE.md's documentation editing guidelines) confirmed no other
   stale unversioned key template remains outside the "Post-implementation review fixes" narrative
   sections that intentionally quote the old, buggy forms while describing past bugs.
+
+**Post-implementation review fixes (round 4 — comprehensive `start-next-feature.ts` hardening):**
+
+- **HIGH-1 (a concurrent execution-lane holder caused a spurious task failure).** A comprehensive
+  pass over `start-next-feature.ts` (after three rounds each surfaced a new bug in the
+  select → code handoff) found that `ExecutionLane.acquireForProject()` — which throws
+  `LockConflictError` when another actor holds `execution-lane:{projectId}` — was called
+  **outside** the task's `try` block, so a lost acquire propagated as an uncaught task failure.
+  That lock is genuinely contended: `github-reconciliation.ts` acquires the same lock for its
+  lock-gated reconciliation commands, and HA-cluster peers / overlapping retries add more
+  contenders. So a routine concurrency condition surfaced as a failed Trigger.dev run
+  (retried 3× with backoff, then a hard failure) — directly contradicting the file's own stated
+  design ("expected race … reported as `started: false`, not thrown"). Fixed by wrapping the lane
+  acquire in its own `try` and introducing an `isTransientRace()` classifier that returns
+  `started: false` for `LockConflictError`, `OptimisticLockError` (a concurrent writer bumped
+  `feature_runs.version` between this task's fresh read and a command's CAS), `StaleFenceError`
+  (the lane lease reclaimed mid-op), and the expected `CommandError` types — now including
+  `concurrent-command` (two invocations racing on the same idempotency key in-flight), which was
+  previously also uncaught. A genuine infrastructure failure matches none of these and still
+  throws. A deterministic regression test in `packages/triggerdev/src/triggerdev.test.ts`
+  pre-acquires the lane with a foreign holder, asserts `start-next-feature` returns
+  `started: false` with the run parked at `selected`, then releases the lock and confirms the
+  next tick recovers it to `coding` via the round-3 stranded-selected path (verified by
+  temporarily restoring the acquire-outside-`try` structure and confirming the test fails).
+- **Non-issues confirmed during the pass** (documented to preempt future churn): the
+  `select-feature:{featureRunId}` / `start-coding:{featureRunId}` idempotency keys are correctly
+  **not** `{expectedVersion}`-scoped — a `feature_runs` row is a single attempt that transitions
+  `→selected`/`→coding` at most once, so the run id is already occurrence-unique (unlike the
+  recurring project-scoped automation-control keys), and a failed attempt rolls back its claim
+  inside the handler transaction. `findNextEligibleFeatureRun()` not checking
+  `active_feature_run_id` is the intended loose-candidate-picker design (`SelectFeatureHandler`
+  is the guard, rejecting with the already-handled `feature-already-active`). A brief code comment
+  now records both, so a future reviewer does not re-flag them.
 
 **Deviations from the original plan:**
 

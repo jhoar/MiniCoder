@@ -473,6 +473,26 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   `StartCodingCommand` directly for that run — this was a real bug (HIGH-1 in a later Phase 8
   code review round), regression-tested in `packages/triggerdev/src/triggerdev.test.ts` for all
   three paused/budget-paused automation states.
+- **`start-next-feature.ts` treats every transient concurrency loss as `started: false`, never a
+  thrown task failure — and `ExecutionLane.acquireForProject()` must be caught, not left to
+  propagate.** The task is scheduled/opportunistic and idempotent, so any "another actor moved
+  state under us" condition should defer to the next tick. Its `isTransientRace()` helper covers
+  `LockConflictError` (a concurrent holder of the same `execution-lane:{projectId}` lock — most
+  commonly a `github-reconciliation` pass, which acquires that exact lock, or an HA-cluster
+  peer), `OptimisticLockError` (a concurrent writer bumped `feature_runs.version` between this
+  task's fresh read and a command's CAS), `StaleFenceError` (the lane lease was reclaimed
+  mid-op), and the expected `CommandError` types (`feature-already-active`, `automation-paused`,
+  `unmet-dependencies`, `not-found`, `concurrent-command`). The lane acquire is wrapped in its
+  own `try` so a `LockConflictError` returns `started: false` **without** entering the
+  release-in-`finally` block — leaving `acquireForProject` uncaught (or outside the `try`) turns
+  a routine concurrency condition into a spurious Trigger.dev failure (a real bug — HIGH-1 in a
+  later Phase 8 code review round; the lane acquire had been outside the `try` entirely). A
+  genuine infrastructure failure is none of those types and still throws, correctly triggering
+  retry. The `select-feature:{featureRunId}` / `start-coding:{featureRunId}` idempotency keys are
+  intentionally **not** `{expectedVersion}`-scoped (unlike the recurring project-scoped
+  automation-control keys): a `feature_runs` row is a single attempt that transitions
+  `→selected`/`→coding` at most once, so the run id is already occurrence-unique, and a failed
+  attempt rolls back its claim inside the handler transaction so retries re-execute.
 - **`evaluateBudget()` is retrospective-threshold-only, by design.** It sums `cost_records.amount`
   live (respecting `window_days` when set) and compares against `budget_policies.soft_limit`/
   `hard_limit` — hard checked before soft, so a policy breaching both reports `hard_breach`. There

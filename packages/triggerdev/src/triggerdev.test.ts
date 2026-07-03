@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { DbClient, ConfigBackend, SecretBackend, PlannerAgentAdapter } from '@minicoder/core';
 import { MissingSecretError, FeatureExecutionState } from '@minicoder/core';
+import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from './test-helpers.js';
 import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
@@ -453,6 +454,48 @@ describe('start-next-feature real wiring', () => {
       expect(codingRows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
     },
   );
+
+  // A concurrent holder of the project's execution lane (a github-reconciliation pass, an
+  // overlapping retry, or an HA-cluster peer) makes lane acquisition throw LockConflictError.
+  // That is an expected race — the task must return started:false, not surface a Trigger.dev
+  // failure. SelectFeatureCommand still runs first (it takes no lock), so the feature run is left
+  // at 'selected'; a later tick recovers it via the stranded-selected path once the lane frees.
+  it('returns started:false without failing when the execution lane is held by another worker', async () => {
+    const featureRunId = `run-${projectId}-1`;
+
+    // A foreign holder grabs the execution lane before start-next-feature runs.
+    const foreignLane = new ExecutionLane(db);
+    const foreignLock = await foreignLane.acquireForProject(projectId, 'foreign-holder', 30_000);
+
+    const blocked = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-lockheld' },
+      db,
+    );
+    expect(blocked.started).toBe(false);
+    expect(blocked.featureRunId).toBe(featureRunId);
+
+    // Selection succeeded (no lock needed) but coding was blocked by the held lane, so the run is
+    // parked at 'selected' with the active pointer set.
+    const selectedRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(selectedRows[0]?.current_execution_state).toBe(FeatureExecutionState.SELECTED);
+
+    // The lane frees; the next scheduled tick recovers the stranded selected run and starts coding.
+    await foreignLane.releaseForProject(foreignLock);
+    const recovered = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-lockfree' },
+      db,
+    );
+    expect(recovered.started).toBe(true);
+    expect(recovered.featureRunId).toBe(featureRunId);
+    const codingRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(codingRows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+  });
 });
 
 // ── Code-review regression tests (HIGH-1, HIGH-2, MEDIUM-2) ────────────────
