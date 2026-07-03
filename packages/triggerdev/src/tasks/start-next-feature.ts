@@ -1,5 +1,6 @@
 import {
   CommandError,
+  FeatureExecutionState,
   SelectFeatureHandler,
   StartCodingHandler,
   TransactionalCommandExecutor,
@@ -56,6 +57,32 @@ export async function runImpl(
   const { projectId, correlationId } = payload;
 
   let featureRunId = payload.featureRunId ?? null;
+  let skipSelection = false;
+
+  if (!featureRunId) {
+    // Recover a feature run stranded at 'selected' by a pause/budget-pause that landed between
+    // SelectFeatureCommand succeeding and StartCodingCommand dispatching (HIGH-1 in a Phase 8
+    // code review round). workflow_states.active_feature_run_id already points at it, so
+    // SelectFeatureHandler's compare-and-swap would reject any other candidate anyway — without
+    // this check, findNextEligibleFeatureRun (which only looks for approved_pending_execution
+    // rows) would never surface it again, stranding the project until manual intervention.
+    const activeRows = await db.query<{ active_feature_run_id: string | null }>(
+      `SELECT active_feature_run_id FROM workflow_states WHERE project_id = ?`,
+      [projectId],
+    );
+    const activeFeatureRunId = activeRows[0]?.active_feature_run_id ?? null;
+    if (activeFeatureRunId) {
+      const activeRunRows = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [activeFeatureRunId],
+      );
+      if (activeRunRows[0]?.current_execution_state === FeatureExecutionState.SELECTED) {
+        featureRunId = activeFeatureRunId;
+        skipSelection = true;
+      }
+    }
+  }
+
   if (!featureRunId) {
     const candidate = await findNextEligibleFeatureRun(db, projectId);
     if (!candidate) {
@@ -88,21 +115,23 @@ export async function runImpl(
   const codingActor = systemActor(correlationId);
   const executor = new TransactionalCommandExecutor(db);
 
-  const selectPayload = { featureRunId, projectId, expectedVersion: currentVersion };
-  const selectEnvelope: CommandEnvelope<typeof selectPayload> = {
-    commandId: generateId(),
-    idempotencyKey: `select-feature:${featureRunId}`,
-    payload: selectPayload,
-    actor: selectActor,
-    correlationId,
-  };
-  try {
-    await executor.execute(selectFeatureHandler, selectEnvelope);
-  } catch (err) {
-    if (isExpectedRace(err)) {
-      return { projectId, featureRunId, started: false };
+  if (!skipSelection) {
+    const selectPayload = { featureRunId, projectId, expectedVersion: currentVersion };
+    const selectEnvelope: CommandEnvelope<typeof selectPayload> = {
+      commandId: generateId(),
+      idempotencyKey: `select-feature:${featureRunId}`,
+      payload: selectPayload,
+      actor: selectActor,
+      correlationId,
+    };
+    try {
+      await executor.execute(selectFeatureHandler, selectEnvelope);
+    } catch (err) {
+      if (isExpectedRace(err)) {
+        return { projectId, featureRunId, started: false };
+      }
+      throw err;
     }
-    throw err;
   }
 
   const lane = new ExecutionLane(db);

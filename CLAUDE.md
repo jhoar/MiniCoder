@@ -461,6 +461,18 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   `RecordCodePushedHandler` deliberately does **not** get this guard — it records the outcome of
   work already in flight rather than starting new work, so a pause after coding has already begun
   should not prevent recording that the push happened.
+- **`start-next-feature.ts` must check `workflow_states.active_feature_run_id` for a stranded
+  `selected` run before falling back to `findNextEligibleFeatureRun()`.** The HIGH-1 fix above
+  (rejecting `StartCodingCommand` when automation isn't `running`) can leave a feature run
+  parked at `selected` with `active_feature_run_id` still pointing at it — and
+  `findNextEligibleFeatureRun()` only ever searches for `approved_pending_execution` rows, so
+  that stranded run would never be found again, permanently blocking the project even after
+  automation resumes (`SelectFeatureHandler`'s compare-and-swap also refuses to select anything
+  else while `active_feature_run_id` is non-`NULL`). When no `featureRunId` is supplied and the
+  active run is at `selected`, the task must skip `SelectFeatureCommand` and dispatch
+  `StartCodingCommand` directly for that run — this was a real bug (HIGH-1 in a later Phase 8
+  code review round), regression-tested in `packages/triggerdev/src/triggerdev.test.ts` for all
+  three paused/budget-paused automation states.
 - **`evaluateBudget()` is retrospective-threshold-only, by design.** It sums `cost_records.amount`
   live (respecting `window_days` when set) and compares against `budget_policies.soft_limit`/
   `hard_limit` — hard checked before soft, so a policy breaching both reports `hard_breach`. There

@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.11
+> Version: 1.0.12
 > Last-updated: 2026-07-03
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -639,8 +639,9 @@ progresses through the happy path.
   (`automation.budget_override_approved` and `automation.resumed`), matching the matrix's two
   declared `emittedEvents` — the first multi-event handler in the codebase. Callers must select
   the idempotency-key template matching the origin state they observed
-  (`budget-override:{projectId}` vs `budget-override-waiting:{projectId}`), documented on the
-  handler as the one command in the codebase without a single fixed template.
+  (`budget-override:{projectId}:{expectedVersion}` vs
+  `budget-override-waiting:{projectId}:{expectedVersion}`), documented on the handler as the one
+  command in the codebase without a single fixed template.
 - `packages/core/src/commands/handlers/feature/start-fixing.ts` — `StartFixingHandler`
   (`changes_requested → fixing`, lock-fence-gated like `StartCodingHandler`). Built and exported,
   but intentionally has **no caller in Phase 8** — the review/fix loop that decides when a
@@ -786,6 +787,31 @@ progresses through the happy path.
   contradicting the round-1 MEDIUM-2 fix (breaches are evaluated from already-existing
   `cost_records` and recorded via `workflow_events`/`outbox_events`; `policy_decisions` is
   reserved for the human override/resume decision). Reworded to match.
+
+**Post-implementation review fixes (round 3):**
+
+- **HIGH-1 (a stranded 'selected' feature run could outlive its pause/budget-pause).** The round-2
+  HIGH-1 fix correctly made `StartCodingHandler` reject coding when automation isn't `running`,
+  but `start-next-feature.ts` had no way to find that feature run again afterward:
+  `findNextEligibleFeatureRun()` only searches for `approved_pending_execution` rows, and
+  `workflow_states.active_feature_run_id` still points at the stranded `selected` run (blocking
+  `SelectFeatureHandler`'s compare-and-swap from picking anything else). A transient pause could
+  therefore strand a project indefinitely, even after automation resumed, until an operator
+  manually intervened. Fixed by having `start-next-feature.ts` check
+  `workflow_states.active_feature_run_id` first when no `featureRunId` is supplied: if it points
+  at a feature run still at `selected`, the task skips `SelectFeatureCommand` entirely and
+  dispatches `StartCodingCommand` directly for that run. New parameterized tests in
+  `packages/triggerdev/src/triggerdev.test.ts` (`paused_by_operator`, `paused_budget_exceeded`,
+  `waiting_for_budget_approval`) drive select → pause/budget-pause → resume → scheduled
+  `start-next-feature` and assert the stranded run reaches `coding` (verified by temporarily
+  reverting the fix and confirming all three fail without it).
+- **MEDIUM-1 (one more stale key example).** The `ApproveBudgetOverrideHandler` "Delivered
+  modules" bullet in this Phase 8 section still showed the pre-fix
+  `budget-override:{projectId}` / `budget-override-waiting:{projectId}` forms even after the
+  round-2 MEDIUM-2 fix updated the docs/04 runbook. Updated to include `{expectedVersion}`. A
+  repo-wide grep sweep (per CLAUDE.md's documentation editing guidelines) confirmed no other
+  stale unversioned key template remains outside the "Post-implementation review fixes" narrative
+  sections that intentionally quote the old, buggy forms while describing past bugs.
 
 **Deviations from the original plan:**
 

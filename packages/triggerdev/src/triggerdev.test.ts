@@ -394,6 +394,65 @@ describe('start-next-feature real wiring', () => {
     );
     expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.APPROVED_PENDING_EXECUTION);
   });
+
+  // HIGH-1 (Phase 8 code review round 3): a pause/budget-pause landing between
+  // SelectFeatureCommand succeeding and StartCodingCommand dispatching used to strand the
+  // project — findNextEligibleFeatureRun only looks for approved_pending_execution rows, so the
+  // already-selected active feature run was never surfaced again once automation resumed.
+  it.each([
+    ['paused_by_operator' as const],
+    ['paused_budget_exceeded' as const],
+    ['waiting_for_budget_approval' as const],
+  ])(
+    'recovers a feature run stranded at selected after automation resumes from %s',
+    async (pausedState) => {
+      const featureRunId = `run-${projectId}-1`;
+
+      // Simulate SelectFeatureCommand having already succeeded (active_feature_run_id set,
+      // feature run at 'selected') before automation was paused/budget-paused, stranding it
+      // before StartCodingCommand could run.
+      await db.execute(
+        `UPDATE feature_runs SET current_execution_state = 'selected', version = version + 1 WHERE id = ?`,
+        [featureRunId],
+      );
+      await db.execute(
+        `UPDATE workflow_states SET active_feature_run_id = ?, automation_state = ?, version = version + 1 WHERE project_id = ?`,
+        [featureRunId, pausedState, projectId],
+      );
+
+      // A scheduled call while still paused must not start coding and must not lose the stranded
+      // run's identity.
+      const whilePaused = await runStartNextFeature(
+        { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-paused' },
+        db,
+      );
+      expect(whilePaused.started).toBe(false);
+      expect(whilePaused.featureRunId).toBe(featureRunId);
+      const stillSelected = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(stillSelected[0]?.current_execution_state).toBe(FeatureExecutionState.SELECTED);
+
+      // Automation resumes (operator resume or budget override, depending on which state).
+      await db.execute(
+        `UPDATE workflow_states SET automation_state = 'running', version = version + 1 WHERE project_id = ?`,
+        [projectId],
+      );
+
+      const afterResume = await runStartNextFeature(
+        { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-resumed' },
+        db,
+      );
+      expect(afterResume.started).toBe(true);
+      expect(afterResume.featureRunId).toBe(featureRunId);
+      const codingRows = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(codingRows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+    },
+  );
 });
 
 // ── Code-review regression tests (HIGH-1, HIGH-2, MEDIUM-2) ────────────────
