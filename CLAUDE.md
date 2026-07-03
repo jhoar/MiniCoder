@@ -387,6 +387,21 @@ failed}`, so the matrix must cover every state that check can reach; a mid-fligh
   `pull_requests` row.** Discovering a brand-new PR that no webhook has ever reported requires a
   `GitHubClient.listPullRequestsForBranch`-style method that does not exist yet — do not assume
   the scheduled task will self-heal a completely missed `pr.opened` webhook.
+- **`github-reconciliation` treats a per-candidate transient concurrency loss as a skip, not a
+  batch abort.** A lock-gated candidate (`code_pushed`/`pr_opened`) whose
+  `execution-lane:{projectId}` lock is held by another actor (the `start-next-feature` task, a
+  webhook-triggered inbox handler, or an HA-cluster peer) makes `lockManager.acquire()` throw
+  `LockConflictError`. That, plus `OptimisticLockError` (a concurrent version bump under a
+  `Record*` command's CAS), `StaleFenceError` (a reclaimed lease), and a `concurrent-command`
+  `CommandError` (an in-flight idempotency-key race with a webhook handler running the same
+  transition), are classified by the same `isTransientRace()` helper `start-next-feature.ts` uses
+  and cause the loop to `continue` to the next candidate — the held candidate is reconciled by a
+  later scheduled pass. Leaving these uncaught (as the original per-candidate loop did) aborts
+  reconciliation of the whole batch and fails the task on a routine concurrency condition (a real
+  bug — HIGH-1 in a later Phase 8 code review round). The wrapping `try` covers only the
+  `reconcileGithubState`/`reconcileWithLock` calls, **not** the `GitHubClient.getPullRequest`
+  fetch — a genuine GitHub API or DB failure still throws and correctly fails the task for
+  Trigger.dev retry.
 - **`minicoder github serve` is intentionally not gated by `guardEnv()`** (unlike
   `github simulate-*`), since it is the real webhook receiver and must run in production/hosted
   deployments. Do not add the dev/test/ci environment guard to it.

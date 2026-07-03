@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.13
+> Version: 1.0.14
 > Last-updated: 2026-07-03
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -845,6 +845,27 @@ progresses through the happy path.
   `active_feature_run_id` is the intended loose-candidate-picker design (`SelectFeatureHandler`
   is the guard, rejecting with the already-handled `feature-already-active`). A brief code comment
   now records both, so a future reviewer does not re-flag them.
+
+**Post-implementation review fixes (round 5 — same lane-contention hardening for `github-reconciliation.ts`):**
+
+- **HIGH-1 (a contended execution lane aborted the whole reconciliation batch).** The round-4
+  `start-next-feature.ts` fix left its sibling `github-reconciliation.ts` with the identical
+  uncaught-`LockConflictError` shape: its per-candidate loop calls `lockManager.acquire()` on the
+  same `execution-lane:{projectId}` lock (via `reconcileWithLock`) with no catch, so a concurrent
+  holder — the `start-next-feature` task, a webhook-triggered inbox handler, or an HA-cluster peer
+  — threw an uncaught `LockConflictError` that aborted reconciliation of every _other_ candidate
+  in the batch and failed the task. Fixed by adding the same `isTransientRace()` classifier
+  (`LockConflictError` / `OptimisticLockError` / `StaleFenceError` / `concurrent-command`
+  `CommandError`) and wrapping each candidate's `reconcileGithubState`/`reconcileWithLock` calls
+  in a `try` that **`continue`s to the next candidate** on a transient race rather than returning
+  from the whole task (the per-candidate analogue of `start-next-feature`'s `started: false`) —
+  the held candidate is reconciled by a later scheduled pass. The wrapping `try` deliberately does
+  **not** cover the `GitHubClient.getPullRequest` fetch, so a genuine GitHub API/DB failure still
+  throws and fails the task for Trigger.dev retry. A deterministic regression test in
+  `packages/triggerdev/src/tasks/github-reconciliation.test.ts` pre-acquires the lane with a
+  foreign holder, asserts the task returns cleanly (`reconciled: 0`, candidate untouched at
+  `code_pushed`), then releases the lane and confirms a subsequent pass reconciles it to
+  `pr_opened` (verified by restoring the uncaught structure and confirming the test fails).
 
 **Deviations from the original plan:**
 
