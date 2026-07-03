@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.9
-> Last-updated: 2026-07-02
+> Version: 1.0.10
+> Last-updated: 2026-07-03
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -695,15 +695,48 @@ sequence; dependencies are enforced; a soft/hard budget breach pauses automation
   dependency-blocked feature and picks the eligible one), single-active-feature enforcement (a
   second `start-next-feature` call while one is active is a clean no-op), the budget gate (a
   soft breach reaches `waiting_for_budget_approval`, an approver override returns to `running`, a
-  subsequent hard breach reaches `paused_budget_exceeded`, another override returns to `running`
-  and both overrides are recorded in `policy_decisions`), and sequencing continuation (once the
-  first feature is simulated as `merged`, the second, previously-blocked feature is selected
-  next). Registered in `packages/testing/src/scenarios/index.ts` and
-  `packages/testing/src/fixtures/index.ts`.
+  _second_ soft breach against the same policy correctly reaches `waiting_for_budget_approval`
+  again rather than being suppressed by a stale cached idempotency result, a subsequent hard
+  breach reaches `paused_budget_exceeded`, and all three overrides are recorded in
+  `policy_decisions`), and sequencing continuation (once the first feature is simulated as
+  `merged`, the second, previously-blocked feature is selected next). Registered in
+  `packages/testing/src/scenarios/index.ts` and `packages/testing/src/fixtures/index.ts`.
 - `packages/triggerdev/src/triggerdev.test.ts` — the previously trivial `start-next-feature`
   stub-shape test is now split into a no-candidate-no-op assertion plus a new "start-next-feature
   real wiring" describe block (select-and-start-coding, single-active-feature enforcement, and a
   paused-automation no-op that leaves state untouched).
+
+**Post-implementation review fixes:**
+
+- **HIGH-1 (idempotency-key collision on repeated budget breaches).** `applyBudgetDecision()`
+  originally built `RecordBudgetExceededCommand`/`RecordBudgetApprovalWaitingCommand` idempotency
+  keys from `projectId` alone (`budget-exceeded:{projectId}`). A project can legitimately breach
+  the same threshold, get overridden back to `running`, and breach again — each such occurrence is
+  read against a distinct `workflow_states.version`, but the original key was identical every
+  time, so `TransactionalCommandExecutor` returned the _first_ breach's cached result for every
+  later one within the 7-day idempotency TTL, silently leaving automation `running` through a
+  second breach. Fixed by including `{policyId}:{expectedVersion}` in the key
+  (`packages/core/src/cost/apply-budget-decision.ts`); `ApproveBudgetOverrideCommand`'s
+  caller-supplied keys (documented on the handler and used by the scenario/CLI) gained the same
+  `:{expectedVersion}` suffix for the identical reason. `AUTOMATION_CONTROL_MATRIX`'s
+  `idempotencyKeyTemplate` fields for all three commands were updated to match. The
+  `execution-orchestrator` scenario's step 4b (a second soft breach after the first override) is
+  the regression test for this fix.
+- **MEDIUM-2 (docs/implementation mismatch on `policy_decisions`).** docs/01 §5.11 previously said
+  "every enforcement decision is recorded as a `policy_decision`," but `RecordBudgetExceededHandler`/
+  `RecordBudgetApprovalWaitingHandler` deliberately do not write one (only the human
+  override/resume does). The spec was corrected to describe the actual, intentional split: a
+  breach is captured via `workflow_events`/`outbox_events`, and `policy_decisions` is reserved for
+  the audit trail of a human's judgment call.
+- **MEDIUM-3 (nondeterministic active-policy selection).** `evaluateBudget()` selected an active
+  `budget_policies` row via `.find()` over an unordered query result; nothing prevents more than
+  one active row from matching the same `(project, scope, feature)` tuple. Fixed by adding
+  `ORDER BY updated_at DESC, id DESC` to the query, the same "most recent wins" tiebreaker
+  `AdapterRegistry.getConfiguration()` already uses for an analogous ambiguity.
+- **LOW-1 (misleading comment).** `automationOperatorActor()`'s doc comment incorrectly implied
+  `StartCodingCommand` also uses the placeholder human actor; corrected to state only
+  `SelectFeatureCommand` does (`StartCodingCommand` uses `systemActor()`, matching its own matrix
+  row).
 
 **Deviations from the original plan:**
 

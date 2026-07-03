@@ -400,7 +400,7 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   compare-and-swap on one column that is correct without a lease/TTL, since "active" must persist
   until the feature completes, not until a lock expires. `packages/workflow`'s `ExecutionLane`
   (a fence-token lock) is the short-lived, heartbeat-able mutual-exclusion guard for handlers that
-  mutate an *already-selected* `feature_runs` row (`StartCodingHandler`, `RecordCodePushedHandler`,
+  mutate an _already-selected_ `feature_runs` row (`StartCodingHandler`, `RecordCodePushedHandler`,
   `StartFixingHandler`) — it protects against two concurrent writers racing on the same feature
   run (e.g. overlapping `start-next-feature` task retries), which the `workflow_states`
   compare-and-swap does not cover once a feature is already selected. `SelectFeatureHandler`
@@ -418,23 +418,40 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   `ApproveBudgetOverrideCommand`; `StateTransitionValidator` resolves the correct matrix row from
   `(fromState, commandName)`, so no branching is needed in the handler. Callers must select the
   idempotency-key template matching the origin state they observed
-  (`budget-override:{projectId}` vs `budget-override-waiting:{projectId}`) — this is the one
-  command in the codebase without a single fixed idempotency-key template. The handler also emits
-  **two** `workflow_events` per the matrix's two declared `emittedEvents`
+  (`budget-override:{projectId}:{expectedVersion}` vs
+  `budget-override-waiting:{projectId}:{expectedVersion}`) — this is the one command in the
+  codebase without a single fixed idempotency-key template. The handler also emits **two**
+  `workflow_events` per the matrix's two declared `emittedEvents`
   (`automation.budget_override_approved` and `automation.resumed`) — the first multi-event handler
   in the codebase.
+- **Budget breach and override idempotency keys must include `{expectedVersion}` (or another
+  per-occurrence discriminator), never `{projectId}` alone.** A project can legitimately breach
+  the same threshold, get overridden, and breach again over its lifetime; each occurrence is read
+  against a distinct `workflow_states.version`. A key scoped to `projectId` alone lets
+  `TransactionalCommandExecutor` return the _first_ occurrence's cached `CommandResult` for every
+  later one within the 7-day idempotency TTL, silently no-opping the transition (this was a real
+  bug — HIGH-1 in the Phase 8 code review — fixed in `apply-budget-decision.ts`'s
+  `RecordBudgetExceededCommand`/`RecordBudgetApprovalWaitingCommand` dispatch and documented as a
+  caller obligation for `ApproveBudgetOverrideCommand`). The `execution-orchestrator` scenario's
+  step 4b exercises a repeated soft breach specifically to guard against a regression here.
 - **`evaluateBudget()` is retrospective-threshold-only, by design.** It sums `cost_records.amount`
   live (respecting `window_days` when set) and compares against `budget_policies.soft_limit`/
   `hard_limit` — hard checked before soft, so a policy breaching both reports `hard_breach`. There
   is deliberately no denormalized running-total column: Phase 8 data volumes don't warrant a second
   source of truth to keep consistent with `cost_records`. Forecasting, per-`AgentRun` pre-flight
   caps, and dashboards (docs/01 §5.11) are Phase 16 scope — do not add them to `evaluateBudget()`.
+  When more than one active `budget_policies` row matches the same `(project, scope, feature)`
+  tuple — nothing currently prevents this — the query orders by `updated_at DESC, id DESC` and
+  picks the first match, the same "most recent wins" tiebreaker `AdapterRegistry.getConfiguration()`
+  already uses for an analogous ambiguity, rather than relying on unspecified SQL result ordering.
 - **`RecordBudgetExceededHandler`/`RecordBudgetApprovalWaitingHandler` write no `cost_records` row
   themselves** — a breach can only be evaluated against rows that already exist; `evaluateBudget()`
-  must run *after* the code path that inserted the triggering `cost_records` row, not before it.
+  must run _after_ the code path that inserted the triggering `cost_records` row, not before it.
   Neither handler writes a `policy_decisions` row either (only `ApproveBudgetOverrideHandler`/
   `ResumeAutomationHandler` do, matching the matrix's `record_policy_decision` side effect, which
-  the two breach-recording edges do not carry).
+  the two breach-recording edges do not carry) — this is intentional (see docs/01 §5.11): the
+  automatic breach is fully reconstructable from `workflow_events`, while `policy_decisions` is
+  reserved for the audit trail of judgment calls a human actually made.
 - **`start-next-feature.ts`'s actor identity is a known Phase 13 placeholder.**
   `SelectFeatureCommand` requires a human/operator actor per its matrix row; the task has no real
   authenticated session to attribute the run to, so it uses a fixed `automationOperatorActor()`

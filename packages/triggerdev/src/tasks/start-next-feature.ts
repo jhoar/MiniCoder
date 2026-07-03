@@ -106,7 +106,11 @@ export async function runImpl(
   }
 
   const lane = new ExecutionLane(db);
-  const lock = await lane.acquireForProject(projectId, 'start-next-feature-task', EXECUTION_LANE_TTL_MS);
+  const lock = await lane.acquireForProject(
+    projectId,
+    'start-next-feature-task',
+    EXECUTION_LANE_TTL_MS,
+  );
   try {
     const selectedRows = await db.query<FeatureRunVersionRow>(
       `SELECT version FROM feature_runs WHERE id = ?`,

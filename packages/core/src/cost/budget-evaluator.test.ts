@@ -21,20 +21,26 @@ class FakeCostDb implements DbClient {
     const s = sql.replace(/\s+/g, ' ').trim();
     if (s.startsWith('SELECT id, project_id, scope, feature_request_id')) {
       const [projectId, scope, featureRequestId] = params as [string, string, string | null];
-      return this.policies.filter(
-        (p) =>
-          p.project_id === projectId &&
-          p.scope === scope &&
-          (p.feature_request_id === featureRequestId ||
-            (p.feature_request_id === null && featureRequestId === null)),
-      ) as unknown as T[];
+      // Mirrors the real query's `ORDER BY updated_at DESC, id DESC` so tests exercising the
+      // deterministic-selection tiebreaker (MEDIUM-3) observe the same ordering a real DB would.
+      return this.policies
+        .filter(
+          (p) =>
+            p.project_id === projectId &&
+            p.scope === scope &&
+            (p.feature_request_id === featureRequestId ||
+              (p.feature_request_id === null && featureRequestId === null)),
+        )
+        .sort((a, b) => {
+          const updatedDiff = String(b.updated_at).localeCompare(String(a.updated_at));
+          if (updatedDiff !== 0) return updatedDiff;
+          return String(b.id).localeCompare(String(a.id));
+        }) as unknown as T[];
     }
     if (s.startsWith('SELECT COALESCE(SUM(amount), 0) as total')) {
       const [projectId, scope] = params as [string, string, ...unknown[]];
       const rest = params.slice(2);
-      let matches = this.costRecords.filter(
-        (r) => r.project_id === projectId && r.scope === scope,
-      );
+      let matches = this.costRecords.filter((r) => r.project_id === projectId && r.scope === scope);
       let idx = 0;
       if (s.includes('AND feature_request_id = ?')) {
         const fr = rest[idx++] as string;
@@ -76,6 +82,7 @@ function policy(overrides: Partial<BudgetPolicyRow> = {}): BudgetPolicyRow {
     hard_limit: 100,
     window_days: null,
     is_active: 1,
+    updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
 }
@@ -160,5 +167,33 @@ describe('evaluateBudget', () => {
     });
     expect(result?.totalSpend).toBe(60);
     expect(result?.status).toBe('soft_breach');
+  });
+
+  it('deterministically picks the most recently updated active policy when more than one matches', async () => {
+    const older = policy({
+      id: 'policy-old',
+      hard_limit: 100,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    });
+    const newer = policy({
+      id: 'policy-new',
+      hard_limit: 500,
+      updated_at: '2026-02-01T00:00:00.000Z',
+    });
+
+    const dbOldFirst = new FakeCostDb([older, newer], []);
+    const dbNewFirst = new FakeCostDb([newer, older], []);
+
+    const resultOldFirst = await evaluateBudget(dbOldFirst, {
+      projectId: 'proj-1',
+      scope: 'project',
+    });
+    const resultNewFirst = await evaluateBudget(dbNewFirst, {
+      projectId: 'proj-1',
+      scope: 'project',
+    });
+
+    expect(resultOldFirst?.policy.id).toBe('policy-new');
+    expect(resultNewFirst?.policy.id).toBe('policy-new');
   });
 });

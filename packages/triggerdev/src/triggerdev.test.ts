@@ -379,9 +379,10 @@ describe('start-next-feature real wiring', () => {
   });
 
   it('no-ops without mutating state when automation is paused', async () => {
-    await db.execute(`UPDATE workflow_states SET automation_state = 'paused_by_operator' WHERE project_id = ?`, [
-      projectId,
-    ]);
+    await db.execute(
+      `UPDATE workflow_states SET automation_state = 'paused_by_operator' WHERE project_id = ?`,
+      [projectId],
+    );
     const result = await runStartNextFeature(
       { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-3' },
       db,

@@ -31,6 +31,14 @@ export type ApplyBudgetDecisionResult =
  * In real Phase 9+ operation the natural call site is immediately after any code path inserts a
  * cost_records row (e.g. an agent-run completion handler); Phase 8 wires only this reaction, not
  * that future producer.
+ *
+ * Idempotency keys include the breached policy id and params.expectedVersion (workflow_states'
+ * version at read time), not just projectId — a project can legitimately breach the same
+ * threshold more than once over its lifetime (e.g. cost keeps accumulating after a human
+ * override returns automation to running), and each such occurrence is read against a distinct
+ * workflow_states version. A key scoped to projectId alone would let
+ * TransactionalCommandExecutor return the first breach's cached result for every later breach
+ * within the idempotency TTL, silently leaving automation running through a second breach.
  */
 export async function applyBudgetDecision(
   db: DbClient,
@@ -52,7 +60,7 @@ export async function applyBudgetDecision(
     };
     const envelope: CommandEnvelope<typeof payload> = {
       commandId: generateId(),
-      idempotencyKey: `budget-exceeded:${projectId}`,
+      idempotencyKey: `budget-exceeded:${projectId}:${evaluation.policy.id}:${expectedVersion}`,
       payload,
       actor,
       correlationId,
@@ -70,7 +78,7 @@ export async function applyBudgetDecision(
   };
   const envelope: CommandEnvelope<typeof payload> = {
     commandId: generateId(),
-    idempotencyKey: `budget-approval-waiting:${projectId}`,
+    idempotencyKey: `budget-approval-waiting:${projectId}:${evaluation.policy.id}:${expectedVersion}`,
     payload,
     actor,
     correlationId,

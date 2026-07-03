@@ -13,6 +13,7 @@ export interface BudgetPolicyRow {
   hard_limit: number | string | null;
   window_days: number | null;
   is_active: number | boolean;
+  updated_at: string;
 }
 
 export interface BudgetEvaluation {
@@ -41,6 +42,12 @@ function toNumber(value: number | string | null): number | null {
  *
  * Returns null when no active budget policy exists for the requested scope (nothing to
  * enforce). Hard limit is checked before soft limit, so a breach of both reports hard_breach.
+ *
+ * Nothing prevents more than one active budget_policies row from matching the same
+ * (project, scope, feature) tuple (no uniqueness constraint, no application-level guard on
+ * insert) — the ORDER BY below picks the most recently updated active row deterministically,
+ * the same "most recent wins" tiebreaker convention AdapterRegistry.getConfiguration() already
+ * uses for an analogous ambiguity, rather than relying on unspecified SQL result ordering.
  */
 export async function evaluateBudget(
   db: DbClient,
@@ -49,10 +56,11 @@ export async function evaluateBudget(
   const { projectId, featureRequestId, scope } = params;
 
   const policyRows = await db.query<BudgetPolicyRow>(
-    `SELECT id, project_id, scope, feature_request_id, currency, soft_limit, hard_limit, window_days, is_active
+    `SELECT id, project_id, scope, feature_request_id, currency, soft_limit, hard_limit, window_days, is_active, updated_at
      FROM budget_policies
      WHERE project_id = ? AND scope = ?
-       AND (feature_request_id = ? OR (feature_request_id IS NULL AND ? IS NULL))`,
+       AND (feature_request_id = ? OR (feature_request_id IS NULL AND ? IS NULL))
+     ORDER BY updated_at DESC, id DESC`,
     [projectId, scope, featureRequestId ?? null, featureRequestId ?? null],
   );
   const policy = policyRows.find((row) => Boolean(row.is_active));

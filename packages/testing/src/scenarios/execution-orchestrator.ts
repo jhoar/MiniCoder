@@ -29,10 +29,7 @@ function approverActor(correlationId: string): ActorIdentity {
   return { id: 'scenario-approver', role: 'approver', actorKind: 'human', correlationId };
 }
 
-async function getFeatureRunByFrId(
-  ctx: ScenarioContext,
-  frSuffix: string,
-): Promise<FeatureRunRow> {
+async function getFeatureRunByFrId(ctx: ScenarioContext, frSuffix: string): Promise<FeatureRunRow> {
   const rows = await ctx.db.query<FeatureRunRow>(
     `SELECT fr.id, fr.current_execution_state
      FROM feature_runs fr
@@ -57,7 +54,9 @@ async function getWorkflowState(ctx: ScenarioContext): Promise<WorkflowStateRow>
 
 function assertEqual(label: string, actual: unknown, expected: unknown): void {
   if (actual !== expected) {
-    throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+    throw new Error(
+      `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+    );
   }
 }
 
@@ -80,7 +79,11 @@ export const executionOrchestratorScenario: Scenario = {
       runStartNextFeature,
     );
     assertEqual('first start-next-feature started', firstRun.result.started, true);
-    assertEqual('first start-next-feature selects FR-001', firstRun.result.featureRunId, fr1Before.id);
+    assertEqual(
+      'first start-next-feature selects FR-001',
+      firstRun.result.featureRunId,
+      fr1Before.id,
+    );
 
     const fr1After = await db.query<FeatureRunRow>(
       `SELECT id, current_execution_state FROM feature_runs WHERE id = ?`,
@@ -96,7 +99,11 @@ export const executionOrchestratorScenario: Scenario = {
       runStartNextFeature,
     );
     assertEqual('second start-next-feature finds no candidate', secondRun.result.started, false);
-    assertEqual('second start-next-feature featureRunId is null', secondRun.result.featureRunId, null);
+    assertEqual(
+      'second start-next-feature featureRunId is null',
+      secondRun.result.featureRunId,
+      null,
+    );
 
     // 3. Soft budget breach on FR-001's feature-scoped policy (soft_limit=50, hard_limit=100).
     await db.execute(
@@ -128,7 +135,11 @@ export const executionOrchestratorScenario: Scenario = {
       correlationId,
     });
     ws = await getWorkflowState(ctx);
-    assertEqual('automation state after soft breach', ws.automation_state, 'waiting_for_budget_approval');
+    assertEqual(
+      'automation state after soft breach',
+      ws.automation_state,
+      'waiting_for_budget_approval',
+    );
 
     // 4. Approver clears the soft breach (waiting_for_budget_approval -> running).
     const overrideWaitingPayload = {
@@ -139,7 +150,7 @@ export const executionOrchestratorScenario: Scenario = {
     };
     const overrideWaitingEnvelope: CommandEnvelope<typeof overrideWaitingPayload> = {
       commandId: generateId(),
-      idempotencyKey: `budget-override-waiting:${projectId}`,
+      idempotencyKey: `budget-override-waiting:${projectId}:${ws.version}`,
       payload: overrideWaitingPayload,
       actor: approverActor(correlationId),
       correlationId,
@@ -148,6 +159,56 @@ export const executionOrchestratorScenario: Scenario = {
     await executor.execute(approveOverrideHandler, overrideWaitingEnvelope);
     ws = await getWorkflowState(ctx);
     assertEqual('automation state after soft override', ws.automation_state, 'running');
+
+    // 4b. HIGH-1 regression: spend keeps accumulating after the override and crosses the soft
+    // limit a second time. If applyBudgetDecision's idempotency key were scoped to projectId
+    // alone, this call would incorrectly replay the first soft breach's cached command result
+    // instead of executing — leaving automation_state at 'running' instead of transitioning back
+    // to 'waiting_for_budget_approval'.
+    await db.execute(
+      `INSERT INTO cost_records (id, project_id, feature_request_id, scope, amount, currency, recorded_at, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'feature', 5, 'USD', datetime('now'), 1, datetime('now'), datetime('now'))`,
+      [`cost-${projectId}-1b`, projectId, fr1FeatureRequestId],
+    );
+    const secondSoftEvaluation = await evaluateBudget(db, {
+      projectId,
+      scope: 'feature',
+      featureRequestId: fr1FeatureRequestId,
+    });
+    if (!secondSoftEvaluation) throw new Error('Expected an active budget policy for FR-001');
+    assertEqual('second soft evaluation status', secondSoftEvaluation.status, 'soft_breach');
+
+    await applyBudgetDecision(db, secondSoftEvaluation, {
+      projectId,
+      expectedVersion: ws.version,
+      actor: systemActor(correlationId),
+      correlationId,
+    });
+    ws = await getWorkflowState(ctx);
+    assertEqual(
+      'automation state after repeated soft breach',
+      ws.automation_state,
+      'waiting_for_budget_approval',
+    );
+
+    // Clear the second soft breach too, using a distinct idempotency key (version-scoped) from
+    // the first override at step 4 — otherwise this call would replay step 4's cached result.
+    const secondOverrideWaitingPayload = {
+      projectId,
+      expectedVersion: ws.version,
+      overrideReason: 'soft limit acceptable again',
+      approvedBudgetPolicyId: secondSoftEvaluation.policy.id,
+    };
+    const secondOverrideWaitingEnvelope: CommandEnvelope<typeof secondOverrideWaitingPayload> = {
+      commandId: generateId(),
+      idempotencyKey: `budget-override-waiting:${projectId}:${ws.version}`,
+      payload: secondOverrideWaitingPayload,
+      actor: approverActor(correlationId),
+      correlationId,
+    };
+    await executor.execute(approveOverrideHandler, secondOverrideWaitingEnvelope);
+    ws = await getWorkflowState(ctx);
+    assertEqual('automation state after second soft override', ws.automation_state, 'running');
 
     // 5. Hard budget breach (cumulative spend now exceeds hard_limit=100).
     await db.execute(
@@ -170,7 +231,11 @@ export const executionOrchestratorScenario: Scenario = {
       correlationId,
     });
     ws = await getWorkflowState(ctx);
-    assertEqual('automation state after hard breach', ws.automation_state, 'paused_budget_exceeded');
+    assertEqual(
+      'automation state after hard breach',
+      ws.automation_state,
+      'paused_budget_exceeded',
+    );
 
     // 6. Approver clears the hard breach (paused_budget_exceeded -> running) and a policy_decision
     // is recorded for the override.
@@ -182,7 +247,7 @@ export const executionOrchestratorScenario: Scenario = {
     };
     const overrideExceededEnvelope: CommandEnvelope<typeof overrideExceededPayload> = {
       commandId: generateId(),
-      idempotencyKey: `budget-override:${projectId}`,
+      idempotencyKey: `budget-override:${projectId}:${ws.version}`,
       payload: overrideExceededPayload,
       actor: approverActor(correlationId),
       correlationId,
@@ -191,13 +256,14 @@ export const executionOrchestratorScenario: Scenario = {
     ws = await getWorkflowState(ctx);
     assertEqual('automation state after hard override', ws.automation_state, 'running');
 
+    // Three overrides total: two soft-limit clears (step 4 and step 4b) and one hard-limit clear.
     const policyDecisions = await db.query<{ id: string }>(
       `SELECT id FROM policy_decisions WHERE project_id = ? AND policy_type = 'budget_override'`,
       [projectId],
     );
-    if (policyDecisions.length !== 2) {
+    if (policyDecisions.length !== 3) {
       throw new Error(
-        `Expected 2 budget_override policy_decisions rows, got ${policyDecisions.length}`,
+        `Expected 3 budget_override policy_decisions rows, got ${policyDecisions.length}`,
       );
     }
 
@@ -219,7 +285,11 @@ export const executionOrchestratorScenario: Scenario = {
       runStartNextFeature,
     );
     assertEqual('third start-next-feature started', thirdRun.result.started, true);
-    assertEqual('third start-next-feature selects FR-002', thirdRun.result.featureRunId, fr2Before.id);
+    assertEqual(
+      'third start-next-feature selects FR-002',
+      thirdRun.result.featureRunId,
+      fr2Before.id,
+    );
 
     const fr2After = await db.query<FeatureRunRow>(
       `SELECT id, current_execution_state FROM feature_runs WHERE id = ?`,

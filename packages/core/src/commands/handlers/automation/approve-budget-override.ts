@@ -39,9 +39,14 @@ interface WorkflowStateRow {
  * handler implementation is correct for both origin states.
  *
  * Callers must pick the idempotency key template matching the origin state they observed
- * ('budget-override:{projectId}' for a hard-limit override, 'budget-override-waiting:{projectId}'
- * for a soft-limit override) — unlike every other handler in this codebase, this command does
- * not have one fixed idempotency-key template, because it serves two distinct matrix edges.
+ * ('budget-override:{projectId}:{expectedVersion}' for a hard-limit override,
+ * 'budget-override-waiting:{projectId}:{expectedVersion}' for a soft-limit override) — unlike
+ * every other handler in this codebase, this command does not have one fixed idempotency-key
+ * template, because it serves two distinct matrix edges. The trailing {expectedVersion}
+ * discriminates repeated overrides of the same project over its lifetime (a project can breach,
+ * get overridden, and breach again) — omitting it would let a later override replay the first
+ * override's cached result instead of executing, the same class of bug HIGH-1 fixed for the
+ * breach-recording commands (see apply-budget-decision.ts).
  */
 export class ApproveBudgetOverrideHandler implements CommandHandler<
   ApproveBudgetOverridePayload,
@@ -56,8 +61,7 @@ export class ApproveBudgetOverrideHandler implements CommandHandler<
     envelope: CommandEnvelope<ApproveBudgetOverridePayload>,
     db: DbClient,
   ): Promise<CommandResult<AutomationState>> {
-    const { projectId, expectedVersion, overrideReason, approvedBudgetPolicyId } =
-      envelope.payload;
+    const { projectId, expectedVersion, overrideReason, approvedBudgetPolicyId } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<AutomationState>(
         tx,

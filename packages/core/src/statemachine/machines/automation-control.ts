@@ -32,8 +32,15 @@ export const AUTOMATION_CONTROL_MATRIX: StateMatrix<AutomationState> = [
     guardDescription: 'hard budget limit breached',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['automation.budget_exceeded'],
-    idempotencyKeyTemplate: 'budget-exceeded:{projectId}',
-    recoveryPath: 'Idempotent: returns cached result',
+    // {expectedVersion} is workflow_states' version at read time, not a caller-chosen value: it
+    // discriminates repeated breaches of the same project over its lifetime (running is only
+    // reached again after an override increments the version) while still deduplicating retries
+    // of the *same* breach attempt, which observe the same version. A key scoped to {projectId}
+    // alone would cache the first breach's result and silently no-op every later one within the
+    // idempotency TTL — see HIGH-1 in the Phase 8 code review.
+    idempotencyKeyTemplate: 'budget-exceeded:{projectId}:{policyId}:{expectedVersion}',
+    recoveryPath:
+      'Idempotent per breach occurrence: retrying the same breach returns cached result',
   },
   {
     fromState: AutomationState.PAUSED_BUDGET_EXCEEDED,
@@ -43,8 +50,12 @@ export const AUTOMATION_CONTROL_MATRIX: StateMatrix<AutomationState> = [
     guardDescription: 'approver overrides budget and resumes',
     sideEffects: ['record_policy_decision', 'write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['automation.budget_override_approved', 'automation.resumed'],
-    idempotencyKeyTemplate: 'budget-override:{projectId}',
-    recoveryPath: 'Idempotent: returns cached result',
+    // {expectedVersion} discriminates repeated overrides of the same project over its lifetime
+    // (a project can breach, get overridden, and breach again) — same reasoning as
+    // RecordBudgetExceededCommand above.
+    idempotencyKeyTemplate: 'budget-override:{projectId}:{expectedVersion}',
+    recoveryPath:
+      'Idempotent per override occurrence: retrying the same override returns cached result',
   },
   {
     fromState: AutomationState.RUNNING,
@@ -54,8 +65,10 @@ export const AUTOMATION_CONTROL_MATRIX: StateMatrix<AutomationState> = [
     guardDescription: 'soft budget limit breached; awaiting approver override',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['automation.budget_approval_waiting'],
-    idempotencyKeyTemplate: 'budget-approval-waiting:{projectId}',
-    recoveryPath: 'Idempotent: returns cached result',
+    // See RecordBudgetExceededCommand above for why {expectedVersion} is required here too.
+    idempotencyKeyTemplate: 'budget-approval-waiting:{projectId}:{policyId}:{expectedVersion}',
+    recoveryPath:
+      'Idempotent per breach occurrence: retrying the same breach returns cached result',
   },
   {
     fromState: AutomationState.WAITING_FOR_BUDGET_APPROVAL,
@@ -65,7 +78,9 @@ export const AUTOMATION_CONTROL_MATRIX: StateMatrix<AutomationState> = [
     guardDescription: 'approver approves budget override',
     sideEffects: ['record_policy_decision', 'write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['automation.budget_override_approved', 'automation.resumed'],
-    idempotencyKeyTemplate: 'budget-override-waiting:{projectId}',
-    recoveryPath: 'Idempotent: returns cached result',
+    // See the paused_budget_exceeded -> running edge above for why {expectedVersion} is required.
+    idempotencyKeyTemplate: 'budget-override-waiting:{projectId}:{expectedVersion}',
+    recoveryPath:
+      'Idempotent per override occurrence: retrying the same override returns cached result',
   },
 ] as const;

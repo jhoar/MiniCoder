@@ -340,7 +340,15 @@ review cycle.
   Cost Manager trips a circuit breaker — pausing to `waiting_for_budget_approval` (soft) or
   `paused_budget_exceeded` (hard) and escalating to the user for budget authorization — independent
   of the §5.8 review-cycle count limit.
-- Every enforcement decision is recorded as a `policy_decision` and a `cost_record`.
+- A breach is recorded as a `workflow_event` (`automation.budget_exceeded` /
+  `automation.budget_approval_waiting`) and an `outbox_event`, not a fresh `policy_decision` — the
+  `cost_record` that triggered the breach already exists (evaluation runs against previously
+  recorded spend, not the other way around). `policy_decision` rows capture the **human**
+  disposition of a breach: an approved override (or an operator resume) is what gets recorded as
+  a `policy_decision`, per the `resumed` note above. This distinction is deliberate (Phase 8):
+  the automatic system-triggered breach is fully reconstructable from the `workflow_events`
+  timeline, while the `policy_decisions` table is reserved for the audit trail of judgment calls
+  a human actually made.
 
 ### 5.12 Observability and Event System
 
