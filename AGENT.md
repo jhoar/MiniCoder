@@ -13,7 +13,7 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–6 implementation**:
+- The codebase currently contains the **Phase 1–8 implementation**:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -50,24 +50,41 @@ architecture requirements remain under `docs/`.
     assessment, assessment-scoped plan/backlog generation and validation, approval, activation
     (creating `feature_runs` rows), artifact export, backlog import, and the clarification circuit
     breaker
-  - all 15 canonical Trigger.dev task IDs registered, with the 9 planner/clarification tasks now
-    calling real Orchestrator Core commands instead of returning stub values
+  - all 15 canonical Trigger.dev task IDs registered; Phase 6 planning/clarification/artifact tasks,
+    Phase 7 `github-reconciliation`, and Phase 8 `start-next-feature` all call real Orchestrator
+    Core commands instead of returning stub values
   - version-scoped backlog-validation tracking on `implementation_plans`
     (`backlog_version`/`backlog_validated_at`/`backlog_validated_state`/`backlog_validated_version`)
     and an `assessment_id` link on `clarification_sessions`, gating plan submission on a passing,
     current `ValidateBacklogCommand` result and scoping the clarification-complete guard to the
     assessment in use
   - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
+  - GitHub webhook receiver package (`packages/github`) with HMAC signature verification,
+    current/previous webhook-secret rotation, event normalization, and `minicoder github serve`
+  - provider-SDK-free GitHub client seam in core plus the Octokit implementation outside core
+  - `pull_requests` persistence and GitHub reconciliation handlers for PR opened, CI
+    running/passed/failed, changes requested, and irreconcilable closed-unmerged PR escalation
+  - shared `reconcileGithubState()` algorithm used by both webhook-triggered inbox handlers and
+    the scheduled `github-reconciliation` Trigger.dev task
+  - real `start-next-feature` Trigger.dev task wiring dependency-ordered feature selection to
+    `SelectFeatureCommand` and `StartCodingCommand` under the workflow execution lane
+  - Phase 8 execution-orchestrator commands for resume automation, budget breach recording,
+    budget override approval, start fixing, unblocking, and next-eligible-feature selection
+  - minimal budget-gate primitive in `packages/core/src/cost/` for live retrospective threshold
+    evaluation and soft/hard automation-state transitions
+  - execution-orchestrator scenario coverage for dependency ordering, single-active-feature
+    enforcement, budget approval flow, and sequencing continuation
 - Do not describe the repository as specification-only.
-- Phase 7 and later remain target architecture. Do not assume later phases are implemented merely
+- Phase 9 and later remain target architecture. Do not assume later phases are implemented merely
   because their schemas, state machines, CLI scaffolds, task stubs, or types already exist.
-- Phase 3 delivered 9 initial task IDs as payload-validated stubs; Phase 6 wired the
-  planner/clarification tasks (`ingest-specification`, `planning-readiness-assessment`,
+- Phase 3 delivered the initial task IDs as payload-validated stubs; Phase 6 wired the
+  planning/clarification/artifact tasks (`ingest-specification`, `planning-readiness-assessment`,
   `start-clarification`, `record-clarification-answer`, `complete-clarification`,
   `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
   `request-plan-approval`, `activate-approved-backlog`, `export-plan`, `export-backlog`,
-  `import-backlog`) to real core commands. `start-next-feature` and `github-reconciliation` remain
-  stubs pending Phase 7/8.
+  `import-backlog`) to real core commands. Phase 7 wired `github-reconciliation`, and Phase 8 wired
+  `start-next-feature`; every canonical Trigger.dev task now calls Orchestrator Core through
+  `TransactionalCommandExecutor`.
 - Phase 5 is an adapter foundation and smoke conformance layer, not the full canonical provider
   adapter runtime. Provider-specific adapters, workflow task-wrapper invocation, richer
   provider/model/cost/token fields, and final canonical run metadata remain later-phase work unless
@@ -76,6 +93,14 @@ architecture requirements remain under `docs/`.
   concrete `PlannerAgentAdapter` implementation — the caller injects one. No reference/generic
   planner adapter has shipped yet (docs/02 §7 names `GenericLLMPlannerAdapter` as future work), so a
   live Trigger.dev deployment fails fast with an actionable error until one exists.
+- Phase 7's GitHub integration is implemented, but scheduled reconciliation only repairs feature
+  runs that already have a `pull_requests` row. Discovering a brand-new PR from a completely missed
+  `pr.opened` webhook remains future work because there is no branch-scoped PR discovery client
+  method yet.
+- Phase 8's execution orchestrator is implemented for selecting and starting the next eligible
+  feature plus threshold-only budget gating. `StartFixingHandler` and `UnblockFeatureHandler` are
+  real, exported handlers with no caller yet; review/fix-loop decisions and merge commands remain
+  later-phase work.
 - Before starting work, inspect the current branch, recent commits, and working tree:
 
 ```bash
@@ -115,6 +140,7 @@ packages/persistence-sqlite/    better-sqlite3 implementation of core persistenc
 packages/persistence-postgres/  pg implementation of core persistence contracts
 packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycle runner
 packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
+packages/github/                GitHub webhook receiver, inbox handlers, and Octokit client
 packages/triggerdev/            Trigger.dev Workflow Layer harness and task registrations
 packages/testing/               Deterministic fixtures, mock adapters, conformance, scenarios, and runner
 packages/cli/                   Thin Commander-based CLI
@@ -137,6 +163,16 @@ Important files:
   planning and clarification command handlers. `ValidateBacklogHandler` owns backlog quality
   evidence, and `SubmitPlanForApprovalHandler` must require current valid backlog evidence before
   `pending_approval`.
+- `packages/core/src/commands/handlers/github/` contains Phase 7 GitHub-facing feature-execution
+  handlers. These handlers update MiniCoder state from GitHub observations; GitHub remains
+  authoritative for PR/review/CI facts.
+- `packages/core/src/commands/handlers/feature/` and `.../automation/` contain Phase 8 execution
+  orchestration and automation-control handlers. Lock-gated feature-run mutations require
+  `envelope.lockContext`; `SelectFeatureHandler` uses an atomic workflow-state compare-and-swap
+  instead.
+- `packages/core/src/github/` owns the provider-SDK-free GitHub client interface and shared
+  reconciliation algorithm. Octokit belongs only in `packages/github/`.
+- `packages/core/src/cost/` owns Phase 8's minimal budget evaluator and breach-to-command glue.
 - `packages/core/src/events/schemas.ts` owns versioned event payload validation.
 - `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
 - `packages/core/src/adapters/types.ts` defines provider-neutral role adapter interfaces and I/O
@@ -151,6 +187,8 @@ Important files:
 - `packages/workflow/src/outbox/dispatcher.ts` and `inbox/processor.ts` implement durable dispatch.
 - `packages/triggerdev/src/task-ids.ts` owns all 15 canonical task ID constants (`ALL_TASK_IDS`).
 - `packages/triggerdev/src/triggerdev-tasks.ts` registers the Trigger.dev task wrappers.
+- `packages/triggerdev/src/tasks/github-reconciliation.ts` and `.../start-next-feature.ts` are real
+  command-backed task implementations as of Phases 7 and 8.
 - `packages/triggerdev/src/db.ts` links Trigger.dev runs to `triggerdev_runs` and probes schema
   readiness.
 - `packages/triggerdev/trigger.config.ts` configures Trigger.dev deployment.
@@ -158,12 +196,15 @@ Important files:
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
 - `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together. Current
   Phase 6 planning schema is split across `0007_clarification_sessions.*` and
-  `0008_backlog_validation_tracking.*`.
+  `0008_backlog_validation_tracking.*`; Phase 7 GitHub PR tracking is in
+  `0009_pull_requests.*`. Phase 8 required no new migration.
 - `packages/testing/src/fixtures/` owns SQLite-only deterministic fixture setup for local/system scenarios.
 - `packages/testing/src/adapters/` owns mock role adapters and the test-only `HumanTestAdapter`.
 - `packages/testing/src/conformance/` owns the Phase 5 smoke conformance runner and append-only
   result persistence.
 - `packages/testing/src/scenarios/` owns the registered scenario flows exercised by `minicoder test system`.
+- `packages/testing/src/scenarios/execution-orchestrator.ts` owns Phase 8 acceptance coverage for
+  dependency ordering, single-active-feature enforcement, budget gating, and sequencing.
 - `infra/docker-compose.triggerdev.yml` owns the local self-hosted Trigger.dev stack.
 - `infra/docker-compose.test.yml` owns the disposable PostgreSQL service used by cross-dialect validation.
 
@@ -233,6 +274,61 @@ backlog_validated_version = backlog_version` on `implementation_plans` before a 
   as `{ valid: false }` hides real infrastructure/programmer failures from Trigger.dev's
   retry/failed-status handling.
 
+### GitHub integration (`packages/github/`, `packages/core/src/github/`, `packages/core/src/commands/handlers/github/`)
+
+- `GitHubClient` is an interface in core; the Octokit implementation lives only in
+  `packages/github`. Orchestrator Core must remain free of Octokit and other provider SDK imports.
+- `packages/github` is the webhook receiver package. It verifies GitHub signatures (including
+  current/previous secret rotation), normalizes events, inserts inbox events, and exposes
+  `minicoder github serve` for real deployments.
+- `minicoder github serve` is not dev/test/ci-gated; it is the production webhook receiver. Keep the
+  environment guard on `github simulate-*` helpers only.
+- `reconcileGithubState()` is the single compare-and-dispatch algorithm. Webhook inbox handlers and
+  the scheduled `github-reconciliation` task fetch observed GitHub state, then call this shared
+  core function; do not fork reconciliation policy into either caller.
+- `pull_requests.review_state` and `pull_requests.ci_status` are observed GitHub mirrors, not
+  state-machine-governed columns.
+- Reconciliation escalates irreconcilably closed-unmerged PRs to `human_required` from every
+  non-terminal feature-execution state the check can reach. Do not narrow the matrix coverage to
+  only early PR states.
+- `RecordCiFailedHandler` and `RecordChangesRequestedHandler` do not track fix-attempt counts or
+  write `review_findings`; that belongs to the Phase 10 review/fix loop.
+- Scheduled `github-reconciliation` only re-checks feature runs that already have a
+  `pull_requests` row. Completely missed PR-opened webhooks are not discovered until a future
+  branch/PR discovery client surface exists.
+
+### Execution orchestrator and budget gate
+
+Relevant code: `packages/core/src/commands/handlers/{feature,automation}/` and
+`packages/core/src/cost/`.
+
+- Sequential execution uses two mechanisms with different purposes. `SelectFeatureHandler` owns the
+  durable single-active-feature-per-project invariant with an atomic conditional update of
+  `workflow_states.active_feature_run_id`. `ExecutionLane` owns short-lived lock/fence protection
+  for mutations to an already-selected `feature_runs` row (`StartCodingHandler`,
+  `RecordCodePushedHandler`, `StartFixingHandler`).
+- `SelectFeatureHandler` takes no workflow lock; lock-gated feature-run mutation handlers must
+  receive `envelope.lockContext` and assert the fence in the same transaction as the guarded write.
+- `findNextEligibleFeatureRun()` is a deterministic read-side candidate picker only. It never
+  mutates state and never replaces the dependency guard inside `SelectFeatureHandler`.
+- `StartFixingHandler` (`changes_requested → fixing`) and `UnblockFeatureHandler`
+  (`blocked → approved_pending_execution`) are implemented and exported but intentionally have no
+  caller in Phase 8. Do not delete them as dead code and do not invent review/fix-loop callers
+  before the relevant phase.
+- `ApproveBudgetOverrideHandler` serves both budget override matrix edges
+  (`paused_budget_exceeded → running` and `waiting_for_budget_approval → running`) from one
+  handler. Callers must use the idempotency-key template matching the origin state they observed.
+- `evaluateBudget()` is retrospective threshold evaluation only: it sums existing
+  `cost_records.amount` rows live, applies optional `window_days`, and reports hard breaches before
+  soft breaches. Forecasting, dashboards, pre-flight provider caps, and denormalized spend rollups
+  are later-phase work.
+- `RecordBudgetExceededHandler` and `RecordBudgetApprovalWaitingHandler` do not insert
+  `cost_records` or `policy_decisions` rows. The cost record must already exist before evaluation;
+  human override/resume handlers own policy-decision audit rows.
+- `start-next-feature` uses `automationOperatorActor()` for `SelectFeatureCommand` because the task
+  has no real authenticated operator session yet; keep this as a Phase 13 placeholder rather than
+  weakening actor requirements in core.
+
 ### `@minicoder/workflow`
 
 - Keep workflow primitives database-backed, deterministic, and portable across SQLite and
@@ -263,9 +359,10 @@ backlog_validated_version = backlog_version` on `implementation_plans` before a 
 
 - Treat Trigger.dev as the concrete Workflow Layer runtime, not a place for business rules.
 - Register only canonical task ID strings from `ALL_TASK_IDS`; no renames, aliases, or drift.
-- The 9 planner/clarification `runImpl` functions call real core commands as of Phase 6
-  (`packages/core/src/commands/handlers/{planning,clarification}/`); keep `start-next-feature` and
-  `github-reconciliation` as payload-validated stubs until Phase 7/8 wire real core commands.
+- The Phase 6 planning/clarification/artifact `runImpl` functions call real core commands
+  (`packages/core/src/commands/handlers/{planning,clarification}/`); `github-reconciliation` calls
+  the shared reconciliation algorithm as of Phase 7; `start-next-feature` selects and starts an
+  eligible feature as of Phase 8. Do not reintroduce payload-only stubs for canonical tasks.
 - Task wrappers may sequence commands but must not change command semantics. Only expected
   domain-level invalid outcomes should be converted into structured task results; operational and
   unexpected errors must propagate so Trigger.dev can mark failures and retry.
@@ -277,6 +374,12 @@ backlog_validated_version = backlog_version` on `implementation_plans` before a 
   parameter, never importing a mock or reference implementation themselves.
 - Preserve `assertSchemaReady()` so task containers fail fast on an unmigrated database.
 - Keep Trigger.dev run metadata idempotent: retries reuse the original `triggerdev_runs` row.
+- `github-reconciliation` catches per-candidate domain failures as non-fatal structured results but
+  lets infrastructure/programmer errors fail the task.
+- `start-next-feature` may dispatch two commands in one task invocation (`SelectFeatureCommand`
+  then lock-gated `StartCodingCommand`) because `selected → coding` has no human/webhook gate
+  between them. Expected races such as already-active feature, paused automation, stale candidate,
+  unmet dependencies, or not found should be clean no-ops; unexpected failures should propagate.
 - Deploy with `npx trigger.dev@4.4.6 deploy ...`; do not use `@latest`.
 - Keep `TRIGGER_API_URL` explicit in deployment so CI does not silently target Trigger.dev Cloud.
 - `loadTriggerConfig()` and `applyTriggerEnv()` are Phase 3 abstractions with no runtime call sites
@@ -324,6 +427,8 @@ NNNN_description.postgres.sql
   `pg_restore` or a purpose-built seed script.
 - `github simulate-*` commands are development/test/CI helpers that insert synthetic inbox events
   and reject production `APP_ENV`/`NODE_ENV`.
+- `github serve` is the real webhook receiver and is intentionally available for production
+  deployments; do not add the dev/test/ci-only guard used by simulation commands.
 - The `minicoder test` group is implemented: `unit` runs non-integration Vitest files,
   `integration` runs `*.integration.test.ts` files, `system` runs all registered scenarios, and
   `scenario <name>` runs one registered scenario.
@@ -348,6 +453,7 @@ NNNN_description.postgres.sql
   `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
   `request-plan-approval`, `activate-approved-backlog`, `start-next-feature`,
   `github-reconciliation`, `export-plan`, `export-backlog`, and `import-backlog`.
+  Every canonical task is now command-backed; task wrappers remain thin orchestration surfaces.
 - Persisted mutable entities use optimistic versions.
 - Locks use monotonically increasing fencing tokens; stale-fence writes must be rejected.
 - Outbox and inbox events contain both `payload` and `payload_schema_version`.
@@ -370,6 +476,10 @@ NNNN_description.postgres.sql
 - Discovery work reuses `feature_requests` with `kind = "discovery"` and `executable = false`.
 - `resumed` is an event, not an automation state.
 - A CI failure never silently advances or merges.
+- `pull_requests` stores observed GitHub mirror values; MiniCoder state transitions happen through
+  feature-execution commands dispatched by reconciliation.
+- Budget-gate states are `paused_budget_exceeded` and `waiting_for_budget_approval`; the budget
+  evaluator reads spend rows live rather than a denormalized running total.
 
 When modifying states, schemas, or entities, keep these layers synchronized:
 
@@ -444,7 +554,12 @@ pnpm vitest run packages/migrations/src/runner.test.ts
 pnpm vitest run packages/workflow/src/outbox/dispatcher.test.ts
 pnpm vitest run packages/workflow/src/inbox/processor.test.ts
 pnpm vitest run packages/workflow/src/locks/manager.test.ts
+pnpm vitest run packages/core/src/cost/budget-evaluator.test.ts
+pnpm vitest run packages/github/src/webhook-signature.test.ts
+pnpm vitest run packages/github/src/normalize.test.ts
+pnpm vitest run packages/testing/src/github-reconcile.test.ts
 pnpm vitest run packages/testing/src/testing.test.ts
+pnpm tsx packages/cli/src/index.ts test scenario execution-orchestrator
 pnpm vitest run packages/triggerdev/src/triggerdev.test.ts
 ```
 
@@ -523,7 +638,11 @@ and a runnable demonstration scenario.
 - Avoid import cycles.
 - Use `.js` suffixes for local TypeScript imports, matching the existing source convention.
 - Preserve root `pnpm typecheck` ordering for packages whose `types` point to generated `dist/`:
-  `core → persistence-sqlite → persistence-postgres → triggerdev → recursive --noEmit`.
+
+  ```text
+  core → persistence-sqlite → persistence-postgres → workflow → github → triggerdev → testing → recursive --noEmit
+  ```
+
 - Prefer small functions and explicit domain types over loosely shaped objects.
 - Formatting is controlled by Prettier:
   - semicolons
