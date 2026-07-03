@@ -10,8 +10,13 @@ export const AUTOMATION_CONTROL_MATRIX: StateMatrix<AutomationState> = [
     guardDescription: 'operator-initiated pause',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['automation.paused_by_operator'],
-    idempotencyKeyTemplate: 'pause-automation:{projectId}',
-    recoveryPath: 'Idempotent: already paused returns cached result',
+    // {expectedVersion} discriminates repeated pauses of the same project over its lifetime
+    // (pause -> resume -> pause again is a legitimate operator workflow) — a key scoped to
+    // {projectId} alone would replay the first pause's cached result for every later one within
+    // the idempotency TTL, leaving automation running when a second pause should have applied
+    // (MEDIUM-1 in the Phase 8 code review, same class of bug as HIGH-1's budget-breach keys).
+    idempotencyKeyTemplate: 'pause-automation:{projectId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per pause occurrence: retrying the same pause returns cached result',
   },
   {
     fromState: AutomationState.PAUSED_BY_OPERATOR,
@@ -21,8 +26,10 @@ export const AUTOMATION_CONTROL_MATRIX: StateMatrix<AutomationState> = [
     guardDescription: 'operator resumes; records resumed event',
     sideEffects: ['record_policy_decision', 'write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['automation.resumed'],
-    idempotencyKeyTemplate: 'resume-automation:{projectId}',
-    recoveryPath: 'Idempotent: already running returns cached result',
+    // See PauseAutomationCommand above for why {expectedVersion} is required here too.
+    idempotencyKeyTemplate: 'resume-automation:{projectId}:{expectedVersion}',
+    recoveryPath:
+      'Idempotent per resume occurrence: retrying the same resume returns cached result',
   },
   {
     fromState: AutomationState.RUNNING,

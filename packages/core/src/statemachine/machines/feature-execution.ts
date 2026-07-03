@@ -276,11 +276,16 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     toState: FeatureExecutionState.FIXING,
     triggeringCommand: 'StartFixingCommand',
     actor: 'system',
-    guardDescription: 'workflow lock held with valid fence',
+    guardDescription: 'workflow lock held with valid fence; automation running',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.fixing_started'],
-    idempotencyKeyTemplate: 'start-fixing:{featureRunId}',
-    recoveryPath: 'Idempotent replay returns cached result',
+    // {expectedVersion} discriminates repeated fix cycles for the same feature run over its
+    // lifetime (changes_requested -> fixing can recur across review rounds) — a key scoped to
+    // {featureRunId} alone would replay the first cycle's cached result for every later one
+    // within the idempotency TTL (MEDIUM-1 in the Phase 8 code review).
+    idempotencyKeyTemplate: 'start-fixing:{featureRunId}:{expectedVersion}',
+    recoveryPath:
+      'Idempotent per fix-cycle occurrence: retrying the same cycle returns cached result',
   },
   {
     fromState: FeatureExecutionState.FIXING,

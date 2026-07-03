@@ -98,17 +98,44 @@ export class StartCodingHandler implements CommandHandler<
         FeatureExecutionState.CODING,
       );
       const now = isoNow();
+      // The UPDATE's WHERE clause re-checks workflow_states.automation_state atomically as part
+      // of the same statement — not just the earlier active_feature_run_id pre-check above —
+      // so a pause/budget-pause that commits between that pre-check and this UPDATE cannot let
+      // coding start anyway (HIGH-1: automation control could otherwise be bypassed in the
+      // window between feature selection and coding start).
       const startCodingAffected = await tx.executeAffected(
-        `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
+        `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ?
+         WHERE id = ? AND version = ?
+           AND EXISTS (
+             SELECT 1 FROM workflow_states
+             WHERE project_id = ? AND automation_state = 'running'
+           )`,
         [
           FeatureExecutionState.CODING,
           nextVersion(run.version),
           now,
           featureRunId,
           expectedVersion,
+          projectId,
         ],
       );
       if (startCodingAffected === 0) {
+        // Disambiguate why the atomic UPDATE matched no row: a stale version (0 rows) vs.
+        // automation no longer running (0 rows for the same reason the SELECT above still saw
+        // an active pointer) — mirrors SelectFeatureHandler's own two-step disambiguation.
+        const wsRows = await tx.query<{ automation_state: string }>(
+          `SELECT automation_state FROM workflow_states WHERE project_id = ?`,
+          [projectId],
+        );
+        if (wsRows[0]?.automation_state !== 'running') {
+          throw new CommandError({
+            type: 'automation-paused',
+            title: 'Automation is paused',
+            status: 409,
+            detail: `Cannot start coding: automation is ${wsRows[0]?.automation_state ?? 'unknown'}`,
+            instance: envelope.correlationId,
+          });
+        }
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
       const eventId = await writeWorkflowEvent(tx, {

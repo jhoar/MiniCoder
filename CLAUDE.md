@@ -424,16 +424,43 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   `workflow_events` per the matrix's two declared `emittedEvents`
   (`automation.budget_override_approved` and `automation.resumed`) — the first multi-event handler
   in the codebase.
-- **Budget breach and override idempotency keys must include `{expectedVersion}` (or another
-  per-occurrence discriminator), never `{projectId}` alone.** A project can legitimately breach
-  the same threshold, get overridden, and breach again over its lifetime; each occurrence is read
-  against a distinct `workflow_states.version`. A key scoped to `projectId` alone lets
+- **Every repeatable automation-control/feature-execution transition's idempotency key must
+  include `{expectedVersion}` (or another per-occurrence discriminator), never
+  `{projectId}`/`{featureRunId}` alone.** A project can legitimately breach the same budget
+  threshold, get overridden, and breach again; be paused, resumed, and paused again; and a
+  feature run can cycle `changes_requested → fixing` more than once — each occurrence is read
+  against a distinct version. A key scoped to the entity id alone lets
   `TransactionalCommandExecutor` return the _first_ occurrence's cached `CommandResult` for every
-  later one within the 7-day idempotency TTL, silently no-opping the transition (this was a real
-  bug — HIGH-1 in the Phase 8 code review — fixed in `apply-budget-decision.ts`'s
-  `RecordBudgetExceededCommand`/`RecordBudgetApprovalWaitingCommand` dispatch and documented as a
-  caller obligation for `ApproveBudgetOverrideCommand`). The `execution-orchestrator` scenario's
-  step 4b exercises a repeated soft breach specifically to guard against a regression here.
+  later one within the 7-day idempotency TTL, silently no-opping the transition. This was a real
+  bug (HIGH-1 in a Phase 8 code review round) fixed for `RecordBudgetExceededCommand`/
+  `RecordBudgetApprovalWaitingCommand` in `apply-budget-decision.ts`, and (MEDIUM-1 in a later
+  round) for `PauseAutomationCommand`/`ResumeAutomationCommand`/`StartFixingCommand`'s matrix
+  templates and handler doc comments — `ApproveBudgetOverrideCommand` already documented the same
+  caller obligation. None of `PauseAutomationCommand`/`ResumeAutomationCommand`/
+  `StartFixingCommand`/`ApproveBudgetOverrideCommand` has a real production caller yet (Phase 13's
+  API / Phase 10's review-fix loop will supply one), so the fix is the documented contract plus
+  `packages/testing/src/automation-control-race.test.ts`'s regression coverage, not a handler
+  code change — the handlers' own version-based CAS was already correct; only the caller-supplied
+  key was under-scoped. The `execution-orchestrator` scenario's step 4b exercises a repeated soft
+  breach for the one command (`RecordBudgetApprovalWaitingCommand`) that does have a real caller
+  (`applyBudgetDecision()`).
+- **`StartCodingHandler` and `StartFixingHandler` atomically re-check
+  `workflow_states.automation_state = 'running'` as part of their `feature_runs` UPDATE, not just
+  via an earlier plain-`SELECT` pre-check.** A pause or budget breach that commits in the window
+  between `SelectFeatureCommand` succeeding and `StartCodingCommand` dispatching (or between a
+  review cycle's guard check and `StartFixingCommand` dispatching) must not let new automated work
+  start anyway — this was a real bug (HIGH-1 in a Phase 8 code review round): `start-next-feature.ts`
+  checked `automation_state` once at the top, then dispatched two separate commands with lock
+  acquisition and other queries in between, and neither `StartCodingHandler` nor
+  `StartFixingHandler` re-checked `automation_state` before advancing the feature run. Fixed by
+  adding `AND EXISTS (SELECT 1 FROM workflow_states WHERE project_id = ? AND automation_state =
+'running')` to each handler's conditional `UPDATE`, with the same two-step disambiguation
+  `SelectFeatureHandler` already uses (a 0-row UPDATE re-queries `workflow_states` to distinguish
+  a stale version from a no-longer-running automation state, throwing the `automation-paused`
+  `CommandError` type `start-next-feature.ts`'s `isExpectedRace()` already treats as non-fatal).
+  `RecordCodePushedHandler` deliberately does **not** get this guard — it records the outcome of
+  work already in flight rather than starting new work, so a pause after coding has already begun
+  should not prevent recording that the push happened.
 - **`evaluateBudget()` is retrospective-threshold-only, by design.** It sums `cost_records.amount`
   live (respecting `window_days` when set) and compares against `budget_policies.soft_limit`/
   `hard_limit` — hard checked before soft, so a policy breaching both reports `hard_breach`. There

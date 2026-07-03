@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.10
+> Version: 1.0.11
 > Last-updated: 2026-07-03
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -605,8 +605,11 @@ the `paused_budget_exceeded` / `waiting_for_budget_approval` transitions (glossa
 dashboards, forecasting, and export remain Phase 16.
 
 Acceptance: only one feature is active at a time (by policy); eligible features are selected in
-sequence; dependencies are enforced; a soft/hard budget breach pauses automation and records a
-`policy_decision`/`cost_record`; mock execution progresses through the happy path.
+sequence; dependencies are enforced; a soft/hard budget breach is evaluated from already-recorded
+`cost_records` and pauses automation, recorded through `workflow_events`/`outbox_events` — a fresh
+`policy_decision` is written only when a human clears the pause (an approved override or an
+operator resume), not by the automatic breach itself (see docs/01 §5.11); mock execution
+progresses through the happy path.
 
 **Delivered modules:**
 
@@ -737,6 +740,52 @@ sequence; dependencies are enforced; a soft/hard budget breach pauses automation
   `StartCodingCommand` also uses the placeholder human actor; corrected to state only
   `SelectFeatureCommand` does (`StartCodingCommand` uses `systemActor()`, matching its own matrix
   row).
+
+**Post-implementation review fixes (round 2):**
+
+- **HIGH-1 (automation control bypassable between feature selection and coding start).**
+  `start-next-feature.ts` checked `workflow_states.automation_state = 'running'` once, then
+  dispatched `SelectFeatureCommand`, then later acquired the execution lane and dispatched
+  `StartCodingCommand` — but `StartCodingHandler` itself never re-checked `automation_state`, only
+  the active-feature-run pointer and lock fence. A pause or budget breach landing in the window
+  between selection and coding start (an operator pause, a hard/soft budget breach from a
+  different code path) could not stop coding from starting. Fixed by making
+  `StartCodingHandler`'s `feature_runs` UPDATE atomically re-check
+  `EXISTS (SELECT 1 FROM workflow_states WHERE project_id = ? AND automation_state = 'running')`
+  in the same statement, throwing the same `automation-paused` `CommandError` type
+  `SelectFeatureHandler` already uses (which `start-next-feature.ts`'s `isExpectedRace()` already
+  treats as a non-fatal, expected race) when the check fails; `StartFixingHandler` — the only
+  other handler that starts new automated work rather than recording an already-in-flight
+  action's outcome — got the identical guard while it was already being touched for the
+  MEDIUM-1 fix below. New tests in
+  `packages/testing/src/automation-control-race.test.ts` drive
+  select → pause → start-coding (operator pause) and select → hard-breach → start-coding (budget
+  pause) and assert both are rejected with the feature run left at `selected`.
+- **MEDIUM-1 (occurrence-insensitive idempotency keys on other repeatable transitions).**
+  `pause-automation:{projectId}`, `resume-automation:{projectId}`, and
+  `start-fixing:{featureRunId}` had the same class of bug the first review round fixed for budget
+  breaches/overrides: a project can be paused/resumed, or a feature can cycle
+  `changes_requested → fixing`, more than once over its lifetime, and an occurrence-insensitive
+  key lets `TransactionalCommandExecutor` replay a stale cached result instead of executing.
+  `AUTOMATION_CONTROL_MATRIX`/`FEATURE_EXECUTION_MATRIX`'s `idempotencyKeyTemplate` fields and the
+  handlers' doc comments were updated to require `{expectedVersion}` (documenting the caller
+  contract, since — like `ApproveBudgetOverrideCommand` — none of these three commands has a real
+  caller yet that the fix needed to touch beyond the new test file).
+  `packages/testing/src/automation-control-race.test.ts` covers pause→resume→pause,
+  pause→resume→pause→resume, two `changes_requested → fixing` cycles, and a second budget
+  override, asserting each repeated occurrence actually transitions rather than replaying a
+  cached result.
+- **MEDIUM-2 (stale runbook idempotency-key examples).** The Phase 8 runbook in docs/04 §11 still
+  showed `budget-override:{projectId}`/`budget-override-waiting:{projectId}` (pre-HIGH-1-fix
+  form) as the keys an operator should use for manual recovery — following it would have
+  recreated the exact collision the first review round fixed. Updated to include
+  `{expectedVersion}`, plus `resume-automation:{projectId}:{expectedVersion}` for the
+  operator-pause case.
+- **MEDIUM-3 (implementation plan still described the pre-fix audit contract).** This Phase 8
+  section's acceptance text said a budget breach "records a `policy_decision`/`cost_record`,"
+  contradicting the round-1 MEDIUM-2 fix (breaches are evaluated from already-existing
+  `cost_records` and recorded via `workflow_events`/`outbox_events`; `policy_decisions` is
+  reserved for the human override/resume decision). Reworded to match.
 
 **Deviations from the original plan:**
 

@@ -808,17 +808,23 @@ interim-manual pattern as the Phase 7 recovery procedure above.
 SELECT automation_state, version, active_feature_run_id FROM workflow_states WHERE project_id = '<id>';
 ```
 
-- **`paused_by_operator`** clears via `ResumeAutomationCommand` (operator actor).
+- **`paused_by_operator`** clears via `ResumeAutomationCommand` (operator actor), idempotency key
+  `resume-automation:{projectId}:{expectedVersion}`.
 - **`paused_budget_exceeded`** or **`waiting_for_budget_approval`** clears via
   `ApproveBudgetOverrideCommand` (approver actor) — the same command serves both matrix edges;
   the `StateTransitionValidator` resolves the correct transition from the current
   `automation_state` automatically. Pick the idempotency key matching the state you observed:
-  `budget-override:{projectId}` from `paused_budget_exceeded`,
-  `budget-override-waiting:{projectId}` from `waiting_for_budget_approval`.
+  `budget-override:{projectId}:{expectedVersion}` from `paused_budget_exceeded`,
+  `budget-override-waiting:{projectId}:{expectedVersion}` from `waiting_for_budget_approval`.
 
 Until Phase 13 exposes these as API/CLI commands, dispatch them directly against
 `ApproveBudgetOverrideHandler`/`ResumeAutomationHandler` via `TransactionalCommandExecutor` from an
-operator script, supplying the current `workflow_states.version` as `expectedVersion`.
+operator script, supplying the current `workflow_states.version` as both `expectedVersion` in the
+payload **and** the `{expectedVersion}` idempotency-key discriminator above. A project can
+legitimately be paused/resumed or breach/overridden more than once over its lifetime — omitting
+the version discriminator and reusing a `{projectId}`-only key recreates the idempotency
+collision fixed in a prior Phase 8 code-review round (a stale cached result would be returned
+instead of executing the new transition).
 
 #### Procedure: Inspect current spend vs. a budget policy by hand
 

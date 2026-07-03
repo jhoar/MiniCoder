@@ -30,6 +30,11 @@ interface WorkflowStateRow {
   version: number;
 }
 
+/**
+ * paused_by_operator -> running. See PauseAutomationHandler for why callers must include a
+ * per-occurrence discriminator (e.g. {expectedVersion}) beyond {projectId} in the idempotency
+ * key.
+ */
 export class ResumeAutomationHandler implements CommandHandler<
   ResumeAutomationPayload,
   AutomationState

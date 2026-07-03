@@ -29,6 +29,13 @@ interface WorkflowStateRow {
   version: number;
 }
 
+/**
+ * running -> paused_by_operator. Callers must include a per-occurrence discriminator (e.g.
+ * {expectedVersion}) beyond {projectId} in the idempotency key — a project can legitimately be
+ * paused, resumed, and paused again over its lifetime, and a key scoped to {projectId} alone
+ * would replay the first pause's cached result for every later one within the idempotency TTL
+ * (MEDIUM-1 in the Phase 8 code review, same class of bug HIGH-1 fixed for budget breaches).
+ */
 export class PauseAutomationHandler implements CommandHandler<
   PauseAutomationPayload,
   AutomationState

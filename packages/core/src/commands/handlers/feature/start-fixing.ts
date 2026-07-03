@@ -36,6 +36,17 @@ interface FeatureRunRow {
  * changes_requested -> fixing. Built in Phase 8 as a matrix-defined lock-gated transition
  * following StartCodingHandler's shape, but has no caller wired yet: the review/fix loop that
  * decides when a feature should re-enter fixing is Phase 10 scope.
+ *
+ * Like StartCodingHandler, this starts new automated work, so the same atomic
+ * workflow_states.automation_state = 'running' re-check applies (HIGH-1 in the Phase 8 code
+ * review): a pause/budget-pause that commits between an upstream caller's automation-state
+ * pre-check and this command's dispatch must not let a fix cycle start anyway.
+ *
+ * Idempotency: the caller must include a per-occurrence discriminator (e.g.
+ * {expectedVersion}) beyond {featureRunId} in the idempotency key — a feature run can cycle
+ * through changes_requested -> fixing more than once over its lifetime (MEDIUM-1 in the Phase 8
+ * code review), and a key scoped to featureRunId alone would replay the first cycle's cached
+ * result for every later one within the idempotency TTL.
  */
 export class StartFixingHandler implements CommandHandler<
   StartFixingPayload,
@@ -89,16 +100,35 @@ export class StartFixingHandler implements CommandHandler<
       );
       const now = isoNow();
       const affected = await tx.executeAffected(
-        `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
+        `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ?
+         WHERE id = ? AND version = ?
+           AND EXISTS (
+             SELECT 1 FROM workflow_states
+             WHERE project_id = ? AND automation_state = 'running'
+           )`,
         [
           FeatureExecutionState.FIXING,
           nextVersion(run.version),
           now,
           featureRunId,
           expectedVersion,
+          projectId,
         ],
       );
       if (affected === 0) {
+        const wsRows = await tx.query<{ automation_state: string }>(
+          `SELECT automation_state FROM workflow_states WHERE project_id = ?`,
+          [projectId],
+        );
+        if (wsRows[0]?.automation_state !== 'running') {
+          throw new CommandError({
+            type: 'automation-paused',
+            title: 'Automation is paused',
+            status: 409,
+            detail: `Cannot start fixing: automation is ${wsRows[0]?.automation_state ?? 'unknown'}`,
+            instance: envelope.correlationId,
+          });
+        }
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
       const eventId = await writeWorkflowEvent(tx, {
