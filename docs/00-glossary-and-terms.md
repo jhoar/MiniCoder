@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.6
-> Last-updated: 2026-07-02
+> Version: 1.0.7
+> Last-updated: 2026-07-04
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -368,6 +368,12 @@ complete-clarification
 validate-backlog
 request-plan-approval
 import-backlog
+```
+
+**Phase 9 addition** (Reference Coder Adapter — shipped with Phase 9):
+
+```text
+run-coder
 ```
 
 ---

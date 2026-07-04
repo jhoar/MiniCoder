@@ -1,4 +1,9 @@
-import type { GitHubClient, ObservedPullRequestState } from '@minicoder/core';
+import type {
+  CreateBranchOptions,
+  CreatePullRequestOptions,
+  GitHubClient,
+  ObservedPullRequestState,
+} from '@minicoder/core';
 import { PrReviewState } from '@minicoder/core';
 import type { MockGitHubProvider, MockPrState } from './mock-github-provider.js';
 
@@ -9,16 +14,40 @@ import type { MockGitHubProvider, MockPrState } from './mock-github-provider.js'
  * `reconcileGithubState` observe it through the same `GitHubClient` interface the real
  * `OctokitGitHubClient` implements — no live GitHub calls (docs/04 §3.2 "Mock Providers by
  * Default").
+ *
+ * `createBranch`/`createPullRequest` (Phase 9): real deterministic in-memory recorders rather
+ * than throwing stubs, since the `run-coder` task is now a real production caller of both.
+ * `createPullRequest` also registers the PR into the wrapped `MockGitHubProvider` (deriving the
+ * feature-run id from the `minicoder/<featureRunId>` branch-naming convention — docs/00 §3.11) so
+ * `getPullRequest`/`reconcileGithubState` observe it exactly as they would a real GitHub PR.
  */
 export class MockGitHubClient implements GitHubClient {
+  readonly branches: Array<CreateBranchOptions> = [];
+  readonly pullRequests: Array<CreatePullRequestOptions & { prNumber: number }> = [];
+  private nextPrNumber = 1;
+
   constructor(private readonly provider: MockGitHubProvider) {}
 
-  async createBranch(): Promise<{ branchName: string; sha: string }> {
-    throw new Error('MockGitHubClient.createBranch is not used by Phase 7 scenarios');
+  async createBranch(options: CreateBranchOptions): Promise<{ branchName: string; sha: string }> {
+    this.branches.push(options);
+    return { branchName: options.branchName, sha: options.fromSha };
   }
 
-  async createPullRequest(): Promise<{ prNumber: number; branchName: string }> {
-    throw new Error('MockGitHubClient.createPullRequest is not used by Phase 7 scenarios');
+  async createPullRequest(
+    options: CreatePullRequestOptions,
+  ): Promise<{ prNumber: number; branchName: string }> {
+    const prNumber = this.nextPrNumber++;
+    this.pullRequests.push({ ...options, prNumber });
+
+    const featureRunId = options.branchName.startsWith('minicoder/')
+      ? options.branchName.slice('minicoder/'.length)
+      : options.branchName;
+    const priorBranch = [...this.branches]
+      .reverse()
+      .find((b) => b.branchName === options.branchName);
+    this.provider.simulatePrOpened(prNumber, featureRunId, priorBranch?.fromSha ?? 'mock-head-sha');
+
+    return { prNumber, branchName: options.branchName };
   }
 
   async getPullRequest(

@@ -28,6 +28,7 @@ import { runImpl as runValidateBacklog } from './tasks/validate-backlog.js';
 import { runImpl as runRequestPlanApproval } from './tasks/request-plan-approval.js';
 import { runImpl as runActivateBacklog } from './tasks/activate-approved-backlog.js';
 import { runImpl as runStartNextFeature } from './tasks/start-next-feature.js';
+import { runImpl as runRunCoder } from './tasks/run-coder.js';
 import { runImpl as runGithubReconciliation } from './tasks/github-reconciliation.js';
 import { runImpl as runExportPlan } from './tasks/export-plan.js';
 import { runImpl as runExportBacklog } from './tasks/export-backlog.js';
@@ -45,6 +46,7 @@ import {
   RequestPlanApprovalPayload as RequestPlanApprovalSchema,
   ActivateApprovedBacklogPayload as ActivateApprovedBacklogSchema,
   StartNextFeaturePayload as StartNextFeatureSchema,
+  RunCoderPayload as RunCoderSchema,
   GithubReconciliationPayload as GithubReconciliationSchema,
   ExportPlanPayload as ExportPlanSchema,
   ExportBacklogPayload as ExportBacklogSchema,
@@ -198,6 +200,13 @@ export const startNextFeatureTask = task({
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
   run: makeTaskRunner('start-next-feature', StartNextFeatureSchema, runStartNextFeature),
+});
+
+export const runCoderTask = task({
+  id: 'run-coder',
+  queue: { concurrencyLimit: 1 },
+  retry: RETRY_CONFIG,
+  run: makeTaskRunner('run-coder', RunCoderSchema, runRunCoder),
 });
 
 export const githubReconciliationTask = task({

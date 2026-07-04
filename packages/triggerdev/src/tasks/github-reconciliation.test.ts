@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { DbClient, GitHubClient, ObservedPullRequestState } from '@minicoder/core';
 import { PrReviewState } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
@@ -259,4 +259,41 @@ describe('github-reconciliation runImpl (concurrency: a held execution lane skip
     );
     expect(afterRows[0]?.current_execution_state).toBe('pr_opened');
   });
+});
+
+/**
+ * LOW-1 code-review fix (round 5): `requireNonBlankEnvVar()` was extracted from `run-coder.ts`
+ * into a shared `env.ts` and adopted here so both GitHub-facing task entrypoints reject a
+ * whitespace-only `GITHUB_TOKEN` identically instead of one silently accepting it and failing
+ * later with a less actionable Octokit auth error.
+ */
+describe('github-reconciliation runImpl (required env var validation, round 5)', () => {
+  const savedToken = process.env['GITHUB_TOKEN'];
+
+  beforeEach(() => {
+    process.env['GITHUB_TOKEN'] = savedToken;
+  });
+
+  afterEach(() => {
+    if (savedToken === undefined) delete process.env['GITHUB_TOKEN'];
+    else process.env['GITHUB_TOKEN'] = savedToken;
+  });
+
+  it.each(['', '   '])(
+    'the default github client factory rejects a whitespace-only GITHUB_TOKEN (%j)',
+    async (blankValue) => {
+      process.env['GITHUB_TOKEN'] = blankValue;
+
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      await seedCodePushedFeatureRunWithTrackedPr(db);
+
+      await expect(
+        runImpl(
+          { projectId: PROJECT_ID, correlationId: 'corr-hr-env', idempotencyKey: 'idem-hr-env' },
+          db,
+        ),
+      ).rejects.toThrow(/GITHUB_TOKEN is not configured/);
+    },
+  );
 });

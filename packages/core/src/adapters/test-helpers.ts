@@ -11,6 +11,9 @@ export class InMemoryAdapterDb implements DbClient {
   readonly agentConfigurations: Record<string, unknown>[] = [];
   readonly agentRuns: Record<string, unknown>[] = [];
   readonly agentErrors: Record<string, unknown>[] = [];
+  readonly agentContextPacks: Record<string, unknown>[] = [];
+  readonly agentToolOperations: Record<string, unknown>[] = [];
+  readonly costRecords: Record<string, unknown>[] = [];
 
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     return this.dispatch(sql, params) as T[];
@@ -74,7 +77,7 @@ export class InMemoryAdapterDb implements DbClient {
     if (s.includes('INTO agent_runs')) {
       // Column order: id, adapter_id, project_id, feature_run_id, role, state, input_summary,
       //   adapter_name, adapter_implementation, adapter_version, capabilities_used,
-      //   version(literal 1), created_at, updated_at
+      //   prompt_template_version, version(literal 1), created_at, updated_at
       const [
         id,
         adapterId,
@@ -87,6 +90,7 @@ export class InMemoryAdapterDb implements DbClient {
         adapterImplementation,
         adapterVersion,
         capabilitiesUsed,
+        promptTemplateVersion,
         createdAt,
         updatedAt,
       ] = params;
@@ -102,6 +106,7 @@ export class InMemoryAdapterDb implements DbClient {
         adapter_implementation: adapterImplementation,
         adapter_version: adapterVersion,
         capabilities_used: capabilitiesUsed,
+        prompt_template_version: promptTemplateVersion,
         created_at: createdAt,
         updated_at: updatedAt,
       });
@@ -116,6 +121,80 @@ export class InMemoryAdapterDb implements DbClient {
         message,
         occurred_at: occurredAt,
         created_at: createdAt,
+      });
+      return;
+    }
+    if (s.includes('INTO agent_context_packs')) {
+      const [id, agentRunId, content, contentSchemaVersion, createdAt, updatedAt] = params;
+      this.agentContextPacks.push({
+        id,
+        agent_run_id: agentRunId,
+        content,
+        content_schema_version: contentSchemaVersion,
+        version: 1,
+        created_at: createdAt,
+        updated_at: updatedAt,
+      });
+      return;
+    }
+    if (s.includes('INTO agent_tool_operations')) {
+      const [
+        id,
+        agentRunId,
+        toolName,
+        inputSummary,
+        outputSummary,
+        status,
+        durationMs,
+        occurredAt,
+        createdAt,
+      ] = params;
+      this.agentToolOperations.push({
+        id,
+        agent_run_id: agentRunId,
+        tool_name: toolName,
+        input_summary: inputSummary,
+        output_summary: outputSummary,
+        status,
+        duration_ms: durationMs,
+        occurred_at: occurredAt,
+        created_at: createdAt,
+      });
+      return;
+    }
+    if (s.includes('INTO cost_records')) {
+      const [
+        id,
+        projectId,
+        featureRequestId,
+        featureRunId,
+        agentRunId,
+        scope,
+        amount,
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
+        recordedAt,
+        createdAt,
+        updatedAt,
+      ] = params;
+      this.costRecords.push({
+        id,
+        project_id: projectId,
+        feature_request_id: featureRequestId,
+        feature_run_id: featureRunId,
+        agent_run_id: agentRunId,
+        scope,
+        amount,
+        provider,
+        model,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        recorded_at: recordedAt,
+        version: 1,
+        created_at: createdAt,
+        updated_at: updatedAt,
       });
       return;
     }
@@ -142,21 +221,35 @@ export class InMemoryAdapterDb implements DbClient {
       return;
     }
     if (s.includes('UPDATE agent_runs') && s.includes('output_summary')) {
-      const [state, outputSummary, endedAt, updatedAt, id] = params;
+      // Params: state, outputSummary, endedAt, tokensUsed, costUsd, provider, model, updatedAt, id
+      const [state, outputSummary, endedAt, tokensUsed, costUsd, provider, model, updatedAt, id] =
+        params;
       const row = this.agentRuns.find((r) => r.id === id);
-      if (row)
+      if (row) {
         Object.assign(row, {
           state,
           output_summary: outputSummary,
           ended_at: endedAt,
           updated_at: updatedAt,
         });
+        if (tokensUsed !== null && tokensUsed !== undefined) row.tokens_used = tokensUsed;
+        if (costUsd !== null && costUsd !== undefined) row.cost_usd = costUsd;
+        if (provider !== null && provider !== undefined) row.provider = provider;
+        if (model !== null && model !== undefined) row.model = model;
+      }
       return;
     }
     if (s.includes('UPDATE agent_runs') && s.includes('error')) {
-      const [state, error, endedAt, updatedAt, id] = params;
+      // Params: state, error, endedAt, tokensUsed, costUsd, provider, model, updatedAt, id
+      const [state, error, endedAt, tokensUsed, costUsd, provider, model, updatedAt, id] = params;
       const row = this.agentRuns.find((r) => r.id === id);
-      if (row) Object.assign(row, { state, error, ended_at: endedAt, updated_at: updatedAt });
+      if (row) {
+        Object.assign(row, { state, error, ended_at: endedAt, updated_at: updatedAt });
+        if (tokensUsed !== null && tokensUsed !== undefined) row.tokens_used = tokensUsed;
+        if (costUsd !== null && costUsd !== undefined) row.cost_usd = costUsd;
+        if (provider !== null && provider !== undefined) row.provider = provider;
+        if (model !== null && model !== undefined) row.model = model;
+      }
       return;
     }
     throw new Error(`InMemoryAdapterDb: unsupported UPDATE: ${s}`);

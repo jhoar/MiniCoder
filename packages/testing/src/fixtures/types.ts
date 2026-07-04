@@ -10,7 +10,8 @@ export type FixtureName =
   | 'trigger-retry'
   | 'github-race'
   | 'final-design-document'
-  | 'execution-orchestrator';
+  | 'execution-orchestrator'
+  | 'coder-adapter-run';
 
 export interface Fixture {
   name: FixtureName;

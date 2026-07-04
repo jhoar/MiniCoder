@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.16
-> Last-updated: 2026-07-03
+> Version: 1.0.23
+> Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -910,13 +910,237 @@ progresses through the happy path.
   scenario's "sequencing continuation" step simulates a feature reaching `merged` with a direct
   SQL update rather than a real merge command, standing in for the not-yet-built Phase 12 path.
 
-## Phase 9 — Reference Coder Adapter
+## Phase 9 — Reference Coder Adapter ✓
 
-Deliver a reference Coder adapter (e.g., `CodexCoderAdapter`), coder context packs, branch-update
-handling, commit/push tracking, and coder-run cost/token records.
+> **Status: Complete** (2026-07-04)
+
+Delivers a reference Coder adapter (`CodexCoderAdapter`), coder context packs, branch-update
+handling, commit/push tracking, coder-run cost/token records, and — for the first time — a real
+(not merely documented) implementation of the workspace-sandboxing policy in
+[`07-security-and-secrets.md`](07-security-and-secrets.md) §6. This is where the pipeline built in
+Phases 1–8 stops being purely structural: before this phase, nothing after `StartCodingCommand` did
+any real work — `feature_runs` reached `coding` and no adapter was ever invoked in production.
+Phase 5 deferred provider-level fields, cost/token reporting, and Workflow Layer wrapper invocation
+of adapters to "Phase 9+" (see Phase 5's "Deferred to Phase 9–10" note above) — this is that phase.
+
+**Scope decisions:**
+
+1. **LLM codegen goes through a small injected interface, not a vendor SDK.** `CodexCoderAdapter`
+   takes a `CodeGenerationProvider` (`generate({featureTitle, acceptanceCriteria, repoContext}) →
+{files, tokensUsed?}`) via constructor injection. Ships exactly one concrete implementation,
+   `HttpCodeGenerationProvider` — a plain `fetch`-based client against an OpenAI-compatible
+   chat/completions endpoint (configurable base URL/API key/model), no vendor SDK dependency. Tests
+   use a deterministic fake implementation of the interface.
+2. **Real sandboxing ships in this phase, not deferred.** Container-level isolation with network
+   egress denial is in scope now (not pushed to Phase 16/18) — this materially increased the
+   phase's size versus a typical phase.
+3. **Code push uses local git, not a Git Data API.** The adapter package owns its own git
+   clone/commit/push (via `child_process.execFile`, token-authenticated HTTPS remote, never
+   `--force`) rather than `GitHubClient` growing `createBlob`/`createTree`/`createCommit` methods.
+   `GitHubClient`'s interface did not change; the only new production behavior is a new call site
+   for the already-existing (previously uncalled) `createPullRequest`.
+
+**Delivered modules:**
+
+- `packages/adapters-coder/` (new package, `@minicoder/adapters-coder`) — depends only on
+  `@minicoder/core`'s adapter role types (`CoderAgentAdapter`, `CoderInput`, `CoderOutput`) and
+  error taxonomy (`AdapterRunError`, `AgentRunErrorType`), never core's command/persistence
+  internals: `codex-coder-adapter.ts` (`CodexCoderAdapter`, composing the modules below into a
+  `CoderAgentAdapter`), `sandbox.ts` (`CoderSandbox`, a `dockerode`-based ephemeral container
+  lifecycle implementing a shared `CommandRunner` seam), `workspace.ts` (git clone/checkout/write/
+  commit/push orchestration, runner-agnostic so the same code runs against a local
+  `child_process` runner in tests or inside a sandbox container via `docker exec` in production),
+  `command-runner.ts` (`ChildProcessCommandRunner`, the local-execution seam), `diff-guard.ts`
+  (bounded-diff/disallowed-path checks — a pure function, defense-in-depth on top of container
+  isolation, not a replacement for it), `code-generation-provider.ts` (`CodeGenerationProvider`
+  interface + `HttpCodeGenerationProvider`), `context-pack.ts` (`ContextPackV1`, a versioned Zod
+  schema per docs/03 §11.4).
+- `packages/migrations/migrations/0010_agent_run_provider_tracking.*` — adds `provider`, `model`,
+  `prompt_template_version` to `agent_runs` (additive only; `EXPECTED_TABLES` count is unchanged —
+  no new table). No `agent_runs.triggerdev_run_id` column — `triggerdev_runs.linked_agent_run_id`
+  already provides that join; a second redundant join column was considered and rejected. No new
+  `input_artifact_references`/`output_artifact_references` columns — input maps onto the new
+  `agent_context_packs` row id, output stays in the existing `output_summary` JSON. `cost_records`
+  needed no new columns.
+- `packages/core/src/adapters/run-recorder.ts` — `AgentRunRecorder`/`RecordRunOptions` gain
+  additive, backward-compatible fields: `contextPack` (writes one `agent_context_packs` row before
+  the wrapped call runs — Phase 9 is this table's first production writer), `costExtractor` (a
+  function of the run's `RunOutcome` — success _or_ failure, since a failed provider call can
+  still carry partial usage — that folds `tokens_used`/`cost_usd`/`provider`/`model` into the
+  existing `agent_runs` UPDATE and writes one `cost_records` row, `scope='feature'` when
+  `featureRequestId` is supplied else `'project'`, **before** any budget evaluation the caller
+  performs next — write-then-evaluate ordering per docs/01 §5.11 and this document's Budget Gate
+  section; throws if a reported `costUsd` has no `projectId` to attribute it to, since
+  `cost_records.project_id` is `NOT NULL`), and `toolOperationsExtractor` (writes
+  `agent_tool_operations` rows — Phase 9 is also this table's first production writer). Existing
+  Phase 5/6 callers are unaffected — all three fields are optional.
+- `packages/core/src/commands/handlers/feature/record-code-pushed.ts` — `RecordCodePushedCommand`'s
+  payload gains `branchName` and `filesChanged` (previously only `commitSha`), carried into the
+  `feature.code_pushed` `workflow_events`/`outbox_events` payload (`packages/core/src/events/
+schemas.ts`'s `FeatureCodePushedPayloadSchema` extended to match); no new `feature_runs` column
+  was needed. The command's idempotency key stays `record-code-pushed:{featureRunId}:{commitSha}`
+  unchanged — `commitSha` is already a per-occurrence discriminator (a genuinely new commit per
+  push), so it already satisfies this document's `{expectedVersion}`-or-equivalent convention;
+  changing it was considered and correctly not done.
+- `packages/triggerdev/src/tasks/run-coder.ts` (new task) — bridges `coding` → sandboxed adapter
+  invocation → `RecordCodePushedCommand` → PR creation. A **separate**, independently
+  scheduled/triggered task from `start-next-feature.ts` (not inlined into it) — matching the
+  existing event-driven `pr_opened → ci_running` pattern rather than growing
+  `start-next-feature.ts`'s already six-rounds-of-review-hardened logic. Resolves the active
+  `CoderAgentAdapter` DB record via `AdapterRegistry` (never imports `CodexCoderAdapter` directly —
+  the literal "orchestrator does not call provider APIs directly" acceptance criterion) while a
+  separate, caller-injected `CoderAdapterFactory` (`(repoUrl) => Promise<CoderAgentAdapter>`)
+  supplies the actual runtime instance — a factory, not a singleton, since one deployment can serve
+  multiple projects with different repos and `CoderInput` itself carries no repo/credential
+  fields. Invokes the adapter through the extended `AgentRunRecorder`, acquires
+  `execution-lane:{projectId}` to dispatch `RecordCodePushedCommand`, then calls
+  `GitHubClient.createPullRequest` outside the lock (a non-fatal, logged side effect if it fails —
+  the coder's work is already durably recorded; reconciliation or a human can retry PR creation).
+  On adapter failure, the feature run is left at `coding` with no new `coding → failed/blocked`
+  matrix edge — that escalation loop is Phase 10/11 scope, the same "handler exists, caller lands
+  later" posture Phase 8 used for `StartFixingHandler`/`UnblockFeatureHandler`. Its default
+  resolvers (`resolveDefaultCoderAdapterFactory`/`resolveDefaultGithubClientFactory`) construct a
+  real `CodexCoderAdapter`/`OctokitGitHubClient` from env vars via dynamic `import()` (mirroring
+  `github-reconciliation.ts`'s existing pattern for `GitHubClient`), failing fast with an
+  actionable error if `GITHUB_TOKEN`/`CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` are
+  unset; test scenarios inject `MockCoderAdapter`/`MockGitHubClient` directly instead.
+- `packages/triggerdev/src/tasks/transient-race.ts` (new) — `isTransientRace(err,
+expectedCommandErrorTypes)` extracted from `start-next-feature.ts`'s previously-duplicated
+  private copy; `github-reconciliation.ts` and the new `run-coder.ts` now share this one
+  implementation of the `LockConflictError`/`OptimisticLockError`/`StaleFenceError` classification,
+  each still supplying its own task-specific `CommandError` `problem.type` allow-list.
+- `packages/testing/src/services/mock-github-client.ts` — `MockGitHubClient.createBranch`/
+  `createPullRequest` changed from throwing stubs ("not used by Phase 7 scenarios") to real
+  deterministic in-memory recorders (`branches`/`pullRequests` arrays); `createPullRequest` also
+  registers the PR into the wrapped `MockGitHubProvider` (deriving the feature-run id from the
+  `minicoder/<featureRunId>` branch-naming convention) so `getPullRequest`/`reconcileGithubState`
+  observe it exactly as they would a real GitHub PR.
+- `packages/testing/src/scenarios/coder-adapter-run.ts` + `fixtures/coder-adapter-run.ts` (new
+  scenario, registered alongside `execution-orchestrator`, runnable via `minicoder test system`) —
+  drives two feature runs already fixture-seeded at `coding`: one through `run-coder` to
+  `code_pushed` with `MockCoderAdapter('success')`/the upgraded `MockGitHubClient`, asserting on
+  `agent_runs` (`succeeded`), exactly one `agent_context_packs` row, and the resulting
+  `createPullRequest` call; the other with `MockCoderAdapter('fail')`, asserting the feature run
+  stays at `coding` with exactly one `agent_errors` row rather than a false `code_pushed`
+  transition. Registers `MockCoderAdapter` into the DB-backed `AdapterRegistry` itself (scoped to
+  this scenario, since it is the first to need a `CoderAgentAdapter` registry entry) rather than
+  extending `runner.ts`'s shared setup.
+- `infra/docker-compose.coder-sandbox.yml` + `infra/docker/coder-sandbox/{Dockerfile,egress-proxy/}`
+  (new) — a 2-service stack (`coder-sandbox-egress-proxy`: a `tinyproxy` allow-list forward proxy,
+  `FilterDefaultDeny yes`, dual-homed between an `internal: true` sandbox network and a real-egress
+  network, GitHub-hosts baked in plus the configured LLM host appended at container start;
+  `coder-sandbox-docker-proxy`: a narrowly-scoped second `tecnativa/docker-socket-proxy` instance,
+  separate from the Trigger.dev supervisor's own proxy) following `docker-compose.triggerdev.yml`'s
+  established conventions (named isolated networks, per-service resource limits). The pre-baked
+  sandbox image (non-root user, git + Node/pnpm preinstalled) is built separately and referenced by
+  name, since `CoderSandbox` creates/removes one container per run rather than running one
+  persistent service.
+
+**Test coverage delivered:** `packages/adapters-coder`'s unit suite (`diff-guard.test.ts`,
+`sandbox.test.ts` against a fake `dockerode` client, `workspace.test.ts` against a real local
+throwaway git repo — no Docker required, `codex-coder-adapter.test.ts` against a fake `Sandbox` +
+fake `CodeGenerationProvider`); `run-recorder.test.ts`'s new "context packs, cost/tool-operation
+provenance" describe block in `packages/core`; `packages/triggerdev/src/tasks/run-coder.test.ts`
+(no-op-off-coding, happy path with full provenance assertions, PR-creation-failure-is-non-fatal,
+adapter-failure-leaves-`coding`); the `coder-adapter-run` scenario described above.
+
+**Deviations from the original plan:**
+
+- **No Docker-daemon-gated integration test was added.** The implementation session's environment
+  had no reachable Docker daemon (`docker info` failed), so the sandbox infra
+  (`infra/docker-compose.coder-sandbox.yml`, the Dockerfiles) could be written and syntax-validated
+  (`docker compose config`) but not exercised end to end, and no gated test proving egress denial
+  was added. This is tracked as follow-up work for an environment with a live daemon, the same way
+  a `MINICODER_TEST_PG_URL`-gated test requires a reachable PostgreSQL instance.
+- The scenario drives `coding → code_pushed` directly (both fixture feature runs start at
+  `coding`) rather than the full `selected → coding → code_pushed` path — `start-next-feature`'s
+  `selected → coding` transition is already covered by the `execution-orchestrator` scenario, so
+  re-covering it here would be redundant; `coder-adapter-run` is scoped to what's new in this
+  phase.
+- `RecordCodePushedCommand`'s idempotency key was **not** changed to include `{expectedVersion}` —
+  see "Delivered modules" above; `commitSha` was already occurrence-unique.
+
+**Post-implementation review fixes (round 1):** a full code/architecture/security review found
+one Critical, six High, three Medium, and one Low finding, all fixed. Highlights: the
+`feature.code_pushed` event schema required `.uuid()` IDs but `generateId()` never produces one
+(a pre-existing, pre-Phase-7 latent bug newly exposed by this phase's schema extension); the
+sandbox's `/workspace` mount was missing entirely under `ReadonlyRootfs`, so every real run would
+have failed at clone time; commits had no git author identity configured; generated file paths
+were written before the diff guard's disallowed-path check ever ran, so `../`/absolute-path
+traversal could escape the intended tree; the GitHub token could leak through failed-git-command
+error messages; coder runs never actually wrote a `cost_records` row (no `costUsd`, only token
+counts), undermining the budget-gate integration claim; PR creation was hardcoded to `main`
+instead of using `repositories.default_branch`; and `prompt_template_version` was declared but
+never persisted. See CLAUDE.md's Reference Coder Adapter Operational Constraints section for the
+full fix-by-fix writeup and regression-test pointers.
+
+**Post-implementation review fixes (round 2):** a re-review found round 1's `feature.code_pushed`
+schema fix was incomplete — the identical `.uuid()`-vs-`generateId()` mismatch was still live on
+every other event schema in the same file (`feature.selected`, `feature.coding_started`,
+`feature.merged`, `plan.approved`, `plan.activated`, `automation.paused_by_operator`/
+`.budget_exceeded`, `automation.resumed`) — fixed everywhere in one pass, with a new
+schema-level regression test file. Also fixed: `prompt_template_version` still wasn't populated
+for real coder runs (only synthetic/test calls); cost-pricing env vars were parsed without
+validation (a malformed value could silently poison a persisted cost); and a stale runbook example
+still omitted the now-required `coderAdapterName`. Also clarified (docs-only, no code change) that
+the code-generation LLM call is deliberately host-process, not routed through the sandbox's egress
+proxy — the sandbox is the untrusted-code-execution boundary, so the LLM credential must stay out
+of it. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 2" section for detail.
+
+**Post-implementation review fixes (round 3):** a third re-review found `PlanActivatedPayloadSchema`
+required `featureRequestCount`, a field the real producer (`ActivatePlanHandler`) never emits — it
+emits `activatedFeatureCount` — so every real `plan.activated` event still failed validation
+despite round 2's schema-level test suite, which had hand-built its payload using the schema's own
+(wrong) field name instead of checking the actual producer. Fixed by renaming the schema field and
+adding a producer-level regression test (`backlog-activation` scenario now parses the real emitted
+outbox row against `EVENT_SCHEMAS`, not a hand-built payload). Also fixed: blank
+(empty-string/whitespace) `CODE_GEN_PRICE_PER_1K_*_TOKENS`/`CODER_PROMPT_TEMPLATE_VERSION` env
+vars were silently accepted (`Number('')` evaluates to `0` in JavaScript), bypassing round 2's
+validation — both now explicitly reject blank values and fall back to the default; and two stale
+doc/comment inconsistencies from round 2's trust-boundary decision were corrected. See CLAUDE.md's
+Reference Coder Adapter Operational Constraints "round 3" section for detail.
+
+**Post-implementation review fixes (round 4):** a fourth re-review found no critical/high/medium
+issues (round 3's fixes held), with two low-priority watch items: required runtime env vars
+(`GITHUB_TOKEN`, `CODE_GEN_BASE_URL`, `CODE_GEN_API_KEY`, `CODE_GEN_MODEL`) were still only
+truthiness-checked, inconsistent with round 3's blank-rejection treatment of the pricing/
+prompt-version env vars — fixed with a shared `requireNonBlankEnvVar()` helper; and the
+`plan.activated` producer regression validated payload shape but not count semantics — fixed by
+asserting the parsed `activatedFeatureCount` equals the actual number of `feature_runs` rows
+produced. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 4" section for
+detail.
+
+**Post-implementation review fixes (round 5):** a fifth re-review found no critical/high/medium
+issues, with three low-priority watch items: `github-reconciliation.ts` still used a
+truthiness-only `GITHUB_TOKEN` check while `run-coder.ts` had already moved to blank-rejecting
+validation, so the two GitHub-facing tasks had diverging contracts for the same env var — fixed
+by extracting the shared `requireNonBlankEnvVar()` helper into a new `tasks/env.ts`, adopted by
+both; the `plan.activated` count regression only held because the fixture never had a
+preexisting `feature_runs` row (`activatedFeatureCount` means "newly inserted," not "final
+total," and a regression reporting the total would still have passed) — fixed by seeding a
+preexisting row and asserting the delta; and a suggested observability/alerting item for
+pushed-but-no-PR runs was explicitly deferred as genuine future work (Phase 16 observability
+scope), not built now. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 5"
+section for detail.
 
 Acceptance: the adapter implements `CoderAgentAdapter`; the orchestrator does not call provider APIs
-directly; a coder run can update a branch; changed files/commits are recorded.
+directly (adapter resolution is always via `AdapterRegistry`); a coder run executes inside an
+isolated, egress-restricted, ephemeral container (infra written; not yet daemon-verified — see
+Deviations) and can update a branch; changed files/commits are recorded on both `feature_runs` (via
+the extended `RecordCodePushedCommand`) and `agent_runs`/`agent_context_packs`/
+`agent_tool_operations`; coder-run cost/token usage is recorded in `cost_records` before any budget
+evaluation runs against it; a PR is opened via the (previously uncalled)
+`GitHubClient.createPullRequest`.
+
+**Explicitly deferred to later phases:** per-`AgentRun` pre-flight token/cost forecast-before-call
+(Phase 16, already marked there in docs/01 §5.11); the review/fix loop and any `coding`/
+`code_pushed → changes_requested/fixing` re-entry (Phase 10); disagreement/arbiter handling of
+coder-vs-reviewer conflicts (Phase 11); merge-gate consumption of this phase's cost/PR data
+(Phase 12); multiple concurrent coder runs per project / parallel sandboxes (Phase 18); a
+production-grade LLM-provider-selection UI or prompt-template-versioning workflow (ongoing/Phase 16
+observability). Git Data API methods on `GitHubClient` and an `agent_runs.triggerdev_run_id` column
+were both considered and explicitly rejected (see "Delivered modules" above) — do not re-propose
+either without new information.
 
 ## Phase 10 — Reference Reviewer Adapter and Review/Fix Loop
 

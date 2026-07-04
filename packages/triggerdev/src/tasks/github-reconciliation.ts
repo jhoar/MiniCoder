@@ -1,13 +1,9 @@
 import type { DbClient, GitHubClient, FeatureExecutionState } from '@minicoder/core';
-import {
-  CommandError,
-  OptimisticLockError,
-  StaleFenceError,
-  reconcileGithubState,
-  requiresExecutionLock,
-} from '@minicoder/core';
-import { WorkflowLockManager, LockConflictError } from '@minicoder/workflow';
+import { reconcileGithubState, requiresExecutionLock } from '@minicoder/core';
+import { WorkflowLockManager } from '@minicoder/workflow';
 import type { GithubReconciliationPayload } from './types.js';
+import { isTransientRace as isTransientRaceShared } from './transient-race.js';
+import { requireNonBlankEnvVar } from './env.js';
 
 export type { GithubReconciliationPayload };
 
@@ -24,22 +20,15 @@ const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command']);
 
 /**
  * A transient concurrency loss on a single candidate that a later reconciliation pass will simply
- * retry past — the candidate is skipped without aborting the rest of the batch:
- *   - LockConflictError: another holder (the start-next-feature task, a webhook-triggered inbox
- *     handler, or an HA-cluster peer) owns the project's `execution-lane:{projectId}` lock;
- *   - OptimisticLockError: a concurrent writer bumped feature_runs.version between reconcile's
- *     fresh read and a Record* command's compare-and-swap;
- *   - StaleFenceError: the execution-lane lease was reclaimed mid-operation;
- *   - a `concurrent-command` CommandError (an in-flight idempotency-key race with a webhook
- *     handler running the same transition).
- * A genuine infrastructure failure (DB down, GitHub API error, etc.) is none of these and still
- * throws, correctly failing the task for Trigger.dev retry.
+ * retry past — the candidate is skipped without aborting the rest of the batch. See
+ * `transient-race.ts`'s `isTransientRace()` doc comment for the shared LockConflictError/
+ * OptimisticLockError/StaleFenceError classification; this task only treats `concurrent-command`
+ * as an additional expected race (an in-flight idempotency-key race with a webhook handler
+ * running the same transition). A genuine infrastructure failure (DB down, GitHub API error,
+ * etc.) matches none of these and still throws, correctly failing the task for Trigger.dev retry.
  */
 function isTransientRace(err: unknown): boolean {
-  if (err instanceof LockConflictError) return true;
-  if (err instanceof OptimisticLockError) return true;
-  if (err instanceof StaleFenceError) return true;
-  return err instanceof CommandError && EXPECTED_COMMAND_ERROR_TYPES.has(err.problem.type);
+  return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
 export type GithubClientFactory = () => Promise<GitHubClient>;
@@ -50,18 +39,17 @@ export type GithubClientFactory = () => Promise<GitHubClient>;
  * constructs an OctokitGitHubClient directly from env, since GitHub credentials (unlike agent
  * adapters) are a single deployment-wide secret, not a per-call injected dependency. Fails fast
  * with an actionable error if GITHUB_TOKEN is unset, matching the "not configured yet" pattern
- * used elsewhere for not-yet-wired dependencies.
+ * used elsewhere for not-yet-wired dependencies. `requireNonBlankEnvVar` is shared with
+ * `run-coder.ts` (LOW-1 code-review fix, round 5) so both GitHub-facing task entrypoints reject
+ * whitespace-only `GITHUB_TOKEN` values identically instead of drifting apart.
  */
 function resolveDefaultGithubClientFactory(): GithubClientFactory {
   return async () => {
-    const token = process.env['GITHUB_TOKEN'];
-    if (!token) {
-      throw new Error(
-        'GITHUB_TOKEN is not configured. github-reconciliation requires a GitHub credential ' +
-          '(GitHub App installation token or PAT) to fetch authoritative PR state — see ' +
-          'docs/07-security-and-secrets.md §3.',
-      );
-    }
+    const token = requireNonBlankEnvVar(
+      'GITHUB_TOKEN',
+      'github-reconciliation requires a GitHub credential (GitHub App installation token or PAT) ' +
+        'to fetch authoritative PR state — see docs/07-security-and-secrets.md §3.',
+    );
     const { OctokitGitHubClient } = await import('@minicoder/github');
     return new OctokitGitHubClient({ auth: token });
   };

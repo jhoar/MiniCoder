@@ -1,0 +1,6 @@
+# Default allow-list: GitHub only. The code-generation provider host is appended at container
+# start from CODE_GEN_ALLOWED_HOST (see entrypoint.sh) since it's deployment-specific.
+^github\.com$
+^api\.github\.com$
+^codeload\.github\.com$
+^objects\.githubusercontent\.com$

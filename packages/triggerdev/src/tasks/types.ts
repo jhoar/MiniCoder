@@ -101,6 +101,14 @@ export const GithubReconciliationPayload = BasePayload.extend({
   featureRunId: z.string().optional(),
 });
 
+export const RunCoderPayload = BasePayload.extend({
+  featureRunId: z.string(),
+  // MEDIUM-3 code-review fix: no default. A default of 'MockCoderAdapter' let a production
+  // trigger that omitted this field silently resolve a test adapter instead of the real
+  // CodexCoderAdapter the default resolver constructs — callers must name the adapter explicitly.
+  coderAdapterName: z.string(),
+});
+
 export const ExportPlanPayload = BasePayload.merge(ActorPayload).extend({
   planId: z.string(),
 });
@@ -136,6 +144,7 @@ export type RequestPlanApprovalPayload = z.infer<typeof RequestPlanApprovalPaylo
 export type ActivateApprovedBacklogPayload = z.infer<typeof ActivateApprovedBacklogPayload>;
 export type StartNextFeaturePayload = z.infer<typeof StartNextFeaturePayload>;
 export type GithubReconciliationPayload = z.infer<typeof GithubReconciliationPayload>;
+export type RunCoderPayload = z.infer<typeof RunCoderPayload>;
 export type ExportPlanPayload = z.infer<typeof ExportPlanPayload>;
 export type ExportBacklogPayload = z.infer<typeof ExportBacklogPayload>;
 export type ImportBacklogPayload = z.infer<typeof ImportBacklogPayload>;

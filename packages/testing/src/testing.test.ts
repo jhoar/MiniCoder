@@ -12,8 +12,8 @@ describe('createTestDb', () => {
 });
 
 describe('FIXTURE_REGISTRY', () => {
-  it('contains all 10 fixtures', () => {
-    expect(FIXTURE_REGISTRY.size).toBe(10);
+  it('contains all 11 fixtures', () => {
+    expect(FIXTURE_REGISTRY.size).toBe(11);
   });
 
   for (const [name, fixture] of FIXTURE_REGISTRY) {
@@ -41,6 +41,11 @@ describe('runScenario', () => {
   it('backlog-activation passes', async () => {
     const result = await runScenario('backlog-activation');
     expect(result.passed).toBe(true);
+  });
+
+  it('coder-adapter-run passes', async () => {
+    const result = await runScenario('coder-adapter-run');
+    expect(result.passed, result.error).toBe(true);
   });
 });
 

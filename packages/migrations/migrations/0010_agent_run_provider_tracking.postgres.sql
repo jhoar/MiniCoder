@@ -1,0 +1,3 @@
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS provider TEXT;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS model TEXT;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS prompt_template_version TEXT;

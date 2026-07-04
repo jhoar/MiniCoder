@@ -184,3 +184,187 @@ describe('AgentRunRecorder.record', () => {
     expect(missingCapabilities).toBeDefined();
   });
 });
+
+describe('AgentRunRecorder.record — context packs, cost/tool-operation provenance (Phase 9)', () => {
+  it('writes exactly one agent_context_packs row keyed to the new agent_run_id', async () => {
+    const { agentRunId } = await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        input: {},
+        capabilitiesUsed: [],
+        contextPack: { content: { featureTitle: 'Add widget' } },
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    expect(db.agentContextPacks).toHaveLength(1);
+    expect(db.agentContextPacks[0]?.agent_run_id).toBe(agentRunId);
+    expect(db.agentContextPacks[0]?.content_schema_version).toBe('1.0.0');
+    expect(String(db.agentContextPacks[0]?.content)).toContain('Add widget');
+  });
+
+  it('persists promptTemplateVersion on agent_runs (MEDIUM-1 code-review fix)', async () => {
+    const { agentRunId } = await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        input: {},
+        capabilitiesUsed: [],
+        promptTemplateVersion: 'coder-v3',
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    const row = db.agentRuns.find((r) => r.id === agentRunId);
+    expect(row?.prompt_template_version).toBe('coder-v3');
+  });
+
+  it('leaves promptTemplateVersion null when not supplied', async () => {
+    const { agentRunId } = await recorder.record(
+      { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: [] },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    const row = db.agentRuns.find((r) => r.id === agentRunId);
+    expect(row?.prompt_template_version ?? null).toBeNull();
+  });
+
+  it('folds cost/token usage into agent_runs and writes one cost_records row on success', async () => {
+    const { agentRunId } = await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        projectId: 'proj-1',
+        featureRunId: 'fr-1',
+        featureRequestId: 'FR-001',
+        input: {},
+        capabilitiesUsed: [],
+        costExtractor: () => ({
+          inputTokens: 100,
+          outputTokens: 50,
+          costUsd: 0.02,
+          provider: 'openai-compatible',
+          model: 'gpt-test',
+        }),
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    const run = db.agentRuns.find((r) => r.id === agentRunId);
+    expect(run?.tokens_used).toBe(150);
+    expect(run?.cost_usd).toBe(0.02);
+    expect(run?.provider).toBe('openai-compatible');
+    expect(run?.model).toBe('gpt-test');
+
+    expect(db.costRecords).toHaveLength(1);
+    const record = db.costRecords[0];
+    expect(record?.agent_run_id).toBe(agentRunId);
+    expect(record?.project_id).toBe('proj-1');
+    expect(record?.feature_request_id).toBe('FR-001');
+    expect(record?.scope).toBe('feature');
+    expect(record?.amount).toBe(0.02);
+    expect(record?.input_tokens).toBe(100);
+    expect(record?.output_tokens).toBe(50);
+  });
+
+  it('scopes the cost_records row to project when no featureRequestId is supplied', async () => {
+    await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        projectId: 'proj-1',
+        input: {},
+        capabilitiesUsed: [],
+        costExtractor: () => ({ costUsd: 0.01 }),
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    expect(db.costRecords).toHaveLength(1);
+    expect(db.costRecords[0]?.scope).toBe('project');
+    expect(db.costRecords[0]?.feature_request_id).toBeNull();
+  });
+
+  it('does not write a cost_records row when costExtractor reports no costUsd', async () => {
+    await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        projectId: 'proj-1',
+        input: {},
+        capabilitiesUsed: [],
+        costExtractor: () => ({ inputTokens: 10 }),
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    expect(db.costRecords).toHaveLength(0);
+  });
+
+  it('throws if costExtractor reports costUsd but no projectId was supplied', async () => {
+    await expect(
+      recorder.record(
+        {
+          adapterId,
+          role: 'CoderAgentAdapter',
+          input: {},
+          capabilitiesUsed: [],
+          costExtractor: () => ({ costUsd: 0.05 }),
+        },
+        async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+      ),
+    ).rejects.toThrow(/projectId/);
+  });
+
+  it('also invokes costExtractor on failure, recording partial usage', async () => {
+    await expect(
+      recorder.record(
+        {
+          adapterId,
+          role: 'CoderAgentAdapter',
+          projectId: 'proj-1',
+          input: {},
+          capabilitiesUsed: [],
+          costExtractor: (outcome) =>
+            outcome.ok ? null : { costUsd: 0.03, provider: 'openai-compatible' },
+        },
+        async () => {
+          throw new AdapterRunError('provider_unavailable', 'boom');
+        },
+      ),
+    ).rejects.toThrow(AdapterRunError);
+
+    expect(db.costRecords).toHaveLength(1);
+    expect(db.costRecords[0]?.amount).toBe(0.03);
+    const run = db.agentRuns[0];
+    expect(run?.state).toBe(AgentRunState.FAILED);
+    expect(run?.cost_usd).toBe(0.03);
+    expect(run?.provider).toBe('openai-compatible');
+  });
+
+  it('records agent_tool_operations rows in order from toolOperationsExtractor', async () => {
+    const { agentRunId } = await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        input: {},
+        capabilitiesUsed: [],
+        toolOperationsExtractor: () => [
+          { toolName: 'git-clone', durationMs: 100 },
+          { toolName: 'pnpm-install', durationMs: 500 },
+          { toolName: 'pnpm-test', status: 'success', durationMs: 200 },
+        ],
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    expect(db.agentToolOperations).toHaveLength(3);
+    expect(db.agentToolOperations.map((r) => r.tool_name)).toEqual([
+      'git-clone',
+      'pnpm-install',
+      'pnpm-test',
+    ]);
+    expect(db.agentToolOperations.every((r) => r.agent_run_id === agentRunId)).toBe(true);
+  });
+});

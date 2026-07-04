@@ -8,6 +8,7 @@ import { triggerRetryScenario } from './trigger-retry.js';
 import { githubRaceScenario } from './github-race.js';
 import { finalDesignDocumentScenario } from './final-design-document.js';
 import { executionOrchestratorScenario } from './execution-orchestrator.js';
+import { coderAdapterRunScenario } from './coder-adapter-run.js';
 
 export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['planning-basic', planningBasicScenario],
@@ -19,6 +20,7 @@ export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['github-race', githubRaceScenario],
   ['final-design-document', finalDesignDocumentScenario],
   ['execution-orchestrator', executionOrchestratorScenario],
+  ['coder-adapter-run', coderAdapterRunScenario],
 ]);
 
 export function getScenario(name: string): Scenario {
