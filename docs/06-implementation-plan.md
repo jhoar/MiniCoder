@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.21
+> Version: 1.0.22
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1099,6 +1099,16 @@ vars were silently accepted (`Number('')` evaluates to `0` in JavaScript), bypas
 validation — both now explicitly reject blank values and fall back to the default; and two stale
 doc/comment inconsistencies from round 2's trust-boundary decision were corrected. See CLAUDE.md's
 Reference Coder Adapter Operational Constraints "round 3" section for detail.
+
+**Post-implementation review fixes (round 4):** a fourth re-review found no critical/high/medium
+issues (round 3's fixes held), with two low-priority watch items: required runtime env vars
+(`GITHUB_TOKEN`, `CODE_GEN_BASE_URL`, `CODE_GEN_API_KEY`, `CODE_GEN_MODEL`) were still only
+truthiness-checked, inconsistent with round 3's blank-rejection treatment of the pricing/
+prompt-version env vars — fixed with a shared `requireNonBlankEnvVar()` helper; and the
+`plan.activated` producer regression validated payload shape but not count semantics — fixed by
+asserting the parsed `activatedFeatureCount` equals the actual number of `feature_runs` rows
+produced. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 4" section for
+detail.
 
 Acceptance: the adapter implements `CoderAgentAdapter`; the orchestrator does not call provider APIs
 directly (adapter resolution is always via `AdapterRegistry`); a coder run executes inside an

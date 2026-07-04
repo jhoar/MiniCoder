@@ -78,6 +78,16 @@ export const backlogActivationScenario: Scenario = {
       throw new Error(`Expected exactly 1 plan.activated outbox row, found ${outboxRows.length}`);
     }
     const payload: unknown = JSON.parse(outboxRows[0]!.payload);
-    EVENT_SCHEMAS['plan.activated']!.parse(payload);
+    const parsed = EVENT_SCHEMAS['plan.activated']!.parse(payload);
+
+    // LOW-2 code-review fix (round 4): the shape-only parse above would still pass if
+    // ActivatePlanHandler reported the wrong count, since Zod validates types, not values —
+    // assert the payload's activatedFeatureCount matches the actual number of feature_runs rows
+    // this run produced.
+    if (parsed.activatedFeatureCount !== featureRuns.length) {
+      throw new Error(
+        `Expected plan.activated payload activatedFeatureCount to equal ${featureRuns.length}, got ${parsed.activatedFeatureCount}`,
+      );
+    }
   },
 };

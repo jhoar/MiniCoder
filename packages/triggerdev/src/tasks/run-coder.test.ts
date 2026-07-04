@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type {
   CoderAgentAdapter,
   CoderInput,
@@ -503,6 +503,115 @@ describe('run-coder', () => {
         [featureRunId],
       );
       expect(agentRuns[0]?.prompt_template_version).toBe('coder-v2-custom');
+    });
+  });
+
+  describe('required env var validation (LOW-1 code-review fix, round 4)', () => {
+    const REQUIRED_ENV_VARS = [
+      'GITHUB_TOKEN',
+      'CODE_GEN_BASE_URL',
+      'CODE_GEN_API_KEY',
+      'CODE_GEN_MODEL',
+    ] as const;
+    const savedEnv: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      for (const key of REQUIRED_ENV_VARS) {
+        savedEnv[key] = process.env[key];
+      }
+    });
+
+    afterEach(() => {
+      for (const key of REQUIRED_ENV_VARS) {
+        if (savedEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedEnv[key];
+      }
+    });
+
+    it.each(['', '   '])(
+      'the default coder adapter factory rejects a whitespace-only GITHUB_TOKEN (%j)',
+      async (blankValue) => {
+        process.env['GITHUB_TOKEN'] = blankValue;
+
+        const db = createTestDb();
+        insertTestProject(db, PROJECT_ID);
+        const { featureRunId } = await seedCodingFeatureRun(db);
+        await registerCoderAdapter(db);
+
+        await expect(
+          runImpl(
+            {
+              projectId: PROJECT_ID,
+              featureRunId,
+              correlationId: 'corr-required-env-github-token',
+              idempotencyKey: 'idem-required-env-github-token',
+              coderAdapterName: 'FakeCoderAdapter',
+            },
+            db,
+            {},
+          ),
+        ).rejects.toThrow(/GITHUB_TOKEN is not configured/);
+      },
+    );
+
+    it.each(['CODE_GEN_BASE_URL', 'CODE_GEN_API_KEY', 'CODE_GEN_MODEL'] as const)(
+      'the default coder adapter factory rejects a whitespace-only %s',
+      async (envVarName) => {
+        process.env['GITHUB_TOKEN'] = 'a-real-token';
+        process.env['CODE_GEN_BASE_URL'] = 'https://example.invalid';
+        process.env['CODE_GEN_API_KEY'] = 'a-real-key';
+        process.env['CODE_GEN_MODEL'] = 'a-real-model';
+        process.env[envVarName] = '   ';
+
+        const db = createTestDb();
+        insertTestProject(db, PROJECT_ID);
+        const { featureRunId } = await seedCodingFeatureRun(db);
+        await registerCoderAdapter(db);
+
+        await expect(
+          runImpl(
+            {
+              projectId: PROJECT_ID,
+              featureRunId,
+              correlationId: `corr-required-env-${envVarName}`,
+              idempotencyKey: `idem-required-env-${envVarName}`,
+              coderAdapterName: 'FakeCoderAdapter',
+            },
+            db,
+            {},
+          ),
+        ).rejects.toThrow(new RegExp(`${envVarName} is not configured`));
+      },
+    );
+
+    it('the default github client factory logs a clear error for a whitespace-only GITHUB_TOKEN (PR creation is a swallowed, non-fatal failure)', async () => {
+      process.env['GITHUB_TOKEN'] = '  ';
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedCodingFeatureRun(db);
+      await registerCoderAdapter(db);
+
+      const result = await runImpl(
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-required-env-github-client',
+          idempotencyKey: 'idem-required-env-github-client',
+          coderAdapterName: 'FakeCoderAdapter',
+        },
+        db,
+        { coderAdapterFactory: async () => fakeCoderAdapter('success') },
+      );
+
+      expect(result.pushed).toBe(true);
+      expect(result.prNumber).toBeNull();
+      const loggedMessages = consoleErrorSpy.mock.calls.map((call) => String(call[1]));
+      expect(loggedMessages.some((msg) => msg.includes('GITHUB_TOKEN is not configured'))).toBe(
+        true,
+      );
+      consoleErrorSpy.mockRestore();
     });
   });
 });

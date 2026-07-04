@@ -812,6 +812,25 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   `RecordRunOptions` field unrelated to `costExtractor`. Both fixed to match the actual
   implementation.
 
+**Post-implementation review fixes (round 4):**
+
+- **LOW-1 (required runtime env vars were only truthiness-checked, not blank-rejected).**
+  `GITHUB_TOKEN`/`CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` used a bare `if (!value)`
+  check in `resolveDefaultGithubClientFactory`/`resolveDefaultCoderAdapterFactory`, so a
+  whitespace-only value passed validation and failed later with a less actionable error (e.g. an
+  Octokit auth failure instead of a clear "not configured" message) — inconsistent with round 3's
+  blank-rejection treatment of the pricing/prompt-version env vars. Fixed with a shared
+  `requireNonBlankEnvVar()` helper, applied to all four required env vars. Tested in
+  `run-coder.test.ts` for whitespace-only values on each var via the default (non-injected)
+  adapter/GitHub-client factory path — including confirming the GitHub-client-factory case still
+  surfaces as a logged, swallowed PR-creation failure (not a thrown/rejected task), consistent
+  with the existing "PR-creation failure after a successful push is never re-thrown" contract.
+- **LOW-2 (the `plan.activated` producer regression validated shape but not count semantics).**
+  The round-3 fix parsed the real emitted outbox payload against `EVENT_SCHEMAS`, but Zod validates
+  types, not values — a future regression that reported the wrong `activatedFeatureCount` (right
+  type, wrong number) would still pass. Fixed by asserting in `backlog-activation.ts` that the
+  parsed `activatedFeatureCount` equals the actual number of `feature_runs` rows the run produced.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

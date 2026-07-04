@@ -56,16 +56,26 @@ export type CoderAdapterFactory = (repoUrl: string) => Promise<CoderAgentAdapter
  * github-reconciliation.ts's resolveDefaultGithubClientFactory (GitHub credentials are a single
  * deployment-wide secret, not a per-call injected dependency).
  */
+/** LOW-1 code-review fix (round 4): a whitespace-only required env var previously passed the
+ * truthiness check here and failed later with a less actionable error (e.g. an Octokit auth
+ * failure instead of a clear "GITHUB_TOKEN is not configured" message). Trims and rejects blank
+ * values, mirroring parsePriceEnvVar's/resolvePromptTemplateVersion's blank-rejection posture. */
+function requireNonBlankEnvVar(envVarName: string, helpText: string): string {
+  const raw = process.env[envVarName];
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    throw new Error(`${envVarName} is not configured. ${helpText}`);
+  }
+  return trimmed;
+}
+
 function resolveDefaultGithubClientFactory(): GithubClientFactory {
   return async () => {
-    const token = process.env['GITHUB_TOKEN'];
-    if (!token) {
-      throw new Error(
-        'GITHUB_TOKEN is not configured. run-coder requires a GitHub credential (GitHub App ' +
-          'installation token or PAT) to open a pull request after pushing — see ' +
-          'docs/07-security-and-secrets.md §3.',
-      );
-    }
+    const token = requireNonBlankEnvVar(
+      'GITHUB_TOKEN',
+      'run-coder requires a GitHub credential (GitHub App installation token or PAT) to open a ' +
+        'pull request after pushing — see docs/07-security-and-secrets.md §3.',
+    );
     const { OctokitGitHubClient } = await import('@minicoder/github');
     return new OctokitGitHubClient({ auth: token });
   };
@@ -80,22 +90,25 @@ function resolveDefaultGithubClientFactory(): GithubClientFactory {
  */
 function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
   return async (repoUrl: string) => {
-    const githubToken = process.env['GITHUB_TOKEN'];
-    if (!githubToken) {
-      throw new Error(
-        'GITHUB_TOKEN is not configured. run-coder requires a GitHub credential to clone/push — ' +
-          'see docs/07-security-and-secrets.md §3.',
-      );
-    }
-    const codeGenBaseUrl = process.env['CODE_GEN_BASE_URL'];
-    const codeGenApiKey = process.env['CODE_GEN_API_KEY'];
-    const codeGenModel = process.env['CODE_GEN_MODEL'];
-    if (!codeGenBaseUrl || !codeGenApiKey || !codeGenModel) {
-      throw new Error(
-        'CODE_GEN_BASE_URL/CODE_GEN_API_KEY/CODE_GEN_MODEL are not configured. run-coder requires ' +
-          'an OpenAI-compatible code-generation endpoint — see docs/07-security-and-secrets.md §3.',
-      );
-    }
+    const githubToken = requireNonBlankEnvVar(
+      'GITHUB_TOKEN',
+      'run-coder requires a GitHub credential to clone/push — see docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenBaseUrl = requireNonBlankEnvVar(
+      'CODE_GEN_BASE_URL',
+      'run-coder requires an OpenAI-compatible code-generation endpoint — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenApiKey = requireNonBlankEnvVar(
+      'CODE_GEN_API_KEY',
+      'run-coder requires an OpenAI-compatible code-generation endpoint — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenModel = requireNonBlankEnvVar(
+      'CODE_GEN_MODEL',
+      'run-coder requires an OpenAI-compatible code-generation endpoint — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
     const { CodexCoderAdapter, HttpCodeGenerationProvider, CoderSandbox } =
       await import('@minicoder/adapters-coder');
     return new CodexCoderAdapter({
