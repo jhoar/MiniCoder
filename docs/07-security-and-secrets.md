@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.3
-> Last-updated: 2026-06-29
+> Version: 1.0.4
+> Last-updated: 2026-07-04
 
 This document is the authoritative security and secrets specification. It expands the principles in
 [`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
@@ -94,6 +94,29 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
   rejected on disallowed paths.
 - **No secret-bearing workflows on untrusted code.** CI/agent workflows that hold secrets must not
   run against untrusted fork code.
+
+**Phase 9 implementation status.** This section was policy-only through Phase 8; Phase 9
+(`packages/adapters-coder`, `infra/docker-compose.coder-sandbox.yml`) gives it a real
+implementation for the first time:
+
+- **Real, as of Phase 9:** one ephemeral, non-root, capability-dropped (`CapDrop: ['ALL']`),
+  read-only-root-filesystem Docker container per coder run (`CoderSandbox`, via `dockerode`
+  against a narrowly-scoped `coder-sandbox-docker-proxy`), attached only to an `internal: true`
+  Docker network with no direct route to the internet; the only egress path is an allow-list
+  forward proxy (`coder-sandbox-egress-proxy`, `tinyproxy` with `FilterDefaultDeny yes`) permitting
+  GitHub hosts plus the configured LLM provider host; the container is always removed in a
+  `finally` (success, failure, or cancellation); bounded-diff/disallowed-path enforcement runs as
+  application logic (`diff-guard.ts`) on top of — not instead of — this container isolation; one
+  branch per run, never force-pushed.
+- **Aspirational, not yet daemon-verified:** the sandbox stack was written and syntax-validated
+  (`docker compose config`) but has not been exercised against a live Docker daemon in this
+  repository's CI — the implementation session had no reachable daemon (see docs/06 Phase 9
+  "Deviations from the original plan"). A Docker-daemon-gated integration test proving egress
+  denial actually blocks a disallowed host while allowing GitHub/the LLM host remains to be added.
+  The "internal package proxy/mirror" and "local dev egress allow-list" variants described above
+  for dependency provisioning are not yet built — the pre-baked sandbox image
+  (`infra/docker/coder-sandbox/Dockerfile`) installs Node/pnpm/git at build time, but a read-only
+  bind-mounted pnpm store is not yet wired into the compose stack.
 
 ## 6a. Workflow-Layer Payload Hygiene
 

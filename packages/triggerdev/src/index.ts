@@ -18,6 +18,8 @@ export { runImpl as runValidateBacklog } from './tasks/validate-backlog.js';
 export { runImpl as runRequestPlanApproval } from './tasks/request-plan-approval.js';
 export { runImpl as runActivateApprovedBacklog } from './tasks/activate-approved-backlog.js';
 export { runImpl as runStartNextFeature } from './tasks/start-next-feature.js';
+export { runImpl as runRunCoder } from './tasks/run-coder.js';
+export type { RunCoderDeps } from './tasks/run-coder.js';
 export { runImpl as runGithubReconciliation } from './tasks/github-reconciliation.js';
 export { runImpl as runExportPlan } from './tasks/export-plan.js';
 export { runImpl as runExportBacklog } from './tasks/export-backlog.js';

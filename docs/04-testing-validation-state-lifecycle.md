@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.4
-> Last-updated: 2026-07-02
+> Version: 1.3.5
+> Last-updated: 2026-07-04
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -873,6 +873,70 @@ Only clear the pointer once the stuck feature run's disposition is resolved (a h
 retried/skipped/blocked it via the escalation path) — clearing it prematurely while the feature
 run is genuinely still in progress would let `start-next-feature` select a second concurrently
 active feature, defeating the single-active-feature invariant this column exists to enforce.
+
+### Phase 9 — Reference Coder Adapter Runbook
+
+Covers manual recovery/inspection for the coder-adapter pipeline delivered in Phase 9
+(`packages/adapters-coder`, `packages/triggerdev/src/tasks/run-coder.ts`,
+`infra/docker-compose.coder-sandbox.yml`). As with Phases 7–8, there is no Phase 13 API surface
+yet — every procedure is a direct task invocation or SQL inspection.
+
+#### Procedure: Start the coder sandbox infrastructure
+
+```bash
+docker compose -f infra/docker-compose.coder-sandbox.yml up -d
+docker build -t minicoder/coder-sandbox:latest infra/docker/coder-sandbox
+```
+
+Set `CODER_SANDBOX_DOCKER_HOST=tcp://<host>:2375` (the `coder-sandbox-docker-proxy` service) and
+`CODER_SANDBOX_HTTPS_PROXY=http://<host>:8888` (the `coder-sandbox-egress-proxy` service) in the
+environment `run-coder`'s default resolver reads. **This stack has not been exercised against a
+live Docker daemon in this repository's CI** (see docs/06 Phase 9 "Deviations from the original
+plan" and docs/07 §6's "Phase 9 implementation status") — treat a first real deployment as the
+verification pass, not as a known-working reference.
+
+#### Procedure: Recover a feature run stuck at `coding` with no `agent_runs` row
+
+`run-coder` is a separate, scheduled/triggered task from `start-next-feature` — a feature run can
+reach `coding` and then never be picked up if the scheduler/webhook that should invoke `run-coder`
+is misconfigured or down. Detect it:
+
+```sql
+SELECT fr.id, fr.current_execution_state
+FROM feature_runs fr
+LEFT JOIN agent_runs ar ON ar.feature_run_id = fr.id
+WHERE fr.current_execution_state = 'coding' AND ar.id IS NULL;
+```
+
+Recovery is invoking the task directly with the stuck `featureRunId` (no state mutation needed
+first — `run-coder` reads the current state itself and no-ops if it isn't at `coding`):
+
+```ts
+import { runRunCoder } from '@minicoder/triggerdev';
+await runRunCoder({ projectId, featureRunId, correlationId, idempotencyKey }, db);
+```
+
+#### Procedure: Inspect a coder run's full provenance
+
+```sql
+SELECT id, state, provider, model, tokens_used, cost_usd, error FROM agent_runs WHERE feature_run_id = '<id>';
+SELECT content, content_schema_version FROM agent_context_packs WHERE agent_run_id = '<agent_run_id>';
+SELECT tool_name, status, duration_ms FROM agent_tool_operations WHERE agent_run_id = '<agent_run_id>' ORDER BY occurred_at;
+SELECT scope, amount, provider, model, input_tokens, output_tokens FROM cost_records WHERE agent_run_id = '<agent_run_id>';
+```
+
+A `state = 'failed'` row's `error` column plus the matching `agent_errors.error_type` row is the
+first place to look for why a coder run didn't reach `code_pushed`.
+
+#### Procedure: Retry pull-request creation after a logged, non-fatal failure
+
+`run-coder` logs (does not throw) a `GitHubClient.createPullRequest` failure once the feature run
+has already reached `code_pushed` — the push itself is not rolled back. Confirm the feature run is
+at `code_pushed` with no tracked `pull_requests` row, then either wait for the next scheduled
+`github-reconciliation` pass (it does not discover brand-new PRs, only re-checks tracked ones — see
+the GitHub Integration Operational Constraints section of CLAUDE.md) or call
+`GitHubClient.createPullRequest` directly with the branch name recorded in the
+`feature.code_pushed` `workflow_events` row's payload.
 
 ---
 

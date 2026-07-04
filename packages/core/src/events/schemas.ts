@@ -26,6 +26,8 @@ export const FeatureCodePushedPayloadSchema = z.object({
   featureRunId: z.string().uuid(),
   projectId: z.string().uuid(),
   commitSha: z.string(),
+  branchName: z.string(),
+  filesChanged: z.number().int().nonnegative(),
 });
 export type FeatureCodePushedPayload = z.infer<typeof FeatureCodePushedPayloadSchema>;
 

@@ -7,7 +7,7 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–3 and 5–8 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–3 and 5–9 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
 backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
@@ -36,7 +36,14 @@ driving both webhook-triggered inbox handlers and the scheduled `github-reconcil
 `packages/workflow`'s `ExecutionLane`), pause/resume automation control (`ResumeAutomationCommand`),
 and the minimal budget-gate primitive (`packages/core/src/cost/`'s `evaluateBudget()`/
 `applyBudgetDecision()`, `RecordBudgetExceededCommand`, `RecordBudgetApprovalWaitingCommand`,
-`ApproveBudgetOverrideCommand`) (Phase 8, no new migration).
+`ApproveBudgetOverrideCommand`) (Phase 8, no new migration); and the Reference Coder Adapter
+implementation — `packages/adapters-coder`'s `CodexCoderAdapter` (an injected `CodeGenerationProvider`
+seam, runner-agnostic git orchestration, bounded-diff/disallowed-path enforcement), real ephemeral
+sandbox container isolation (`CoderSandbox` via `dockerode`, `infra/docker-compose.coder-sandbox.yml`'s
+egress-allow-list proxy — written but not yet daemon-verified in this repository's CI), the
+`run-coder` Trigger.dev task bridging `coding` → adapter invocation → `RecordCodePushedCommand` →
+pull-request creation, and `AgentRunRecorder`'s first production writers for `agent_context_packs`,
+`agent_tool_operations`, and `cost_records` (Phase 9, migration 0010).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -179,7 +186,7 @@ merge-if-ready, final design-document approval, and guarded/destructive lifecycl
 
 ### Workflow Layer task IDs (exact strings, no drift)
 
-All 15 canonical task IDs (`ALL_TASK_IDS` in `packages/triggerdev/src/task-ids.ts`). The 9 Phase 3
+All 16 canonical task IDs (`ALL_TASK_IDS` in `packages/triggerdev/src/task-ids.ts`). The 9 Phase 3
 tasks and the 6 Phase 6 additions are listed together — there is no "initial vs. later" distinction
 in the token set itself, only in when each task's `runImpl` was wired to a real core command:
 
@@ -187,12 +194,13 @@ in the token set itself, only in when each task's `runImpl` was wired to a real 
 ingest-specification | planning-readiness-assessment | start-clarification
 record-clarification-answer | complete-clarification | generate-implementation-plan
 generate-feature-backlog | validate-backlog | request-plan-approval
-activate-approved-backlog | start-next-feature | github-reconciliation
+activate-approved-backlog | start-next-feature | run-coder | github-reconciliation
 export-plan | export-backlog | import-backlog
 ```
 
-Every canonical task, including `github-reconciliation` (Phase 7) and `start-next-feature`
-(Phase 8), now calls a real Orchestrator Core command through `TransactionalCommandExecutor`.
+Every canonical task, including `github-reconciliation` (Phase 7), `start-next-feature`
+(Phase 8), and `run-coder` (Phase 9), now calls a real Orchestrator Core command through
+`TransactionalCommandExecutor`.
 
 ### Review finding severities (§3.7)
 
@@ -547,6 +555,123 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   authority; a stale candidate (e.g. a dependency that changes between the read and the
   `SelectFeatureCommand` dispatch) is simply rejected by that handler, not by the picker.
 
+## Reference Coder Adapter Operational Constraints (`packages/adapters-coder/`, migration 0010, `infra/docker-compose.coder-sandbox.yml`)
+
+- **Code push uses local git, not a Git Data API.** `CodexCoderAdapter` (`packages/adapters-coder`)
+  owns its own git clone/commit/push via `workspace.ts` (token-authenticated HTTPS remote,
+  `child_process.execFile`/`docker exec` — never a shell string, never `--force`). `GitHubClient`'s
+  interface (`packages/core/src/github/client.ts`) gained **no new methods** for this — adding
+  `createBlob`/`createTree`/`createCommit` was considered and rejected: the adapter isn't part of
+  `packages/core` (provider-SDK-free rule doesn't even apply to it), it already needs a real local
+  checkout to run tests (`can_run_tests`), and Git Data API commits don't naturally support running
+  a test suite before committing. The only new production behavior on `GitHubClient` is a new
+  caller of the already-existing (previously uncalled) `createPullRequest`, from
+  `packages/triggerdev/src/tasks/run-coder.ts`.
+- **`workspace.ts` is runner-agnostic — never touches host `fs` directly.** Git commands *and* file
+  writes both go through an injected `CommandRunner` (`run(cmd, args, opts)`), so the identical
+  orchestration code runs against `ChildProcessCommandRunner` (local, used by tests against a real
+  throwaway git repo) or `CoderSandbox` (`docker exec` inside the ephemeral container) with zero
+  branching. File writes use a `sh -c 'printf %s "$2" | base64 -d > "$1"'` one-liner (content
+  base64-encoded into argv) rather than stdin plumbing or host `fs.writeFile`, precisely so the
+  same call works whether the runner is local or inside a container.
+- **`RecordCodePushedCommand`'s idempotency key was deliberately left unchanged
+  (`record-code-pushed:{featureRunId}:{commitSha}`), not given an `{expectedVersion}` suffix.**
+  Unlike the recurring project-scoped automation-control keys this document flags elsewhere,
+  `commitSha` is already a per-occurrence discriminator — a genuinely new commit is produced (or,
+  on idempotent retry, the same prior commit is deterministically reused, see below) per push, so
+  the run id is not the only uniqueness anchor here. Do not "fix" this key; it was reviewed and is
+  correct as-is.
+- **Idempotent retry is a commit-trailer check, not a database record.** `workspace.ts` tags every
+  commit with a `MiniCoder-Feature-Run: <featureRunId>` trailer
+  (`FEATURE_RUN_TRAILER`) and, before writing anything, checks whether the branch's HEAD commit
+  already carries that trailer for this run — if so, it returns the existing `commitSha` without
+  re-committing or re-pushing (docs/03 §11.6: "must not double-commit/double-push" on retry).
+- **`AgentRunRecorder` gained three additive, backward-compatible `RecordRunOptions` fields —
+  `contextPack`, `costExtractor`, `toolOperationsExtractor` — none of which change any existing
+  Phase 5/6 caller.** `costExtractor`/`toolOperationsExtractor` both take the run's full
+  `RunOutcome<O>` (`{ok: true, output} | {ok: false, error}`), not just the success output, because
+  a failed provider call can still carry partial token/cost usage worth recording — see the
+  `run-recorder.test.ts` "also invokes costExtractor on failure" case. `costExtractor`'s returned
+  `costUsd` (if any) is written to `cost_records` **before** `insertCostRecord` returns, and the
+  caller's own `evaluateBudget()` call always runs after `recorder.record()` resolves — this
+  write-then-evaluate ordering is what makes the Budget Gate section's "a fresh breach evaluation
+  sees this run's cost" claim true for coder runs, not just a documented aspiration.
+  `insertCostRecord` throws if `costUsd` is reported without a `projectId` on `RecordRunOptions` —
+  `cost_records.project_id` is `NOT NULL` and there is no sensible fallback scope.
+- **`cost_records.scope` is derived from whether `featureRequestId` was supplied, not a caller
+  choice.** `featureRequestId` present → `scope='feature'` (matches `evaluateBudget()`'s
+  feature-scoped query, which filters by `feature_request_id`); absent → `scope='project'`.
+  `'agent_run'` is deliberately **not** a `cost_records.scope` value — `BudgetScope` only has three
+  members (`project`/`feature`/`review_cycle`, `packages/core/src/domain/states.ts`), and a
+  `cost_records` row using a scope no `budget_policies` row can ever match would be invisible to
+  `evaluateBudget()`, silently defeating the write-then-evaluate contract above.
+- **`run-coder.ts` is a separate, independently scheduled/triggered task from
+  `start-next-feature.ts` — never inline the two.** This matches the already-established
+  event-driven pattern (`pr_opened → ci_running` is reconciliation-driven, not chained in-process)
+  and, just as importantly, avoids touching `start-next-feature.ts`'s logic, which has already
+  been through six rounds of concurrency-bug code review (see the Execution Orchestrator section
+  above) — every additional responsibility added to that file is another surface for a new race.
+- **`run-coder.ts` resolves the `CoderAgentAdapter` *DB record* via `AdapterRegistry` but takes the
+  actual runtime *instance* via a separate, caller-injected `CoderAdapterFactory`
+  (`(repoUrl) => Promise<CoderAgentAdapter>`) — these are not the same lookup.** The registry only
+  ever stores metadata (name/role/capabilities/version); there is no live-object registry the way
+  there is for, say, Express middleware. A factory (not a constructed singleton, and not a
+  factory with no arguments) is required because one deployment can serve multiple projects with
+  different GitHub repos, and `CoderInput`/`CoderOutput` (the shared, Phase-5-vintage adapter
+  contract) carry no repo/credential fields — those live on the factory-constructed instance, one
+  per invocation, never on the wire-format input/output types. Do not add `repoUrl` to
+  `CoderInput` to "simplify" this; it would also require every other role's `Input` type and every
+  existing `MockCoderAdapter` call site to change for no benefit.
+- **The default `CoderAdapterFactory`/`GithubClientFactory` construct real implementations from
+  env vars via dynamic `import()`, exactly mirroring `github-reconciliation.ts`'s existing
+  `resolveDefaultGithubClientFactory` pattern for `OctokitGitHubClient`.** `GITHUB_TOKEN` (shared
+  with the GitHub-reconciliation task), `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL`,
+  and `CODER_SANDBOX_IMAGE`/`CODER_SANDBOX_NETWORK`/`CODER_SANDBOX_DOCKER_HOST`/
+  `CODER_SANDBOX_HTTPS_PROXY` (the latter two optional, defaulting to the local Docker socket and
+  no proxy) are read lazily inside the resolver closures, not at module load — a live deployment
+  missing any required var fails fast with an actionable error only when the default path is
+  actually exercised; test scenarios never hit this code path since they always inject
+  `MockCoderAdapter`/`MockGitHubClient` explicitly via `RunCoderDeps`.
+- **A PR-creation failure after a successful push is logged and swallowed, never re-thrown or
+  rolled back.** `run-coder.ts` calls `GitHubClient.createPullRequest` **after** — and outside the
+  lock of — the already-committed `RecordCodePushedCommand` dispatch; the coder's work is already
+  durably recorded as `code_pushed` by that point, so a GitHub API hiccup creating the PR is a
+  non-fatal, retryable side effect (a later `github-reconciliation` pass or a human can retry PR
+  creation), not a reason to fail the whole task or claim the push never happened.
+- **On adapter failure, the feature run is deliberately left at `coding` — no new `coding →
+failed`/`coding → blocked` matrix edge was added.** `RecordCodePushedCommand` is never dispatched
+  in this path, and no other command touches `feature_runs`. The escalation loop that decides what
+  happens next (retry, fix-cycle, human escalation) is Phase 10/11 scope — the same "handler
+  exists, caller lands later" posture Phase 8 left `StartFixingHandler`/`UnblockFeatureHandler` in.
+- **`isTransientRace()` moved to a shared `packages/triggerdev/src/tasks/transient-race.ts`,
+  taking the caller's expected-`CommandError`-type set as a parameter.** `start-next-feature.ts`'s
+  previously-duplicated private copy (and `github-reconciliation.ts`'s near-identical one) both now
+  call this shared function — `isTransientRace(err, expectedCommandErrorTypes)` — passing their
+  own task-specific allow-list (`start-next-feature.ts`'s is broader: it also treats
+  `feature-already-active`/`automation-paused`/`unmet-dependencies`/`not-found` as expected races
+  that `github-reconciliation.ts`/`run-coder.ts` don't). The `LockConflictError`/
+  `OptimisticLockError`/`StaleFenceError` classification itself is identical across all three
+  callers and lives only in this one function now.
+- **The sandbox is real container isolation, not yet daemon-verified in this repository's CI.**
+  `packages/adapters-coder/src/sandbox.ts`'s `CoderSandbox` creates one ephemeral, non-root,
+  capability-dropped (`CapDrop: ['ALL']`), read-only-root-filesystem container per run via
+  `dockerode`, attached only to the `internal: true` `minicoder-coder-sandbox` network defined in
+  `infra/docker-compose.coder-sandbox.yml`, with the `coder-sandbox-egress-proxy` (`tinyproxy`,
+  `FilterDefaultDeny yes`) as its only egress path. Unit tests exercise this against a fake
+  `dockerode` client (`DockerLike`), not a real daemon — the implementation session had no
+  reachable Docker daemon (`docker info` failed), so the compose stack was written and
+  syntax-validated (`docker compose config`) but never run end-to-end, and no Docker-daemon-gated
+  integration test exists yet proving egress denial actually blocks a disallowed host. Treat this
+  as real, reviewed infrastructure that needs a live-daemon verification pass, not as
+  aspirational/未-built — see docs/07 §6's "Phase 9 implementation status" for the exact real-vs-
+  aspirational split.
+- **`agent_context_packs`, `agent_tool_operations`, and `cost_records` get their first production
+  writers in Phase 9.** All three tables (plus `agent_runs.provider`/`.model`/
+  `.prompt_template_version`, migration `0010_agent_run_provider_tracking.*`) existed since
+  migration `0001` / Phase 5 with zero production INSERTs before this phase — only test-scenario
+  fixtures wrote directly to `cost_records`. `agent_runs.triggerdev_run_id` was considered and
+  rejected as a new column; `triggerdev_runs.linked_agent_run_id` already provides that join.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
@@ -589,13 +714,18 @@ calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do no
 The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
 running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
 appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
-Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → triggerdev → testing → (rest --noEmit)`.
+Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → triggerdev → testing → (rest --noEmit)`.
 `workflow` moved ahead of `github`/`triggerdev` in Phase 7: `packages/github`'s inbox handlers and
 `packages/triggerdev`'s `github-reconciliation` task both acquire a `WorkflowLockManager` lock
 before dispatching a lock-gated reconciliation command (`RecordPrOpenedCommand`/
 `RecordCiRunningCommand`), so both now depend on `@minicoder/workflow` for its type. `github` was
 also added ahead of `triggerdev` (`github-reconciliation.ts` imports `OctokitGitHubClient` from
-`@minicoder/github`).
+`@minicoder/github`). `adapters-coder` was added ahead of `triggerdev` in Phase 9:
+`packages/triggerdev/src/tasks/run-coder.ts`'s default resolver dynamically imports
+`CodexCoderAdapter`/`HttpCodeGenerationProvider`/`CoderSandbox` from `@minicoder/adapters-coder`
+(the same "constructs the real reference implementation from env, dynamic `import()`" pattern
+`github-reconciliation.ts` already uses for `OctokitGitHubClient`), so `packages/triggerdev`
+depends on `@minicoder/adapters-coder`'s type declarations.
 
 When adding a new workspace package that others import for types, add it to this chain.
 

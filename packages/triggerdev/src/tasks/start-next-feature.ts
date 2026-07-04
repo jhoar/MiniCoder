@@ -1,19 +1,17 @@
 import {
-  CommandError,
   FeatureExecutionState,
-  OptimisticLockError,
   SelectFeatureHandler,
-  StaleFenceError,
   StartCodingHandler,
   TransactionalCommandExecutor,
   findNextEligibleFeatureRun,
   generateId,
 } from '@minicoder/core';
 import type { CommandEnvelope, DbClient } from '@minicoder/core';
-import { ExecutionLane, LockConflictError } from '@minicoder/workflow';
+import { ExecutionLane } from '@minicoder/workflow';
 import type { AcquiredLock } from '@minicoder/workflow';
 import type { StartNextFeaturePayload } from './types.js';
 import { automationOperatorActor, systemActor } from './actor.js';
+import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 
 export type { StartNextFeaturePayload };
 
@@ -49,23 +47,14 @@ const EXPECTED_COMMAND_ERROR_TYPES = new Set([
  * `started: false`, not thrown, mirroring how github-reconciliation.ts treats per-candidate
  * failures as non-fatal. This task is scheduled/opportunistic and idempotent, so any "another
  * actor moved state under us" condition should defer to the next tick rather than surface a
- * spurious Trigger.dev task failure:
- *   - LockConflictError: another holder (a concurrent start-next-feature retry, a
- *     github-reconciliation pass acquiring the same `execution-lane:{projectId}` lock, or an
- *     HA-cluster peer) owns the project's execution lane;
- *   - OptimisticLockError: a concurrent writer bumped feature_runs.version between this task's
- *     fresh read and the command's compare-and-swap (the version is always read immediately
- *     before each dispatch, so a mismatch here is a race, not a stale-version bug);
- *   - StaleFenceError: the execution-lane lease was reclaimed mid-operation;
- *   - an expected CommandError type (see the set above).
- * A genuine infrastructure failure (DB down, etc.) is none of these and still throws, correctly
- * triggering Trigger.dev's retry/failed-status handling.
+ * spurious Trigger.dev task failure. See `transient-race.ts`'s `isTransientRace()` doc comment
+ * for the shared LockConflictError/OptimisticLockError/StaleFenceError classification; this
+ * task's own `EXPECTED_COMMAND_ERROR_TYPES` set above additionally covers this task's specific
+ * expected races. A genuine infrastructure failure (DB down, etc.) matches none of these and
+ * still throws, correctly triggering Trigger.dev's retry/failed-status handling.
  */
 function isTransientRace(err: unknown): boolean {
-  if (err instanceof LockConflictError) return true;
-  if (err instanceof OptimisticLockError) return true;
-  if (err instanceof StaleFenceError) return true;
-  return err instanceof CommandError && EXPECTED_COMMAND_ERROR_TYPES.has(err.problem.type);
+  return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
 /**

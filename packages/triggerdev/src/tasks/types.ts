@@ -101,6 +101,11 @@ export const GithubReconciliationPayload = BasePayload.extend({
   featureRunId: z.string().optional(),
 });
 
+export const RunCoderPayload = BasePayload.extend({
+  featureRunId: z.string(),
+  coderAdapterName: z.string().default('MockCoderAdapter'),
+});
+
 export const ExportPlanPayload = BasePayload.merge(ActorPayload).extend({
   planId: z.string(),
 });
@@ -136,6 +141,7 @@ export type RequestPlanApprovalPayload = z.infer<typeof RequestPlanApprovalPaylo
 export type ActivateApprovedBacklogPayload = z.infer<typeof ActivateApprovedBacklogPayload>;
 export type StartNextFeaturePayload = z.infer<typeof StartNextFeaturePayload>;
 export type GithubReconciliationPayload = z.infer<typeof GithubReconciliationPayload>;
+export type RunCoderPayload = z.infer<typeof RunCoderPayload>;
 export type ExportPlanPayload = z.infer<typeof ExportPlanPayload>;
 export type ExportBacklogPayload = z.infer<typeof ExportBacklogPayload>;
 export type ImportBacklogPayload = z.infer<typeof ImportBacklogPayload>;

@@ -21,6 +21,8 @@ export const RecordCodePushedPayloadSchema = z.object({
   projectId: z.string(),
   expectedVersion: z.number().int().nonnegative(),
   commitSha: z.string().min(1),
+  branchName: z.string().min(1),
+  filesChanged: z.number().int().nonnegative(),
 });
 export type RecordCodePushedPayload = z.infer<typeof RecordCodePushedPayloadSchema>;
 
@@ -46,7 +48,8 @@ export class RecordCodePushedHandler implements CommandHandler<
     envelope: CommandEnvelope<RecordCodePushedPayload>,
     db: DbClient,
   ): Promise<CommandResult<FeatureExecutionState>> {
-    const { featureRunId, projectId, expectedVersion, commitSha } = envelope.payload;
+    const { featureRunId, projectId, expectedVersion, commitSha, branchName, filesChanged } =
+      envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<FeatureExecutionState>(
         tx,
@@ -106,7 +109,7 @@ export class RecordCodePushedHandler implements CommandHandler<
       });
       await writeOutboxEvent(tx, {
         eventType: 'feature.code_pushed',
-        payload: { featureRunId, projectId, commitSha },
+        payload: { featureRunId, projectId, commitSha, branchName, filesChanged },
       });
       const result: CommandResult<FeatureExecutionState> = {
         commandId: envelope.commandId,

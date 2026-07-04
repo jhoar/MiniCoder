@@ -7,7 +7,7 @@ implementation backlog, then orchestrates feature-branch development, pull reque
 reviews, fixes, merge gates, and final design documentation. It is designed to be auditable,
 deterministic, cost-aware, safe, and fully testable without human intervention.
 
-This repository contains the **Phase 1–8 implementation** of MiniCoder — the monorepo skeleton,
+This repository contains the **Phase 1–9 implementation** of MiniCoder — the monorepo skeleton,
 persistence abstraction (SQLite + PostgreSQL), initial schema, migration tooling,
 config/secrets backends, database lifecycle CLI, and CI (Phase 1); full state-machine / command
 layer, transactional idempotent commands, outbox/inbox dispatching, workflow locks, and local auth
@@ -23,8 +23,11 @@ implementation — the webhook receiver, provider-SDK-free `GitHubClient` seam, 
 reconciliation algorithm driving both webhook-triggered inbox handlers and the scheduled
 fallback (Phase 7); and the Execution Orchestrator implementation — dependency-ordered sequential
 feature selection, the `start-next-feature` Trigger.dev task, pause/resume automation control, and
-a minimal budget-gate primitive with soft/hard limit enforcement (Phase 8). Specification documents
-live under `docs/`.
+a minimal budget-gate primitive with soft/hard limit enforcement (Phase 8); and the Reference Coder
+Adapter implementation — `CodexCoderAdapter` (an injected code-generation seam, runner-agnostic git
+orchestration, bounded-diff enforcement), ephemeral sandbox container isolation, the `run-coder`
+Trigger.dev task bridging coding through pull-request creation, and cost/context-pack/tool-operation
+provenance recording (Phase 9). Specification documents live under `docs/`.
 
 ## Documentation (canonical)
 

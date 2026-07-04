@@ -1,0 +1,98 @@
+version: '3.8'
+
+# MiniCoder — Coder sandbox infrastructure (Phase 9, docs/07-security-and-secrets.md §6).
+#
+# Services (3 total):
+#   coder-sandbox-egress-proxy  — the ONLY egress path out of a coder-run container: an allow-list
+#                                  forward proxy (tinyproxy), dual-homed on the isolated
+#                                  minicoder-coder-sandbox network (no direct internet route) and
+#                                  minicoder-coder-egress (real internet access).
+#   coder-sandbox-docker-proxy  — a narrowly-scoped Docker socket proxy (separate from the
+#                                  Trigger.dev supervisor's own proxy in
+#                                  docker-compose.triggerdev.yml) that packages/adapters-coder's
+#                                  CoderSandbox talks to via dockerode to spawn one ephemeral
+#                                  sandbox container per coder run.
+#
+# The pre-baked sandbox image itself (infra/docker/coder-sandbox/Dockerfile) is built separately
+# (`docker build -t minicoder/coder-sandbox:latest infra/docker/coder-sandbox`) and referenced by
+# name via CODER_SANDBOX_IMAGE — it is not a long-running service, since CoderSandbox creates and
+# removes one container per run rather than one persistent container.
+#
+# Networks:
+#   minicoder-coder-sandbox — internal: true (no route to the internet); sandbox containers and
+#                             the egress proxy attach here.
+#   minicoder-coder-egress  — real internet access; only the egress proxy attaches here.
+#   minicoder-coder-docker-proxy — the run-coder Trigger.dev task's process and
+#                             coder-sandbox-docker-proxy attach here.
+#
+# Startup: `docker compose -f infra/docker-compose.coder-sandbox.yml up -d`, then build the
+# sandbox image (see above) and point CODER_SANDBOX_DOCKER_HOST /
+# CODER_SANDBOX_HTTPS_PROXY (consumed by packages/triggerdev/src/tasks/run-coder.ts's default
+# resolver) at coder-sandbox-docker-proxy:2375 / coder-sandbox-egress-proxy:8888 respectively.
+#
+# Status: this stack has not been exercised against a live Docker daemon in this repository's CI
+# yet (docs/07 §6 and CLAUDE.md's Reference Coder Adapter Operational Constraints call this out
+# explicitly) — packages/adapters-coder's unit tests run against a fake dockerode client instead.
+# A Docker-daemon-gated integration test (see packages/adapters-coder's test suite) is the
+# intended place to prove this stack end to end once a daemon is available in CI.
+#
+# Optional env vars:
+#   CODE_GEN_ALLOWED_HOST — the code-generation provider's hostname, appended to the egress
+#                           proxy's GitHub-only default allow-list (see egress-proxy/entrypoint.sh)
+
+services:
+  coder-sandbox-egress-proxy:
+    build:
+      context: ./docker/coder-sandbox/egress-proxy
+    restart: unless-stopped
+    environment:
+      CODE_GEN_ALLOWED_HOST: '${CODE_GEN_ALLOWED_HOST:-api.openai.com}'
+    networks:
+      - coder-sandbox
+      - coder-egress
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+    healthcheck:
+      test: ['CMD', 'nc', '-z', 'localhost', '8888']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  coder-sandbox-docker-proxy:
+    # Pin to an immutable digest for production; :latest is the only widely published tag.
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      # Minimum permissions needed to create/start/exec/remove containers on the isolated
+      # sandbox network — no access to volumes, images-push, swarm, or other Docker API surface.
+      CONTAINERS: '1'
+      POST: '1'
+      EXEC: '1'
+      NETWORKS: '1'
+      IMAGES: '1'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - coder-docker-proxy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
+    healthcheck:
+      test: ['CMD-SHELL', 'nc -z localhost 2375 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  coder-sandbox:
+    name: minicoder-coder-sandbox
+    internal: true
+  coder-egress:
+    name: minicoder-coder-egress
+  coder-docker-proxy:
+    name: minicoder-coder-docker-proxy

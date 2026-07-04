@@ -9,6 +9,7 @@ import { triggerRetryFixture } from './trigger-retry.js';
 import { githubRaceFixture } from './github-race.js';
 import { finalDesignDocumentFixture } from './final-design-document.js';
 import { executionOrchestratorFixture } from './execution-orchestrator.js';
+import { coderAdapterRunFixture } from './coder-adapter-run.js';
 
 export const FIXTURE_REGISTRY: Map<FixtureName, Fixture> = new Map([
   ['planning-basic', planningBasicFixture],
@@ -21,6 +22,7 @@ export const FIXTURE_REGISTRY: Map<FixtureName, Fixture> = new Map([
   ['github-race', githubRaceFixture],
   ['final-design-document', finalDesignDocumentFixture],
   ['execution-orchestrator', executionOrchestratorFixture],
+  ['coder-adapter-run', coderAdapterRunFixture],
 ]);
 
 export function getFixture(name: FixtureName): Fixture {

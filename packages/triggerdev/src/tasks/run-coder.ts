@@ -1,0 +1,312 @@
+import {
+  AdapterRegistry,
+  AgentRole,
+  AgentRunRecorder,
+  FeatureExecutionState,
+  RecordCodePushedHandler,
+  TransactionalCommandExecutor,
+  generateId,
+} from '@minicoder/core';
+import type { CommandEnvelope, CoderAgentAdapter, CoderInput, DbClient, GitHubClient } from '@minicoder/core';
+import { ExecutionLane } from '@minicoder/workflow';
+import type { AcquiredLock } from '@minicoder/workflow';
+import type { RunCoderPayload } from './types.js';
+import { systemActor } from './actor.js';
+import { isTransientRace as isTransientRaceShared } from './transient-race.js';
+
+export type { RunCoderPayload };
+
+export interface RunCoderResult {
+  projectId: string;
+  featureRunId: string;
+  pushed: boolean;
+  prNumber: number | null;
+}
+
+const recordCodePushedHandler = new RecordCodePushedHandler();
+const EXECUTION_LANE_TTL_MS = 30_000;
+
+// This task never attempts SelectFeature/StartCoding-style transitions of its own, so the
+// expected-race set is narrower than start-next-feature.ts's: only an in-flight idempotency-key
+// race with a concurrent invocation of this same command, or the feature run vanishing underneath
+// us (a genuinely unexpected but non-fatal condition for a scheduled/opportunistic task).
+const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'not-found']);
+
+/** See `transient-race.ts`'s `isTransientRace()` doc comment for the shared
+ * LockConflictError/OptimisticLockError/StaleFenceError classification this task reuses. */
+function isTransientRace(err: unknown): boolean {
+  return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
+}
+
+export type GithubClientFactory = () => Promise<GitHubClient>;
+/** Builds a fresh `CoderAgentAdapter` instance for this one run, given the project's repo URL —
+ * a factory (not a singleton) because a single deployment can serve multiple projects with
+ * different repos, and `CoderInput` itself carries no repo/credential fields (docs/06 Phase 9). */
+export type CoderAdapterFactory = (repoUrl: string) => Promise<CoderAgentAdapter>;
+
+/**
+ * No live GitHubClient is injectable at the Trigger.dev task boundary the way an adapter
+ * instance is — constructs an OctokitGitHubClient directly from env, mirroring
+ * github-reconciliation.ts's resolveDefaultGithubClientFactory (GitHub credentials are a single
+ * deployment-wide secret, not a per-call injected dependency).
+ */
+function resolveDefaultGithubClientFactory(): GithubClientFactory {
+  return async () => {
+    const token = process.env['GITHUB_TOKEN'];
+    if (!token) {
+      throw new Error(
+        'GITHUB_TOKEN is not configured. run-coder requires a GitHub credential (GitHub App ' +
+          'installation token or PAT) to open a pull request after pushing — see ' +
+          'docs/07-security-and-secrets.md §3.',
+      );
+    }
+    const { OctokitGitHubClient } = await import('@minicoder/github');
+    return new OctokitGitHubClient({ auth: token });
+  };
+}
+
+/**
+ * Constructs the real reference `CodexCoderAdapter` from env config (sandbox image/network,
+ * code-generation endpoint, GitHub token) — a dynamic import so `packages/triggerdev` only pays
+ * for `@minicoder/adapters-coder` when this default path is actually exercised, the same posture
+ * `resolveDefaultGithubClientFactory` takes for `@minicoder/github`. Test scenarios inject
+ * `MockCoderAdapter` directly instead of going through this factory.
+ */
+function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
+  return async (repoUrl: string) => {
+    const githubToken = process.env['GITHUB_TOKEN'];
+    if (!githubToken) {
+      throw new Error(
+        'GITHUB_TOKEN is not configured. run-coder requires a GitHub credential to clone/push — ' +
+          'see docs/07-security-and-secrets.md §3.',
+      );
+    }
+    const codeGenBaseUrl = process.env['CODE_GEN_BASE_URL'];
+    const codeGenApiKey = process.env['CODE_GEN_API_KEY'];
+    const codeGenModel = process.env['CODE_GEN_MODEL'];
+    if (!codeGenBaseUrl || !codeGenApiKey || !codeGenModel) {
+      throw new Error(
+        'CODE_GEN_BASE_URL/CODE_GEN_API_KEY/CODE_GEN_MODEL are not configured. run-coder requires ' +
+          'an OpenAI-compatible code-generation endpoint — see docs/07-security-and-secrets.md §3.',
+      );
+    }
+    const { CodexCoderAdapter, HttpCodeGenerationProvider, CoderSandbox } = await import(
+      '@minicoder/adapters-coder'
+    );
+    return new CodexCoderAdapter({
+      repoUrl,
+      githubToken,
+      codeGenerationProvider: new HttpCodeGenerationProvider({
+        baseUrl: codeGenBaseUrl,
+        apiKey: codeGenApiKey,
+        model: codeGenModel,
+      }),
+      createSandbox: () =>
+        new CoderSandbox({
+          image: process.env['CODER_SANDBOX_IMAGE'] ?? 'minicoder/coder-sandbox:latest',
+          network: process.env['CODER_SANDBOX_NETWORK'] ?? 'minicoder-coder-sandbox',
+          dockerHost: process.env['CODER_SANDBOX_DOCKER_HOST'],
+          httpsProxy: process.env['CODER_SANDBOX_HTTPS_PROXY'],
+        }),
+    });
+  };
+}
+
+interface RepositoryRow {
+  owner: string;
+  name: string;
+}
+
+interface FeatureRunRow {
+  id: string;
+  feature_request_id: string;
+  version: number;
+  current_execution_state: string;
+}
+
+interface FeatureRequestRow {
+  title: string;
+  fr_id: string;
+}
+
+export interface RunCoderDeps {
+  readonly coderAdapterFactory?: CoderAdapterFactory;
+  readonly githubClientFactory?: GithubClientFactory;
+}
+
+/**
+ * Bridges the `coding` state to a real coder-adapter invocation and back into the state machine
+ * (docs/06 Phase 9): resolves the active `CoderAgentAdapter` via `AdapterRegistry` (never imports
+ * `CodexCoderAdapter` directly — the caller/default-factory does, this file does not), invokes it
+ * through `AgentRunRecorder` (recording the context pack, cost/token usage, and tool-operation
+ * provenance), dispatches `RecordCodePushedCommand`, then opens a pull request. A separate,
+ * independently scheduled/triggered task from `start-next-feature.ts` — see CLAUDE.md's
+ * Reference Coder Adapter Operational Constraints for why. Dependencies are bundled into one
+ * `deps` object (rather than separate positional params) so `MockTriggerRunner.run`'s single
+ * `extra` slot can inject both at once in tests.
+ */
+export async function runImpl(
+  payload: RunCoderPayload,
+  db: DbClient,
+  deps: RunCoderDeps = {},
+): Promise<RunCoderResult> {
+  const coderAdapterFactory = deps.coderAdapterFactory ?? resolveDefaultCoderAdapterFactory();
+  const githubClientFactory = deps.githubClientFactory ?? resolveDefaultGithubClientFactory();
+  const { projectId, featureRunId, correlationId, coderAdapterName } = payload;
+
+  const runRows = await db.query<FeatureRunRow>(
+    `SELECT fr.id, fr.feature_request_id, fr.version, fr.current_execution_state
+     FROM feature_runs fr
+     JOIN feature_requests freq ON fr.feature_request_id = freq.id
+     WHERE fr.id = ? AND freq.project_id = ?`,
+    [featureRunId, projectId],
+  );
+  const run = runRows[0];
+  if (!run || run.current_execution_state !== FeatureExecutionState.CODING) {
+    return { projectId, featureRunId, pushed: false, prNumber: null };
+  }
+
+  const featureRows = await db.query<FeatureRequestRow>(
+    `SELECT title, fr_id FROM feature_requests WHERE id = ?`,
+    [run.feature_request_id],
+  );
+  const acceptanceRows = await db.query<{ description: string }>(
+    `SELECT description FROM acceptance_criteria WHERE feature_request_id = ? ORDER BY order_index ASC`,
+    [run.feature_request_id],
+  );
+  const repoRows = await db.query<RepositoryRow>(
+    `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+    [projectId],
+  );
+  const repo = repoRows[0];
+  const feature = featureRows[0];
+  if (!repo || !feature) {
+    return { projectId, featureRunId, pushed: false, prNumber: null };
+  }
+  const repoUrl = `https://github.com/${repo.owner}/${repo.name}.git`;
+
+  const registry = new AdapterRegistry(db);
+  const recorder = new AgentRunRecorder(db, registry);
+  const adapterRecord = await registry.resolve(AgentRole.CODER, coderAdapterName);
+  const adapter = await coderAdapterFactory(repoUrl);
+
+  const input: CoderInput = {
+    projectId,
+    featureRunId,
+    featureTitle: feature.title,
+    acceptanceCriteria: acceptanceRows.map((r) => r.description),
+    correlationId,
+  };
+
+  const { output } = await recorder.record(
+    {
+      adapterId: adapterRecord.id,
+      role: AgentRole.CODER,
+      projectId,
+      featureRunId,
+      featureRequestId: run.feature_request_id,
+      input,
+      capabilitiesUsed: ['can_modify_files', 'can_commit', 'can_push_branch'],
+      contextPack: { content: input },
+      costExtractor: (outcome) => {
+        if (!outcome.ok) return null;
+        const out = outcome.output as { tokensUsed?: { input: number; output: number } };
+        if (!out.tokensUsed) return null;
+        return {
+          inputTokens: out.tokensUsed.input,
+          outputTokens: out.tokensUsed.output,
+          provider: process.env['CODE_GEN_PROVIDER_NAME'] ?? 'openai-compatible',
+          model: process.env['CODE_GEN_MODEL'],
+        };
+      },
+      toolOperationsExtractor: (outcome) => {
+        if (!outcome.ok) return null;
+        const out = outcome.output as {
+          toolOperations?: Array<{ toolName: string; status: string; durationMs: number }>;
+        };
+        return out.toolOperations?.map((op) => ({
+          toolName: op.toolName,
+          status: op.status,
+          durationMs: op.durationMs,
+        }));
+      },
+    },
+    () => adapter.run(input),
+  );
+
+  const executor = new TransactionalCommandExecutor(db);
+  const lane = new ExecutionLane(db);
+  let lock: AcquiredLock;
+  try {
+    lock = await lane.acquireForProject(projectId, 'run-coder-task', EXECUTION_LANE_TTL_MS);
+  } catch (err) {
+    if (isTransientRace(err)) {
+      return { projectId, featureRunId, pushed: false, prNumber: null };
+    }
+    throw err;
+  }
+
+  try {
+    const versionRows = await db.query<{ version: number }>(
+      `SELECT version FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    const expectedVersion = versionRows[0]?.version ?? run.version;
+
+    const recordPayload = {
+      featureRunId,
+      projectId,
+      expectedVersion,
+      commitSha: output.commitSha,
+      branchName: output.branchName,
+      filesChanged: output.filesChanged,
+    };
+    const envelope: CommandEnvelope<typeof recordPayload> = {
+      commandId: generateId(),
+      idempotencyKey: `record-code-pushed:${featureRunId}:${output.commitSha}`,
+      payload: recordPayload,
+      actor: systemActor(correlationId),
+      correlationId,
+      lockContext: {
+        lockId: lock.lockId,
+        fence: lock.fence,
+        holderId: lock.holderId,
+        projectId,
+        resourceKey: lock.resourceKey,
+      },
+    };
+    await executor.execute(recordCodePushedHandler, envelope);
+  } catch (err) {
+    if (isTransientRace(err)) {
+      return { projectId, featureRunId, pushed: false, prNumber: null };
+    }
+    throw err;
+  } finally {
+    await lane.releaseForProject(lock);
+  }
+
+  // A PR-creation failure here is a non-fatal, logged side effect: the coder's work is already
+  // durably recorded as code_pushed. Reconciliation or a human can retry PR creation later — it
+  // must not roll back or re-throw past the already-committed state transition above.
+  let prNumber: number | null = null;
+  try {
+    const client = await githubClientFactory();
+    const created = await client.createPullRequest({
+      owner: repo.owner,
+      repo: repo.name,
+      branchName: output.branchName,
+      baseBranch: 'main',
+      title: `${feature.fr_id}: ${feature.title}`,
+    });
+    prNumber = created.prNumber;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `run-coder: pull request creation failed for ${featureRunId} after a successful push; ` +
+        'a later reconciliation pass or a human can retry it',
+      err,
+    );
+  }
+
+  return { projectId, featureRunId, pushed: true, prNumber };
+}

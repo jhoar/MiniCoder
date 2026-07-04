@@ -63,12 +63,46 @@ export interface AdapterRunSnapshot {
   readonly capabilitiesUsed: readonly string[];
 }
 
-export interface RecordRunOptions {
+/** Either branch of a completed run, passed to cost/tool-operation extractors (docs/01 §5.11 —
+ * a failed provider call can still carry partial token/cost usage, so extractors see both
+ * branches rather than only the success path). */
+export type RunOutcome<O> = { readonly ok: true; readonly output: O } | { readonly ok: false; readonly error: unknown };
+
+/** Cost/token usage extracted from a run's outcome, folded into `agent_runs` and (when `costUsd`
+ * is present) written as one `cost_records` row — Phase 9's first production writer of that
+ * table (see CLAUDE.md's Reference Coder Adapter Operational Constraints). */
+export interface RecordedCostUsage {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly costUsd?: number;
+  readonly provider?: string;
+  readonly model?: string;
+}
+
+/** One row of `agent_tool_operations` provenance (e.g. clone/install/test/push for a coder run). */
+export interface RecordedToolOperation {
+  readonly toolName: string;
+  readonly inputSummary?: string;
+  readonly outputSummary?: string;
+  readonly status?: string;
+  readonly durationMs?: number;
+}
+
+export interface RecordRunOptions<O = unknown> {
   readonly adapterId: string;
   /** Must match the adapter's registered role; a mismatch throws RunRoleMismatchError. */
   readonly role: string;
   readonly projectId?: string;
   readonly featureRunId?: string;
+  /**
+   * Required to attribute a written `cost_records` row to a budget-evaluable scope
+   * (`evaluateBudget()` only sums rows with `scope='feature'`/`'project'` — see
+   * `packages/core/src/cost/budget-evaluator.ts`). When `costExtractor` reports a `costUsd` and
+   * this is set, the row is written with `scope='feature'`; otherwise `scope='project'`. Ignored
+   * if `costExtractor` is not supplied or reports no `costUsd`.
+   */
+  readonly featureRequestId?: string;
+  readonly promptTemplateVersion?: string;
   readonly input: unknown;
   /**
    * Which capabilities the run exercised. Required — silently defaulting to an empty list
@@ -81,6 +115,22 @@ export interface RecordRunOptions {
    * subset was used during a run.
    */
   readonly capabilitiesUsed: readonly string[];
+  /**
+   * The run's input context pack (docs/03 §11.4 — versioned, structured input). When present,
+   * one `agent_context_packs` row is written before the wrapped call runs, keyed to the new
+   * `agent_run_id` — Phase 9's first production writer of that table.
+   */
+  readonly contextPack?: { readonly content: unknown; readonly schemaVersion?: string };
+  /**
+   * Extracts cost/token usage from the run's outcome (success or failure). Invoked once after
+   * `fn()` settles, before this method returns/rethrows — write-then-evaluate ordering, so a
+   * caller's subsequent `evaluateBudget()` call sees this run's cost (docs/01 §5.11).
+   */
+  readonly costExtractor?: (outcome: RunOutcome<O>) => RecordedCostUsage | null | undefined;
+  /** Extracts `agent_tool_operations` rows (e.g. clone/install/test/push) from the run's outcome. */
+  readonly toolOperationsExtractor?: (
+    outcome: RunOutcome<O>,
+  ) => readonly RecordedToolOperation[] | null | undefined;
 }
 
 export interface RecordRunResult<O> {
@@ -108,7 +158,7 @@ export class AgentRunRecorder {
     private readonly redactor: SecretRedactor = defaultRedactor,
   ) {}
 
-  async record<O>(opts: RecordRunOptions, fn: () => Promise<O>): Promise<RecordRunResult<O>> {
+  async record<O>(opts: RecordRunOptions<O>, fn: () => Promise<O>): Promise<RecordRunResult<O>> {
     const agentRunId = generateId();
     const queuedAt = isoNow();
 
@@ -158,6 +208,23 @@ export class AgentRunRecorder {
       ],
     );
 
+    if (opts.contextPack) {
+      const packAt = isoNow();
+      await this.db.execute(
+        `INSERT INTO agent_context_packs
+           (id, agent_run_id, content, content_schema_version, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        [
+          generateId(),
+          agentRunId,
+          JSON.stringify(this.redactor.redactObject(opts.contextPack.content)),
+          opts.contextPack.schemaVersion ?? '1.0.0',
+          packAt,
+          packAt,
+        ],
+      );
+    }
+
     validator.assertValid(AgentRunState.QUEUED, AgentRunState.RUNNING);
     const startedAt = isoNow();
     await this.db.execute(
@@ -167,32 +234,32 @@ export class AgentRunRecorder {
 
     try {
       const output = await fn();
+      const outcome: RunOutcome<O> = { ok: true, output };
 
       validator.assertValid(AgentRunState.RUNNING, AgentRunState.SUCCEEDED);
       const endedAt = isoNow();
-      await this.db.execute(
-        `UPDATE agent_runs SET state = ?, output_summary = ?, ended_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
-        [
-          AgentRunState.SUCCEEDED,
-          JSON.stringify(this.redactor.redactObject(output)),
-          endedAt,
-          endedAt,
-          agentRunId,
-        ],
-      );
+      const usage = opts.costExtractor?.(outcome) ?? null;
+      await this.applyUsageAndSetSucceeded(agentRunId, output, usage, endedAt);
+      if (usage) {
+        await this.insertCostRecord(agentRunId, opts, usage, endedAt);
+      }
+      await this.insertToolOperations(agentRunId, opts.toolOperationsExtractor?.(outcome));
 
       return { agentRunId, output };
     } catch (err) {
       const errorType: AgentRunErrorType =
         err instanceof AdapterRunError ? err.errorType : 'provider_unavailable';
       const message = this.redactor.redact(err instanceof Error ? err.message : String(err));
+      const outcome: RunOutcome<O> = { ok: false, error: err };
 
       validator.assertValid(AgentRunState.RUNNING, AgentRunState.FAILED);
       const endedAt = isoNow();
-      await this.db.execute(
-        `UPDATE agent_runs SET state = ?, error = ?, ended_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
-        [AgentRunState.FAILED, message, endedAt, endedAt, agentRunId],
-      );
+      const usage = opts.costExtractor?.(outcome) ?? null;
+      await this.applyUsageAndSetFailed(agentRunId, message, usage, endedAt);
+      if (usage) {
+        await this.insertCostRecord(agentRunId, opts, usage, endedAt);
+      }
+      await this.insertToolOperations(agentRunId, opts.toolOperationsExtractor?.(outcome));
       await this.db.execute(
         `INSERT INTO agent_errors (id, agent_run_id, error_type, message, occurred_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -200,6 +267,128 @@ export class AgentRunRecorder {
       );
 
       throw err;
+    }
+  }
+
+  private totalTokens(usage: RecordedCostUsage | null): number | null {
+    if (!usage) return null;
+    if (usage.inputTokens === undefined && usage.outputTokens === undefined) return null;
+    return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+  }
+
+  private async applyUsageAndSetSucceeded<O>(
+    agentRunId: string,
+    output: O,
+    usage: RecordedCostUsage | null,
+    endedAt: string,
+  ): Promise<void> {
+    await this.db.execute(
+      `UPDATE agent_runs
+         SET state = ?, output_summary = ?, ended_at = ?, tokens_used = COALESCE(?, tokens_used),
+             cost_usd = COALESCE(?, cost_usd), provider = COALESCE(?, provider), model = COALESCE(?, model),
+             version = version + 1, updated_at = ?
+       WHERE id = ?`,
+      [
+        AgentRunState.SUCCEEDED,
+        JSON.stringify(this.redactor.redactObject(output)),
+        endedAt,
+        this.totalTokens(usage),
+        usage?.costUsd ?? null,
+        usage?.provider ?? null,
+        usage?.model ?? null,
+        endedAt,
+        agentRunId,
+      ],
+    );
+  }
+
+  private async applyUsageAndSetFailed(
+    agentRunId: string,
+    message: string,
+    usage: RecordedCostUsage | null,
+    endedAt: string,
+  ): Promise<void> {
+    await this.db.execute(
+      `UPDATE agent_runs
+         SET state = ?, error = ?, ended_at = ?, tokens_used = COALESCE(?, tokens_used),
+             cost_usd = COALESCE(?, cost_usd), provider = COALESCE(?, provider), model = COALESCE(?, model),
+             version = version + 1, updated_at = ?
+       WHERE id = ?`,
+      [
+        AgentRunState.FAILED,
+        message,
+        endedAt,
+        this.totalTokens(usage),
+        usage?.costUsd ?? null,
+        usage?.provider ?? null,
+        usage?.model ?? null,
+        endedAt,
+        agentRunId,
+      ],
+    );
+  }
+
+  private async insertCostRecord<O>(
+    agentRunId: string,
+    opts: RecordRunOptions<O>,
+    usage: RecordedCostUsage,
+    recordedAt: string,
+  ): Promise<void> {
+    if (usage.costUsd === undefined) return;
+    if (!opts.projectId) {
+      throw new Error(
+        'AgentRunRecorder.record: costExtractor reported costUsd but no projectId was supplied ' +
+          '— cost_records.project_id is NOT NULL and cannot be attributed.',
+      );
+    }
+    const scope = opts.featureRequestId ? 'feature' : 'project';
+    await this.db.execute(
+      `INSERT INTO cost_records
+         (id, project_id, feature_request_id, feature_run_id, agent_run_id, scope, amount,
+          provider, model, input_tokens, output_tokens, recorded_at, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        generateId(),
+        opts.projectId,
+        opts.featureRequestId ?? null,
+        opts.featureRunId ?? null,
+        agentRunId,
+        scope,
+        usage.costUsd,
+        usage.provider ?? null,
+        usage.model ?? null,
+        usage.inputTokens ?? null,
+        usage.outputTokens ?? null,
+        recordedAt,
+        recordedAt,
+        recordedAt,
+      ],
+    );
+  }
+
+  private async insertToolOperations(
+    agentRunId: string,
+    operations: readonly RecordedToolOperation[] | null | undefined,
+  ): Promise<void> {
+    if (!operations || operations.length === 0) return;
+    for (const op of operations) {
+      const occurredAt = isoNow();
+      await this.db.execute(
+        `INSERT INTO agent_tool_operations
+           (id, agent_run_id, tool_name, input_summary, output_summary, status, duration_ms, occurred_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          generateId(),
+          agentRunId,
+          op.toolName,
+          op.inputSummary ?? null,
+          op.outputSummary ?? null,
+          op.status ?? 'success',
+          op.durationMs ?? null,
+          occurredAt,
+          occurredAt,
+        ],
+      );
     }
   }
 }
