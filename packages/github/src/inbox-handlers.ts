@@ -11,10 +11,11 @@
  * `@minicoder/workflow`'s `InboxHandler` type: the returned objects satisfy that interface
  * structurally (`{ eventType, handle(payload, schemaVersion) }`).
  *
- * Some reconciliation actions (RecordPrOpenedCommand, RecordCiRunningCommand) are execution-lane
- * lock-gated, matching RecordCodePushedHandler's guard. Only those two actions ever require
- * `envelope.lockContext` (see `requiresExecutionLock()` in `@minicoder/core`'s reconcile module) —
- * CI-outcome/review-outcome transitions never do. This handler does a cheap `feature_runs`
+ * Some reconciliation actions (RecordPrOpenedCommand, RecordCiRunningCommand, and — since Phase 10
+ * — StartFixingCommand on a changes_requested run) are execution-lane lock-gated, matching
+ * RecordCodePushedHandler's guard. Only those actions ever require `envelope.lockContext` (see
+ * `requiresExecutionLock()` in `@minicoder/core`'s reconcile module) — other CI-outcome/
+ * review-outcome transitions never do. This handler does a cheap `feature_runs`
  * lookup for `current_execution_state` before deciding whether to acquire the
  * `execution-lane:<projectId>` lock `SelectFeatureCommand`/`RecordCodePushedCommand` use, skipping
  * acquisition entirely (and calling `reconcileGithubState()` with `lockContext: undefined`) when
