@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.15
+> Version: 1.0.16
 > Last-updated: 2026-07-03
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -710,7 +710,7 @@ progresses through the happy path.
   real wiring" describe block (select-and-start-coding, single-active-feature enforcement, and a
   paused-automation no-op that leaves state untouched).
 
-**Post-implementation review fixes:**
+**Post-implementation review fixes (round 1):**
 
 - **HIGH-1 (idempotency-key collision on repeated budget breaches).** `applyBudgetDecision()`
   originally built `RecordBudgetExceededCommand`/`RecordBudgetApprovalWaitingCommand` idempotency
