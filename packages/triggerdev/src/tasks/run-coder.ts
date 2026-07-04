@@ -19,6 +19,7 @@ import type { AcquiredLock } from '@minicoder/workflow';
 import type { RunCoderPayload } from './types.js';
 import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
+import { requireNonBlankEnvVar } from './env.js';
 
 export type { RunCoderPayload };
 
@@ -54,21 +55,10 @@ export type CoderAdapterFactory = (repoUrl: string) => Promise<CoderAgentAdapter
  * No live GitHubClient is injectable at the Trigger.dev task boundary the way an adapter
  * instance is — constructs an OctokitGitHubClient directly from env, mirroring
  * github-reconciliation.ts's resolveDefaultGithubClientFactory (GitHub credentials are a single
- * deployment-wide secret, not a per-call injected dependency).
+ * deployment-wide secret, not a per-call injected dependency). `requireNonBlankEnvVar` is shared
+ * with that task (LOW-1 code-review fix, round 5) so both entrypoints reject whitespace-only
+ * required env vars identically instead of drifting apart.
  */
-/** LOW-1 code-review fix (round 4): a whitespace-only required env var previously passed the
- * truthiness check here and failed later with a less actionable error (e.g. an Octokit auth
- * failure instead of a clear "GITHUB_TOKEN is not configured" message). Trims and rejects blank
- * values, mirroring parsePriceEnvVar's/resolvePromptTemplateVersion's blank-rejection posture. */
-function requireNonBlankEnvVar(envVarName: string, helpText: string): string {
-  const raw = process.env[envVarName];
-  const trimmed = raw?.trim();
-  if (!trimmed) {
-    throw new Error(`${envVarName} is not configured. ${helpText}`);
-  }
-  return trimmed;
-}
-
 function resolveDefaultGithubClientFactory(): GithubClientFactory {
   return async () => {
     const token = requireNonBlankEnvVar(

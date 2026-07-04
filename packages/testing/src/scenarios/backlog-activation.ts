@@ -20,6 +20,25 @@ export const backlogActivationScenario: Scenario = {
       throw new Error(`Expected an implementation_plans row for project ${projectId}`);
     }
 
+    // LOW-2 code-review fix (round 5): seed one feature_runs row before activation so the
+    // scenario proves activatedFeatureCount means "newly inserted this call", not "total
+    // feature_runs rows" — a count regression that reported the final row total instead of the
+    // delta would only be caught with a preexisting row already in place (round 4's assertion
+    // alone would pass either way, since the fixture never had preexisting runs).
+    const preexistingFeatures = await db.query<{ id: string }>(
+      `SELECT id FROM feature_requests WHERE project_id = ? AND kind = 'feature' ORDER BY fr_id ASC LIMIT 1`,
+      [projectId],
+    );
+    const preexistingFeature = preexistingFeatures[0];
+    if (!preexistingFeature) {
+      throw new Error(`Expected at least one feature_requests row for project ${projectId}`);
+    }
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'approved_pending_execution', 1, datetime('now'), datetime('now'))`,
+      [`run-preexisting-${preexistingFeature.id}`, preexistingFeature.id],
+    );
+
     await runner.run(
       'activate-approved-backlog',
       {
@@ -80,13 +99,16 @@ export const backlogActivationScenario: Scenario = {
     const payload: unknown = JSON.parse(outboxRows[0]!.payload);
     const parsed = EVENT_SCHEMAS['plan.activated']!.parse(payload);
 
-    // LOW-2 code-review fix (round 4): the shape-only parse above would still pass if
-    // ActivatePlanHandler reported the wrong count, since Zod validates types, not values —
-    // assert the payload's activatedFeatureCount matches the actual number of feature_runs rows
-    // this run produced.
-    if (parsed.activatedFeatureCount !== featureRuns.length) {
+    // LOW-2 code-review fix (round 4, strengthened round 5): the shape-only parse above would
+    // still pass if ActivatePlanHandler reported the wrong count, since Zod validates types, not
+    // values. With one feature_runs row preexisting (seeded above), activatedFeatureCount must be
+    // featureRuns.length - 1 (2 newly inserted) — proving the field means "newly activated this
+    // call", not "final total row count", which a naive count regression could otherwise satisfy.
+    const expectedActivatedCount = featureRuns.length - 1;
+    if (parsed.activatedFeatureCount !== expectedActivatedCount) {
       throw new Error(
-        `Expected plan.activated payload activatedFeatureCount to equal ${featureRuns.length}, got ${parsed.activatedFeatureCount}`,
+        `Expected plan.activated payload activatedFeatureCount to equal ${expectedActivatedCount} ` +
+          `(featureRuns.length ${featureRuns.length} minus the 1 preexisting run), got ${parsed.activatedFeatureCount}`,
       );
     }
   },

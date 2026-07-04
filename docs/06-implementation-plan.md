@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.22
+> Version: 1.0.23
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1109,6 +1109,19 @@ prompt-version env vars — fixed with a shared `requireNonBlankEnvVar()` helper
 asserting the parsed `activatedFeatureCount` equals the actual number of `feature_runs` rows
 produced. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 4" section for
 detail.
+
+**Post-implementation review fixes (round 5):** a fifth re-review found no critical/high/medium
+issues, with three low-priority watch items: `github-reconciliation.ts` still used a
+truthiness-only `GITHUB_TOKEN` check while `run-coder.ts` had already moved to blank-rejecting
+validation, so the two GitHub-facing tasks had diverging contracts for the same env var — fixed
+by extracting the shared `requireNonBlankEnvVar()` helper into a new `tasks/env.ts`, adopted by
+both; the `plan.activated` count regression only held because the fixture never had a
+preexisting `feature_runs` row (`activatedFeatureCount` means "newly inserted," not "final
+total," and a regression reporting the total would still have passed) — fixed by seeding a
+preexisting row and asserting the delta; and a suggested observability/alerting item for
+pushed-but-no-PR runs was explicitly deferred as genuine future work (Phase 16 observability
+scope), not built now. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 5"
+section for detail.
 
 Acceptance: the adapter implements `CoderAgentAdapter`; the orchestrator does not call provider APIs
 directly (adapter resolution is always via `AdapterRegistry`); a coder run executes inside an

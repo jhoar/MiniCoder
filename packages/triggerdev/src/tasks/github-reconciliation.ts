@@ -3,6 +3,7 @@ import { reconcileGithubState, requiresExecutionLock } from '@minicoder/core';
 import { WorkflowLockManager } from '@minicoder/workflow';
 import type { GithubReconciliationPayload } from './types.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
+import { requireNonBlankEnvVar } from './env.js';
 
 export type { GithubReconciliationPayload };
 
@@ -38,18 +39,17 @@ export type GithubClientFactory = () => Promise<GitHubClient>;
  * constructs an OctokitGitHubClient directly from env, since GitHub credentials (unlike agent
  * adapters) are a single deployment-wide secret, not a per-call injected dependency. Fails fast
  * with an actionable error if GITHUB_TOKEN is unset, matching the "not configured yet" pattern
- * used elsewhere for not-yet-wired dependencies.
+ * used elsewhere for not-yet-wired dependencies. `requireNonBlankEnvVar` is shared with
+ * `run-coder.ts` (LOW-1 code-review fix, round 5) so both GitHub-facing task entrypoints reject
+ * whitespace-only `GITHUB_TOKEN` values identically instead of drifting apart.
  */
 function resolveDefaultGithubClientFactory(): GithubClientFactory {
   return async () => {
-    const token = process.env['GITHUB_TOKEN'];
-    if (!token) {
-      throw new Error(
-        'GITHUB_TOKEN is not configured. github-reconciliation requires a GitHub credential ' +
-          '(GitHub App installation token or PAT) to fetch authoritative PR state — see ' +
-          'docs/07-security-and-secrets.md §3.',
-      );
-    }
+    const token = requireNonBlankEnvVar(
+      'GITHUB_TOKEN',
+      'github-reconciliation requires a GitHub credential (GitHub App installation token or PAT) ' +
+        'to fetch authoritative PR state — see docs/07-security-and-secrets.md §3.',
+    );
     const { OctokitGitHubClient } = await import('@minicoder/github');
     return new OctokitGitHubClient({ auth: token });
   };

@@ -831,6 +831,33 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   type, wrong number) would still pass. Fixed by asserting in `backlog-activation.ts` that the
   parsed `activatedFeatureCount` equals the actual number of `feature_runs` rows the run produced.
 
+**Post-implementation review fixes (round 5):**
+
+- **LOW-1 (required env validation was fixed in `run-coder` but not centralized across sibling
+  GitHub-facing tasks).** `github-reconciliation.ts`'s `resolveDefaultGithubClientFactory` still
+  used a bare `if (!token)` truthiness check for `GITHUB_TOKEN`, while `run-coder.ts` had already
+  moved to blank-rejecting validation — the same env var had two different validation contracts
+  depending on which task read it. Fixed by extracting `requireNonBlankEnvVar()` out of
+  `run-coder.ts` into a new shared `packages/triggerdev/src/tasks/env.ts`, adopted by both
+  `run-coder.ts` and `github-reconciliation.ts`. Regression-tested in
+  `github-reconciliation.test.ts` for whitespace-only `GITHUB_TOKEN` values via the default
+  (non-injected) client-factory path, mirroring `run-coder.test.ts`'s existing coverage.
+- **LOW-2 (the `plan.activated` count regression was still fixture-coupled).** Round 4's assertion
+  (`activatedFeatureCount === featureRuns.length`) only holds because the `backlog-activation`
+  fixture never seeds a preexisting `feature_runs` row — `ActivatePlanHandler` skips
+  already-activated features (idempotent re-activation), so `activatedFeatureCount` means "newly
+  inserted this call," not "final total row count," and a regression that reported the total
+  instead of the delta would still have passed round 4's test. Fixed by seeding one preexisting
+  `feature_runs` row in the scenario before activation and asserting
+  `activatedFeatureCount === featureRuns.length - 1` (2 newly inserted of 3 total), which only
+  passes if the handler's actual "skip already-activated" semantics are preserved.
+- **LOW-3 (observability for pushed-but-no-PR runs) — explicitly deferred, not built.** The
+  reviewer's third suggestion (a metric/alert for `code_pushed` runs with no PR after a grace
+  period) is genuine future work, not a fix to land now — it requires new alerting/metrics
+  infrastructure this repository doesn't have yet, the same category of item Phase 16
+  ("observability") already owns elsewhere in this document. Recorded here rather than silently
+  dropped.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
