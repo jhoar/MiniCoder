@@ -15,17 +15,22 @@ export interface GithubReconciliationResult {
 
 // CommandError `problem.type`s that represent an expected per-candidate concurrency race (a
 // webhook-triggered inbox handler ran the same reconciliation transition in-flight under the same
-// idempotency key).
-const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command']);
+// idempotency key), or an expected non-fatal policy condition. `automation-paused` (code-review
+// HIGH-1, round 4): reconcileGithubState()'s CHANGES_REQUESTED branch dispatches
+// StartFixingCommand, which throws this when the project's automation is paused/budget-paused —
+// a routine, per-candidate condition (this candidate's automation is paused right now), not a
+// reason to abort reconciling the rest of the batch.
+const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'automation-paused']);
 
 /**
  * A transient concurrency loss on a single candidate that a later reconciliation pass will simply
  * retry past — the candidate is skipped without aborting the rest of the batch. See
  * `transient-race.ts`'s `isTransientRace()` doc comment for the shared LockConflictError/
- * OptimisticLockError/StaleFenceError classification; this task only treats `concurrent-command`
- * as an additional expected race (an in-flight idempotency-key race with a webhook handler
- * running the same transition). A genuine infrastructure failure (DB down, GitHub API error,
- * etc.) matches none of these and still throws, correctly failing the task for Trigger.dev retry.
+ * OptimisticLockError/StaleFenceError classification; this task also treats `concurrent-command`
+ * (an in-flight idempotency-key race with a webhook handler running the same transition) and
+ * `automation-paused` (see above) as additional expected races. A genuine infrastructure failure
+ * (DB down, GitHub API error, etc.) matches none of these and still throws, correctly failing the
+ * task for Trigger.dev retry.
  */
 function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);

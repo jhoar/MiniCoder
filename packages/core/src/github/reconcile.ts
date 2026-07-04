@@ -48,9 +48,26 @@
  * includes `observed.headSha`, so repeated calls for the *same* unresolved review on the *same*
  * commit collapse to the same key (true idempotency preserved), while fix-cycle re-entry with a
  * *new* `headSha` correctly gets a fresh key and fires again.
+ *
+ * `ci_failed` ownership (Phase 10 — Review/Fix Loop): the `CI_FAILED` branch added in this phase
+ * dispatches `RequestChangesAfterCiFailCommand` (fix-attempt count below threshold) or
+ * `EscalateToHumanCommand` (at/over threshold) immediately after a `ci_running -> ci_failed`
+ * transition, inside the same bounded catch-up loop — so both the webhook-triggered path
+ * (`packages/github/src/inbox-handlers.ts`) and the scheduled `github-reconciliation` task get
+ * this follow-up for free, matching this module's single-algorithm design.
+ *
+ * `changes_requested -> fixing` (code-review HIGH-1, round 4): a `CHANGES_REQUESTED` branch
+ * dispatches `StartFixingCommand` whenever the run reaches that state, regardless of whether it
+ * got there via the CI-failure path above or a GitHub-observed human review below — previously
+ * nothing drove either origin to `fixing`, so a feature run below the fix-attempt threshold could
+ * sit at `changes_requested` forever. This is the one review-outcome-adjacent branch that DOES
+ * need the execution-lane lock (`requiresExecutionLock()` now includes `CHANGES_REQUESTED`); like
+ * `CODE_PUSHED`/`PR_OPENED`, it reports `lock_required` when none is supplied so the caller
+ * retries with one.
  */
 
 import { FeatureExecutionState, UserRole } from '../domain/states.js';
+import { FIX_ATTEMPT_THRESHOLD } from '../domain/constants.js';
 import type { ActorIdentity } from '../auth/types.js';
 import type { CommandEnvelope } from '../commands/types.js';
 import { TransactionalCommandExecutor } from '../commands/executor.js';
@@ -65,7 +82,9 @@ import { RecordCiRunningHandler } from '../commands/handlers/github/record-ci-ru
 import { RecordCiPassedHandler } from '../commands/handlers/github/record-ci-passed.js';
 import { RecordCiFailedHandler } from '../commands/handlers/github/record-ci-failed.js';
 import { RecordChangesRequestedHandler } from '../commands/handlers/github/record-changes-requested.js';
+import { RequestChangesAfterCiFailHandler } from '../commands/handlers/github/request-changes-after-ci-fail.js';
 import { EscalateToHumanHandler } from '../commands/handlers/feature/escalate-to-human-required.js';
+import { StartFixingHandler } from '../commands/handlers/feature/start-fixing.js';
 
 const SYSTEM_ACTOR_ID = 'github-reconciliation';
 
@@ -97,6 +116,8 @@ export type ReconciliationAction =
   | 'ci_passed'
   | 'ci_failed'
   | 'changes_requested'
+  | 'changes_requested_after_ci_fail'
+  | 'fixing_started'
   | 'escalated'
   | 'lock_required';
 
@@ -130,12 +151,15 @@ interface FeatureRunSnapshot {
  * to decide whether acquiring the `execution-lane:<projectId>` `WorkflowLockManager` lock before
  * calling `reconcileGithubState` is necessary at all — CI-outcome and review-outcome transitions
  * (`RecordCiPassedCommand`/`RecordCiFailedCommand`/`RecordChangesRequestedCommand`) never require
- * `envelope.lockContext`.
+ * `envelope.lockContext`. `CHANGES_REQUESTED` is the exception (code-review HIGH-1, round 4):
+ * driving `changes_requested -> fixing` via `StartFixingCommand` needs the lock, same as
+ * `CODE_PUSHED`/`PR_OPENED`.
  */
 export function requiresExecutionLock(currentState: FeatureExecutionState): boolean {
   return (
     currentState === FeatureExecutionState.CODE_PUSHED ||
-    currentState === FeatureExecutionState.PR_OPENED
+    currentState === FeatureExecutionState.PR_OPENED ||
+    currentState === FeatureExecutionState.CHANGES_REQUESTED
   );
 }
 
@@ -179,6 +203,7 @@ export async function reconcileGithubState(
 
   for (let step = 0; step < MAX_RECONCILE_STEPS; step += 1) {
     const stepResult = await runStep({
+      db,
       executor,
       actor,
       correlationId,
@@ -223,6 +248,7 @@ export async function reconcileGithubState(
 }
 
 interface RunStepOptions {
+  db: DbClient;
   executor: TransactionalCommandExecutor;
   actor: ActorIdentity;
   correlationId: string;
@@ -239,6 +265,7 @@ async function runStep(
   opts: RunStepOptions,
 ): Promise<{ action: ReconciliationAction; resultingState?: FeatureExecutionState } | null> {
   const {
+    db,
     executor,
     actor,
     correlationId,
@@ -384,6 +411,68 @@ async function runStep(
     }
   }
 
+  // Phase 10: ownership of the ci_failed next-transition stays inside reconcileGithubState() so
+  // both the webhook-triggered path (via inbox-handlers.ts, which also calls this function) and
+  // the scheduled github-reconciliation task get it for free, immediately following a successful
+  // ci_running -> ci_failed transition in the loop's previous iteration (HIGH-2 catch-up loop).
+  // This branch never needs the execution lane lock — CI-outcome/review-outcome transitions are
+  // not lock-gated (requiresExecutionLock() above only covers pr_opened/ci_running).
+  if (currentState === FeatureExecutionState.CI_FAILED) {
+    const fixAttemptRows = await db.query<{ fix_attempt_count: number }>(
+      `SELECT fix_attempt_count FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    const fixAttemptCount = fixAttemptRows[0]?.fix_attempt_count ?? 0;
+    if (fixAttemptCount >= FIX_ATTEMPT_THRESHOLD) {
+      return escalate(
+        executor,
+        actor,
+        correlationId,
+        {
+          featureRunId,
+          projectId,
+          expectedVersion,
+          reason: `Fix-attempt threshold (${FIX_ATTEMPT_THRESHOLD}) reached after repeated CI failures`,
+        },
+        `escalate-human-ci-limit:${featureRunId}`,
+      );
+    }
+    const envelope: CommandEnvelope<Record<string, unknown>> = {
+      commandId: generateId(),
+      idempotencyKey: `changes-requested-after-ci:${featureRunId}:${expectedVersion}`,
+      payload: { featureRunId, projectId, expectedVersion },
+      actor,
+      correlationId,
+    };
+    const result = await executor.execute(new RequestChangesAfterCiFailHandler(), envelope);
+    return { action: 'changes_requested_after_ci_fail', resultingState: result.resultingState };
+  }
+
+  // Code-review HIGH-1 (round 4): drives changes_requested -> fixing uniformly regardless of how
+  // the run reached changes_requested — a CI-failure-originated occurrence (the branch above) or a
+  // GitHub-observed human review (the branch below) both need this same hop, and previously
+  // nothing drove either one: run-review.ts only ever resumes a stranded changes_requested run
+  // that IT itself put there (the AI-reviewer path), so a CI-failure-driven or human-review-driven
+  // changes_requested had no path to fixing at all — the feature run could sit there forever below
+  // the fix-attempt threshold. Matches this module's single-algorithm design (both the
+  // webhook-triggered path and the scheduled github-reconciliation task get this for free) and
+  // mirrors run-review.ts's advanceToFixing() helper. Needs the execution-lane lock (like
+  // CODE_PUSHED/PR_OPENED — see requiresExecutionLock() above); the caller retries with a lock on
+  // 'lock_required', the same established pattern used throughout this file.
+  if (currentState === FeatureExecutionState.CHANGES_REQUESTED) {
+    if (!lockContext) return { action: 'lock_required' };
+    const envelope: CommandEnvelope<Record<string, unknown>> = {
+      commandId: generateId(),
+      idempotencyKey: `start-fixing:${featureRunId}:${expectedVersion}`,
+      payload: { featureRunId, projectId, expectedVersion },
+      actor,
+      correlationId,
+      lockContext,
+    };
+    const result = await executor.execute(new StartFixingHandler(), envelope);
+    return { action: 'fixing_started', resultingState: result.resultingState };
+  }
+
   if (
     currentState === FeatureExecutionState.UNDER_REVIEW &&
     observed.reviewState === 'changes_requested'
@@ -391,6 +480,31 @@ async function runStep(
     // round-6 HIGH-1: no `priorReviewState` pre-check here — see the module doc comment above.
     // Idempotency is entirely carried by the key below (includes `observed.headSha`), matching
     // every other branch in this file.
+    //
+    // HIGH-2 code-review fix (Phase 10 PR review): RecordChangesRequestedHandler now throws
+    // 'fix-attempt-limit-exceeded' once fix_attempt_count >= FIX_ATTEMPT_THRESHOLD (Phase 10) —
+    // dispatching it unconditionally here would surface that as an uncaught reconciliation
+    // failure instead of the matrix-required under_review -> human_required escalation. Check the
+    // threshold first, mirroring the CI_FAILED branch above.
+    const fixAttemptRows = await db.query<{ fix_attempt_count: number }>(
+      `SELECT fix_attempt_count FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    const fixAttemptCount = fixAttemptRows[0]?.fix_attempt_count ?? 0;
+    if (fixAttemptCount >= FIX_ATTEMPT_THRESHOLD) {
+      return escalate(
+        executor,
+        actor,
+        correlationId,
+        {
+          featureRunId,
+          projectId,
+          expectedVersion,
+          reason: `Fix-attempt threshold (${FIX_ATTEMPT_THRESHOLD}) reached after repeated review cycles`,
+        },
+        `escalate-human-review:${featureRunId}`,
+      );
+    }
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
       idempotencyKey: `changes-requested:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,
@@ -415,10 +529,11 @@ async function escalate(
   actor: ActorIdentity,
   correlationId: string,
   payload: { featureRunId: string; projectId: string; expectedVersion: number; reason: string },
+  idempotencyKey: string = `escalate-human-github:${payload.featureRunId}`,
 ): Promise<{ action: ReconciliationAction; resultingState?: FeatureExecutionState }> {
   const envelope: CommandEnvelope<Record<string, unknown>> = {
     commandId: generateId(),
-    idempotencyKey: `escalate-human-github:${payload.featureRunId}`,
+    idempotencyKey,
     payload,
     actor,
     correlationId,

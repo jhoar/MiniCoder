@@ -59,6 +59,15 @@ importers:
         specifier: ^3.3.29
         version: 3.3.47
 
+  packages/adapters-reviewer:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
   packages/cli:
     dependencies:
       '@minicoder/core':
@@ -194,6 +203,9 @@ importers:
       '@minicoder/adapters-coder':
         specifier: workspace:*
         version: link:../adapters-coder
+      '@minicoder/adapters-reviewer':
+        specifier: workspace:*
+        version: link:../adapters-reviewer
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core

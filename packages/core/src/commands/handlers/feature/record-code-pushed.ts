@@ -23,6 +23,14 @@ export const RecordCodePushedPayloadSchema = z.object({
   commitSha: z.string().min(1),
   branchName: z.string().min(1),
   filesChanged: z.number().int().nonnegative(),
+  // Phase 10 code-review fix (HIGH-2, round 2): populated by run-coder.ts on a fix-cycle push
+  // (fixing -> code_pushed) so the "optimistic fixed" coder-response write and finding resolution
+  // happen atomically with the state transition — a crash between a successful state update and a
+  // separate follow-up write would otherwise strand resolved-in-practice findings as open forever
+  // (a retry no-ops since the run is no longer `coding`/`fixing`). Left undefined for the
+  // coding -> code_pushed edge, which has no findings to resolve.
+  coderRunId: z.string().optional(),
+  resolvedFindingIds: z.array(z.string()).optional(),
 });
 export type RecordCodePushedPayload = z.infer<typeof RecordCodePushedPayloadSchema>;
 
@@ -48,8 +56,16 @@ export class RecordCodePushedHandler implements CommandHandler<
     envelope: CommandEnvelope<RecordCodePushedPayload>,
     db: DbClient,
   ): Promise<CommandResult<FeatureExecutionState>> {
-    const { featureRunId, projectId, expectedVersion, commitSha, branchName, filesChanged } =
-      envelope.payload;
+    const {
+      featureRunId,
+      projectId,
+      expectedVersion,
+      commitSha,
+      branchName,
+      filesChanged,
+      coderRunId,
+      resolvedFindingIds,
+    } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<FeatureExecutionState>(
         tx,
@@ -97,6 +113,34 @@ export class RecordCodePushedHandler implements CommandHandler<
       );
       if (codePushedAffected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
+      }
+      if (resolvedFindingIds && resolvedFindingIds.length > 0 && coderRunId) {
+        for (const findingId of resolvedFindingIds) {
+          // MEDIUM code-review fix (Phase 10, round 4): scope the resolve-update to this
+          // feature run, not just the bare finding id — a bad/future caller passing a finding id
+          // from a different feature run must not resolve it. Only write the coder_responses
+          // audit row when the scoped update actually matched a finding belonging to this run.
+          // HIGH code-review fix (round 3, still applies): `resolved = TRUE`, not `= 1` — see
+          // write-findings.ts's comment on why a bare integer literal against a PostgreSQL
+          // BOOLEAN column fails.
+          const resolvedAffected = await tx.executeAffected(
+            `UPDATE review_findings SET resolved = TRUE, resolved_by_run_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND feature_run_id = ?`,
+            [coderRunId, now, findingId, featureRunId],
+          );
+          if (resolvedAffected === 0) continue;
+          await tx.execute(
+            `INSERT INTO coder_responses (id, finding_id, coder_run_id, response_type, notes, version, created_at, updated_at)
+             VALUES (?, ?, ?, 'fixed', ?, 1, ?, ?)`,
+            [
+              `coder-response:${featureRunId}:${findingId}`,
+              findingId,
+              coderRunId,
+              'Optimistic: coder push completed without per-finding disposition (Phase 10 simplification)',
+              now,
+              now,
+            ],
+          );
+        }
       }
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,

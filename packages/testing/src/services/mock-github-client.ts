@@ -67,6 +67,19 @@ export class MockGitHubClient implements GitHubClient {
   async getRemainingRateLimit(): Promise<number> {
     return 5000;
   }
+
+  /** Deterministic fake diff (Phase 10) — MockGitHubProvider doesn't track real file content, so
+   * this returns a stable, PR-number-derived placeholder unified diff. */
+  async getPullRequestDiff(owner: string, repo: string, prNumber: number): Promise<string> {
+    return (
+      `diff --git a/${repo}/mock-file-${prNumber}.ts b/${repo}/mock-file-${prNumber}.ts\n` +
+      `--- a/${repo}/mock-file-${prNumber}.ts\n` +
+      `+++ b/${repo}/mock-file-${prNumber}.ts\n` +
+      `@@ -1,1 +1,2 @@\n` +
+      ` // ${owner}/${repo} mock diff for PR #${prNumber}\n` +
+      `+// mock change\n`
+    );
+  }
 }
 
 function toObservedState(pr: MockPrState): ObservedPullRequestState {

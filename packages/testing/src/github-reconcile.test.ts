@@ -44,6 +44,16 @@ async function seedFeatureRun(
      VALUES (?, ?, 1, ?, datetime('now'), 1, datetime('now'), datetime('now'))`,
     [featureRunId, featureRequestId, currentState],
   );
+  // Code-review HIGH-1 (round 4): reconcileGithubState()'s new CHANGES_REQUESTED -> fixing branch
+  // dispatches StartFixingCommand, which requires a workflow_states row with automation_state =
+  // 'running' — every real production feature run reaching a GitHub-observed state necessarily
+  // has one (that's how it was selected in the first place), so this fixture was already
+  // incomplete relative to that invariant; it just went unexercised until this branch existed.
+  await db.execute(
+    `INSERT OR IGNORE INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'running', 1, datetime('now'), datetime('now'))`,
+    [`ws-${PROJECT_ID}`, PROJECT_ID, featureRunId],
+  );
   return { featureRequestId, featureRunId };
 }
 
@@ -165,11 +175,12 @@ describe('reconcileGithubState', () => {
     expect(result.resultingState).toBe(FeatureExecutionState.UNDER_REVIEW);
   });
 
-  it('transitions ci_running -> ci_failed when CI fails', async () => {
+  it('transitions ci_running -> ci_failed -> changes_requested -> fixing in the same call (code-review HIGH-1, round 4)', async () => {
     const db = createTestDb();
     await seedProject(db);
     const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CI_RUNNING);
     await seedPullRequestRow(db, featureRunId, { prNumber: 13, ciStatus: 'running' });
+    const lockContext = await seedLock(db);
 
     const result = await reconcileGithubState({
       db,
@@ -177,17 +188,37 @@ describe('reconcileGithubState', () => {
       projectId: PROJECT_ID,
       observed: observed({ prNumber: 13, ciStatus: 'failed' }),
       correlationId: 'corr-4',
+      lockContext,
     });
 
-    expect(result.action).toBe('ci_failed');
-    expect(result.resultingState).toBe(FeatureExecutionState.CI_FAILED);
+    // Phase 10: the bounded catch-up loop continues past ci_failed to dispatch
+    // RequestChangesAfterCiFailCommand (fix_attempt_count starts at 0, well below
+    // FIX_ATTEMPT_THRESHOLD). Code-review HIGH-1 (round 4): the loop now continues one step
+    // further still — a CI-failure-originated changes_requested is no longer stranded; with a
+    // lock supplied, the same call also dispatches StartFixingCommand, reaching `fixing`.
+    expect(result.actions).toEqual([
+      'ci_failed',
+      'changes_requested_after_ci_fail',
+      'fixing_started',
+    ]);
+    expect(result.action).toBe('fixing_started');
+    expect(result.resultingState).toBe(FeatureExecutionState.FIXING);
+
+    const findings = await db.query<{ severity: string; category: string }>(
+      `SELECT severity, category FROM review_findings WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.severity).toBe('blocking');
+    expect(findings[0]?.category).toBe('ci_failure');
   });
 
-  it('transitions under_review -> changes_requested on a changes-requested review', async () => {
+  it('transitions under_review -> changes_requested -> fixing on a changes-requested review (code-review HIGH-1, round 4)', async () => {
     const db = createTestDb();
     await seedProject(db);
     const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
     await seedPullRequestRow(db, featureRunId, { prNumber: 14, ciStatus: 'passed' });
+    const lockContext = await seedLock(db);
 
     const result = await reconcileGithubState({
       db,
@@ -195,10 +226,34 @@ describe('reconcileGithubState', () => {
       projectId: PROJECT_ID,
       observed: observed({ prNumber: 14, ciStatus: 'passed', reviewState: 'changes_requested' }),
       correlationId: 'corr-5',
+      lockContext,
     });
 
-    expect(result.action).toBe('changes_requested');
-    expect(result.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+    // Code-review HIGH-1 (round 4): a human-review-driven changes_requested was just as stranded
+    // as a CI-failure-driven one before this fix — nothing drove it to fixing. With a lock
+    // supplied, the same call now also dispatches StartFixingCommand.
+    expect(result.actions).toEqual(['changes_requested', 'fixing_started']);
+    expect(result.action).toBe('fixing_started');
+    expect(result.resultingState).toBe(FeatureExecutionState.FIXING);
+  });
+
+  it('HIGH-2 (Phase 10 PR review): escalates instead of throwing when a GitHub changes-requested review arrives at the fix-attempt threshold', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 16, ciStatus: 'passed' });
+    await db.execute(`UPDATE feature_runs SET fix_attempt_count = 5 WHERE id = ?`, [featureRunId]);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 16, ciStatus: 'passed', reviewState: 'changes_requested' }),
+      correlationId: 'corr-5b',
+    });
+
+    expect(result.action).toBe('escalated');
+    expect(result.resultingState).toBe(FeatureExecutionState.HUMAN_REQUIRED);
   });
 
   it('escalates to human_required when the PR closes unmerged while CI is running', async () => {
@@ -267,7 +322,7 @@ describe('reconcileGithubState', () => {
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
   });
 
-  it('HIGH-2: catches up pr_opened -> ci_failed in one call when ci_running was missed and CI already failed', async () => {
+  it('HIGH-2: catches up pr_opened -> changes_requested in one call when ci_running was missed and CI already failed (Phase 10)', async () => {
     const db = createTestDb();
     await seedProject(db);
     const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.PR_OPENED);
@@ -283,9 +338,19 @@ describe('reconcileGithubState', () => {
       lockContext,
     });
 
-    expect(result.actions).toEqual(['ci_running', 'ci_failed']);
-    expect(result.action).toBe('ci_failed');
-    expect(result.resultingState).toBe(FeatureExecutionState.CI_FAILED);
+    // Phase 10 extends this catch-up chain one step further: ci_failed no longer ends the call —
+    // the bounded loop also dispatches RequestChangesAfterCiFailCommand in the same pass.
+    // Code-review HIGH-1 (round 4): with a lock supplied, the loop continues one hop further
+    // still, all the way to `fixing` — a CI-failure-originated changes_requested is no longer
+    // stranded.
+    expect(result.actions).toEqual([
+      'ci_running',
+      'ci_failed',
+      'changes_requested_after_ci_fail',
+      'fixing_started',
+    ]);
+    expect(result.action).toBe('fixing_started');
+    expect(result.resultingState).toBe(FeatureExecutionState.FIXING);
   });
 
   it('HIGH-3: full observed-state mirror sync writes every column, not just ci_status/review_state', async () => {
@@ -543,6 +608,10 @@ describe('reconcileGithubState', () => {
       reviewState: 'changes_requested',
     });
 
+    // No lockContext supplied here — this test is deliberately isolating the mirror/observed-state
+    // nuance from the code-review HIGH-1 (round 4) changes_requested -> fixing hop (covered by its
+    // own dedicated tests above), so every call below intentionally stops at 'lock_required' once
+    // it reaches CHANGES_REQUESTED rather than cascading further.
     const firstPass = await reconcileGithubState({
       db,
       featureRunId,
@@ -550,7 +619,7 @@ describe('reconcileGithubState', () => {
       observed: observed({ prNumber: 60, headSha: 'sha1', reviewState: 'changes_requested' }),
       correlationId: 'corr-high1r6-a',
     });
-    expect(firstPass.action).toBe('changes_requested');
+    expect(firstPass.actions).toEqual(['changes_requested', 'lock_required']);
     expect(firstPass.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
 
     const midRunRows = await db.query<{ current_execution_state: string }>(
@@ -560,8 +629,12 @@ describe('reconcileGithubState', () => {
     expect(midRunRows[0]?.current_execution_state).toBe(FeatureExecutionState.CHANGES_REQUESTED);
 
     // A duplicate delivery for the exact same occurrence (same headSha, run already advanced past
-    // UNDER_REVIEW) naturally no-ops — the branch only matches currentState === UNDER_REVIEW, so
-    // no idempotency-key replay is even needed to prevent a second RecordChangesRequestedCommand.
+    // UNDER_REVIEW): the UNDER_REVIEW branch itself still naturally no-ops on this occurrence (no
+    // idempotency-key replay is needed to prevent a second RecordChangesRequestedCommand — the
+    // branch only matches currentState === UNDER_REVIEW, which no longer holds). Code-review
+    // HIGH-1 (round 4): every reconcile pass on a CHANGES_REQUESTED run now actively tries to
+    // advance it to `fixing` rather than treating "no new GitHub-observed news" as "nothing to
+    // do" — so the result is 'lock_required' (needs a lock to make progress), not 'none'.
     const duplicatePass = await reconcileGithubState({
       db,
       featureRunId,
@@ -569,7 +642,7 @@ describe('reconcileGithubState', () => {
       observed: observed({ prNumber: 60, headSha: 'sha1', reviewState: 'changes_requested' }),
       correlationId: 'corr-high1r6-b',
     });
-    expect(duplicatePass.action).toBe('none');
+    expect(duplicatePass.action).toBe('lock_required');
 
     // Fix cycle: the run genuinely re-enters UNDER_REVIEW after a new commit (fixing ->
     // code_pushed -> pr_opened -> ci_running -> under_review). The reviewer never re-reviewed the
@@ -588,7 +661,7 @@ describe('reconcileGithubState', () => {
       observed: observed({ prNumber: 60, headSha: 'sha2', reviewState: 'changes_requested' }),
       correlationId: 'corr-high1r6-c',
     });
-    expect(fixCyclePass.action).toBe('changes_requested');
+    expect(fixCyclePass.actions).toEqual(['changes_requested', 'lock_required']);
     expect(fixCyclePass.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
 
     const finalRunRows = await db.query<{ current_execution_state: string }>(

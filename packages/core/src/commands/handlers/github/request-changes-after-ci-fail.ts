@@ -15,23 +15,15 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
-import { ReviewFindingInsertSchema } from '../../../review/normalize-findings.js';
-import { insertReviewFindings } from '../../../review/write-findings.js';
 
-export const RecordChangesRequestedPayloadSchema = z.object({
+export const RequestChangesAfterCiFailPayloadSchema = z.object({
   featureRunId: z.string(),
   projectId: z.string(),
   expectedVersion: z.number().int().nonnegative(),
-  reviewId: z.string().min(1),
-  reviewer: z.string().optional(),
-  // Phase 10: populated by run-review.ts's ReviewerAgentAdapter-driven caller; left
-  // undefined/empty for the existing GitHub-human-review caller in reconcile.ts, which has no
-  // structured findings or reviewer agent run to attribute them to.
-  reviewerRunId: z.string().optional(),
-  reviewCycle: z.number().int().positive().optional(),
-  findings: z.array(ReviewFindingInsertSchema).optional(),
 });
-export type RecordChangesRequestedPayload = z.infer<typeof RecordChangesRequestedPayloadSchema>;
+export type RequestChangesAfterCiFailPayload = z.infer<
+  typeof RequestChangesAfterCiFailPayloadSchema
+>;
 
 const validator = new StateTransitionValidator(FEATURE_EXECUTION_MATRIX, 'feature-execution');
 const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -44,41 +36,27 @@ interface FeatureRunRow {
 }
 
 /**
- * Records a `changes_requested` outcome as the feature-execution matrix's
- * under_review -> changes_requested transition. Two callers: `reconcileGithubState()` (a GitHub-
- * observed human review — no `findings`/`reviewerRunId`) and `run-review.ts` (a
- * `ReviewerAgentAdapter`-driven review — supplies both). Phase 10 delivers the matrix's
- * 'increment_fix_attempt_count' side effect and the fix-attempt-threshold guard
- * (`feature_runs.fix_attempt_count`, migration 0011) that Phase 7 deferred.
- *
- * The threshold is enforced here as defense-in-depth (guardDescription on the matrix row), but
- * callers should check `fix_attempt_count` themselves *before* dispatching this command and
- * dispatch `EscalateToHumanCommand` instead when at/over the threshold — this handler throwing
- * mid-transaction is the fallback, not the primary control path (avoids a wasted transaction).
+ * ci_failed -> changes_requested (Phase 10 — Review/Fix Loop). Follows
+ * RecordChangesRequestedHandler/RecordCiFailedHandler's shape exactly. Guard: `fix_attempt_count
+ * < FIX_ATTEMPT_THRESHOLD`; a caller (`reconcileGithubState()`) should check this itself before
+ * dispatching (dispatching `EscalateToHumanCommand` instead when at/over threshold), but the
+ * handler enforces it too as defense-in-depth. Side effect: increment `fix_attempt_count` (the
+ * matrix's `increment_fix_attempt_count`).
  */
-export class RecordChangesRequestedHandler implements CommandHandler<
-  RecordChangesRequestedPayload,
+export class RequestChangesAfterCiFailHandler implements CommandHandler<
+  RequestChangesAfterCiFailPayload,
   FeatureExecutionState
 > {
-  readonly commandName = 'RecordChangesRequestedCommand';
+  readonly commandName = 'RequestChangesAfterCiFailCommand';
   readonly requiredRole = UserRole.ADMIN;
   readonly requiredActorKind = 'system' as const;
-  readonly idempotencyScope = 'record-changes-requested';
+  readonly idempotencyScope = 'request-changes-after-ci-fail';
 
   async execute(
-    envelope: CommandEnvelope<RecordChangesRequestedPayload>,
+    envelope: CommandEnvelope<RequestChangesAfterCiFailPayload>,
     db: DbClient,
   ): Promise<CommandResult<FeatureExecutionState>> {
-    const {
-      featureRunId,
-      projectId,
-      expectedVersion,
-      reviewId,
-      reviewer,
-      reviewerRunId,
-      reviewCycle,
-      findings,
-    } = envelope.payload;
+    const { featureRunId, projectId, expectedVersion } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<FeatureExecutionState>(
         tx,
@@ -124,28 +102,20 @@ export class RecordChangesRequestedHandler implements CommandHandler<
       if (affected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
-      if (findings && findings.length > 0) {
-        await insertReviewFindings(tx, {
-          featureRunId,
-          reviewerRunId: reviewerRunId ?? null,
-          reviewCycle: reviewCycle ?? run.fix_attempt_count + 1,
-          findings,
-        });
-      }
-      // pull_requests.review_state is written by reconcileGithubState's unconditional
-      // syncPullRequestObservedState() top-level mirror sync, not here (HIGH-3 fix).
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,
         projectId,
-        eventType: 'github.changes_requested',
+        eventType: 'github.changes_requested_after_ci_fail',
         fromState,
         toState: FeatureExecutionState.CHANGES_REQUESTED,
         actorId: envelope.actor.id,
         correlationId: envelope.correlationId,
       });
+      // Matches FeatureChangesRequestedPayloadSchema's required shape (reviewId/reviewer) —
+      // there is no GitHub review here, only a CI failure, so reviewId is a synthetic marker.
       await writeOutboxEvent(tx, {
         eventType: 'feature.changes_requested',
-        payload: { featureRunId, projectId, reviewId, reviewer: reviewer ?? null },
+        payload: { featureRunId, projectId, reviewId: `ci-failed:${featureRunId}`, reviewer: null },
       });
       const result: CommandResult<FeatureExecutionState> = {
         commandId: envelope.commandId,

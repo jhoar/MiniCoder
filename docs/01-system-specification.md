@@ -306,6 +306,18 @@ Manages structured review cycles between Coder and Reviewer agents. Loops are bo
 limits: five review cycles per feature, two fix attempts per finding, one reopening of the same
 finding.
 
+**Delivered (Phase 10):** the aggregate five-review-cycles-per-feature limit ships as a single
+`feature_runs.fix_attempt_count` counter checked against `FIX_ATTEMPT_THRESHOLD` (5) everywhere the
+feature-execution matrix requires a fix-attempt guard (`ci_failed -> changes_requested`/
+`ci_failed -> human_required`, `under_review -> changes_requested`/`under_review ->
+human_required`) — `ClaudeReviewerAdapter` (`packages/adapters-reviewer`) and the `run-review`
+Workflow Layer task (`packages/triggerdev/src/tasks/run-review.ts`) drive the loop end to end:
+structured findings land in `review_findings`, a blocking finding transitions
+`under_review -> changes_requested -> fixing`, and a fix-cycle push writes `coder_responses`. The
+finer-grained "two fix attempts per finding, one reopening" limits above are **not** yet
+implemented — only the single aggregate per-feature counter is (docs/06 Phase 10 scope decision
+#2); that granularity remains future work.
+
 ### 5.9 Disagreement Manager
 
 Detects unresolved or circular coder/reviewer conflicts and routes them to the Arbiter or Human
@@ -584,11 +596,16 @@ it):
 | Merge-gate input                                     | Produced by                                 | Phase |
 | ---------------------------------------------------- | ------------------------------------------- | ----- |
 | CI result                                            | GitHub Actions → GitHub Integration         | 7     |
-| Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop          | 10    |
+| Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop          | 10 ✓  |
 | Conversation resolution                              | GitHub Integration                          | 7     |
 | Branch protection / mergeability                     | GitHub Integration                          | 7     |
 | Budget status                                        | Budget-gate primitive (Cost Manager)        | 8     |
 | Human approvals                                      | Human-required workflow / `human_approvals` | 11    |
+
+Phase 10 has shipped: `review_findings` (blocking / `requires_human_decision`) is a real, populated
+input today, produced by `ClaudeReviewerAdapter` + the `run-review` task's review/fix loop
+(`packages/adapters-reviewer`, `packages/triggerdev/src/tasks/run-review.ts`) — the Merge Gate
+itself (consuming this input to actually allow/block a merge) remains Phase 12 scope.
 
 ## 13. Final System Design Document
 

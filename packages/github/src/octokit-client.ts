@@ -146,6 +146,21 @@ export class OctokitGitHubClient implements GitHubClient {
     const { data } = await this.octokit.rateLimit.get();
     return data.resources.core.remaining;
   }
+
+  /**
+   * Phase 10: uses Octokit's diff media type (`mediaType: { format: 'diff' }`), which makes
+   * `response.data` a raw unified-diff string rather than the usual parsed PR object — @octokit/
+   * rest@^19's generated types don't model this per-request override, hence the cast.
+   */
+  async getPullRequestDiff(owner: string, repo: string, prNumber: number): Promise<string> {
+    const response = await this.octokit.pulls.get({
+      owner,
+      repo,
+      pull_number: prNumber,
+      mediaType: { format: 'diff' },
+    });
+    return response.data as unknown as string;
+  }
 }
 
 /**

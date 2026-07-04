@@ -1,0 +1,1 @@
+ALTER TABLE feature_runs ADD COLUMN IF NOT EXISTS fix_attempt_count INTEGER NOT NULL DEFAULT 0;

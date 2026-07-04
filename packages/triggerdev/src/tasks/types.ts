@@ -109,6 +109,13 @@ export const RunCoderPayload = BasePayload.extend({
   coderAdapterName: z.string(),
 });
 
+export const RunReviewPayload = BasePayload.extend({
+  featureRunId: z.string(),
+  // No default, per Phase 9's MEDIUM-3 precedent ("no silent test-adapter default in production
+  // payloads") — every production/test call site must name the adapter explicitly.
+  reviewerAdapterName: z.string(),
+});
+
 export const ExportPlanPayload = BasePayload.merge(ActorPayload).extend({
   planId: z.string(),
 });
@@ -145,6 +152,7 @@ export type ActivateApprovedBacklogPayload = z.infer<typeof ActivateApprovedBack
 export type StartNextFeaturePayload = z.infer<typeof StartNextFeaturePayload>;
 export type GithubReconciliationPayload = z.infer<typeof GithubReconciliationPayload>;
 export type RunCoderPayload = z.infer<typeof RunCoderPayload>;
+export type RunReviewPayload = z.infer<typeof RunReviewPayload>;
 export type ExportPlanPayload = z.infer<typeof ExportPlanPayload>;
 export type ExportBacklogPayload = z.infer<typeof ExportBacklogPayload>;
 export type ImportBacklogPayload = z.infer<typeof ImportBacklogPayload>;

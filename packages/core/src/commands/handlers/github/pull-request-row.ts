@@ -57,12 +57,15 @@ export async function insertPullRequestRow(
 ): Promise<void> {
   const now = isoNow();
   const existing = await getPullRequestByFeatureRun(tx, opts.featureRunId);
+  // HIGH code-review fix (Phase 10, round 4): `conversations_resolved` is BOOLEAN in PostgreSQL
+  // (migration 0009) — bare integer literals (`0`) are rejected there, the same cross-dialect
+  // issue already fixed for `review_findings.resolved`. `FALSE` is portable across both dialects.
   if (existing) {
     await tx.execute(
       `UPDATE pull_requests
        SET pr_number = ?, branch_name = ?, base_branch = ?, head_sha = ?, state = 'open',
            review_state = 'none', ci_status = 'pending', mergeable = NULL,
-           blocking_labels = '[]', conversations_resolved = 0,
+           blocking_labels = '[]', conversations_resolved = FALSE,
            merged_at = NULL, merge_sha = NULL, closed_at = NULL,
            version = version + 1, updated_at = ?
        WHERE feature_run_id = ?`,
@@ -74,7 +77,7 @@ export async function insertPullRequestRow(
     `INSERT INTO pull_requests
        (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
         ci_status, blocking_labels, conversations_resolved, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'open', 'none', 'pending', '[]', 0, 1, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'open', 'none', 'pending', '[]', FALSE, 1, ?, ?)`,
     [
       opts.id,
       opts.featureRunId,

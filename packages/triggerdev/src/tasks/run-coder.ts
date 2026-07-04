@@ -225,9 +225,18 @@ export async function runImpl(
     [featureRunId, projectId],
   );
   const run = runRows[0];
-  if (!run || run.current_execution_state !== FeatureExecutionState.CODING) {
+  // Phase 10: widened from CODING-only to also accept FIXING — a fix-cycle re-entry
+  // (changes_requested -> fixing) reuses this same task/handler, per the matrix's
+  // fixing -> code_pushed row (RecordCodePushedCommand, same idempotency key template as
+  // coding -> code_pushed; StateTransitionValidator resolves the right matrix row automatically).
+  if (
+    !run ||
+    (run.current_execution_state !== FeatureExecutionState.CODING &&
+      run.current_execution_state !== FeatureExecutionState.FIXING)
+  ) {
     return { projectId, featureRunId, pushed: false, prNumber: null };
   }
+  const isFixCycle = run.current_execution_state === FeatureExecutionState.FIXING;
 
   const featureRows = await db.query<FeatureRequestRow>(
     `SELECT title, fr_id FROM feature_requests WHERE id = ?`,
@@ -248,6 +257,17 @@ export async function runImpl(
   }
   const repoUrl = `https://github.com/${repo.owner}/${repo.name}.git`;
 
+  // Phase 10: unresolved review_findings for this feature run, folded into CoderInput.openFindings
+  // for a fix-cycle invocation only — a first-pass `coding` run has no findings yet.
+  // HIGH code-review fix (round 3): `resolved = FALSE`, not `= 0` — see write-findings.ts's
+  // comment on why a bare integer literal against a PostgreSQL BOOLEAN column fails.
+  const openFindingRows = isFixCycle
+    ? await db.query<{ id: string; description: string }>(
+        `SELECT id, description FROM review_findings WHERE feature_run_id = ? AND resolved = FALSE`,
+        [featureRunId],
+      )
+    : [];
+
   const registry = new AdapterRegistry(db);
   const recorder = new AgentRunRecorder(db, registry);
   const adapterRecord = await registry.resolve(AgentRole.CODER, coderAdapterName);
@@ -259,9 +279,10 @@ export async function runImpl(
     featureTitle: feature.title,
     acceptanceCriteria: acceptanceRows.map((r) => r.description),
     correlationId,
+    openFindings: openFindingRows.length > 0 ? openFindingRows : undefined,
   };
 
-  const { output } = await recorder.record(
+  const { agentRunId, output } = await recorder.record(
     {
       adapterId: adapterRecord.id,
       role: AgentRole.CODER,
@@ -334,6 +355,14 @@ export async function runImpl(
       commitSha: output.commitSha,
       branchName: output.branchName,
       filesChanged: output.filesChanged,
+      // HIGH-2 code-review fix (round 2): pass these through so RecordCodePushedHandler writes
+      // the coder_responses rows and resolves findings in the SAME transaction as the state
+      // transition, instead of a separate follow-up write after the transaction commits (a crash
+      // in between used to strand resolved-in-practice findings as open forever, since a retry
+      // no-ops once the run is no longer coding/fixing).
+      coderRunId: isFixCycle && openFindingRows.length > 0 ? agentRunId : undefined,
+      resolvedFindingIds:
+        isFixCycle && openFindingRows.length > 0 ? openFindingRows.map((f) => f.id) : undefined,
     };
     const envelope: CommandEnvelope<typeof recordPayload> = {
       commandId: generateId(),
@@ -358,6 +387,17 @@ export async function runImpl(
   } finally {
     await lane.releaseForProject(lock);
   }
+
+  // Phase 10 "optimistic fixed" simplification: a successful fix-cycle push writes one
+  // coder_responses row (response_type='fixed') per currently-unresolved review_findings row on
+  // this feature run, and marks each resolved. CoderOutput (the shared, Phase-5-vintage adapter
+  // contract) carries no per-finding disposition today — a repeat_finding-style reviewer behavior
+  // on the *next* review cycle inserts a NEW review_findings row (a new review_cycle) if the issue
+  // truly wasn't fixed, preserving history rather than reopening/re-flagging this resolved one.
+  // HIGH-2 code-review fix (round 2): this write now happens inside RecordCodePushedHandler's own
+  // transaction (via the coderRunId/resolvedFindingIds payload fields above), not as a separate
+  // follow-up step here — a crash between the state transition and a standalone follow-up write
+  // used to leave findings stranded as unresolved even though the fix had already landed.
 
   // A PR-creation failure here is a non-fatal, logged side effect: the coder's work is already
   // durably recorded as code_pushed. Reconciliation or a human can retry PR creation later — it

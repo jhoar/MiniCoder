@@ -87,3 +87,8 @@ export * from './commands/handlers/automation/record-budget-approval-waiting.js'
 export * from './commands/handlers/automation/approve-budget-override.js';
 export * from './cost/budget-evaluator.js';
 export * from './cost/apply-budget-decision.js';
+export * from './domain/constants.js';
+
+// Phase 10: Reference Reviewer Adapter and Review/Fix Loop
+export * from './review/index.js';
+export * from './commands/handlers/github/request-changes-after-ci-fail.js';

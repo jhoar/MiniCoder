@@ -83,4 +83,11 @@ export interface GitHubClient {
 
   /** Remaining GitHub API rate-limit budget, for the capacity pre-flight check. */
   getRemainingRateLimit(): Promise<number>;
+
+  /**
+   * Unified diff text for a pull request (Phase 10 — Reviewer adapter). Reviewing a PR is
+   * read-only, unlike Coder's clone/commit/push, so this is the only new GitHub-facing method
+   * this phase adds — no sandbox, no local git checkout required.
+   */
+  getPullRequestDiff(owner: string, repo: string, prNumber: number): Promise<string>;
 }
