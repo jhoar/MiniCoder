@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.5
+> Version: 1.3.6
 > Last-updated: 2026-07-04
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -913,7 +913,12 @@ first — `run-coder` reads the current state itself and no-ops if it isn't at `
 
 ```ts
 import { runRunCoder } from '@minicoder/triggerdev';
-await runRunCoder({ projectId, featureRunId, correlationId, idempotencyKey }, db);
+// coderAdapterName is required (no default — see CLAUDE.md's Reference Coder Adapter Operational
+// Constraints, MEDIUM-3): use the production registry name (e.g. 'CodexCoderAdapter'), not a mock.
+await runRunCoder(
+  { projectId, featureRunId, correlationId, idempotencyKey, coderAdapterName: 'CodexCoderAdapter' },
+  db,
+);
 ```
 
 #### Procedure: Inspect a coder run's full provenance

@@ -38,7 +38,14 @@ version: '3.8'
 #
 # Optional env vars:
 #   CODE_GEN_ALLOWED_HOST — the code-generation provider's hostname, appended to the egress
-#                           proxy's GitHub-only default allow-list (see egress-proxy/entrypoint.sh)
+#                           proxy's GitHub-only default allow-list (see egress-proxy/entrypoint.sh).
+#                           NOT used by the current CodexCoderAdapter: the LLM call
+#                           (HttpCodeGenerationProvider) runs host-side in the Trigger.dev task
+#                           process, deliberately never inside this sandbox container (see
+#                           docs/07-security-and-secrets.md §6 "Phase 9 implementation status" —
+#                           CODE_GEN_API_KEY must not be reachable from the untrusted-code-
+#                           execution container). This entry is reserved for a future variant that
+#                           invokes code generation from inside the sandbox.
 
 services:
   coder-sandbox-egress-proxy:

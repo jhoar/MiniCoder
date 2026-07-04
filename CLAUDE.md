@@ -738,6 +738,51 @@ failed`/`coding → blocked` matrix edge was added.** `RecordCodePushedCommand` 
   field required; every production/test call site already passed it explicitly.
 - **LOW-1 (tracked files failed `format:check`).** Ran Prettier on the phase's touched files.
 
+**Post-implementation review fixes (round 2):**
+
+- **HIGH-1 (the event-ID schema fix was incomplete — the same `.uuid()` mismatch was live on
+  every other schema in the file).** Round 1 fixed only `FeatureCodePushedPayloadSchema` (the
+  schema Phase 9 directly touched); `FeatureSelectedPayloadSchema`, `FeatureCodingStartedPayloadSchema`,
+  `FeatureMergedPayloadSchema`, `PlanApprovedPayloadSchema`, `PlanActivatedPayloadSchema`,
+  `AutomationPausedPayloadSchema`, and `AutomationResumedPayloadSchema` all still required
+  `.uuid()` while every real ID in the system is a `generateId()` string — an active
+  `InboxProcessor.validateEventPayload()` boundary that would mark these events `failed` without
+  invoking the handler. Fixed everywhere in `packages/core/src/events/schemas.ts` in one pass
+  (changed to `.min(1)`) rather than leaving a split contract across event families. New
+  `packages/core/src/events/schemas.test.ts` asserts every previously-`.uuid()` schema accepts a
+  realistic `generateId()`-shaped ID; the Phase 7 GitHub-facing events already had handler-driven
+  coverage in `packages/testing/src/github-outbox-schemas.test.ts`, and `feature.code_pushed`'s is
+  in `packages/triggerdev/src/tasks/run-coder.test.ts`.
+- **MEDIUM-1 (`prompt_template_version` still wasn't populated for real coder runs).** Round 1
+  taught `AgentRunRecorder` to persist `promptTemplateVersion` when supplied, but `run-coder.ts`'s
+  `recorder.record(...)` call never passed one — the fix only proved out against synthetic/test
+  calls. Fixed by adding a `CODER_PROMPT_TEMPLATE_VERSION` constant (env-overridable via
+  `CODER_PROMPT_TEMPLATE_VERSION`) passed through at the real call site; asserted non-null in
+  `run-coder.test.ts`'s happy-path test.
+- **MEDIUM-2 (the egress-proxy/host-process trust boundary for code generation was undocumented
+  and looked like an oversight).** `CodexCoderAdapter.run()` calls `CodeGenerationProvider.generate()`
+  (a plain `fetch`) in the Trigger.dev task process, not inside `sandbox` — `CODER_SANDBOX_HTTPS_PROXY`
+  only reaches the sandboxed container's `Env`, so it never governs this call, and the compose
+  file's `CODE_GEN_ALLOWED_HOST` egress-proxy allow-list entry is consequently unused today. This
+  is a deliberate design choice, not a gap: the sandbox container is the untrusted-code-execution
+  boundary (it runs `pnpm install`/`pnpm test` against LLM-generated files), so `CODE_GEN_API_KEY`
+  must never be reachable from inside it. Documented explicitly in docs/07 §6's "Phase 9
+  implementation status", the compose file's `CODE_GEN_ALLOWED_HOST` comment, and a code comment
+  at the `codeGenerationProvider.generate()` call site in `codex-coder-adapter.ts` — no code
+  redesign, since moving the call into the sandbox would be the less secure option.
+- **MEDIUM-3 (cost-pricing env vars were parsed without validation).** `computeCostUsd()` used
+  `Number(process.env[...])` directly — a malformed, non-finite, or negative value would produce
+  `NaN`/`Infinity`/a negative cost silently persisted into `cost_records`, poisoning budget-gate
+  arithmetic. Fixed with `parsePriceEnvVar()`, which rejects non-finite/negative values (logging an
+  error and falling back to the default) rather than propagating them. Tested in
+  `run-coder.test.ts` for `'not-a-number'`/`'NaN'`/`'Infinity'`/`'-1'` (all fall back to the
+  default, cost stays finite and positive) and for a valid custom price (honored exactly).
+- **LOW-1 (the state-repair runbook's direct `runRunCoder` example omitted the now-required
+  `coderAdapterName`).** Round 1 removed `RunCoderPayload.coderAdapterName`'s default (MEDIUM-3 in
+  round 1), but docs/04's recovery-procedure example wasn't updated to match, so following it
+  verbatim would hit a Zod validation error instead of recovering the stuck run. Fixed to include
+  `coderAdapterName: 'CodexCoderAdapter'` (the production registry name) in the example.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

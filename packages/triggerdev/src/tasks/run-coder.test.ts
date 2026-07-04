@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type {
   CoderAgentAdapter,
   CoderInput,
@@ -196,13 +196,18 @@ describe('run-coder', () => {
       state: string;
       tokens_used: number | null;
       cost_usd: number | null;
-    }>(`SELECT state, tokens_used, cost_usd FROM agent_runs WHERE feature_run_id = ?`, [
-      featureRunId,
-    ]);
+      prompt_template_version: string | null;
+    }>(
+      `SELECT state, tokens_used, cost_usd, prompt_template_version FROM agent_runs WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
     expect(agentRuns).toHaveLength(1);
     expect(agentRuns[0]?.state).toBe('succeeded');
     expect(agentRuns[0]?.tokens_used).toBe(140);
     expect(agentRuns[0]?.cost_usd).toBeGreaterThan(0);
+    // MEDIUM-1 code-review fix (round 2) regression: a real coder run must populate
+    // prompt_template_version, not just synthetic recorder-level test calls.
+    expect(agentRuns[0]?.prompt_template_version).toBeTruthy();
 
     // HIGH-5 code-review fix regression: a coder run must write a cost_records row so budget
     // gates summing cost_records actually see coder spend.
@@ -334,5 +339,93 @@ describe('run-coder', () => {
 
     expect(client.createdPullRequests).toHaveLength(1);
     expect(client.createdPullRequests[0]?.baseBranch).toBe('develop');
+  });
+
+  describe('cost pricing env var validation (MEDIUM-3 code-review fix, round 2)', () => {
+    const PRICE_ENV_VARS = [
+      'CODE_GEN_PRICE_PER_1K_INPUT_TOKENS',
+      'CODE_GEN_PRICE_PER_1K_OUTPUT_TOKENS',
+    ] as const;
+    const originalValues = new Map<string, string | undefined>();
+
+    beforeEach(() => {
+      for (const name of PRICE_ENV_VARS) originalValues.set(name, process.env[name]);
+    });
+
+    afterEach(() => {
+      for (const name of PRICE_ENV_VARS) {
+        const original = originalValues.get(name);
+        if (original === undefined) delete process.env[name];
+        else process.env[name] = original;
+      }
+    });
+
+    it.each(['not-a-number', 'NaN', 'Infinity', '-1'])(
+      'falls back to the default price when the env var is invalid (%s)',
+      async (badValue) => {
+        process.env['CODE_GEN_PRICE_PER_1K_INPUT_TOKENS'] = badValue;
+
+        const db = createTestDb();
+        insertTestProject(db, PROJECT_ID);
+        const { featureRunId } = await seedCodingFeatureRun(db);
+        await registerCoderAdapter(db);
+
+        await runImpl(
+          {
+            projectId: PROJECT_ID,
+            featureRunId,
+            correlationId: 'corr-price',
+            idempotencyKey: 'idem-price',
+            coderAdapterName: 'FakeCoderAdapter',
+          },
+          db,
+          {
+            coderAdapterFactory: async () => fakeCoderAdapter('success'),
+            githubClientFactory: async () => fakeGithubClient(),
+          },
+        );
+
+        const agentRuns = await db.query<{ cost_usd: number | null }>(
+          `SELECT cost_usd FROM agent_runs WHERE feature_run_id = ?`,
+          [featureRunId],
+        );
+        const costUsd = agentRuns[0]?.cost_usd;
+        expect(costUsd).not.toBeNull();
+        expect(Number.isFinite(costUsd)).toBe(true);
+        expect(costUsd as number).toBeGreaterThan(0);
+      },
+    );
+
+    it('honors a valid custom price', async () => {
+      process.env['CODE_GEN_PRICE_PER_1K_INPUT_TOKENS'] = '1';
+      process.env['CODE_GEN_PRICE_PER_1K_OUTPUT_TOKENS'] = '2';
+
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedCodingFeatureRun(db);
+      await registerCoderAdapter(db);
+
+      await runImpl(
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-price-2',
+          idempotencyKey: 'idem-price-2',
+          coderAdapterName: 'FakeCoderAdapter',
+        },
+        db,
+        {
+          coderAdapterFactory: async () => fakeCoderAdapter('success'),
+          githubClientFactory: async () => fakeGithubClient(),
+        },
+      );
+
+      // fakeCoderAdapter reports { input: 100, output: 40 } tokens (140 total, see tokensUsed above).
+      const agentRuns = await db.query<{ cost_usd: number }>(
+        `SELECT cost_usd FROM agent_runs WHERE feature_run_id = ?`,
+        [featureRunId],
+      );
+      expect(agentRuns[0]?.cost_usd).toBeCloseTo((100 / 1000) * 1 + (40 / 1000) * 2, 6);
+    });
   });
 });

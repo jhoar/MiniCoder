@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.19
+> Version: 1.0.20
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1073,6 +1073,19 @@ counts), undermining the budget-gate integration claim; PR creation was hardcode
 instead of using `repositories.default_branch`; and `prompt_template_version` was declared but
 never persisted. See CLAUDE.md's Reference Coder Adapter Operational Constraints section for the
 full fix-by-fix writeup and regression-test pointers.
+
+**Post-implementation review fixes (round 2):** a re-review found round 1's `feature.code_pushed`
+schema fix was incomplete — the identical `.uuid()`-vs-`generateId()` mismatch was still live on
+every other event schema in the same file (`feature.selected`, `feature.coding_started`,
+`feature.merged`, `plan.approved`, `plan.activated`, `automation.paused_by_operator`/
+`.budget_exceeded`, `automation.resumed`) — fixed everywhere in one pass, with a new
+schema-level regression test file. Also fixed: `prompt_template_version` still wasn't populated
+for real coder runs (only synthetic/test calls); cost-pricing env vars were parsed without
+validation (a malformed value could silently poison a persisted cost); and a stale runbook example
+still omitted the now-required `coderAdapterName`. Also clarified (docs-only, no code change) that
+the code-generation LLM call is deliberately host-process, not routed through the sandbox's egress
+proxy — the sandbox is the untrusted-code-execution boundary, so the LLM credential must stay out
+of it. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 2" section for detail.
 
 Acceptance: the adapter implements `CoderAgentAdapter`; the orchestrator does not call provider APIs
 directly (adapter resolution is always via `AdapterRegistry`); a coder run executes inside an

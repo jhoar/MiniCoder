@@ -123,12 +123,33 @@ function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
 const DEFAULT_PRICE_PER_1K_INPUT_TOKENS = 0.00015;
 const DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS = 0.0006;
 
+const CODER_PROMPT_TEMPLATE_VERSION = 'coder-v1';
+
+// MEDIUM-3 code-review fix (round 2): a malformed, negative, or non-finite pricing env var must
+// never silently poison a persisted cost_records row — fall back to the default (with a logged
+// warning) instead of letting NaN/Infinity/a negative number through.
+function parsePriceEnvVar(envVarName: string, fallback: number): number {
+  const raw = process.env[envVarName];
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `run-coder: ${envVarName}="${raw}" is not a finite, non-negative number; falling back to ${fallback}`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
 function computeCostUsd(inputTokens: number, outputTokens: number): number {
-  const pricePerKInput = Number(
-    process.env['CODE_GEN_PRICE_PER_1K_INPUT_TOKENS'] ?? DEFAULT_PRICE_PER_1K_INPUT_TOKENS,
+  const pricePerKInput = parsePriceEnvVar(
+    'CODE_GEN_PRICE_PER_1K_INPUT_TOKENS',
+    DEFAULT_PRICE_PER_1K_INPUT_TOKENS,
   );
-  const pricePerKOutput = Number(
-    process.env['CODE_GEN_PRICE_PER_1K_OUTPUT_TOKENS'] ?? DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS,
+  const pricePerKOutput = parsePriceEnvVar(
+    'CODE_GEN_PRICE_PER_1K_OUTPUT_TOKENS',
+    DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS,
   );
   return (inputTokens / 1000) * pricePerKInput + (outputTokens / 1000) * pricePerKOutput;
 }
@@ -230,6 +251,11 @@ export async function runImpl(
       input,
       capabilitiesUsed: ['can_modify_files', 'can_commit', 'can_push_branch'],
       contextPack: { content: input },
+      // MEDIUM-1 code-review fix (round 2): AgentRunRecorder persists promptTemplateVersion when
+      // supplied, but this call site never passed one, so the column stayed NULL for every real
+      // coder run despite the fix proving out fine for synthetic/test calls.
+      promptTemplateVersion:
+        process.env['CODER_PROMPT_TEMPLATE_VERSION'] ?? CODER_PROMPT_TEMPLATE_VERSION,
       costExtractor: (outcome) => {
         if (!outcome.ok) return null;
         const out = outcome.output as { tokensUsed?: { input: number; output: number } };

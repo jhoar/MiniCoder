@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.4
+> Version: 1.0.5
 > Last-updated: 2026-07-04
 
 This document is the authoritative security and secrets specification. It expands the principles in
@@ -102,12 +102,29 @@ implementation for the first time:
 - **Real, as of Phase 9:** one ephemeral, non-root, capability-dropped (`CapDrop: ['ALL']`),
   read-only-root-filesystem Docker container per coder run (`CoderSandbox`, via `dockerode`
   against a narrowly-scoped `coder-sandbox-docker-proxy`), attached only to an `internal: true`
-  Docker network with no direct route to the internet; the only egress path is an allow-list
-  forward proxy (`coder-sandbox-egress-proxy`, `tinyproxy` with `FilterDefaultDeny yes`) permitting
-  GitHub hosts plus the configured LLM provider host; the container is always removed in a
-  `finally` (success, failure, or cancellation); bounded-diff/disallowed-path enforcement runs as
-  application logic (`diff-guard.ts`) on top of — not instead of — this container isolation; one
-  branch per run, never force-pushed.
+  Docker network with no direct route to the internet; the only egress path out of that container
+  is an allow-list forward proxy (`coder-sandbox-egress-proxy`, `tinyproxy` with
+  `FilterDefaultDeny yes`) permitting GitHub hosts (the sandbox does git clone/commit/push); the
+  container is always removed in a `finally` (success, failure, or cancellation); bounded-diff/
+  disallowed-path enforcement runs as application logic (`diff-guard.ts`) on top of — not instead
+  of — this container isolation; one branch per run, never force-pushed.
+- **Deliberate trust-boundary split: the LLM code-generation call is host-side, not
+  sandboxed.** `CodexCoderAdapter.run()` starts the sandbox for clone/list-files/write/commit/push,
+  but calls `CodeGenerationProvider.generate()` (a plain `fetch`, `HttpCodeGenerationProvider`) in
+  the Trigger.dev task process itself — the _same_ process that holds `CODE_GEN_API_KEY` and
+  `GITHUB_TOKEN` as environment variables. This is intentional, not an oversight: the sandbox
+  container is the untrusted-code-execution boundary (it runs `pnpm install`/`pnpm test` against
+  LLM-generated files and, eventually, project-supplied test/build scripts), so `CODE_GEN_API_KEY`
+  must never be reachable from inside it — injecting the LLM credential into the same container
+  that executes generated code would let a compromised dependency or malicious generated test
+  exfiltrate it. The egress proxy's `CODE_GEN_ALLOWED_HOST` allow-list entry
+  (`infra/docker/coder-sandbox/egress-proxy/filter.txt`) is consequently unused by any call the
+  sandbox container makes today — it exists for a future variant where code generation is invoked
+  from inside the sandbox (e.g. a self-hosted model reachable without a long-lived credential), not
+  as a claim that the current `HttpCodeGenerationProvider` call is proxied through it. Host-process
+  egress for the code-generation call is governed by ordinary deployment-network egress controls,
+  not by this sandbox's proxy — document and secure that host-process network path the same way
+  any other outbound API call from the Workflow Layer's worker process is secured.
 - **Aspirational, not yet daemon-verified:** the sandbox stack was written and syntax-validated
   (`docker compose config`) but has not been exercised against a live Docker daemon in this
   repository's CI — the implementation session had no reachable daemon (see docs/06 Phase 9

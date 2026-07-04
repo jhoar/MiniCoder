@@ -80,6 +80,12 @@ export class CodexCoderAdapter implements CoderAgentAdapter {
           ? `Tracked files:\n${files.join('\n')}`
           : 'Repository has no tracked files yet.',
       ].join('\n\n');
+      // Deliberate trust-boundary split (docs/07 §6 "Phase 9 implementation status"): this call
+      // runs in the host process, not inside `sandbox` — the code-generation credential
+      // (CODE_GEN_API_KEY) must never be reachable from the same container that executes
+      // LLM-generated code / project test scripts. Only clone/list-files/write/commit/push run
+      // inside the sandbox; do not move this call into it without also removing the credential
+      // from that container's reach.
       let generation;
       try {
         generation = await this.timedOp(toolOperations, 'code-generation', () =>
