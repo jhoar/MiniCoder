@@ -55,6 +55,15 @@
  * transition, inside the same bounded catch-up loop — so both the webhook-triggered path
  * (`packages/github/src/inbox-handlers.ts`) and the scheduled `github-reconciliation` task get
  * this follow-up for free, matching this module's single-algorithm design.
+ *
+ * `changes_requested -> fixing` (code-review HIGH-1, round 4): a `CHANGES_REQUESTED` branch
+ * dispatches `StartFixingCommand` whenever the run reaches that state, regardless of whether it
+ * got there via the CI-failure path above or a GitHub-observed human review below — previously
+ * nothing drove either origin to `fixing`, so a feature run below the fix-attempt threshold could
+ * sit at `changes_requested` forever. This is the one review-outcome-adjacent branch that DOES
+ * need the execution-lane lock (`requiresExecutionLock()` now includes `CHANGES_REQUESTED`); like
+ * `CODE_PUSHED`/`PR_OPENED`, it reports `lock_required` when none is supplied so the caller
+ * retries with one.
  */
 
 import { FeatureExecutionState, UserRole } from '../domain/states.js';
@@ -75,6 +84,7 @@ import { RecordCiFailedHandler } from '../commands/handlers/github/record-ci-fai
 import { RecordChangesRequestedHandler } from '../commands/handlers/github/record-changes-requested.js';
 import { RequestChangesAfterCiFailHandler } from '../commands/handlers/github/request-changes-after-ci-fail.js';
 import { EscalateToHumanHandler } from '../commands/handlers/feature/escalate-to-human-required.js';
+import { StartFixingHandler } from '../commands/handlers/feature/start-fixing.js';
 
 const SYSTEM_ACTOR_ID = 'github-reconciliation';
 
@@ -107,6 +117,7 @@ export type ReconciliationAction =
   | 'ci_failed'
   | 'changes_requested'
   | 'changes_requested_after_ci_fail'
+  | 'fixing_started'
   | 'escalated'
   | 'lock_required';
 
@@ -140,12 +151,15 @@ interface FeatureRunSnapshot {
  * to decide whether acquiring the `execution-lane:<projectId>` `WorkflowLockManager` lock before
  * calling `reconcileGithubState` is necessary at all — CI-outcome and review-outcome transitions
  * (`RecordCiPassedCommand`/`RecordCiFailedCommand`/`RecordChangesRequestedCommand`) never require
- * `envelope.lockContext`.
+ * `envelope.lockContext`. `CHANGES_REQUESTED` is the exception (code-review HIGH-1, round 4):
+ * driving `changes_requested -> fixing` via `StartFixingCommand` needs the lock, same as
+ * `CODE_PUSHED`/`PR_OPENED`.
  */
 export function requiresExecutionLock(currentState: FeatureExecutionState): boolean {
   return (
     currentState === FeatureExecutionState.CODE_PUSHED ||
-    currentState === FeatureExecutionState.PR_OPENED
+    currentState === FeatureExecutionState.PR_OPENED ||
+    currentState === FeatureExecutionState.CHANGES_REQUESTED
   );
 }
 
@@ -432,6 +446,31 @@ async function runStep(
     };
     const result = await executor.execute(new RequestChangesAfterCiFailHandler(), envelope);
     return { action: 'changes_requested_after_ci_fail', resultingState: result.resultingState };
+  }
+
+  // Code-review HIGH-1 (round 4): drives changes_requested -> fixing uniformly regardless of how
+  // the run reached changes_requested — a CI-failure-originated occurrence (the branch above) or a
+  // GitHub-observed human review (the branch below) both need this same hop, and previously
+  // nothing drove either one: run-review.ts only ever resumes a stranded changes_requested run
+  // that IT itself put there (the AI-reviewer path), so a CI-failure-driven or human-review-driven
+  // changes_requested had no path to fixing at all — the feature run could sit there forever below
+  // the fix-attempt threshold. Matches this module's single-algorithm design (both the
+  // webhook-triggered path and the scheduled github-reconciliation task get this for free) and
+  // mirrors run-review.ts's advanceToFixing() helper. Needs the execution-lane lock (like
+  // CODE_PUSHED/PR_OPENED — see requiresExecutionLock() above); the caller retries with a lock on
+  // 'lock_required', the same established pattern used throughout this file.
+  if (currentState === FeatureExecutionState.CHANGES_REQUESTED) {
+    if (!lockContext) return { action: 'lock_required' };
+    const envelope: CommandEnvelope<Record<string, unknown>> = {
+      commandId: generateId(),
+      idempotencyKey: `start-fixing:${featureRunId}:${expectedVersion}`,
+      payload: { featureRunId, projectId, expectedVersion },
+      actor,
+      correlationId,
+      lockContext,
+    };
+    const result = await executor.execute(new StartFixingHandler(), envelope);
+    return { action: 'fixing_started', resultingState: result.resultingState };
   }
 
   if (

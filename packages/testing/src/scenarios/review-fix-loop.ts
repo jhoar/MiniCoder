@@ -1,5 +1,6 @@
 import { AdapterRegistry, reconcileGithubState } from '@minicoder/core';
 import { runRunReview, runRunCoder } from '@minicoder/triggerdev';
+import { ExecutionLane } from '@minicoder/workflow';
 import { MockGitHubClient } from '../services/mock-github-client.js';
 import { MockCoderAdapter } from '../adapters/mock-coder.js';
 import { MockReviewerAdapter } from '../adapters/mock-reviewer.js';
@@ -230,22 +231,38 @@ export const reviewFixLoopScenario: Scenario = {
     const observed = await client.getPullRequest('minicoder-test', 'review-fix-loop-repo', 103);
     if (!observed) throw new Error('Expected MockGitHubClient.getPullRequest to return a PR state');
 
-    await reconcileGithubState({
-      db,
-      featureRunId: fr3.id,
-      projectId,
-      observed,
-      correlationId,
-    });
+    // Code-review HIGH-1 (round 4): a CI-failure-originated changes_requested is no longer
+    // stranded — reconcileGithubState()'s bounded catch-up loop also drives changes_requested ->
+    // fixing when a lock is supplied, exactly like a fix-cycle re-push would need.
+    const lane = new ExecutionLane(db);
+    const lock = await lane.acquireForProject(projectId, 'review-fix-loop-scenario', 30_000);
+    try {
+      await reconcileGithubState({
+        db,
+        featureRunId: fr3.id,
+        projectId,
+        observed,
+        correlationId,
+        lockContext: {
+          lockId: lock.lockId,
+          fence: lock.fence,
+          holderId: lock.holderId,
+          projectId,
+          resourceKey: lock.resourceKey,
+        },
+      });
+    } finally {
+      await lane.releaseForProject(lock);
+    }
 
     const fr3After = await db.query<FeatureRunRow>(
       `SELECT id, current_execution_state, fix_attempt_count FROM feature_runs WHERE id = ?`,
       [fr3.id],
     );
     assertEqual(
-      'FR-103 reaches changes_requested after ci_failed (below threshold)',
+      'FR-103 reaches fixing after ci_failed -> changes_requested (below threshold)',
       fr3After[0]?.current_execution_state,
-      'changes_requested',
+      'fixing',
     );
     assertEqual('FR-103 fix_attempt_count incremented', fr3After[0]?.fix_attempt_count, 1);
 

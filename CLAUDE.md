@@ -1047,6 +1047,51 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   shared Phase-5 adapter contract, carries no such fields) — caps review fidelity but is not a
   correctness bug. Widening `ReviewerInput` is future work, not this phase's scope.
 
+**Post-implementation review fixes (round 4):**
+
+- **HIGH-1 (a `changes_requested` run — whether CI-failure-originated or human-review-originated
+  — had no path to `fixing`).** `run-review.ts`'s `advanceToFixing()` only ever resumes a run that
+  IT itself put at `changes_requested` (the AI-reviewer path); a CI-failure-driven or
+  GitHub-human-review-driven `changes_requested` had no caller at all driving the
+  `changes_requested -> fixing` hop, so a feature run below the fix-attempt threshold could get
+  permanently stuck — and the `review-fix-loop` scenario's CI-failure case locked in that stuck
+  state as "correct" (`current_execution_state === 'changes_requested'`). Fixed by adding a
+  `CHANGES_REQUESTED` branch to `reconcileGithubState()` itself (not a separate task) that
+  dispatches `StartFixingCommand` — firing uniformly regardless of how the run reached
+  `changes_requested`, matching this module's single-algorithm design. `requiresExecutionLock()`
+  now includes `CHANGES_REQUESTED` (this branch needs the lock, like `CODE_PUSHED`/`PR_OPENED`);
+  `github-reconciliation.ts`'s `EXPECTED_COMMAND_ERROR_TYPES` gained `automation-paused` since
+  `StartFixingCommand` can now throw it per-candidate (a routine, skip-this-candidate condition,
+  not a reason to abort the batch). This is a deliberate behavioral change to an already-tested
+  invariant: a reconcile pass on an unchanged `changes_requested` run previously no-opped
+  (`action: 'none'`); it now actively retries the `-> fixing` hop every time (reporting
+  `lock_required` until a lock is supplied) — five existing `github-reconcile.test.ts` tests were
+  updated to reflect this, and `seedFeatureRun()`'s fixture now seeds a `workflow_states` row
+  (`automation_state = 'running'`) since `StartFixingHandler`'s guard requires one, matching a real
+  production feature run's actual invariants. The `review-fix-loop` scenario's CI-failure case
+  (and its fixture) now acquires a real `ExecutionLane` lock and asserts the run reaches `fixing`.
+- **HIGH-2 (`pull_requests.conversations_resolved` had the same bare-integer-literal bug fixed for
+  `review_findings.resolved` in round 3, but was missed).** `insertPullRequestRow()`'s `UPDATE`
+  (`conversations_resolved = 0`) and `INSERT` (positional `0`) both write into a PostgreSQL
+  `BOOLEAN` column (migration 0009) via raw SQL literals — the identical cross-dialect issue,
+  just in a different table. Fixed to `FALSE`. Note: `syncPullRequestObservedState()`'s own
+  `conversations_resolved`/`mergeable` writes were NOT touched — those already pass a JS
+  `0`/`1` as a _bound parameter_ (`?` placeholder), not an inline SQL literal, and a bound
+  integer parameter against a PostgreSQL `BOOLEAN` column is accepted (confirmed empirically
+  against a live PostgreSQL 16 instance) — only bare literals parsed directly by PostgreSQL's SQL
+  parser lack an implicit integer-to-boolean cast.
+- **MEDIUM (`RecordCodePushedHandler` trusted `resolvedFindingIds` without scoping to the current
+  feature run).** A bad or future caller passing a finding id from a different feature run would
+  have resolved it and written a `coder_responses` row for it. Fixed by scoping the
+  `review_findings` resolve-`UPDATE` with `AND feature_run_id = ?` and using its affected-row count
+  to gate whether the `coder_responses` row is even written — a mismatched id is now silently
+  skipped rather than acted upon. Defense-in-depth only: `run-coder.ts`'s current caller already
+  derives every id from `review_findings WHERE feature_run_id = ?`, so this was never an observed
+  breakage.
+- **LOW (`@minicoder/adapters-reviewer` was missing from `vitest.config.ts`'s alias map).** Added,
+  matching the pattern used for every other workspace package that tests resolve directly from
+  source rather than `dist/`.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

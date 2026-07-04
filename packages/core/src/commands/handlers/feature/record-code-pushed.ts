@@ -116,6 +116,18 @@ export class RecordCodePushedHandler implements CommandHandler<
       }
       if (resolvedFindingIds && resolvedFindingIds.length > 0 && coderRunId) {
         for (const findingId of resolvedFindingIds) {
+          // MEDIUM code-review fix (Phase 10, round 4): scope the resolve-update to this
+          // feature run, not just the bare finding id — a bad/future caller passing a finding id
+          // from a different feature run must not resolve it. Only write the coder_responses
+          // audit row when the scoped update actually matched a finding belonging to this run.
+          // HIGH code-review fix (round 3, still applies): `resolved = TRUE`, not `= 1` — see
+          // write-findings.ts's comment on why a bare integer literal against a PostgreSQL
+          // BOOLEAN column fails.
+          const resolvedAffected = await tx.executeAffected(
+            `UPDATE review_findings SET resolved = TRUE, resolved_by_run_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND feature_run_id = ?`,
+            [coderRunId, now, findingId, featureRunId],
+          );
+          if (resolvedAffected === 0) continue;
           await tx.execute(
             `INSERT INTO coder_responses (id, finding_id, coder_run_id, response_type, notes, version, created_at, updated_at)
              VALUES (?, ?, ?, 'fixed', ?, 1, ?, ?)`,
@@ -127,13 +139,6 @@ export class RecordCodePushedHandler implements CommandHandler<
               now,
               now,
             ],
-          );
-          // HIGH code-review fix (Phase 10, round 3): `resolved = TRUE`, not `= 1` — see
-          // write-findings.ts's comment on why a bare integer literal against a PostgreSQL
-          // BOOLEAN column fails.
-          await tx.execute(
-            `UPDATE review_findings SET resolved = TRUE, resolved_by_run_id = ?, version = version + 1, updated_at = ? WHERE id = ?`,
-            [coderRunId, now, findingId],
           );
         }
       }
