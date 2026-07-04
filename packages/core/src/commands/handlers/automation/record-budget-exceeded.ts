@@ -14,11 +14,14 @@ import {
   fulfillIdempotencyKey,
 } from '../../helpers.js';
 
-export const PauseAutomationPayloadSchema = z.object({
+export const RecordBudgetExceededPayloadSchema = z.object({
   projectId: z.string(),
   expectedVersion: z.number().int().nonnegative(),
+  breachedPolicyId: z.string(),
+  currentSpend: z.number(),
+  hardLimit: z.number(),
 });
-export type PauseAutomationPayload = z.infer<typeof PauseAutomationPayloadSchema>;
+export type RecordBudgetExceededPayload = z.infer<typeof RecordBudgetExceededPayloadSchema>;
 
 const validator = new StateTransitionValidator(AUTOMATION_CONTROL_MATRIX, 'automation-control');
 const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -30,26 +33,26 @@ interface WorkflowStateRow {
 }
 
 /**
- * running -> paused_by_operator. Callers must include a per-occurrence discriminator (e.g.
- * {expectedVersion}) beyond {projectId} in the idempotency key — a project can legitimately be
- * paused, resumed, and paused again over its lifetime, and a key scoped to {projectId} alone
- * would replay the first pause's cached result for every later one within the idempotency TTL
- * (MEDIUM-1 in the Phase 8 code review, same class of bug HIGH-1 fixed for budget breaches).
+ * Matrix side effects for this edge are write_workflow_event/write_outbox_event only
+ * (no record_policy_decision) — the decision record belongs to the human override that
+ * eventually clears this state (ApproveBudgetOverrideHandler), not to the system-triggered
+ * breach itself.
  */
-export class PauseAutomationHandler implements CommandHandler<
-  PauseAutomationPayload,
+export class RecordBudgetExceededHandler implements CommandHandler<
+  RecordBudgetExceededPayload,
   AutomationState
 > {
-  readonly commandName = 'PauseAutomationCommand';
-  readonly requiredRole = UserRole.OPERATOR;
-  readonly requiredActorKind = 'human' as const;
-  readonly idempotencyScope = 'pause-automation';
+  readonly commandName = 'RecordBudgetExceededCommand';
+  readonly requiredRole = UserRole.ADMIN;
+  readonly requiredActorKind = 'system' as const;
+  readonly idempotencyScope = 'record-budget-exceeded';
 
   async execute(
-    envelope: CommandEnvelope<PauseAutomationPayload>,
+    envelope: CommandEnvelope<RecordBudgetExceededPayload>,
     db: DbClient,
   ): Promise<CommandResult<AutomationState>> {
-    const { projectId, expectedVersion } = envelope.payload;
+    const { projectId, expectedVersion, breachedPolicyId, currentSpend, hardLimit } =
+      envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<AutomationState>(
         tx,
@@ -67,32 +70,39 @@ export class PauseAutomationHandler implements CommandHandler<
       assertVersion('workflow_states', projectId, ws, expectedVersion);
       validator.assertValid(
         ws.automation_state as AutomationState,
-        AutomationState.PAUSED_BY_OPERATOR,
+        AutomationState.PAUSED_BUDGET_EXCEEDED,
       );
       const now = isoNow();
-      const pauseAffected = await tx.executeAffected(
+      const affected = await tx.executeAffected(
         `UPDATE workflow_states SET automation_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [AutomationState.PAUSED_BY_OPERATOR, nextVersion(ws.version), now, ws.id, expectedVersion],
+        [
+          AutomationState.PAUSED_BUDGET_EXCEEDED,
+          nextVersion(ws.version),
+          now,
+          ws.id,
+          expectedVersion,
+        ],
       );
-      if (pauseAffected === 0) {
+      if (affected === 0) {
         throw new OptimisticLockError('workflow_states', projectId, expectedVersion, -1);
       }
+
       const eventId = await writeWorkflowEvent(tx, {
         projectId,
-        eventType: 'automation.paused_by_operator',
+        eventType: 'automation.budget_exceeded',
         fromState: AutomationState.RUNNING,
-        toState: AutomationState.PAUSED_BY_OPERATOR,
+        toState: AutomationState.PAUSED_BUDGET_EXCEEDED,
         actorId: envelope.actor.id,
         correlationId: envelope.correlationId,
       });
       await writeOutboxEvent(tx, {
-        eventType: 'automation.paused_by_operator',
-        payload: { projectId, reason: 'operator' },
+        eventType: 'automation.budget_exceeded',
+        payload: { projectId, breachedPolicyId, currentSpend, hardLimit },
       });
       const result: CommandResult<AutomationState> = {
         commandId: envelope.commandId,
         accepted: true,
-        resultingState: AutomationState.PAUSED_BY_OPERATOR,
+        resultingState: AutomationState.PAUSED_BUDGET_EXCEEDED,
         emittedEventIds: [eventId],
       };
       await fulfillIdempotencyKey(tx, claim.claimId, result);

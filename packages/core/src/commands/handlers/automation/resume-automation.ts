@@ -12,13 +12,14 @@ import {
   writeOutboxEvent,
   claimIdempotencyKey,
   fulfillIdempotencyKey,
+  insertPolicyDecision,
 } from '../../helpers.js';
 
-export const PauseAutomationPayloadSchema = z.object({
+export const ResumeAutomationPayloadSchema = z.object({
   projectId: z.string(),
   expectedVersion: z.number().int().nonnegative(),
 });
-export type PauseAutomationPayload = z.infer<typeof PauseAutomationPayloadSchema>;
+export type ResumeAutomationPayload = z.infer<typeof ResumeAutomationPayloadSchema>;
 
 const validator = new StateTransitionValidator(AUTOMATION_CONTROL_MATRIX, 'automation-control');
 const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -30,23 +31,21 @@ interface WorkflowStateRow {
 }
 
 /**
- * running -> paused_by_operator. Callers must include a per-occurrence discriminator (e.g.
- * {expectedVersion}) beyond {projectId} in the idempotency key — a project can legitimately be
- * paused, resumed, and paused again over its lifetime, and a key scoped to {projectId} alone
- * would replay the first pause's cached result for every later one within the idempotency TTL
- * (MEDIUM-1 in the Phase 8 code review, same class of bug HIGH-1 fixed for budget breaches).
+ * paused_by_operator -> running. See PauseAutomationHandler for why callers must include a
+ * per-occurrence discriminator (e.g. {expectedVersion}) beyond {projectId} in the idempotency
+ * key.
  */
-export class PauseAutomationHandler implements CommandHandler<
-  PauseAutomationPayload,
+export class ResumeAutomationHandler implements CommandHandler<
+  ResumeAutomationPayload,
   AutomationState
 > {
-  readonly commandName = 'PauseAutomationCommand';
+  readonly commandName = 'ResumeAutomationCommand';
   readonly requiredRole = UserRole.OPERATOR;
   readonly requiredActorKind = 'human' as const;
-  readonly idempotencyScope = 'pause-automation';
+  readonly idempotencyScope = 'resume-automation';
 
   async execute(
-    envelope: CommandEnvelope<PauseAutomationPayload>,
+    envelope: CommandEnvelope<ResumeAutomationPayload>,
     db: DbClient,
   ): Promise<CommandResult<AutomationState>> {
     const { projectId, expectedVersion } = envelope.payload;
@@ -65,34 +64,41 @@ export class PauseAutomationHandler implements CommandHandler<
       );
       const ws = rows[0];
       assertVersion('workflow_states', projectId, ws, expectedVersion);
-      validator.assertValid(
-        ws.automation_state as AutomationState,
-        AutomationState.PAUSED_BY_OPERATOR,
-      );
+      const fromState = ws.automation_state as AutomationState;
+      validator.assertValid(fromState, AutomationState.RUNNING);
       const now = isoNow();
-      const pauseAffected = await tx.executeAffected(
+      const affected = await tx.executeAffected(
         `UPDATE workflow_states SET automation_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-        [AutomationState.PAUSED_BY_OPERATOR, nextVersion(ws.version), now, ws.id, expectedVersion],
+        [AutomationState.RUNNING, nextVersion(ws.version), now, ws.id, expectedVersion],
       );
-      if (pauseAffected === 0) {
+      if (affected === 0) {
         throw new OptimisticLockError('workflow_states', projectId, expectedVersion, -1);
       }
+
+      await insertPolicyDecision(tx, {
+        projectId,
+        policyType: 'automation_resume',
+        decision: 'resumed',
+        context: { fromState },
+        actor: envelope.actor.id,
+      });
+
       const eventId = await writeWorkflowEvent(tx, {
         projectId,
-        eventType: 'automation.paused_by_operator',
-        fromState: AutomationState.RUNNING,
-        toState: AutomationState.PAUSED_BY_OPERATOR,
+        eventType: 'automation.resumed',
+        fromState,
+        toState: AutomationState.RUNNING,
         actorId: envelope.actor.id,
         correlationId: envelope.correlationId,
       });
       await writeOutboxEvent(tx, {
-        eventType: 'automation.paused_by_operator',
+        eventType: 'automation.resumed',
         payload: { projectId, reason: 'operator' },
       });
       const result: CommandResult<AutomationState> = {
         commandId: envelope.commandId,
         accepted: true,
-        resultingState: AutomationState.PAUSED_BY_OPERATOR,
+        resultingState: AutomationState.RUNNING,
         emittedEventIds: [eventId],
       };
       await fulfillIdempotencyKey(tx, claim.claimId, result);

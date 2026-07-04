@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.3
+> Version: 1.3.4
 > Last-updated: 2026-07-02
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -790,6 +790,89 @@ has been raised across multiple review rounds; the decision to defer it stands, 
 This is Medium-severity operational-completeness scope, not a correctness bug: reconciliation
 behaves correctly for every PR it knows about, and the manual runbook above (introduced in round 6,
 corrected in round 7) is the accepted interim mitigation until one of the above is built.
+
+### Phase 8 — Execution Orchestrator Runbook
+
+This runbook covers the manual recovery procedures for the sequential feature-selection and
+budget-gate primitives delivered in Phase 8 (`packages/core/src/commands/handlers/{automation,
+feature}/`, `packages/core/src/cost/`). There is no Phase 13 API surface for any of these yet —
+every procedure below is a direct command dispatch or SQL inspection, following the same
+interim-manual pattern as the Phase 7 recovery procedure above.
+
+#### Procedure: Resume automation stuck in a paused state
+
+`workflow_states.automation_state` can be `paused_by_operator`, `paused_budget_exceeded`, or
+`waiting_for_budget_approval` (glossary §3.8). Confirm which one first:
+
+```sql
+SELECT automation_state, version, active_feature_run_id FROM workflow_states WHERE project_id = '<id>';
+```
+
+- **`paused_by_operator`** clears via `ResumeAutomationCommand` (operator actor), idempotency key
+  `resume-automation:{projectId}:{expectedVersion}`.
+- **`paused_budget_exceeded`** or **`waiting_for_budget_approval`** clears via
+  `ApproveBudgetOverrideCommand` (approver actor) — the same command serves both matrix edges;
+  the `StateTransitionValidator` resolves the correct transition from the current
+  `automation_state` automatically. Pick the idempotency key matching the state you observed:
+  `budget-override:{projectId}:{expectedVersion}` from `paused_budget_exceeded`,
+  `budget-override-waiting:{projectId}:{expectedVersion}` from `waiting_for_budget_approval`.
+
+Until Phase 13 exposes these as API/CLI commands, dispatch them directly against
+`ApproveBudgetOverrideHandler`/`ResumeAutomationHandler` via `TransactionalCommandExecutor` from an
+operator script, supplying the current `workflow_states.version` as both `expectedVersion` in the
+payload **and** the `{expectedVersion}` idempotency-key discriminator above. A project can
+legitimately be paused/resumed or breach/overridden more than once over its lifetime — omitting
+the version discriminator and reusing a `{projectId}`-only key recreates the idempotency
+collision fixed in a prior Phase 8 code-review round (a stale cached result would be returned
+instead of executing the new transition).
+
+#### Procedure: Inspect current spend vs. a budget policy by hand
+
+`evaluateBudget()` (`packages/core/src/cost/budget-evaluator.ts`) computes its verdict with a live
+`SUM(cost_records.amount)` — reproduce it manually:
+
+```sql
+-- Active policy for a scope (project | feature | review_cycle)
+SELECT * FROM budget_policies
+WHERE project_id = '<id>' AND scope = '<scope>' AND is_active = 1
+  AND (feature_request_id = '<fr_id>' OR feature_request_id IS NULL);
+
+-- Cumulative spend for the same scope (add a recorded_at >= <cutoff> clause if the policy has
+-- a window_days value)
+SELECT COALESCE(SUM(amount), 0) AS total FROM cost_records
+WHERE project_id = '<id>' AND scope = '<scope>' [AND feature_request_id = '<fr_id>'];
+```
+
+`total >= hard_limit` is a hard breach; otherwise `total >= soft_limit` is a soft breach; hard is
+checked first, so a policy breaching both limits reports as hard.
+
+#### Procedure: Recover a stuck `active_feature_run_id` pointer
+
+`workflow_states.active_feature_run_id` is set by `SelectFeatureHandler`'s atomic conditional
+`UPDATE` and is not automatically cleared except by the feature run completing. **There is no
+automatic reconciliation for this in Phase 8** — a crashed worker, a feature run wedged in
+`human_required`/`failed`/`system_failed` with no subsequent unblock, or an operator directly
+editing `feature_runs` can leave `active_feature_run_id` pointing at a feature run that will never
+naturally advance, permanently blocking `start-next-feature` from selecting anything else for that
+project. This is a known limitation, not a silently-accepted gap — flagged here so it is not
+mistaken for automated self-healing.
+
+**Detection**: `active_feature_run_id` is non-`NULL` but the referenced `feature_runs` row has sat
+at `human_required`, `failed`, `blocked`, or `system_failed` for longer than expected, with no
+active work in progress.
+
+**Recovery (manual)**:
+
+```sql
+UPDATE workflow_states
+SET active_feature_run_id = NULL, version = version + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+WHERE project_id = '<id>' AND active_feature_run_id = '<stuck_feature_run_id>';
+```
+
+Only clear the pointer once the stuck feature run's disposition is resolved (a human has
+retried/skipped/blocked it via the escalation path) — clearing it prematurely while the feature
+run is genuinely still in progress would let `start-next-feature` select a second concurrently
+active feature, defeating the single-active-feature invariant this column exists to enforce.
 
 ---
 

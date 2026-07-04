@@ -7,6 +7,7 @@ import { mergeGateScenario } from './merge-gate.js';
 import { triggerRetryScenario } from './trigger-retry.js';
 import { githubRaceScenario } from './github-race.js';
 import { finalDesignDocumentScenario } from './final-design-document.js';
+import { executionOrchestratorScenario } from './execution-orchestrator.js';
 
 export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['planning-basic', planningBasicScenario],
@@ -17,6 +18,7 @@ export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['trigger-retry', triggerRetryScenario],
   ['github-race', githubRaceScenario],
   ['final-design-document', finalDesignDocumentScenario],
+  ['execution-orchestrator', executionOrchestratorScenario],
 ]);
 
 export function getScenario(name: string): Scenario {

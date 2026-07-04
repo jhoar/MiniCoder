@@ -7,7 +7,7 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–3 and 5–7 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–3 and 5–8 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
 backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
@@ -30,7 +30,13 @@ current+previous secret rotation, event normalization, `minicoder github serve`)
 provider-SDK-free `GitHubClient` seam and `OctokitGitHubClient`, the `pull_requests` table, five
 new GitHub-facing feature-execution commands, and the shared `reconcileGithubState()` algorithm
 driving both webhook-triggered inbox handlers and the scheduled `github-reconciliation` fallback
-(Phase 7, migration 0009).
+(Phase 7, migration 0009); and the Execution Orchestrator implementation — the real
+`start-next-feature` Trigger.dev task (dependency-ordered feature selection via
+`findNextEligibleFeatureRun()`, `SelectFeatureCommand`, and `StartCodingCommand` gated by
+`packages/workflow`'s `ExecutionLane`), pause/resume automation control (`ResumeAutomationCommand`),
+and the minimal budget-gate primitive (`packages/core/src/cost/`'s `evaluateBudget()`/
+`applyBudgetDecision()`, `RecordBudgetExceededCommand`, `RecordBudgetApprovalWaitingCommand`,
+`ApproveBudgetOverrideCommand`) (Phase 8, no new migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -185,9 +191,8 @@ activate-approved-backlog | start-next-feature | github-reconciliation
 export-plan | export-backlog | import-backlog
 ```
 
-`start-next-feature` remains a payload-validated stub pending Phase 8; every other task, including
-`github-reconciliation` (Phase 7), now calls a real Orchestrator Core command through
-`TransactionalCommandExecutor`.
+Every canonical task, including `github-reconciliation` (Phase 7) and `start-next-feature`
+(Phase 8), now calls a real Orchestrator Core command through `TransactionalCommandExecutor`.
 
 ### Review finding severities (§3.7)
 
@@ -382,9 +387,165 @@ failed}`, so the matrix must cover every state that check can reach; a mid-fligh
   `pull_requests` row.** Discovering a brand-new PR that no webhook has ever reported requires a
   `GitHubClient.listPullRequestsForBranch`-style method that does not exist yet — do not assume
   the scheduled task will self-heal a completely missed `pr.opened` webhook.
+- **`github-reconciliation` treats a per-candidate transient concurrency loss as a skip, not a
+  batch abort.** A lock-gated candidate (`code_pushed`/`pr_opened`) whose
+  `execution-lane:{projectId}` lock is held by another actor (the `start-next-feature` task, a
+  webhook-triggered inbox handler, or an HA-cluster peer) makes `lockManager.acquire()` throw
+  `LockConflictError`. That, plus `OptimisticLockError` (a concurrent version bump under a
+  `Record*` command's CAS), `StaleFenceError` (a reclaimed lease), and a `concurrent-command`
+  `CommandError` (an in-flight idempotency-key race with a webhook handler running the same
+  transition), are classified by the same `isTransientRace()` helper `start-next-feature.ts` uses
+  and cause the loop to `continue` to the next candidate — the held candidate is reconciled by a
+  later scheduled pass. Leaving these uncaught (as the original per-candidate loop did) aborts
+  reconciliation of the whole batch and fails the task on a routine concurrency condition (a real
+  bug — HIGH-1 in a later Phase 8 code review round). The wrapping `try` covers only the
+  `reconcileGithubState`/`reconcileWithLock` calls, **not** the `GitHubClient.getPullRequest`
+  fetch — a genuine GitHub API or DB failure still throws and correctly fails the task for
+  Trigger.dev retry.
 - **`minicoder github serve` is intentionally not gated by `guardEnv()`** (unlike
   `github simulate-*`), since it is the real webhook receiver and must run in production/hosted
   deployments. Do not add the dev/test/ci environment guard to it.
+
+## Execution Orchestrator Operational Constraints (`packages/core/src/commands/handlers/{automation,feature}/`, `packages/core/src/cost/`)
+
+- **Sequential execution is enforced by two mechanisms with two different jobs — do not collapse
+  them into one.** `SelectFeatureHandler`'s atomic conditional `UPDATE workflow_states SET
+active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_run_id IS NULL`
+  is the durable, crash-surviving **single-active-feature-per-project** invariant — a
+  compare-and-swap on one column that is correct without a lease/TTL, since "active" must persist
+  until the feature completes, not until a lock expires. `packages/workflow`'s `ExecutionLane`
+  (a fence-token lock) is the short-lived, heartbeat-able mutual-exclusion guard for handlers that
+  mutate an _already-selected_ `feature_runs` row (`StartCodingHandler`, `RecordCodePushedHandler`,
+  `StartFixingHandler`) — it protects against two concurrent writers racing on the same feature
+  run (e.g. overlapping `start-next-feature` task retries), which the `workflow_states`
+  compare-and-swap does not cover once a feature is already selected. `SelectFeatureHandler`
+  correctly takes no lock (there is nothing to hold — it is a single atomic UPDATE); the handlers
+  that mutate an active feature run's state correctly require `envelope.lockContext`.
+- **`StartFixingHandler` and `UnblockFeatureHandler` are intentionally orphaned.** Both are real,
+  matrix-defined transitions (`changes_requested → fixing`, `blocked → approved_pending_execution`)
+  built and exported in Phase 8, but neither has a caller yet: the review/fix loop that decides
+  when a feature re-enters `fixing` is Phase 10 scope, and nothing in Phase 8 ever transitions a
+  feature run to `blocked` in the first place. This is the same posture Phase 7 left
+  `StartCodingHandler`/`RecordCodePushedHandler` in before Phase 8 gave them a caller — do not
+  treat an orphaned-but-tested handler as dead code to delete.
+- **`ApproveBudgetOverrideHandler` serves two matrix edges from one handler** —
+  `paused_budget_exceeded → running` and `waiting_for_budget_approval → running` both dispatch
+  `ApproveBudgetOverrideCommand`; `StateTransitionValidator` resolves the correct matrix row from
+  `(fromState, commandName)`, so no branching is needed in the handler. Callers must select the
+  idempotency-key template matching the origin state they observed
+  (`budget-override:{projectId}:{expectedVersion}` vs
+  `budget-override-waiting:{projectId}:{expectedVersion}`) — this is the one command in the
+  codebase without a single fixed idempotency-key template. The handler also emits **two**
+  `workflow_events` per the matrix's two declared `emittedEvents`
+  (`automation.budget_override_approved` and `automation.resumed`) — the first multi-event handler
+  in the codebase.
+- **Every repeatable automation-control/feature-execution transition's idempotency key must
+  include `{expectedVersion}` (or another per-occurrence discriminator), never
+  `{projectId}`/`{featureRunId}` alone.** A project can legitimately breach the same budget
+  threshold, get overridden, and breach again; be paused, resumed, and paused again; and a
+  feature run can cycle `changes_requested → fixing` more than once — each occurrence is read
+  against a distinct version. A key scoped to the entity id alone lets
+  `TransactionalCommandExecutor` return the _first_ occurrence's cached `CommandResult` for every
+  later one within the 7-day idempotency TTL, silently no-opping the transition. This was a real
+  bug (HIGH-1 in a Phase 8 code review round) fixed for `RecordBudgetExceededCommand`/
+  `RecordBudgetApprovalWaitingCommand` in `apply-budget-decision.ts`, and (MEDIUM-1 in a later
+  round) for `PauseAutomationCommand`/`ResumeAutomationCommand`/`StartFixingCommand`'s matrix
+  templates and handler doc comments — `ApproveBudgetOverrideCommand` already documented the same
+  caller obligation. None of `PauseAutomationCommand`/`ResumeAutomationCommand`/
+  `StartFixingCommand`/`ApproveBudgetOverrideCommand` has a real production caller yet (Phase 13's
+  API / Phase 10's review-fix loop will supply one), so the fix is the documented contract plus
+  `packages/testing/src/automation-control-race.test.ts`'s regression coverage, not a handler
+  code change — the handlers' own version-based CAS was already correct; only the caller-supplied
+  key was under-scoped. The `execution-orchestrator` scenario's step 4b exercises a repeated soft
+  breach for the one command (`RecordBudgetApprovalWaitingCommand`) that does have a real caller
+  (`applyBudgetDecision()`).
+- **`StartCodingHandler` and `StartFixingHandler` atomically re-check
+  `workflow_states.automation_state = 'running'` as part of their `feature_runs` UPDATE, not just
+  via an earlier plain-`SELECT` pre-check.** A pause or budget breach that commits in the window
+  between `SelectFeatureCommand` succeeding and `StartCodingCommand` dispatching (or between a
+  review cycle's guard check and `StartFixingCommand` dispatching) must not let new automated work
+  start anyway — this was a real bug (HIGH-1 in a Phase 8 code review round): `start-next-feature.ts`
+  checked `automation_state` once at the top, then dispatched two separate commands with lock
+  acquisition and other queries in between, and neither `StartCodingHandler` nor
+  `StartFixingHandler` re-checked `automation_state` before advancing the feature run. Fixed by
+  adding `AND EXISTS (SELECT 1 FROM workflow_states WHERE project_id = ? AND automation_state =
+'running')` to each handler's conditional `UPDATE`, with the same two-step disambiguation
+  `SelectFeatureHandler` already uses (a 0-row UPDATE re-queries `workflow_states` to distinguish
+  a stale version from a no-longer-running automation state, throwing the `automation-paused`
+  `CommandError` type `start-next-feature.ts`'s `isTransientRace()` already treats as non-fatal).
+  `RecordCodePushedHandler` deliberately does **not** get this guard — it records the outcome of
+  work already in flight rather than starting new work, so a pause after coding has already begun
+  should not prevent recording that the push happened.
+- **`start-next-feature.ts` must check `workflow_states.active_feature_run_id` for a stranded
+  `selected` run before falling back to `findNextEligibleFeatureRun()` — for both the
+  auto-discovery and the explicit-`featureRunId` call paths.** The HIGH-1 fix above (rejecting
+  `StartCodingCommand` when automation isn't `running`) can leave a feature run parked at
+  `selected` with `active_feature_run_id` still pointing at it — and
+  `findNextEligibleFeatureRun()` only ever searches for `approved_pending_execution` rows, so
+  that stranded run would never be found again via auto-discovery, permanently blocking the
+  project even after automation resumes (`SelectFeatureHandler`'s compare-and-swap also refuses
+  to select anything else while `active_feature_run_id` is non-`NULL`). The same check must also
+  apply when a caller passes `featureRunId` explicitly (e.g. a targeted retry) and it happens to
+  equal the stranded active run — skipping it left a real bug where `SelectFeatureCommand` was
+  dispatched on an already-`selected` run, an invalid `selected -> selected` transition that
+  throws an uncaught `TransitionError` (a plain `Error`, not a `CommandError`, so
+  `isTransientRace()` cannot catch it) instead of recovering (a later Phase 8 code review round).
+  When the resolved `featureRunId` — whichever path supplied it — is at `selected`, the task must
+  skip `SelectFeatureCommand` and dispatch `StartCodingCommand` directly for that run,
+  regression-tested in `packages/triggerdev/src/triggerdev.test.ts` for all three
+  paused/budget-paused automation states (auto-discovery) and for the explicit-`featureRunId`
+  case.
+- **`start-next-feature.ts` treats every transient concurrency loss as `started: false`, never a
+  thrown task failure — and `ExecutionLane.acquireForProject()` must be caught, not left to
+  propagate.** The task is scheduled/opportunistic and idempotent, so any "another actor moved
+  state under us" condition should defer to the next tick. Its `isTransientRace()` helper covers
+  `LockConflictError` (a concurrent holder of the same `execution-lane:{projectId}` lock — most
+  commonly a `github-reconciliation` pass, which acquires that exact lock, or an HA-cluster
+  peer), `OptimisticLockError` (a concurrent writer bumped `feature_runs.version` between this
+  task's fresh read and a command's CAS), `StaleFenceError` (the lane lease was reclaimed
+  mid-op), and the expected `CommandError` types (`feature-already-active`, `automation-paused`,
+  `unmet-dependencies`, `not-found`, `concurrent-command`). The lane acquire is wrapped in its
+  own `try` so a `LockConflictError` returns `started: false` **without** entering the
+  release-in-`finally` block — leaving `acquireForProject` uncaught (or outside the `try`) turns
+  a routine concurrency condition into a spurious Trigger.dev failure (a real bug — HIGH-1 in a
+  later Phase 8 code review round; the lane acquire had been outside the `try` entirely). A
+  genuine infrastructure failure is none of those types and still throws, correctly triggering
+  retry. The `select-feature:{featureRunId}` / `start-coding:{featureRunId}` idempotency keys are
+  intentionally **not** `{expectedVersion}`-scoped (unlike the recurring project-scoped
+  automation-control keys): a `feature_runs` row is a single attempt that transitions
+  `→selected`/`→coding` at most once, so the run id is already occurrence-unique, and a failed
+  attempt rolls back its claim inside the handler transaction so retries re-execute.
+- **`evaluateBudget()` is retrospective-threshold-only, by design.** It sums `cost_records.amount`
+  live (respecting `window_days` when set) and compares against `budget_policies.soft_limit`/
+  `hard_limit` — hard checked before soft, so a policy breaching both reports `hard_breach`. There
+  is deliberately no denormalized running-total column: Phase 8 data volumes don't warrant a second
+  source of truth to keep consistent with `cost_records`. Forecasting, per-`AgentRun` pre-flight
+  caps, and dashboards (docs/01 §5.11) are Phase 16 scope — do not add them to `evaluateBudget()`.
+  When more than one active `budget_policies` row matches the same `(project, scope, feature)`
+  tuple — nothing currently prevents this — the query orders by `updated_at DESC, id DESC` and
+  picks the first match, the same "most recent wins" tiebreaker `AdapterRegistry.getConfiguration()`
+  already uses for an analogous ambiguity, rather than relying on unspecified SQL result ordering.
+- **`RecordBudgetExceededHandler`/`RecordBudgetApprovalWaitingHandler` write no `cost_records` row
+  themselves** — a breach can only be evaluated against rows that already exist; `evaluateBudget()`
+  must run _after_ the code path that inserted the triggering `cost_records` row, not before it.
+  Neither handler writes a `policy_decisions` row either (only `ApproveBudgetOverrideHandler`/
+  `ResumeAutomationHandler` do, matching the matrix's `record_policy_decision` side effect, which
+  the two breach-recording edges do not carry) — this is intentional (see docs/01 §5.11): the
+  automatic breach is fully reconstructable from `workflow_events`, while `policy_decisions` is
+  reserved for the audit trail of judgment calls a human actually made.
+- **`start-next-feature.ts`'s actor identity is a known Phase 13 placeholder.**
+  `SelectFeatureCommand` requires a human/operator actor per its matrix row; the task has no real
+  authenticated session to attribute the run to, so it uses a fixed `automationOperatorActor()`
+  identity (`packages/triggerdev/src/tasks/actor.ts`) — the same category of placeholder
+  `ActorPayload`'s doc comment already describes for human-initiated tasks. `StartCodingCommand`,
+  by contrast, requires a system actor per its own matrix row and continues to use the existing
+  `systemActor()`. Do not weaken either handler's `requiredActorKind`/`requiredRole` just to
+  simplify this task's caller — that would change accepted-command semantics repo-wide.
+- **`findNextEligibleFeatureRun()` is a candidate-picker, not a second guard authority.** It is a
+  plain read function, not a `CommandHandler` — no idempotency key, no lock, no state mutation.
+  `SelectFeatureHandler` re-checks the dependency guard itself and remains the sole transition
+  authority; a stale candidate (e.g. a dependency that changes between the read and the
+  `SelectFeatureCommand` dispatch) is simply rejected by that handler, not by the picker.
 
 ## Cross-Dialect Testing (Mandatory)
 
@@ -443,13 +604,28 @@ When adding a new workspace package that others import for types, add it to this
 The budget-gate primitive ships in **Phase 8** (not Phase 16). Phase 16 adds dashboards and
 forecasting only.
 
-Key tables: `budget_policies` (thresholds/config). Key transitions:
+Key tables: `budget_policies` (thresholds/config, scope ∈ {project, feature, review_cycle}),
+`cost_records` (spend rows), `policy_decisions` (human override audit trail). Key transitions:
 
 - Hard limit breach → `paused_budget_exceeded`
 - Soft limit breach → `waiting_for_budget_approval`
 
 The review/fix loop is also a budget scope; breaching the per-feature threshold trips the circuit
 breaker and escalates to human.
+
+**Implementation (`packages/core/src/cost/`):** `evaluateBudget(db, { projectId,
+featureRequestId?, scope })` reads the active `budget_policies` row for the scope and computes
+`SUM(cost_records.amount)` **live** (no denormalized running-total column — Phase 8 data volumes
+don't justify a second source of truth to keep in sync with `cost_records`; a materialized rollup
+can be added in Phase 16 without changing this function's contract). Hard limit is checked
+**before** soft limit, so a policy breaching both reports `hard_breach`. `applyBudgetDecision(db,
+evaluation, {...})` is the orchestration glue that turns a breach verdict into a state transition —
+it dispatches `RecordBudgetExceededCommand` (hard) or `RecordBudgetApprovalWaitingCommand` (soft)
+via `TransactionalCommandExecutor`, and no-ops on `ok`. It is deliberately separate from the
+`RecordBudget*Handler`s themselves, which stay pure state-transition logic and write no
+`cost_records`/`policy_decisions` row of their own — the row must already exist before evaluation
+runs, and only the human override (`ApproveBudgetOverrideHandler`) records a `policy_decisions`
+row, not the system-triggered breach.
 
 ## Security Sandbox Rules (docs/07, §6)
 

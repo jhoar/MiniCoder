@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { DbClient, GitHubClient, ObservedPullRequestState } from '@minicoder/core';
 import { PrReviewState } from '@minicoder/core';
+import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
 import { runImpl } from './github-reconciliation.js';
 
@@ -185,5 +186,77 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
 
     expect(getPullRequestCallCount).toBe(0);
     expect(result.reconciled).toBe(0);
+  });
+});
+
+/**
+ * Concurrency regression (round 6): a lock-gated candidate (`code_pushed`/`pr_opened`) whose
+ * `execution-lane:{projectId}` lock is held by another worker (the start-next-feature task, a
+ * webhook-triggered inbox handler, or an HA-cluster peer) used to throw an uncaught
+ * `LockConflictError` out of the per-candidate loop, aborting reconciliation of the whole batch
+ * and failing the task. The task must instead skip that one candidate and finish the batch; the
+ * next scheduled fallback reconciles it once the lane frees.
+ */
+describe('github-reconciliation runImpl (concurrency: a held execution lane skips the candidate, not the batch)', () => {
+  function prOpenedClient(): GitHubClient {
+    return {
+      async createBranch() {
+        throw new Error('not used in this test');
+      },
+      async createPullRequest() {
+        throw new Error('not used in this test');
+      },
+      async getPullRequest() {
+        return observedPrOpenedState('newsha0000');
+      },
+      async publishStatusCheck() {
+        // no-op
+      },
+      async getRemainingRateLimit() {
+        return 5000;
+      },
+    };
+  }
+
+  it('skips a lock-gated candidate whose execution lane is held, without failing the task', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const featureRunId = await seedCodePushedFeatureRunWithTrackedPr(db);
+
+    // A foreign holder grabs the project's execution lane (the same resource key
+    // github-reconciliation acquires) before reconciliation runs.
+    const foreignLane = new ExecutionLane(db);
+    const foreignLock = await foreignLane.acquireForProject(PROJECT_ID, 'foreign-holder', 30_000);
+
+    // Must NOT throw despite the LockConflictError from acquiring the held lane.
+    const blocked = await runImpl(
+      { projectId: PROJECT_ID, correlationId: 'corr-hr-lock', idempotencyKey: 'idem-hr-lock' },
+      db,
+      async () => prOpenedClient(),
+    );
+    expect(blocked.reconciled).toBe(0);
+    expect(blocked.humanRequired).toBe(0);
+
+    // The candidate is untouched (reconcileGithubState never ran — the lock could not be acquired),
+    // so it is still code_pushed and its pull_requests row is unchanged.
+    const blockedRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(blockedRows[0]?.current_execution_state).toBe('code_pushed');
+
+    // Once the lane frees, a subsequent pass reconciles the candidate normally.
+    await foreignLane.releaseForProject(foreignLock);
+    const after = await runImpl(
+      { projectId: PROJECT_ID, correlationId: 'corr-hr-free', idempotencyKey: 'idem-hr-free' },
+      db,
+      async () => prOpenedClient(),
+    );
+    expect(after.reconciled).toBeGreaterThan(0);
+    const afterRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(afterRows[0]?.current_execution_state).toBe('pr_opened');
   });
 });

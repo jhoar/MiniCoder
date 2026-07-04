@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { DbClient, ConfigBackend, SecretBackend, PlannerAgentAdapter } from '@minicoder/core';
-import { MissingSecretError } from '@minicoder/core';
+import { MissingSecretError, FeatureExecutionState } from '@minicoder/core';
+import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from './test-helpers.js';
 import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
@@ -297,15 +298,234 @@ describe('task runImpl — command-backed unit tests', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('start-next-feature returns started boolean', async () => {
+  it('start-next-feature returns started boolean and no-ops when no candidate exists', async () => {
     const result = await runStartNextFeature(BASE_PAYLOAD, db);
     expect(typeof result.started).toBe('boolean');
+    expect(result.started).toBe(false);
+    expect(result.featureRunId).toBeNull();
   });
 
   it('github-reconciliation returns numeric reconciled and humanRequired counts', async () => {
     const result = await runGithubReconciliation(BASE_PAYLOAD, db);
     expect(typeof result.reconciled).toBe('number');
     expect(typeof result.humanRequired).toBe('number');
+  });
+});
+
+// ── start-next-feature real wiring (Phase 8) ────────────────────────────────
+
+async function seedExecutionOrchestratorFixture(db: DbClient, projectId: string): Promise<void> {
+  const planId = `plan-${projectId}`;
+  const frId = `fr-${projectId}-1`;
+  const runId = `run-${projectId}-1`;
+
+  await db.execute(
+    `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+     VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+    [planId, projectId],
+  );
+  await db.execute(
+    `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'FR-001', 'Feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+    [frId, planId, projectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+  );
+  await db.execute(
+    `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+     VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+    [runId, frId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+  );
+  await db.execute(
+    `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+     VALUES (?, ?, NULL, 'running', 1, datetime('now'), datetime('now'))`,
+    [`ws-${projectId}`, projectId],
+  );
+}
+
+describe('start-next-feature real wiring', () => {
+  let db: DbClient;
+  const projectId = 'proj-snf-wiring';
+
+  beforeEach(async () => {
+    const testDb = createTestDb();
+    insertTestProject(testDb, projectId);
+    db = testDb;
+    await seedExecutionOrchestratorFixture(db, projectId);
+  });
+
+  it('selects the eligible feature run and starts coding', async () => {
+    const result = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-1' },
+      db,
+    );
+    expect(result.started).toBe(true);
+    expect(result.featureRunId).toBe(`run-${projectId}-1`);
+
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [`run-${projectId}-1`],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+  });
+
+  it('does not start a second feature while one is already active', async () => {
+    await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-1' },
+      db,
+    );
+    const second = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-2' },
+      db,
+    );
+    expect(second.started).toBe(false);
+  });
+
+  it('no-ops without mutating state when automation is paused', async () => {
+    await db.execute(
+      `UPDATE workflow_states SET automation_state = 'paused_by_operator' WHERE project_id = ?`,
+      [projectId],
+    );
+    const result = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-3' },
+      db,
+    );
+    expect(result.started).toBe(false);
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [`run-${projectId}-1`],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.APPROVED_PENDING_EXECUTION);
+  });
+
+  // HIGH-1 (Phase 8 code review round 3): a pause/budget-pause landing between
+  // SelectFeatureCommand succeeding and StartCodingCommand dispatching used to strand the
+  // project — findNextEligibleFeatureRun only looks for approved_pending_execution rows, so the
+  // already-selected active feature run was never surfaced again once automation resumed.
+  it.each([
+    ['paused_by_operator' as const],
+    ['paused_budget_exceeded' as const],
+    ['waiting_for_budget_approval' as const],
+  ])(
+    'recovers a feature run stranded at selected after automation resumes from %s',
+    async (pausedState) => {
+      const featureRunId = `run-${projectId}-1`;
+
+      // Simulate SelectFeatureCommand having already succeeded (active_feature_run_id set,
+      // feature run at 'selected') before automation was paused/budget-paused, stranding it
+      // before StartCodingCommand could run.
+      await db.execute(
+        `UPDATE feature_runs SET current_execution_state = 'selected', version = version + 1 WHERE id = ?`,
+        [featureRunId],
+      );
+      await db.execute(
+        `UPDATE workflow_states SET active_feature_run_id = ?, automation_state = ?, version = version + 1 WHERE project_id = ?`,
+        [featureRunId, pausedState, projectId],
+      );
+
+      // A scheduled call while still paused must not start coding and must not lose the stranded
+      // run's identity.
+      const whilePaused = await runStartNextFeature(
+        { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-paused' },
+        db,
+      );
+      expect(whilePaused.started).toBe(false);
+      expect(whilePaused.featureRunId).toBe(featureRunId);
+      const stillSelected = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(stillSelected[0]?.current_execution_state).toBe(FeatureExecutionState.SELECTED);
+
+      // Automation resumes (operator resume or budget override, depending on which state).
+      await db.execute(
+        `UPDATE workflow_states SET automation_state = 'running', version = version + 1 WHERE project_id = ?`,
+        [projectId],
+      );
+
+      const afterResume = await runStartNextFeature(
+        { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-resumed' },
+        db,
+      );
+      expect(afterResume.started).toBe(true);
+      expect(afterResume.featureRunId).toBe(featureRunId);
+      const codingRows = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(codingRows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+    },
+  );
+
+  // A concurrent holder of the project's execution lane (a github-reconciliation pass, an
+  // overlapping retry, or an HA-cluster peer) makes lane acquisition throw LockConflictError.
+  // That is an expected race — the task must return started:false, not surface a Trigger.dev
+  // failure. SelectFeatureCommand still runs first (it takes no lock), so the feature run is left
+  // at 'selected'; a later tick recovers it via the stranded-selected path once the lane frees.
+  it('returns started:false without failing when the execution lane is held by another worker', async () => {
+    const featureRunId = `run-${projectId}-1`;
+
+    // A foreign holder grabs the execution lane before start-next-feature runs.
+    const foreignLane = new ExecutionLane(db);
+    const foreignLock = await foreignLane.acquireForProject(projectId, 'foreign-holder', 30_000);
+
+    const blocked = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-lockheld' },
+      db,
+    );
+    expect(blocked.started).toBe(false);
+    expect(blocked.featureRunId).toBe(featureRunId);
+
+    // Selection succeeded (no lock needed) but coding was blocked by the held lane, so the run is
+    // parked at 'selected' with the active pointer set.
+    const selectedRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(selectedRows[0]?.current_execution_state).toBe(FeatureExecutionState.SELECTED);
+
+    // The lane frees; the next scheduled tick recovers the stranded selected run and starts coding.
+    await foreignLane.releaseForProject(foreignLock);
+    const recovered = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-lockfree' },
+      db,
+    );
+    expect(recovered.started).toBe(true);
+    expect(recovered.featureRunId).toBe(featureRunId);
+    const codingRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(codingRows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+  });
+
+  // HIGH-1 (Phase 8 code review round 6): the stranded-selected recovery previously only ran
+  // when payload.featureRunId was omitted. An explicit caller naming the project's already-
+  // selected active run directly (e.g. a targeted retry) would still attempt an invalid
+  // 'selected -> selected' SelectFeatureCommand, throwing an uncaught TransitionError instead of
+  // recovering and starting coding.
+  it('recovers a stranded selected run when the caller explicitly names it', async () => {
+    const featureRunId = `run-${projectId}-1`;
+
+    await db.execute(
+      `UPDATE feature_runs SET current_execution_state = 'selected', version = version + 1 WHERE id = ?`,
+      [featureRunId],
+    );
+    await db.execute(
+      `UPDATE workflow_states SET active_feature_run_id = ?, version = version + 1 WHERE project_id = ?`,
+      [featureRunId, projectId],
+    );
+
+    const result = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-explicit', featureRunId },
+      db,
+    );
+    expect(result.started).toBe(true);
+    expect(result.featureRunId).toBe(featureRunId);
+
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
   });
 });
 

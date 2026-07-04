@@ -1,6 +1,12 @@
 import type { DbClient, GitHubClient, FeatureExecutionState } from '@minicoder/core';
-import { reconcileGithubState, requiresExecutionLock } from '@minicoder/core';
-import { WorkflowLockManager } from '@minicoder/workflow';
+import {
+  CommandError,
+  OptimisticLockError,
+  StaleFenceError,
+  reconcileGithubState,
+  requiresExecutionLock,
+} from '@minicoder/core';
+import { WorkflowLockManager, LockConflictError } from '@minicoder/workflow';
 import type { GithubReconciliationPayload } from './types.js';
 
 export type { GithubReconciliationPayload };
@@ -9,6 +15,31 @@ export interface GithubReconciliationResult {
   projectId: string;
   reconciled: number;
   humanRequired: number;
+}
+
+// CommandError `problem.type`s that represent an expected per-candidate concurrency race (a
+// webhook-triggered inbox handler ran the same reconciliation transition in-flight under the same
+// idempotency key).
+const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command']);
+
+/**
+ * A transient concurrency loss on a single candidate that a later reconciliation pass will simply
+ * retry past — the candidate is skipped without aborting the rest of the batch:
+ *   - LockConflictError: another holder (the start-next-feature task, a webhook-triggered inbox
+ *     handler, or an HA-cluster peer) owns the project's `execution-lane:{projectId}` lock;
+ *   - OptimisticLockError: a concurrent writer bumped feature_runs.version between reconcile's
+ *     fresh read and a Record* command's compare-and-swap;
+ *   - StaleFenceError: the execution-lane lease was reclaimed mid-operation;
+ *   - a `concurrent-command` CommandError (an in-flight idempotency-key race with a webhook
+ *     handler running the same transition).
+ * A genuine infrastructure failure (DB down, GitHub API error, etc.) is none of these and still
+ * throws, correctly failing the task for Trigger.dev retry.
+ */
+function isTransientRace(err: unknown): boolean {
+  if (err instanceof LockConflictError) return true;
+  if (err instanceof OptimisticLockError) return true;
+  if (err instanceof StaleFenceError) return true;
+  return err instanceof CommandError && EXPECTED_COMMAND_ERROR_TYPES.has(err.problem.type);
 }
 
 export type GithubClientFactory = () => Promise<GitHubClient>;
@@ -164,30 +195,41 @@ export async function runImpl(
       }
     };
 
-    if (!needsLock) {
-      let result = await reconcileGithubState({
-        db,
-        featureRunId: candidate.id,
-        projectId: payload.projectId,
-        observed,
-        correlationId: payload.correlationId,
-        lockContext: undefined,
-      });
-      // HIGH-3: the no-lock fast path raced with a concurrent writer (e.g. an overlapping webhook
-      // delivery) that advanced this feature run into a lock-gated state after `needsLock` was
-      // computed above. Retry once with the lock — its fresh internal state read picks up
-      // whatever changed underneath the first call.
-      if (result.action === 'lock_required') {
+    // A per-candidate transient concurrency loss (a concurrent holder of the same
+    // `execution-lane:{projectId}` lock — most commonly the start-next-feature task or a
+    // webhook-triggered inbox handler running the same reconciliation — a version bump under a
+    // Record* command's CAS, a reclaimed lease, or an in-flight idempotency-key race) must skip
+    // this candidate, not abort reconciliation of the rest of the batch. The next scheduled
+    // fallback (or the webhook that eventually arrives) reconciles it. Wrapping only the
+    // reconcile calls — not the getPullRequest fetch above — keeps a genuine GitHub API/DB
+    // failure throwing (correctly failing the task for retry).
+    try {
+      let result: Awaited<ReturnType<typeof reconcileGithubState>>;
+      if (!needsLock) {
+        result = await reconcileGithubState({
+          db,
+          featureRunId: candidate.id,
+          projectId: payload.projectId,
+          observed,
+          correlationId: payload.correlationId,
+          lockContext: undefined,
+        });
+        // HIGH-3: the no-lock fast path raced with a concurrent writer (e.g. an overlapping
+        // webhook delivery) that advanced this feature run into a lock-gated state after
+        // `needsLock` was computed above. Retry once with the lock — its fresh internal state
+        // read picks up whatever changed underneath the first call.
+        if (result.action === 'lock_required') {
+          result = await reconcileWithLock();
+        }
+      } else {
         result = await reconcileWithLock();
       }
       if (result.action !== 'none') reconciled++;
       if (result.action === 'escalated') humanRequired++;
-      continue;
+    } catch (err) {
+      if (isTransientRace(err)) continue;
+      throw err;
     }
-
-    const result = await reconcileWithLock();
-    if (result.action !== 'none') reconciled++;
-    if (result.action === 'escalated') humanRequired++;
   }
 
   return { projectId: payload.projectId, reconciled, humanRequired };
