@@ -980,6 +980,43 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   `changes_requested -> fixing` hop, via a new shared `advanceToFixing()` helper used by both the
   fresh-review path and this resumed path.
 
+**Post-implementation review fixes (round 2):**
+
+- **HIGH-1 (`review_findings` were written before, not atomically with, the state transition they
+  gate).** `run-review.ts` used to call `insertReviewFindings()` unconditionally right after
+  normalizing the reviewer's output, in its own statement separate from whichever
+  `RecordChangesRequestedCommand`/`EscalateToHumanCommand` dispatch followed. A crash between the
+  two left blocking/`requires_human_decision` findings recorded against a feature run that never
+  actually transitioned; a retry would then recompute `reviewCycle = MAX(review_cycle) + 1`,
+  re-invoke the reviewer, and write a redundant cycle on top of the orphaned one. Fixed by passing
+  `reviewerRunId`/`reviewCycle`/`findings` straight into the command payload for the
+  blocking/escalation paths — `RecordChangesRequestedHandler` already accepted these (built but
+  unused for this purpose in round 1); `EscalateToHumanHandler` gained the same optional fields —
+  so both handlers now write the findings inside the same transaction as the state transition. Only
+  the "approved, no transition to piggyback on" path still writes findings as a standalone call,
+  since there's no command to attach them to. New atomicity regressions
+  (`run-review.test.ts`, `review-write-findings.test.ts`) dispatch each handler with a deliberately
+  stale `expectedVersion` and assert zero `review_findings` rows exist afterward, proving the
+  rollback is total.
+- **HIGH-2 (the same atomicity gap existed for `run-coder.ts`'s fix-cycle `coder_responses` write).**
+  The "optimistic fixed" write (`coder_responses` + `review_findings.resolved`) happened in a
+  separate transaction _after_ `RecordCodePushedCommand` had already committed `fixing ->
+code_pushed`. A crash in that window left the push durably recorded but the findings it addressed
+  still open forever — a retry no-ops since the run is no longer `coding`/`fixing`. Fixed by adding
+  optional `coderRunId`/`resolvedFindingIds` fields to `RecordCodePushedCommand`'s payload;
+  `RecordCodePushedHandler` now performs the `coder_responses` insert and `review_findings.resolved`
+  update inside its own transaction, immediately after the state update succeeds. A new atomicity
+  regression (`review-write-findings.test.ts`) forces an `OptimisticLockError` via a stale
+  `expectedVersion` and asserts no `coder_responses` row and no `resolved` flip occurred.
+- **WATCH (deferred, not fixed): `advanceToFixing()`'s transient lock-conflict path still returns
+  a "successful" `decision: 'changes_requested'` without itself retrying `StartFixingCommand`.**
+  This is intentional, not an oversight: the `run-review.ts` guard added in round 1 already makes a
+  feature run stranded at `CHANGES_REQUESTED` resumable on the _next_ invocation of this task (a
+  later scheduled/opportunistic call, not a synchronous in-process retry) — the design already
+  documented in round 1's HIGH-3 fix. Making `advanceToFixing()` itself fail/retry synchronously
+  would just convert a routine, already-recoverable lock contention into a thrown task failure for
+  no added safety.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

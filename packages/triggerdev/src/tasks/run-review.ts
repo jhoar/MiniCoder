@@ -174,12 +174,14 @@ export interface RunReviewDeps {
  * Bridges the `under_review` state to a real reviewer-adapter invocation and back into the state
  * machine (docs/06 Phase 10): resolves the active `ReviewerAgentAdapter` via `AdapterRegistry`,
  * invokes it through `AgentRunRecorder`, normalizes its output (the single normalization point —
- * see `@minicoder/core`'s `normalizeReviewerFindings()` doc comment), writes `review_findings`
- * unconditionally (covers the "approved but with non-blocking findings" case, which has no state
- * transition to piggyback on), then dispatches `RecordChangesRequestedCommand`/
- * `EscalateToHumanCommand`/nothing depending on the findings. A separate, independently
- * scheduled/triggered task from `run-coder.ts` and `start-next-feature.ts` (CLAUDE.md's "never
- * inline" rule for GitHub-facing/execution tasks).
+ * see `@minicoder/core`'s `normalizeReviewerFindings()` doc comment), then either (a) passes the
+ * findings straight into `RecordChangesRequestedCommand`/`EscalateToHumanCommand`'s payload so
+ * they're written atomically with the state transition (HIGH-1 code-review fix, round 2 — a crash
+ * between a standalone findings write and the transition used to strand blocking findings against
+ * a run that never actually transitioned), or (b) writes them via a standalone
+ * `insertReviewFindings()` call when the review is clean (no transition to piggyback on). A
+ * separate, independently scheduled/triggered task from `run-coder.ts` and `start-next-feature.ts`
+ * (CLAUDE.md's "never inline" rule for GitHub-facing/execution tasks).
  *
  * No `RecordApprovedByPolicyCommand` is dispatched on approval (Phase 12 — Merge Gate — owns that
  * transition); a clean review simply leaves the feature run at `under_review` with its
@@ -303,15 +305,6 @@ export async function runImpl(
   // validates/shapes it into insert-ready ReviewFindingInsert rows.
   const findings: ReviewFindingInsert[] = normalizeReviewerFindings(output);
 
-  // Written unconditionally, regardless of which branch below fires — this is what makes the
-  // "approved but with non-blocking findings" case (no state transition) still durably recorded.
-  await insertReviewFindings(db, {
-    featureRunId,
-    reviewerRunId: agentRunId,
-    reviewCycle,
-    findings,
-  });
-
   const executor = new TransactionalCommandExecutor(db);
   const actor = systemActor(correlationId);
 
@@ -320,8 +313,21 @@ export async function runImpl(
   );
   const hasBlocking = findings.some((f) => f.severity === FindingSeverity.BLOCKING);
 
+  // HIGH-1 code-review fix (round 2): findings used to be written unconditionally *before* this
+  // branch, in their own transaction separate from whichever state transition follows. A crash in
+  // that window left blocking/requires_human_decision findings recorded against a run that never
+  // actually transitioned, and a retry would recompute reviewCycle = MAX(review_cycle) + 1,
+  // re-invoke the reviewer, and write a redundant cycle on top. Now the blocking/escalation paths
+  // pass `findings`/`reviewerRunId`/`reviewCycle` straight into the command payload so
+  // RecordChangesRequestedHandler/EscalateToHumanHandler write them in the SAME transaction as the
+  // state transition (fully atomic — either both commit or neither does). Only the "approved, no
+  // transition to piggyback on" path below still writes findings as a standalone call.
   if (hasRequiresHumanDecision) {
-    await dispatchEscalation(executor, actor, correlationId, projectId, featureRunId, run.version);
+    await dispatchEscalation(executor, actor, correlationId, projectId, featureRunId, run.version, {
+      reviewerRunId: agentRunId,
+      reviewCycle,
+      findings,
+    });
     return { projectId, featureRunId, reviewed: true, decision: 'escalated' };
   }
 
@@ -334,6 +340,7 @@ export async function runImpl(
         projectId,
         featureRunId,
         run.version,
+        { reviewerRunId: agentRunId, reviewCycle, findings },
       );
       return { projectId, featureRunId, reviewed: true, decision: 'escalated' };
     }
@@ -344,7 +351,15 @@ export async function runImpl(
       const envelope: CommandEnvelope<Record<string, unknown>> = {
         commandId: generateId(),
         idempotencyKey: `changes-requested:${featureRunId}:${reviewId}`,
-        payload: { featureRunId, projectId, expectedVersion: run.version, reviewId },
+        payload: {
+          featureRunId,
+          projectId,
+          expectedVersion: run.version,
+          reviewId,
+          reviewerRunId: agentRunId,
+          reviewCycle,
+          findings,
+        },
         actor,
         correlationId,
       };
@@ -373,8 +388,15 @@ export async function runImpl(
     return { projectId, featureRunId, reviewed: true, decision };
   }
 
-  // Only non_blocking/nit/question/out_of_scope findings (or none at all) — no transition;
-  // the feature run stays at under_review (Phase 12's Merge Gate owns the next hop).
+  // Only non_blocking/nit/question/out_of_scope findings (or none at all) — no transition to
+  // piggyback the write on, so this is the one path that still writes findings as a standalone
+  // call; the feature run stays at under_review (Phase 12's Merge Gate owns the next hop).
+  await insertReviewFindings(db, {
+    featureRunId,
+    reviewerRunId: agentRunId,
+    reviewCycle,
+    findings,
+  });
   return { projectId, featureRunId, reviewed: true, decision: 'approved' };
 }
 
@@ -440,6 +462,11 @@ async function dispatchEscalation(
   projectId: string,
   featureRunId: string,
   expectedVersion: number,
+  findingsContext?: {
+    reviewerRunId: string;
+    reviewCycle: number;
+    findings: ReviewFindingInsert[];
+  },
 ): Promise<void> {
   const envelope: CommandEnvelope<Record<string, unknown>> = {
     commandId: generateId(),
@@ -450,6 +477,13 @@ async function dispatchEscalation(
       expectedVersion,
       reason:
         'Reviewer produced a requires_human_decision finding or exceeded the fix-attempt threshold',
+      ...(findingsContext
+        ? {
+            reviewerRunId: findingsContext.reviewerRunId,
+            reviewCycle: findingsContext.reviewCycle,
+            findings: findingsContext.findings,
+          }
+        : {}),
     },
     actor,
     correlationId,

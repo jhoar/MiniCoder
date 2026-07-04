@@ -14,12 +14,25 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
+import { ReviewFindingInsertSchema } from '../../../review/normalize-findings.js';
+import { insertReviewFindings } from '../../../review/write-findings.js';
 
 export const EscalateToHumanPayloadSchema = z.object({
   featureRunId: z.string(),
   projectId: z.string(),
   expectedVersion: z.number().int().nonnegative(),
   reason: z.string().min(1),
+  // Phase 10 code-review fix (HIGH-1, round 2): populated by run-review.ts when escalating on a
+  // requires_human_decision finding or a fix-attempt-threshold breach, so the just-reviewed
+  // findings are persisted atomically with the under_review -> human_required transition instead
+  // of via a separate write beforehand — a crash between the two used to leave blocking findings
+  // recorded against a run that never actually escalated, and a retry would re-invoke the reviewer
+  // and write a duplicate review cycle. Left undefined for every other EscalateToHumanCommand
+  // caller (GitHub-reconciliation divergence, CI-fail-limit, etc.), which have no findings to
+  // attribute.
+  reviewerRunId: z.string().optional(),
+  reviewCycle: z.number().int().positive().optional(),
+  findings: z.array(ReviewFindingInsertSchema).optional(),
 });
 export type EscalateToHumanPayload = z.infer<typeof EscalateToHumanPayloadSchema>;
 
@@ -45,7 +58,15 @@ export class EscalateToHumanHandler implements CommandHandler<
     envelope: CommandEnvelope<EscalateToHumanPayload>,
     db: DbClient,
   ): Promise<CommandResult<FeatureExecutionState>> {
-    const { featureRunId, projectId, expectedVersion, reason } = envelope.payload;
+    const {
+      featureRunId,
+      projectId,
+      expectedVersion,
+      reason,
+      reviewerRunId,
+      reviewCycle,
+      findings,
+    } = envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<FeatureExecutionState>(
         tx,
@@ -89,6 +110,14 @@ export class EscalateToHumanHandler implements CommandHandler<
       );
       if (escalateAffected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
+      }
+      if (findings && findings.length > 0) {
+        await insertReviewFindings(tx, {
+          featureRunId,
+          reviewerRunId: reviewerRunId ?? null,
+          reviewCycle: reviewCycle ?? 1,
+          findings,
+        });
       }
       const eventId = await writeWorkflowEvent(tx, {
         featureRunId,

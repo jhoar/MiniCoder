@@ -1,13 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import type {
+  CommandEnvelope,
   DbClient,
+  EscalateToHumanPayload,
   GitHubClient,
+  RecordChangesRequestedPayload,
   ReviewerAgentAdapter,
   ReviewerInput,
   ReviewerOutput,
 } from '@minicoder/core';
-import { FeatureExecutionState } from '@minicoder/core';
+import {
+  FeatureExecutionState,
+  RecordChangesRequestedHandler,
+  EscalateToHumanHandler,
+  OptimisticLockError,
+  generateId,
+} from '@minicoder/core';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
+import { systemActor } from './actor.js';
 import { runImpl, type RunReviewDeps } from './run-review.js';
 
 const PROJECT_ID = 'proj-run-review-001';
@@ -324,5 +334,87 @@ describe('run-review', () => {
       [featureRunId],
     );
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.FIXING);
+  });
+
+  describe('HIGH-1 code-review fix (round 2): findings write atomically with the state transition', () => {
+    it('RecordChangesRequestedHandler: a guard failure (stale expectedVersion) leaves no review_findings row despite findings in the payload', async () => {
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedUnderReviewFeatureRun(db);
+
+      const handler = new RecordChangesRequestedHandler();
+      const correlationId = 'corr-atomic-1';
+      const envelope: CommandEnvelope<RecordChangesRequestedPayload> = {
+        commandId: generateId(),
+        idempotencyKey: `changes-requested:${featureRunId}:review-atomic-1`,
+        payload: {
+          featureRunId,
+          projectId: PROJECT_ID,
+          // Deliberately stale — the seeded run is at version 1 — to force assertVersion to
+          // throw before the review_findings insert (which happens after the state UPDATE).
+          expectedVersion: 99,
+          reviewId: 'review-atomic-1',
+          reviewerRunId: 'agent-run-atomic',
+          reviewCycle: 1,
+          findings: [{ severity: 'blocking', category: 'correctness', description: 'bug' }],
+        },
+        actor: systemActor(correlationId),
+        correlationId,
+      };
+
+      await expect(handler.execute(envelope, db)).rejects.toBeInstanceOf(OptimisticLockError);
+
+      const findings = await db.query<{ id: string }>(
+        `SELECT id FROM review_findings WHERE feature_run_id = ?`,
+        [featureRunId],
+      );
+      expect(findings).toHaveLength(0);
+
+      const runRows = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
+    });
+
+    it('EscalateToHumanHandler: a guard failure (stale expectedVersion) leaves no review_findings row despite findings in the payload', async () => {
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedUnderReviewFeatureRun(db);
+
+      const handler = new EscalateToHumanHandler();
+      const correlationId = 'corr-atomic-2';
+      const envelope: CommandEnvelope<EscalateToHumanPayload> = {
+        commandId: generateId(),
+        idempotencyKey: `escalate-human-review:${featureRunId}`,
+        payload: {
+          featureRunId,
+          projectId: PROJECT_ID,
+          expectedVersion: 99,
+          reason: 'requires_human_decision',
+          reviewerRunId: 'agent-run-atomic',
+          reviewCycle: 1,
+          findings: [
+            { severity: 'requires_human_decision', category: 'policy', description: 'ambiguous' },
+          ],
+        },
+        actor: systemActor(correlationId),
+        correlationId,
+      };
+
+      await expect(handler.execute(envelope, db)).rejects.toBeInstanceOf(OptimisticLockError);
+
+      const findings = await db.query<{ id: string }>(
+        `SELECT id FROM review_findings WHERE feature_run_id = ?`,
+        [featureRunId],
+      );
+      expect(findings).toHaveLength(0);
+
+      const runRows = await db.query<{ current_execution_state: string }>(
+        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
+    });
   });
 });

@@ -353,6 +353,14 @@ export async function runImpl(
       commitSha: output.commitSha,
       branchName: output.branchName,
       filesChanged: output.filesChanged,
+      // HIGH-2 code-review fix (round 2): pass these through so RecordCodePushedHandler writes
+      // the coder_responses rows and resolves findings in the SAME transaction as the state
+      // transition, instead of a separate follow-up write after the transaction commits (a crash
+      // in between used to strand resolved-in-practice findings as open forever, since a retry
+      // no-ops once the run is no longer coding/fixing).
+      coderRunId: isFixCycle && openFindingRows.length > 0 ? agentRunId : undefined,
+      resolvedFindingIds:
+        isFixCycle && openFindingRows.length > 0 ? openFindingRows.map((f) => f.id) : undefined,
     };
     const envelope: CommandEnvelope<typeof recordPayload> = {
       commandId: generateId(),
@@ -384,29 +392,10 @@ export async function runImpl(
   // contract) carries no per-finding disposition today — a repeat_finding-style reviewer behavior
   // on the *next* review cycle inserts a NEW review_findings row (a new review_cycle) if the issue
   // truly wasn't fixed, preserving history rather than reopening/re-flagging this resolved one.
-  if (isFixCycle && openFindingRows.length > 0) {
-    const now = new Date().toISOString();
-    await db.transaction(async (tx) => {
-      for (const finding of openFindingRows) {
-        await tx.execute(
-          `INSERT INTO coder_responses (id, finding_id, coder_run_id, response_type, notes, version, created_at, updated_at)
-           VALUES (?, ?, ?, 'fixed', ?, 1, ?, ?)`,
-          [
-            generateId(),
-            finding.id,
-            agentRunId,
-            'Optimistic: coder push completed without per-finding disposition (Phase 10 simplification)',
-            now,
-            now,
-          ],
-        );
-        await tx.execute(
-          `UPDATE review_findings SET resolved = 1, resolved_by_run_id = ?, version = version + 1, updated_at = ? WHERE id = ?`,
-          [agentRunId, now, finding.id],
-        );
-      }
-    });
-  }
+  // HIGH-2 code-review fix (round 2): this write now happens inside RecordCodePushedHandler's own
+  // transaction (via the coderRunId/resolvedFindingIds payload fields above), not as a separate
+  // follow-up step here — a crash between the state transition and a standalone follow-up write
+  // used to leave findings stranded as unresolved even though the fix had already landed.
 
   // A PR-creation failure here is a non-fatal, logged side effect: the coder's work is already
   // durably recorded as code_pushed. Reconciliation or a human can retry PR creation later — it
