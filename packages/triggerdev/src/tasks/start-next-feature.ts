@@ -83,27 +83,31 @@ export async function runImpl(
   let featureRunId = payload.featureRunId ?? null;
   let skipSelection = false;
 
-  if (!featureRunId) {
-    // Recover a feature run stranded at 'selected' by a pause/budget-pause that landed between
-    // SelectFeatureCommand succeeding and StartCodingCommand dispatching (HIGH-1 in a Phase 8
-    // code review round). workflow_states.active_feature_run_id already points at it, so
-    // SelectFeatureHandler's compare-and-swap would reject any other candidate anyway — without
-    // this check, findNextEligibleFeatureRun (which only looks for approved_pending_execution
-    // rows) would never surface it again, stranding the project until manual intervention.
-    const activeRows = await db.query<{ active_feature_run_id: string | null }>(
-      `SELECT active_feature_run_id FROM workflow_states WHERE project_id = ?`,
-      [projectId],
+  // Recover a feature run stranded at 'selected' by a pause/budget-pause that landed between
+  // SelectFeatureCommand succeeding and StartCodingCommand dispatching (HIGH-1 in a Phase 8 code
+  // review round). workflow_states.active_feature_run_id already points at it, so
+  // SelectFeatureHandler's compare-and-swap would reject any other candidate anyway.
+  //
+  // This check runs for BOTH the auto-discovery path (no featureRunId supplied — without it,
+  // findNextEligibleFeatureRun, which only looks for approved_pending_execution rows, would never
+  // surface the stranded run again) and the explicit-featureRunId path (a caller naming the
+  // project's already-selected active run directly, e.g. a targeted retry after a prior partial
+  // failure — without it, dispatching SelectFeatureCommand on an already-'selected' run is an
+  // invalid `selected -> selected` transition that throws an uncaught TransitionError, a real bug
+  // found in a later Phase 8 code review round).
+  const activeRows = await db.query<{ active_feature_run_id: string | null }>(
+    `SELECT active_feature_run_id FROM workflow_states WHERE project_id = ?`,
+    [projectId],
+  );
+  const activeFeatureRunId = activeRows[0]?.active_feature_run_id ?? null;
+  if (activeFeatureRunId && (featureRunId === null || featureRunId === activeFeatureRunId)) {
+    const activeRunRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [activeFeatureRunId],
     );
-    const activeFeatureRunId = activeRows[0]?.active_feature_run_id ?? null;
-    if (activeFeatureRunId) {
-      const activeRunRows = await db.query<{ current_execution_state: string }>(
-        `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
-        [activeFeatureRunId],
-      );
-      if (activeRunRows[0]?.current_execution_state === FeatureExecutionState.SELECTED) {
-        featureRunId = activeFeatureRunId;
-        skipSelection = true;
-      }
+    if (activeRunRows[0]?.current_execution_state === FeatureExecutionState.SELECTED) {
+      featureRunId = activeFeatureRunId;
+      skipSelection = true;
     }
   }
 

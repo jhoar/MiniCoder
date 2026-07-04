@@ -496,6 +496,37 @@ describe('start-next-feature real wiring', () => {
     );
     expect(codingRows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
   });
+
+  // HIGH-1 (Phase 8 code review round 6): the stranded-selected recovery previously only ran
+  // when payload.featureRunId was omitted. An explicit caller naming the project's already-
+  // selected active run directly (e.g. a targeted retry) would still attempt an invalid
+  // 'selected -> selected' SelectFeatureCommand, throwing an uncaught TransitionError instead of
+  // recovering and starting coding.
+  it('recovers a stranded selected run when the caller explicitly names it', async () => {
+    const featureRunId = `run-${projectId}-1`;
+
+    await db.execute(
+      `UPDATE feature_runs SET current_execution_state = 'selected', version = version + 1 WHERE id = ?`,
+      [featureRunId],
+    );
+    await db.execute(
+      `UPDATE workflow_states SET active_feature_run_id = ?, version = version + 1 WHERE project_id = ?`,
+      [featureRunId, projectId],
+    );
+
+    const result = await runStartNextFeature(
+      { projectId, correlationId: 'corr-snf', idempotencyKey: 'idem-snf-explicit', featureRunId },
+      db,
+    );
+    expect(result.started).toBe(true);
+    expect(result.featureRunId).toBe(featureRunId);
+
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+  });
 });
 
 // ── Code-review regression tests (HIGH-1, HIGH-2, MEDIUM-2) ────────────────

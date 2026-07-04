@@ -472,22 +472,29 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
 'running')` to each handler's conditional `UPDATE`, with the same two-step disambiguation
   `SelectFeatureHandler` already uses (a 0-row UPDATE re-queries `workflow_states` to distinguish
   a stale version from a no-longer-running automation state, throwing the `automation-paused`
-  `CommandError` type `start-next-feature.ts`'s `isExpectedRace()` already treats as non-fatal).
+  `CommandError` type `start-next-feature.ts`'s `isTransientRace()` already treats as non-fatal).
   `RecordCodePushedHandler` deliberately does **not** get this guard — it records the outcome of
   work already in flight rather than starting new work, so a pause after coding has already begun
   should not prevent recording that the push happened.
 - **`start-next-feature.ts` must check `workflow_states.active_feature_run_id` for a stranded
-  `selected` run before falling back to `findNextEligibleFeatureRun()`.** The HIGH-1 fix above
-  (rejecting `StartCodingCommand` when automation isn't `running`) can leave a feature run
-  parked at `selected` with `active_feature_run_id` still pointing at it — and
+  `selected` run before falling back to `findNextEligibleFeatureRun()` — for both the
+  auto-discovery and the explicit-`featureRunId` call paths.** The HIGH-1 fix above (rejecting
+  `StartCodingCommand` when automation isn't `running`) can leave a feature run parked at
+  `selected` with `active_feature_run_id` still pointing at it — and
   `findNextEligibleFeatureRun()` only ever searches for `approved_pending_execution` rows, so
-  that stranded run would never be found again, permanently blocking the project even after
-  automation resumes (`SelectFeatureHandler`'s compare-and-swap also refuses to select anything
-  else while `active_feature_run_id` is non-`NULL`). When no `featureRunId` is supplied and the
-  active run is at `selected`, the task must skip `SelectFeatureCommand` and dispatch
-  `StartCodingCommand` directly for that run — this was a real bug (HIGH-1 in a later Phase 8
-  code review round), regression-tested in `packages/triggerdev/src/triggerdev.test.ts` for all
-  three paused/budget-paused automation states.
+  that stranded run would never be found again via auto-discovery, permanently blocking the
+  project even after automation resumes (`SelectFeatureHandler`'s compare-and-swap also refuses
+  to select anything else while `active_feature_run_id` is non-`NULL`). The same check must also
+  apply when a caller passes `featureRunId` explicitly (e.g. a targeted retry) and it happens to
+  equal the stranded active run — skipping it left a real bug where `SelectFeatureCommand` was
+  dispatched on an already-`selected` run, an invalid `selected -> selected` transition that
+  throws an uncaught `TransitionError` (a plain `Error`, not a `CommandError`, so
+  `isTransientRace()` cannot catch it) instead of recovering (a later Phase 8 code review round).
+  When the resolved `featureRunId` — whichever path supplied it — is at `selected`, the task must
+  skip `SelectFeatureCommand` and dispatch `StartCodingCommand` directly for that run,
+  regression-tested in `packages/triggerdev/src/triggerdev.test.ts` for all three
+  paused/budget-paused automation states (auto-discovery) and for the explicit-`featureRunId`
+  case.
 - **`start-next-feature.ts` treats every transient concurrency loss as `started: false`, never a
   thrown task failure — and `ExecutionLane.acquireForProject()` must be caught, not left to
   propagate.** The task is scheduled/opportunistic and idempotent, so any "another actor moved

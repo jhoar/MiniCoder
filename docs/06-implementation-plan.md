@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.14
+> Version: 1.0.15
 > Last-updated: 2026-07-03
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -754,7 +754,7 @@ progresses through the happy path.
   `StartCodingHandler`'s `feature_runs` UPDATE atomically re-check
   `EXISTS (SELECT 1 FROM workflow_states WHERE project_id = ? AND automation_state = 'running')`
   in the same statement, throwing the same `automation-paused` `CommandError` type
-  `SelectFeatureHandler` already uses (which `start-next-feature.ts`'s `isExpectedRace()` already
+  `SelectFeatureHandler` already uses (which `start-next-feature.ts`'s `isTransientRace()` already
   treats as a non-fatal, expected race) when the check fails; `StartFixingHandler` — the only
   other handler that starts new automated work rather than recording an already-in-flight
   action's outcome — got the identical guard while it was already being touched for the
@@ -866,6 +866,27 @@ progresses through the happy path.
   foreign holder, asserts the task returns cleanly (`reconciled: 0`, candidate untouched at
   `code_pushed`), then releases the lane and confirms a subsequent pass reconciles it to
   `pr_opened` (verified by restoring the uncaught structure and confirming the test fails).
+
+**Post-implementation review fixes (round 6):**
+
+- **HIGH-1 (explicit `featureRunId` retry could still fail a stranded selected run).** The
+  round-3 stranded-selected recovery in `start-next-feature.ts` only ran when
+  `payload.featureRunId` was omitted (the scheduled/auto-discovery path). A caller explicitly
+  naming the project's already-selected active run directly — e.g. a targeted retry after a
+  prior partial failure, or a manual re-invocation — still fell through to dispatching
+  `SelectFeatureCommand`, which is an invalid `selected -> selected` transition:
+  `StateTransitionValidator.assertValid` throws a plain `TransitionError` (not a `CommandError`),
+  which `isTransientRace()` does not catch, so it propagated as an uncaught task failure instead
+  of recovering and starting coding. Fixed by running the same active-run/`selected`-state check
+  for both the explicit and auto-discovery `featureRunId` paths (a single
+  `workflow_states.active_feature_run_id` read, followed by a `feature_runs.current_execution_state`
+  check when the resolved `featureRunId` — whichever path supplied it — matches that active run).
+  New test in `packages/triggerdev/src/triggerdev.test.ts` seeds a stranded `selected` run and
+  calls `start-next-feature` with that run's id passed explicitly, asserting it recovers and
+  reaches `coding` (verified by reverting to the omitted-only check and confirming the test fails
+  with `TransitionError: selected -> selected`).
+- **LOW-1 (stale `isExpectedRace()` references).** `CLAUDE.md` and this section referred to the
+  classifier by its pre-round-4 name; both now say `isTransientRace()`, matching the code.
 
 **Deviations from the original plan:**
 
