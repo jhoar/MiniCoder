@@ -92,3 +92,11 @@ export * from './domain/constants.js';
 // Phase 10: Reference Reviewer Adapter and Review/Fix Loop
 export * from './review/index.js';
 export * from './commands/handlers/github/request-changes-after-ci-fail.js';
+
+// Phase 11: Disagreement, Arbiter, and Human Escalation
+export * from './disagreement/index.js';
+export * from './commands/handlers/feature/resolve-disagreement.js';
+export * from './commands/handlers/feature/resume-feature-execution.js';
+export * from './commands/handlers/feature/retry-feature.js';
+export * from './commands/handlers/feature/skip-feature.js';
+export * from './commands/handlers/feature/block-feature.js';

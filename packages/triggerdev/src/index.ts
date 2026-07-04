@@ -21,7 +21,11 @@ export { runImpl as runStartNextFeature } from './tasks/start-next-feature.js';
 export { runImpl as runRunCoder } from './tasks/run-coder.js';
 export type { RunCoderDeps } from './tasks/run-coder.js';
 export { runImpl as runRunReview } from './tasks/run-review.js';
-export type { RunReviewDeps, ReviewerAdapterFactory } from './tasks/run-review.js';
+export type {
+  RunReviewDeps,
+  ReviewerAdapterFactory,
+  ArbiterAdapterFactory,
+} from './tasks/run-review.js';
 export { runImpl as runGithubReconciliation } from './tasks/github-reconciliation.js';
 export { runImpl as runExportPlan } from './tasks/export-plan.js';
 export { runImpl as runExportBacklog } from './tasks/export-backlog.js';

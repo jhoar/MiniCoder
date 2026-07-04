@@ -12,8 +12,13 @@ import {
   generateId,
   normalizeReviewerFindings,
   insertReviewFindings,
+  findRepeatedFinding,
+  insertDisagreementRecord,
+  recordArbiterDisposition,
 } from '@minicoder/core';
 import type {
+  ArbiterAgentAdapter,
+  ArbiterInput,
   CommandEnvelope,
   DbClient,
   GitHubClient,
@@ -50,6 +55,16 @@ const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'not-found']
 function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
+
+/** Builds a fresh `ArbiterAgentAdapter` instance for a single disagreement resolution. There is no
+ * default/reference implementation of this yet (docs/03 §9 lists only `GenericLLMPlannerAdapter`,
+ * `CodexCoderAdapter`, `ClaudeReviewerAdapter`, `GenericLLMDocumentationAdapter` as reference
+ * adapters — no Arbiter equivalent has shipped), so `run-review.ts` never constructs one from env
+ * the way it does for the Reviewer — callers must inject this via `RunReviewDeps`, mirroring
+ * `planning-readiness-assessment`/`generate-implementation-plan`'s treatment of
+ * `PlannerAgentAdapter` (docs/06 Phase 6). A live deployment that reaches a disagreement without
+ * one configured fails fast with an actionable error instead of silently skipping arbitration. */
+export type ArbiterAdapterFactory = () => Promise<ArbiterAgentAdapter>;
 
 export type GithubClientFactory = () => Promise<GitHubClient>;
 /** Builds a fresh `ReviewerAgentAdapter` instance for this one run, given the project's repo
@@ -168,6 +183,33 @@ interface PullRequestRow {
 export interface RunReviewDeps {
   readonly reviewerAdapterFactory?: ReviewerAdapterFactory;
   readonly githubClientFactory?: GithubClientFactory;
+  readonly arbiterAdapterFactory?: ArbiterAdapterFactory;
+}
+
+const ARBITER_PROMPT_TEMPLATE_VERSION = 'arbiter-v1';
+
+interface CoderResponseRow {
+  response_type: string;
+  notes: string | null;
+}
+
+/**
+ * Best-effort summary of the coder's side of a disagreement, for `ArbiterInput.coderPosition`.
+ * `coder_responses` only ever writes an optimistic `'fixed'` disposition today (docs/06 Phase 10's
+ * "optimistic fixed" design decision) — there is no real per-finding dispute/acknowledgement text
+ * yet — so this is deliberately a plain fallback description, not a claim that the coder actually
+ * argued for its position.
+ */
+async function summarizeCoderPosition(db: DbClient, priorFindingId: string): Promise<string> {
+  const rows = await db.query<CoderResponseRow>(
+    `SELECT response_type, notes FROM coder_responses WHERE finding_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [priorFindingId],
+  );
+  const row = rows[0];
+  if (!row) {
+    return 'No coder_responses row on file for the prior occurrence of this finding.';
+  }
+  return `Coder's last response to this finding was '${row.response_type}'${row.notes ? `: ${row.notes}` : ''}.`;
 }
 
 /**
@@ -194,7 +236,8 @@ export async function runImpl(
   deps: RunReviewDeps = {},
 ): Promise<RunReviewResult> {
   const githubClientFactory = deps.githubClientFactory ?? resolveDefaultGithubClientFactory();
-  const { projectId, featureRunId, correlationId, reviewerAdapterName } = payload;
+  const { projectId, featureRunId, correlationId, reviewerAdapterName, arbiterAdapterName } =
+    payload;
 
   const runRows = await db.query<FeatureRunRow>(
     `SELECT fr.id, fr.feature_request_id, fr.version, fr.current_execution_state, fr.fix_attempt_count
@@ -345,6 +388,109 @@ export async function runImpl(
       return { projectId, featureRunId, reviewed: true, decision: 'escalated' };
     }
 
+    // Phase 11: disagreement detection. The same blocking finding recurring across review cycles
+    // means the coder's prior fix attempt didn't actually satisfy the reviewer — a genuine
+    // coder/reviewer disagreement, not a normal one-shot fix cycle — so route it through the
+    // ArbiterAgentAdapter before falling back to the ordinary changes_requested path.
+    let effectiveFindings = findings;
+    const repeated = await findRepeatedFinding(db, { featureRunId, reviewCycle, findings });
+    if (repeated) {
+      if (!arbiterAdapterName || !deps.arbiterAdapterFactory) {
+        throw new Error(
+          'run-review detected a repeated unresolved finding (a coder/reviewer disagreement) but no ' +
+            'arbiterAdapterName/arbiterAdapterFactory was configured — see docs/06 Phase 11: there is ' +
+            'no reference ArbiterAgentAdapter implementation yet, so one must be injected via RunReviewDeps.',
+        );
+      }
+      const disagreementId = await insertDisagreementRecord(db, {
+        featureRunId,
+        findingId: repeated.priorFindingId,
+        reviewCycle,
+      });
+      const arbiterRegistry = new AdapterRegistry(db);
+      const arbiterAdapterRecord = await arbiterRegistry.resolve(
+        AgentRole.ARBITER,
+        arbiterAdapterName,
+      );
+      const arbiterAdapter = await deps.arbiterAdapterFactory();
+      const arbiterInput: ArbiterInput = {
+        projectId,
+        featureRunId,
+        findingDescription: repeated.description,
+        coderPosition: await summarizeCoderPosition(db, repeated.priorFindingId),
+        reviewerPosition: repeated.description,
+        correlationId,
+      };
+      const { agentRunId: arbiterRunId, output: arbiterOutput } = await recorder.record(
+        {
+          adapterId: arbiterAdapterRecord.id,
+          role: AgentRole.ARBITER,
+          projectId,
+          featureRunId,
+          featureRequestId: run.feature_request_id,
+          input: arbiterInput,
+          capabilitiesUsed: ['can_resolve_disagreement'],
+          contextPack: { content: arbiterInput },
+          promptTemplateVersion: ARBITER_PROMPT_TEMPLATE_VERSION,
+        },
+        () => arbiterAdapter.run(arbiterInput),
+      );
+
+      if (arbiterOutput.resolution === 'escalate_to_human') {
+        await recordArbiterDisposition(db, {
+          disagreementId,
+          arbiterRunId,
+          state: 'escalated',
+          resolution: arbiterOutput.notes,
+        });
+        await dispatchEscalation(
+          executor,
+          actor,
+          correlationId,
+          projectId,
+          featureRunId,
+          run.version,
+          { reviewerRunId: agentRunId, reviewCycle, findings },
+        );
+        return { projectId, featureRunId, reviewed: true, decision: 'escalated' };
+      }
+
+      await recordArbiterDisposition(db, {
+        disagreementId,
+        arbiterRunId,
+        state: 'resolved',
+        resolution: arbiterOutput.notes,
+      });
+      if (arbiterOutput.resolution === 'coder_correct') {
+        // The Arbiter sided with the coder: this finding is dismissed, not a real defect.
+        // Downgrade it to non_blocking rather than dropping it, so the disagreement stays
+        // auditable in review_findings.
+        effectiveFindings = findings.map((f) =>
+          f.description.trim() === repeated.description.trim() &&
+          (f.severity === FindingSeverity.BLOCKING ||
+            f.severity === FindingSeverity.REQUIRES_HUMAN_DECISION)
+            ? { ...f, severity: FindingSeverity.NON_BLOCKING }
+            : f,
+        );
+      }
+      // 'reviewer_correct' / 'compromise': the finding stands, proceed to the normal fix loop
+      // below with `findings` unchanged.
+    }
+
+    const stillBlocking = effectiveFindings.some((f) => f.severity === FindingSeverity.BLOCKING);
+    if (!stillBlocking) {
+      // The Arbiter dismissed every blocking finding this cycle; nothing left to request changes
+      // for. Record the (now downgraded) findings for audit and stay at under_review, same as the
+      // plain "no blocking findings" path below.
+      await insertReviewFindings(db, {
+        featureRunId,
+        reviewerRunId: agentRunId,
+        reviewCycle,
+        findings: effectiveFindings,
+      });
+      return { projectId, featureRunId, reviewed: true, decision: 'approved' };
+    }
+
     const reviewId = `review-${featureRunId}-${reviewCycle}`;
     let changesRequestedVersion: number;
     try {
@@ -358,7 +504,7 @@ export async function runImpl(
           reviewId,
           reviewerRunId: agentRunId,
           reviewCycle,
-          findings,
+          findings: effectiveFindings,
         },
         actor,
         correlationId,

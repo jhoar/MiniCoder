@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.6
+> Version: 1.3.7
 > Last-updated: 2026-07-04
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -942,6 +942,73 @@ at `code_pushed` with no tracked `pull_requests` row, then either wait for the n
 the GitHub Integration Operational Constraints section of CLAUDE.md) or call
 `GitHubClient.createPullRequest` directly with the branch name recorded in the
 `feature.code_pushed` `workflow_events` row's payload.
+
+### Phase 11 — Disagreement, Arbiter, and Human Escalation Runbook
+
+Covers manual recovery/inspection for the disagreement-detection and human-escalation machinery
+delivered in Phase 11 (`packages/core/src/disagreement/`, the five `human_required` exit command
+handlers, `minicoder human ...`). As with Phases 7–9, there is no Phase 13 API surface yet.
+
+#### Procedure: Find feature runs stuck at `human_required`
+
+```sql
+SELECT fr.id, fr.current_execution_state, fr.fix_attempt_count, freq.fr_id
+FROM feature_runs fr
+JOIN feature_requests freq ON fr.feature_request_id = freq.id
+WHERE fr.current_execution_state = 'human_required';
+```
+
+For each, check whether it has an open (or Arbiter-escalated) disagreement to inform which
+disposition applies:
+
+```sql
+SELECT id, state, review_cycle, resolution FROM disagreement_records
+WHERE feature_run_id = '<feature_run_id>' AND state IN ('open', 'escalated')
+ORDER BY review_cycle DESC LIMIT 1;
+```
+
+#### Procedure: Disposition a `human_required` feature run
+
+All five dispositions require `--project`, `--feature-run`, `--actor`, and either `--resolution`
+(resolve-disagreement) or `--notes` (the other four). `--actor-role` defaults to `approver`.
+
+```bash
+# A disagreement exists and the reviewer's finding is correct — fix required
+minicoder human resolve-disagreement --feature-run <id> --project <id> --actor <you> \
+  --resolution "reviewer finding stands, fix required"
+
+# The escalation is dismissed — no fix needed; use --disagreement if resolving in the coder's favor
+minicoder human resume --feature-run <id> --project <id> --actor <you> \
+  --notes "false positive, dismissing" [--disagreement <id>]
+
+# Retry automation from the top — only valid while this run is still the project's active feature
+minicoder human retry --feature-run <id> --project <id> --actor <you> \
+  --notes "transient infra failure, retrying"
+
+# Abandon automation for this feature entirely (terminal — see docs/00 §3.3's known limitation on
+# downstream feature_dependencies never clearing)
+minicoder human skip --feature-run <id> --project <id> --actor <you> \
+  --notes "descoped, will not be automated"
+
+# An external precondition must be satisfied first (known limitation: UnblockFeatureCommand's
+# guard only checks feature_dependencies, not a human-set block — recovering a human-blocked
+# feature with no unmet dependency currently requires `minicoder state repair`)
+minicoder human block --feature-run <id> --project <id> --actor <you> \
+  --notes "waiting on an external API key"
+```
+
+Each writes a `human_approvals` row (queryable via `SELECT * FROM human_approvals WHERE
+feature_run_id = '<id>' ORDER BY decided_at DESC`) and a `workflow_events`/`outbox_events` pair
+(`feature.disagreement_resolved` / `feature.resumed_from_human_required` / `feature.retried` /
+`feature.skipped` / `feature.blocked_by_human`).
+
+#### Procedure: `retry` rejected with `not-active-feature-run`
+
+`RetryFeatureCommand` only applies to the project's current `workflow_states.active_feature_run_id`
+— retrying a different (non-active) feature run at `human_required` would strand it at `selected`
+with nothing to ever pick it up. If the feature run you want to retry isn't the active one, this is
+a signal that `start-next-feature` already moved on; a direct `minicoder state repair` is the
+recovery path, not a retry.
 
 ---
 

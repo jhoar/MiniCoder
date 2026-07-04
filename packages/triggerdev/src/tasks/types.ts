@@ -114,6 +114,11 @@ export const RunReviewPayload = BasePayload.extend({
   // No default, per Phase 9's MEDIUM-3 precedent ("no silent test-adapter default in production
   // payloads") — every production/test call site must name the adapter explicitly.
   reviewerAdapterName: z.string(),
+  // Phase 11: only consulted when run-review.ts detects a repeated unresolved finding (a
+  // coder/reviewer disagreement) and needs to invoke ArbiterAgentAdapter. Optional because most
+  // review cycles never hit a disagreement; omitting it is only an error at the point a
+  // disagreement is actually detected (see run-review.ts's actionable-error message).
+  arbiterAdapterName: z.string().optional(),
 });
 
 export const ExportPlanPayload = BasePayload.merge(ActorPayload).extend({

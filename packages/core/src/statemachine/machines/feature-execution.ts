@@ -399,4 +399,74 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     idempotencyKeyTemplate: 'unblock-feature:{featureRunId}',
     recoveryPath: 'Idempotent: returns cached result',
   },
+  // ── Phase 11: human_required dispositions ────────────────────────────────
+  // docs/00 §3.3: "human_required ... resolve, retry, skip, block, or resume". Five distinct
+  // exit commands, one per disposition, all actor=approver (CLAUDE.md: "approver/admin required
+  // for ... disagreement resolution ... and guarded/destructive lifecycle actions"). Before this
+  // phase, human_required had no outgoing transitions at all.
+  {
+    fromState: FeatureExecutionState.HUMAN_REQUIRED,
+    toState: FeatureExecutionState.CHANGES_REQUESTED,
+    triggeringCommand: 'ResolveDisagreementCommand',
+    actor: UserRole.APPROVER,
+    guardDescription:
+      'an open disagreement_records row exists for this feature run and is dispositioned "fix required" (reviewer_correct/compromise)',
+    sideEffects: [
+      'resolve_disagreement_record',
+      'write_human_approval',
+      'write_workflow_event',
+      'write_outbox_event',
+    ],
+    emittedEvents: ['feature.disagreement_resolved'],
+    idempotencyKeyTemplate: 'resolve-disagreement:{featureRunId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per occurrence: retrying the same escalation returns cached result',
+  },
+  {
+    fromState: FeatureExecutionState.HUMAN_REQUIRED,
+    toState: FeatureExecutionState.UNDER_REVIEW,
+    triggeringCommand: 'ResumeFeatureExecutionCommand',
+    actor: UserRole.APPROVER,
+    guardDescription:
+      'human (optionally via a resolved disagreement) determines no further code change is needed; resumes the review/merge flow directly',
+    sideEffects: ['write_human_approval', 'write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.resumed_from_human_required'],
+    idempotencyKeyTemplate: 'resume-feature-execution:{featureRunId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per occurrence: retrying the same escalation returns cached result',
+  },
+  {
+    fromState: FeatureExecutionState.HUMAN_REQUIRED,
+    toState: FeatureExecutionState.SELECTED,
+    triggeringCommand: 'RetryFeatureCommand',
+    actor: UserRole.APPROVER,
+    guardDescription:
+      'human decides to retry automation from the top (e.g. a transient system_failed/failed condition); automation=running',
+    sideEffects: ['write_human_approval', 'write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.retried'],
+    idempotencyKeyTemplate: 'retry-feature:{featureRunId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per occurrence: retrying the same escalation returns cached result',
+  },
+  {
+    fromState: FeatureExecutionState.HUMAN_REQUIRED,
+    toState: FeatureExecutionState.SKIPPED,
+    triggeringCommand: 'SkipFeatureCommand',
+    actor: UserRole.APPROVER,
+    guardDescription: 'human explicitly abandons automation for this feature; terminal',
+    sideEffects: ['write_human_approval', 'write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.skipped'],
+    idempotencyKeyTemplate: 'skip-feature:{featureRunId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per occurrence: retrying the same escalation returns cached result',
+  },
+  {
+    fromState: FeatureExecutionState.HUMAN_REQUIRED,
+    toState: FeatureExecutionState.BLOCKED,
+    triggeringCommand: 'BlockFeatureCommand',
+    actor: UserRole.APPROVER,
+    guardDescription:
+      'human identifies an external precondition that must be satisfied before automation resumes',
+    sideEffects: ['write_human_approval', 'write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.blocked_by_human'],
+    idempotencyKeyTemplate: 'block-feature:{featureRunId}:{expectedVersion}',
+    recoveryPath:
+      'Human-initiated block; UnblockFeatureCommand only clears once dependencies are merged — a human-blocked feature with no unmet dependency requires RetryFeatureCommand instead (known limitation, see docs/06 Phase 11)',
+  },
 ] as const;

@@ -7,7 +7,7 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–3 and 5–9 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–3 and 5–11 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
 backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
@@ -43,7 +43,20 @@ sandbox container isolation (`CoderSandbox` via `dockerode`, `infra/docker-compo
 egress-allow-list proxy — written but not yet daemon-verified in this repository's CI), the
 `run-coder` Trigger.dev task bridging `coding` → adapter invocation → `RecordCodePushedCommand` →
 pull-request creation, and `AgentRunRecorder`'s first production writers for `agent_context_packs`,
-`agent_tool_operations`, and `cost_records` (Phase 9, migration 0010).
+`agent_tool_operations`, and `cost_records` (Phase 9, migration 0010); the Reference Reviewer
+Adapter and Review/Fix Loop implementation — `packages/adapters-reviewer`'s
+`ClaudeReviewerAdapter` (a sandbox-free, read-only `ReviewProvider` seam), the `run-review`
+Trigger.dev task driving `under_review → changes_requested → fixing` and `ci_failed →
+changes_requested → fixing`, the aggregate `feature_runs.fix_attempt_count` circuit breaker
+(migration 0011), and `reconcileGithubState()`'s new `changes_requested → fixing` reconciliation
+branch (Phase 10); and the Disagreement, Arbiter, and Human Escalation implementation —
+`packages/core/src/disagreement`'s repeated-unresolved-finding detection and
+`disagreement_records` evidence writers, `run-review.ts`'s inline `ArbiterAgentAdapter` invocation
+(no reference implementation shipped; injected only), five new `human_required` exit commands
+(`ResolveDisagreementCommand`, `ResumeFeatureExecutionCommand`, `RetryFeatureCommand`,
+`SkipFeatureCommand`, `BlockFeatureCommand`) and their `minicoder human ...` CLI surface, the new
+terminal `skipped` feature-execution state, and `human_approvals`'s first production writers
+(Phase 11, no new migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -1091,6 +1104,93 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
 - **LOW (`@minicoder/adapters-reviewer` was missing from `vitest.config.ts`'s alias map).** Added,
   matching the pattern used for every other workspace package that tests resolve directly from
   source rather than `dist/`.
+
+## Disagreement, Arbiter, and Human Escalation Operational Constraints (`packages/core/src/disagreement/`, `packages/core/src/commands/handlers/feature/{resolve-disagreement,resume-feature-execution,retry-feature,skip-feature,block-feature}.ts`)
+
+- **`human_required` had zero outgoing transitions before this phase.** Five new matrix rows give
+  it five exit commands, matching docs/00 §3.3's "resolve, retry, skip, block, or resume"
+  vocabulary exactly: `ResolveDisagreementCommand` (→ `changes_requested`, requires an open/
+  escalated `disagreement_records` row), `ResumeFeatureExecutionCommand` (→ `under_review`, no fix
+  needed), `RetryFeatureCommand` (→ `selected`), `SkipFeatureCommand` (→ `skipped`, new terminal
+  state), `BlockFeatureCommand` (→ `blocked`, human-initiated). All five are actor=`approver`.
+- **"Repeated unresolved finding" detection compares description text across review cycles,
+  because there is no other repeat signal.** `findRepeatedFinding()`
+  (`packages/core/src/disagreement/detect.ts`) matches a current `blocking`/
+  `requires_human_decision` finding's exact (trimmed) description against `review_findings` from an
+  earlier `review_cycle` for the same feature run. This is necessary, not merely convenient:
+  Phase 10's "optimistic fixed" `RecordCodePushedHandler` design resolves every currently-open
+  finding on any push, so a problem the coder didn't actually fix never shows up as the same row
+  reopened — it shows up as a brand-new row in a later cycle with the same text. There is no
+  per-finding fingerprint/hash column to match on instead.
+- **The fix-attempt-threshold circuit breaker is checked before disagreement detection, and the
+  Arbiter cannot override it.** `run-review.ts`'s `hasBlocking` branch still checks
+  `fix_attempt_count >= FIX_ATTEMPT_THRESHOLD` first and escalates unconditionally if so — matching
+  docs/01 §5.8/§5.9's framing that the review-cycle limit and the Disagreement Manager are
+  independent circuit breakers. Disagreement detection only runs in the branch below that check.
+- **No `run-arbiter` Trigger.dev task was added.** Unlike Coder (`run-coder`) and Reviewer
+  (`run-review`), which are each independently scheduled/triggered tasks per the "never inline"
+  rule elsewhere in this document, the Arbiter is invoked inline inside the same `run-review.ts`
+  task invocation that produced the reviewer output being arbitrated — arbitrating a disagreement
+  is a sub-decision within processing this one review cycle's output, not an independently
+  dispatchable unit of work the way a full Coder or Reviewer run is.
+- **`ArbiterAgentAdapter` has no reference implementation, so `run-review.ts` never constructs one
+  from env.** `RunReviewDeps.arbiterAdapterFactory` must be injected by the caller — the same
+  posture Phase 6 established for `PlannerAgentAdapter` in `planning-readiness-assessment`/
+  `generate-implementation-plan` before any reference planner adapter existed. A live deployment
+  that reaches a disagreement without one configured throws an actionable error rather than
+  silently skipping arbitration or falling through to escalation.
+- **The Arbiter's `resolution` maps to three different outcomes, not a binary
+  resolve/escalate.** `reviewer_correct`/`compromise` continue the ordinary fix loop unchanged
+  (the finding stays blocking). `coder_correct` downgrades the matching finding to `non_blocking`
+  in the in-memory findings array before insertion (not deleted — it stays in `review_findings` for
+  audit) and, if nothing else in the cycle is still blocking, the feature run returns to
+  `under_review` instead of `changes_requested`. `escalate_to_human` reuses the exact same
+  `dispatchEscalation()` helper the pre-Phase-11 threshold-exceeded path already used.
+- **`disagreement_records.state` has three values with two different "still open" meanings.**
+  `open` (never arbitrated) and `escalated` (the Arbiter pushed it to a human, who hasn't
+  dispositioned it yet) are both still-unresolved from a human-resolution caller's point of view —
+  `findOpenDisagreement()`/`resolveDisagreementByHuman()` both match `state IN ('open',
+'escalated')`, not `state = 'open'` alone. Only `resolved` (set by either
+  `recordArbiterDisposition()` or `resolveDisagreementByHuman()`) is terminal.
+- **`RetryFeatureCommand` re-checks `workflow_states.active_feature_run_id === featureRunId`
+  before allowing `human_required → selected`.** Retrying a feature run that isn't the project's
+  current active feature would leave it at `selected` with no `active_feature_run_id` pointer to
+  it — neither `SelectFeatureHandler`'s compare-and-swap nor `start-next-feature`'s
+  stranded-selected-run check would ever discover it again, silently orphaning the run. This is the
+  same class of invariant-preservation guard `start-next-feature.ts`'s several concurrency-bug
+  fixes already established for this column (Execution Orchestrator Operational Constraints
+  above) — do not remove it to "simplify" a retry.
+- **`SkipFeatureCommand`/`BlockFeatureCommand` clear `workflow_states.active_feature_run_id` when
+  the feature run being dispositioned is the active one**, mirroring `RecordMergedCommand`'s
+  `clear_active_feature_run` side effect — otherwise `start-next-feature` would never select a
+  different feature for the project again. `ResolveDisagreementCommand`/
+  `ResumeFeatureExecutionCommand` correctly do **not** clear it — the feature run stays active,
+  just at a different execution state.
+- **A human-initiated `blocked` (via `BlockFeatureCommand`) has no matching human-initiated
+  unblock — this is a known, documented limitation, not an oversight.**
+  `UnblockFeatureCommand`'s guard (Phase 8) checks `feature_dependencies`, not "a human said this
+  is unblocked now"; a feature blocked this way with no unmet dependency will never satisfy that
+  guard automatically. Recovering it currently requires `minicoder state repair`. `RetryFeatureCommand`
+  is not reachable from `blocked` either (its `fromState` is `human_required` only) — this is the
+  same "handler exists, full recovery path lands later" posture Phase 8 already left
+  `UnblockFeatureHandler` in for several phases.
+- **`SKIPPED` is a new terminal `FeatureExecutionState`, added to the glossary before use** (per
+  the glossary's own "no new state without adding it to docs/00 first" rule). A `skipped` feature
+  never reaches `merged`, so any downstream feature depending on it via `feature_dependencies` will
+  never see its dependency guard clear automatically — a documented, not solved, consequence of a
+  deliberate human decision (the same posture this document already applies elsewhere).
+- **`minicoder human ...` is the first CLI surface to dispatch a real state-machine command
+  directly**, via `TransactionalCommandExecutor`, rather than only reading state (`state inspect`)
+  or writing simulated inbox events (`github simulate-*`). A one-shot human disposition has no
+  async/durable-retry need that would justify a Trigger.dev task, so this is a synchronous CLI
+  action against the DB, using the pre-existing `humanActor()` helper
+  (`packages/triggerdev/src/tasks/actor.ts`) to build the acting human's `ActorIdentity`.
+- **`human_approvals` and `disagreement_records` get their first production writers in Phase 11.**
+  Both tables existed unwritten since the Phase 1 initial schema (43-table migration) — the same
+  "created-but-unwritten" pattern `cost_records`/`agent_context_packs` followed before Phase 8/9.
+  No migration was needed: both tables' columns (plain `TEXT`, no `CHECK` constraints) already
+  accommodated every value this phase writes, including the new `human_escalation_resolution`
+  `human_approvals.context_type` convention for dispositions unrelated to a specific disagreement.
 
 ## Cross-Dialect Testing (Mandatory)
 

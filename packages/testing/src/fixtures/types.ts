@@ -12,7 +12,8 @@ export type FixtureName =
   | 'final-design-document'
   | 'execution-orchestrator'
   | 'coder-adapter-run'
-  | 'review-fix-loop';
+  | 'review-fix-loop'
+  | 'disagreement-arbiter';
 
 export interface Fixture {
   name: FixtureName;

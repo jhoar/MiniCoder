@@ -169,6 +169,55 @@ export async function insertPolicyDecision(
   return id;
 }
 
+/**
+ * First production writer of `human_approvals` (Phase 11) — the table existed unwritten since
+ * the Phase 1 initial schema, the same "created-but-unwritten" pattern `cost_records`/
+ * `agent_context_packs` followed before Phase 8/9. `contextType` uses the ERD's documented
+ * `plan_activation / budget_override / disagreement_resolution / merge_gate / design_document`
+ * values where applicable; the human_required exit commands unrelated to a specific disagreement
+ * (retry/skip/block) use `'human_escalation_resolution'` — a new conventional value, not
+ * CHECK-constrained in the schema (plain TEXT column).
+ */
+export async function insertHumanApproval(
+  tx: TxClient,
+  opts: {
+    projectId: string;
+    featureRequestId?: string;
+    featureRunId?: string;
+    contextType: string;
+    contextId?: string;
+    decision: 'approved' | 'rejected' | 'deferred';
+    actor: string;
+    actorRole: string;
+    notes?: string;
+  },
+): Promise<string> {
+  const id = generateId();
+  const now = isoNow();
+  await tx.execute(
+    `INSERT INTO human_approvals
+       (id, project_id, feature_request_id, feature_run_id, context_type, context_id, decision,
+        actor, actor_role, notes, decided_at, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    [
+      id,
+      opts.projectId,
+      opts.featureRequestId ?? null,
+      opts.featureRunId ?? null,
+      opts.contextType,
+      opts.contextId ?? null,
+      opts.decision,
+      opts.actor,
+      opts.actorRole,
+      opts.notes ?? null,
+      now,
+      now,
+      now,
+    ],
+  );
+  return id;
+}
+
 export async function assertLockFence(
   tx: TxClient,
   lockContext: {

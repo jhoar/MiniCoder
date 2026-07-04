@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.0.0
-> Last-updated: 2026-06-12
+> Version: 1.0.1
+> Last-updated: 2026-07-04
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) and are authoritative there.
@@ -322,6 +322,32 @@ implemented — only the single aggregate per-feature counter is (docs/06 Phase 
 
 Detects unresolved or circular coder/reviewer conflicts and routes them to the Arbiter or Human
 Agent.
+
+**Delivered (Phase 11).** `packages/core/src/disagreement/` implements the detection and
+evidence-write side; `packages/triggerdev/src/tasks/run-review.ts` drives the flow end to end.
+"Repeated unresolved finding" is detected by matching a current `blocking`/
+`requires_human_decision` finding's exact description text against `review_findings` from an
+earlier `review_cycle` for the same feature run — the only available repeat signal, since a coder
+push always resolves every currently-open finding optimistically (docs/06 Phase 10's "optimistic
+fixed" design decision), so a genuinely unfixed problem reappears as a _new_ row rather than a
+reopened one. On a match: a `disagreement_records` row opens, `ArbiterAgentAdapter` is invoked
+(via `AgentRunRecorder`, the same pattern as the Reviewer/Coder adapters), and its `resolution`
+drives the outcome — `reviewer_correct`/`compromise` continues the ordinary fix loop
+(`under_review -> changes_requested -> fixing`); `coder_correct` downgrades the finding to
+`non_blocking` and, if nothing else is still blocking, returns to `under_review`;
+`escalate_to_human` transitions to `human_required` exactly like the pre-Phase-11 escalation path,
+with the disagreement marked `escalated`. There is no reference `ArbiterAgentAdapter`
+implementation yet (docs/03 §9) — a live deployment must inject one via `RunReviewDeps`, the same
+posture `planning-readiness-assessment`/`generate-implementation-plan` have for
+`PlannerAgentAdapter` (docs/06 Phase 6). The fix-attempt-threshold circuit breaker (§5.8) is
+checked _before_ disagreement detection and is unconditional — it is a distinct, independent
+circuit breaker (as this section already states) that the Arbiter cannot override. Five
+`human_required` exit commands (`ResolveDisagreementCommand`, `ResumeFeatureExecutionCommand`,
+`RetryFeatureCommand`, `SkipFeatureCommand`, `BlockFeatureCommand` — docs/00 §3.2/§3.9) let a human
+disposition an escalation that the Arbiter could not resolve, or any other `human_required`
+escalation (GitHub-reconciliation divergence, `system_failed`/`failed`, an unresolved
+`merge_failed`). `human_approvals` and `disagreement_records` — both created unwritten in the
+Phase 1 initial schema — get their first production writers here.
 
 ### 5.10 Merge Gate
 
