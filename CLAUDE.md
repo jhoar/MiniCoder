@@ -1017,6 +1017,36 @@ code_pushed`. A crash in that window left the push durably recorded but the find
   would just convert a routine, already-recoverable lock contention into a thrown task failure for
   no added safety.
 
+**Post-implementation review fixes (round 3):**
+
+- **HIGH (bare integer literals against `review_findings.resolved`, a PostgreSQL `BOOLEAN`
+  column).** `insertReviewFindings()` (`0` on insert), `run-coder.ts`'s open-findings query
+  (`resolved = 0`), and `RecordCodePushedHandler`'s resolve-on-fix-push update (`resolved = 1`) all
+  used bare integer literals. SQLite accepts this (no real boolean type — stored as `INTEGER`), but
+  real PostgreSQL rejects it outright (`column "resolved" is of type boolean but expression is of
+type integer` on insert/update; `operator does not exist: boolean = integer` on the `WHERE`
+  clause) — confirmed against a live PostgreSQL 16 instance, not just inferred from the schema.
+  Fixed by switching all three sites to the `FALSE`/`TRUE` SQL keywords, which both SQLite (3.23+)
+  and PostgreSQL accept identically. New Postgres-backed regression
+  (`packages/migrations/src/review-findings.postgres.test.ts`, gated by `MINICODER_TEST_PG_URL`
+  like the existing `runner.postgres.test.ts`/`registry.postgres.test.ts`) applies the real
+  migrations against a live PostgreSQL schema and round-trips `insertReviewFindings()` →
+  open-findings query → `RecordCodePushedHandler`'s resolve path — reverting the fix reproduces
+  the exact `42804`/`column is of type boolean` errors this regression now catches.
+- **MEDIUM (deferred, not fixed): the clean-review (no-transition) path's `insertReviewFindings()`
+  call is still a standalone write, not wrapped in a caller-level idempotency guard.** Unlike the
+  blocking/escalation paths (round 2's HIGH-1 fix), there's no state transition here to make the
+  write atomic with — a crash/retry in this window can still mint a new `reviewCycle` and duplicate
+  audit-only (non-blocking) findings. This is a real but explicitly lower-severity gap than the
+  round-2 fix (no state-machine correctness impact, only redundant audit rows and a wasted reviewer
+  invocation on retry) — a proper fix needs a deterministic review-occurrence marker independent of
+  `MAX(review_cycle) + 1`, which is more machinery than this phase's scope justifies. Tracked as
+  follow-up, not built here.
+- **MEDIUM (deferred, not fixed): `ClaudeReviewerAdapter` synthesizes a placeholder feature title
+  and empty acceptance criteria.** Already a known, documented simplification (`ReviewerInput`, the
+  shared Phase-5 adapter contract, carries no such fields) — caps review fidelity but is not a
+  correctness bug. Widening `ReviewerInput` is future work, not this phase's scope.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

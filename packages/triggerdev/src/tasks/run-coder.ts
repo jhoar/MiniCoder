@@ -259,9 +259,11 @@ export async function runImpl(
 
   // Phase 10: unresolved review_findings for this feature run, folded into CoderInput.openFindings
   // for a fix-cycle invocation only — a first-pass `coding` run has no findings yet.
+  // HIGH code-review fix (round 3): `resolved = FALSE`, not `= 0` — see write-findings.ts's
+  // comment on why a bare integer literal against a PostgreSQL BOOLEAN column fails.
   const openFindingRows = isFixCycle
     ? await db.query<{ id: string; description: string }>(
-        `SELECT id, description FROM review_findings WHERE feature_run_id = ? AND resolved = 0`,
+        `SELECT id, description FROM review_findings WHERE feature_run_id = ? AND resolved = FALSE`,
         [featureRunId],
       )
     : [];

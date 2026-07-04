@@ -128,8 +128,11 @@ export class RecordCodePushedHandler implements CommandHandler<
               now,
             ],
           );
+          // HIGH code-review fix (Phase 10, round 3): `resolved = TRUE`, not `= 1` — see
+          // write-findings.ts's comment on why a bare integer literal against a PostgreSQL
+          // BOOLEAN column fails.
           await tx.execute(
-            `UPDATE review_findings SET resolved = 1, resolved_by_run_id = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+            `UPDATE review_findings SET resolved = TRUE, resolved_by_run_id = ?, version = version + 1, updated_at = ? WHERE id = ?`,
             [coderRunId, now, findingId],
           );
         }

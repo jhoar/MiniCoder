@@ -28,11 +28,16 @@ export async function insertReviewFindings(
   const now = isoNow();
   for (const [index, finding] of opts.findings.entries()) {
     const id = `review-finding:${opts.featureRunId}:${opts.reviewCycle}:${index}`;
+    // HIGH code-review fix (Phase 10, round 3): `resolved` is BOOLEAN in PostgreSQL
+    // (migration 0001) — a bare integer literal `0` is rejected there ("column is of type
+    // boolean but expression is of type integer"), even though SQLite accepts it since it has
+    // no real boolean type. `FALSE`/`TRUE` SQL keywords are portable across both dialects
+    // (SQLite has recognized them as literal synonyms for 0/1 since 3.23).
     await db.execute(
       `INSERT INTO review_findings
          (id, feature_run_id, reviewer_run_id, review_cycle, severity, category, description,
           file_path, line_start, line_end, resolved, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, 1, ?, ?)
        ON CONFLICT (id) DO NOTHING`,
       [
         id,
