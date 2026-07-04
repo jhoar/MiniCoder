@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.23
+> Version: 1.0.24
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1237,13 +1237,132 @@ deliberately simplified to one aggregate counter — see scope decision #2 above
 Acceptance: reviewer output becomes structured findings; blocking findings trigger fixes;
 non-blocking findings do not block merge; review-loop limits are enforced.
 
-## Phase 11 — Disagreement, Arbiter, and Human Escalation
+## Phase 11 — Disagreement, Arbiter, and Human Escalation ✓
+
+> **Status: Complete** (2026-07-04)
 
 Deliver disagreement detection, disagreement records, Arbiter adapter integration, the
 human-required workflow, and escalation UI/API support.
 
 Acceptance: repeated unresolved findings create disagreement records; automation stops on
 `human_required`; a human can resolve, retry, skip, block, or resume.
+
+**Delivered modules:**
+
+- `packages/core/src/domain/states.ts` — new `FeatureExecutionState.SKIPPED` (`'skipped'`), a
+  terminal state a human reaches via `SkipFeatureCommand`. Not in the original glossary §3.2/§3.3
+  lists; added per the glossary's own editing rule (docs/00 §3.3).
+- `packages/core/src/statemachine/machines/feature-execution.ts` — five new matrix rows, all
+  `fromState: HUMAN_REQUIRED` (previously zero — `human_required` had no outgoing transitions at
+  all before this phase): `ResolveDisagreementCommand` (→ `changes_requested`),
+  `ResumeFeatureExecutionCommand` (→ `under_review`), `RetryFeatureCommand` (→ `selected`),
+  `SkipFeatureCommand` (→ `skipped`), `BlockFeatureCommand` (→ `blocked`). All five are
+  actor=`approver` (CLAUDE.md: disagreement resolution and guarded lifecycle actions require
+  approver/admin).
+- `packages/core/src/disagreement/` (new directory) — `detect.ts`'s `findRepeatedFinding()`
+  (matches a current `blocking` finding's description against `review_findings` from an earlier
+  `review_cycle` for the same feature run — the only available repeat signal, since Phase 10's
+  "optimistic fixed" coder-push design already resolves every open finding on push, so a
+  genuinely unfixed problem shows up as a _new_ row, never a reopened one — `requires_human_decision`
+  is deliberately excluded, see the post-implementation review fix below); `write.ts`'s
+  `insertDisagreementRecord()`/`recordArbiterDisposition()`/`findOpenDisagreement()`/
+  `findDisagreementForFeatureRun()`/`resolveDisagreementByHuman()` (evidence-data writers for
+  `disagreement_records`, the same non-`CommandHandler` posture `insertReviewFindings()` established
+  in Phase 10, with deterministic
+  `disagreement:{featureRunId}:{reviewCycle}` ids and `ON CONFLICT (id) DO NOTHING` for idempotent
+  retry). `findOpenDisagreement()`/`resolveDisagreementByHuman()` match `state IN ('open',
+'escalated')` — a disagreement the Arbiter already escalated still needs a human disposition, so
+  it must remain findable, not just ones the Arbiter never reached.
+- `packages/core/src/commands/handlers/feature/` — five new handlers:
+  `resolve-disagreement.ts` (requires an open/escalated `disagreement_records` row — a
+  `human_required` escalation unrelated to any disagreement has no such row and must use a
+  different disposition), `resume-feature-execution.ts` (optionally resolves a disagreement in the
+  coder's favor via an optional `disagreementId`), `retry-feature.ts` (re-checks
+  `workflow_states.active_feature_run_id === featureRunId` before allowing the transition — a real
+  finding during implementation: retrying a feature run that isn't the project's current active
+  feature would land it at `selected` with no `active_feature_run_id` pointer to it, silently
+  orphaning it, since neither `SelectFeatureHandler`'s CAS nor `start-next-feature`'s
+  stranded-selected-run check would ever pick it up), `skip-feature.ts` and `block-feature.ts`
+  (both clear `workflow_states.active_feature_run_id` when this run was the active one, mirroring
+  `RecordMergedCommand`'s `clear_active_feature_run` side effect, so `start-next-feature` can
+  select a different feature next). All five write `human_approvals` — its first production writer
+  since the Phase 1 initial schema (the same "created-but-unwritten" pattern `cost_records`/
+  `agent_context_packs` followed before Phase 8/9).
+- `packages/core/src/commands/helpers.ts` — new `insertHumanApproval()`, mirroring
+  `insertPolicyDecision()`'s shape.
+- `packages/core/src/events/schemas.ts` — five new event payload schemas
+  (`feature.disagreement_resolved`, `feature.resumed_from_human_required`, `feature.retried`,
+  `feature.skipped`, `feature.blocked_by_human`), using `.min(1)` string IDs from the start (not
+  `.uuid()` — see the Phase 9/10 review rounds that had to retrofit every other schema).
+- `packages/triggerdev/src/tasks/run-review.ts` — disagreement detection and Arbiter invocation
+  inserted into the existing `hasBlocking` branch, _after_ the unconditional fix-attempt-threshold
+  escalation check (the threshold circuit breaker is independent of the Arbiter — docs/01 §5.8/§5.9
+  — and is not something a disagreement resolution can override) and _before_ the ordinary
+  `RecordChangesRequestedCommand` dispatch. No separate `run-arbiter` Trigger.dev task was added —
+  the Arbiter call happens inline in the same task invocation as the Reviewer call, since
+  arbitrating a disagreement is a sub-decision within processing the reviewer's output for this one
+  review cycle, not an independently-schedulable unit of work the way `run-coder`/`run-review`
+  themselves are. `RunReviewPayload` gained an optional `arbiterAdapterName`; `RunReviewDeps` gained
+  an `arbiterAdapterFactory` with **no default resolver** — mirroring
+  `planning-readiness-assessment`/`generate-implementation-plan`'s treatment of
+  `PlannerAgentAdapter` (docs/06 Phase 6), since no reference `ArbiterAgentAdapter` implementation
+  has shipped (docs/03 §9 lists only `GenericLLMPlannerAdapter`/`CodexCoderAdapter`/
+  `ClaudeReviewerAdapter`/`GenericLLMDocumentationAdapter`). A live deployment that reaches a
+  disagreement without one configured fails fast with an actionable error rather than silently
+  skipping arbitration.
+- `packages/cli/src/commands/human.ts` — new `minicoder human {resolve-disagreement, resume,
+retry, skip, block}` CLI group, the first CLI surface to dispatch a real state-machine command
+  directly (via `TransactionalCommandExecutor`) rather than only reading state or writing simulated
+  inbox events — no async/durable-retry need for a one-shot human disposition justifies a
+  Trigger.dev task here. Uses the existing `humanActor()` helper (`packages/triggerdev/src/tasks/
+actor.ts`, already exported from `@minicoder/triggerdev`) to build the human `ActorIdentity`.
+- `packages/testing/src/fixtures/disagreement-arbiter.ts` /
+  `packages/testing/src/scenarios/disagreement-arbiter.ts` — new fixture/scenario pair exercising
+  all three disagreement outcomes against a single feature run across three review cycles: cycle 1
+  establishes the finding (nothing to repeat yet), cycle 2 repeats it and the Arbiter resolves in
+  the reviewer's favor (continues to `fixing`), cycle 3 repeats again and the Arbiter escalates
+  (reaches `human_required`). Uses `MockReviewerAdapter`'s pre-existing `'repeat_finding'` behavior
+  (already present in `packages/testing/src/adapters/mock-reviewer.ts` before this phase, evidently
+  anticipating exactly this scenario) and `MockArbiterAdapter`'s existing `'resolve'`/`'escalate'`
+  behaviors (also pre-existing from Phase 5).
+- **Known limitation, documented not solved (see docs/00 §3.3's `skipped` note and
+  `block-feature.ts`'s doc comment):** a `skipped` feature never reaches `merged`, so
+  `feature_dependencies`-based downstream guards never clear automatically for anything depending
+  on it; and a human-initiated `BlockFeatureCommand` has no matching human-initiated unblock —
+  `UnblockFeatureCommand`'s guard checks dependency-clearing, not human disposition, so a
+  human-blocked feature with no unmet dependency currently requires a direct `minicoder state
+repair` to recover. Both are the same "documented, not solved" posture this codebase already
+  applies elsewhere to a deliberate human decision's cross-cutting consequences.
+
+**Post-implementation review fixes (round 1):**
+
+- **HIGH (a caller-supplied `disagreementId` was trusted bare).** `ResolveDisagreementHandler`/
+  `ResumeFeatureExecutionHandler` accepted an optional `disagreementId` and passed it straight to
+  `resolveDisagreementByHuman()` with no check that it belonged to the feature run in question, was
+  still open/escalated, or existed at all — a bogus id silently updated 0 rows while the feature
+  run's `human_required -> changes_requested`/`under_review` transition proceeded anyway, and a
+  valid id from a _different_ feature run's disagreement would have mutated that other record.
+  Fixed with a new `findDisagreementForFeatureRun()` (`packages/core/src/disagreement/write.ts`),
+  which scopes the lookup to `id + feature_run_id + state IN (open, escalated)`; both handlers now
+  call it before proceeding and reject with a 409 `no-open-disagreement` `CommandError` if it
+  returns `null`. `resolveDisagreementByHuman()` itself was also changed to scope its `UPDATE` by
+  `feature_run_id` (defense-in-depth) and to return the affected-row count, so a second layer
+  catches a 0-row update (e.g. a disagreement resolved by a concurrent request within the same
+  idempotency window) instead of the caller assuming success.
+- **MEDIUM (`findRepeatedFinding()`'s doc comments and candidate filter claimed
+  `requires_human_decision` findings were included in repeat detection, but the control flow made
+  that unreachable).** `run-review.ts`'s `hasRequiresHumanDecision` branch escalates that severity
+  to `human_required` unconditionally and returns before `findRepeatedFinding()` is ever called —
+  so a repeated `requires_human_decision` finding never actually opened a `disagreement_records`
+  row or invoked the Arbiter, contradicting the shipped doc comments. Rather than restructuring
+  `run-review.ts`'s control flow to run detection before that early return (a real option, but one
+  that complicates the most-reviewed function in this codebase for a case that arguably shouldn't
+  be arbitrated anyway), this was fixed by narrowing `findRepeatedFinding()` to `blocking` severity
+  only and documenting why: `requires_human_decision` is the Reviewer's own explicit call that
+  something is beyond automation scope, and the Arbiter second-guessing that would undermine the
+  Reviewer's authority to make it — the Arbiter's actual role (docs/03 §5) is resolving a
+  coder/reviewer disagreement over a recurring `blocking` finding, not vetting a Reviewer decision
+  to punt to a human. docs/01 §5.9 and this section were updated to match.
 
 ## Phase 12 — Merge Gate and Branch Protection
 

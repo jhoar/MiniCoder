@@ -121,6 +121,26 @@ export const AutomationResumedPayloadSchema = z.object({
 });
 export type AutomationResumedPayload = z.infer<typeof AutomationResumedPayloadSchema>;
 
+// ── Phase 11: Disagreement, Arbiter, and Human Escalation events ─────────
+
+export const FeatureDisagreementResolvedPayloadSchema = z.object({
+  featureRunId: z.string().min(1),
+  projectId: z.string().min(1),
+  disagreementId: z.string().min(1),
+  resolution: z.string().min(1),
+});
+export type FeatureDisagreementResolvedPayload = z.infer<
+  typeof FeatureDisagreementResolvedPayloadSchema
+>;
+
+export const FeatureHumanEscalationDispositionPayloadSchema = z.object({
+  featureRunId: z.string().min(1),
+  projectId: z.string().min(1),
+});
+export type FeatureHumanEscalationDispositionPayload = z.infer<
+  typeof FeatureHumanEscalationDispositionPayloadSchema
+>;
+
 // ── Registry: eventType → schema ─────────────────────────────────────────
 
 export const EVENT_SCHEMAS: Record<string, z.ZodTypeAny> = {
@@ -139,6 +159,11 @@ export const EVENT_SCHEMAS: Record<string, z.ZodTypeAny> = {
   'automation.paused_by_operator': AutomationPausedPayloadSchema,
   'automation.budget_exceeded': AutomationPausedPayloadSchema,
   'automation.resumed': AutomationResumedPayloadSchema,
+  'feature.disagreement_resolved': FeatureDisagreementResolvedPayloadSchema,
+  'feature.resumed_from_human_required': FeatureHumanEscalationDispositionPayloadSchema,
+  'feature.retried': FeatureHumanEscalationDispositionPayloadSchema,
+  'feature.skipped': FeatureHumanEscalationDispositionPayloadSchema,
+  'feature.blocked_by_human': FeatureHumanEscalationDispositionPayloadSchema,
 };
 
 export function validateEventPayload(eventType: string, payload: unknown): void {

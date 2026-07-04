@@ -10,6 +10,7 @@ import { finalDesignDocumentScenario } from './final-design-document.js';
 import { executionOrchestratorScenario } from './execution-orchestrator.js';
 import { coderAdapterRunScenario } from './coder-adapter-run.js';
 import { reviewFixLoopScenario } from './review-fix-loop.js';
+import { disagreementArbiterScenario } from './disagreement-arbiter.js';
 
 export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['planning-basic', planningBasicScenario],
@@ -23,6 +24,7 @@ export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['execution-orchestrator', executionOrchestratorScenario],
   ['coder-adapter-run', coderAdapterRunScenario],
   ['review-fix-loop', reviewFixLoopScenario],
+  ['disagreement-arbiter', disagreementArbiterScenario],
 ]);
 
 export function getScenario(name: string): Scenario {

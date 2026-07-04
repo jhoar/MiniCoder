@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_agent_adapter_architecture_specification.md,
 > minicoder_agent_adapter_architecture_specification_testing_updated.md
-> Version: 1.0.2
+> Version: 1.0.3
 > Last-updated: 2026-07-04
 
 Role and adapter names are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md) §4.
@@ -131,7 +131,12 @@ detailed scope.
   (`packages/adapters-coder`), implementing `CoderAgentAdapter` against an ephemeral, sandboxed
   workspace and an injected `CodeGenerationProvider` seam (see §11 and
   [`06-implementation-plan.md`](06-implementation-plan.md) Phase 9). The other three reference
-  adapters remain future work.
+  adapters remain future work. **No reference `ArbiterAgentAdapter` implementation exists either**
+  — as of Phase 11, `run-review.ts` is the first production caller of `ArbiterAgentAdapter`, but it
+  only accepts an injected instance via `RunReviewDeps.arbiterAdapterFactory` (no default resolver
+  constructing a real implementation from env), the same posture Phase 6 established for
+  `PlannerAgentAdapter` in `planning-readiness-assessment`/`generate-implementation-plan` before any
+  reference planner adapter existed.
 
 ## 10. Acceptance
 

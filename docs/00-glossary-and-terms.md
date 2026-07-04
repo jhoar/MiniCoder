@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.7
+> Version: 1.0.8
 > Last-updated: 2026-07-04
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -148,6 +148,25 @@ diagnostics, and transitions the feature to `human_required` — so an orphaned 
 never leaves a feature branch permanently locked. Stale locks are also reclaimed by lease
 expiry/reconciliation (`state doctor`).
 
+**`human_required` exit dispositions (Phase 11).** Before Phase 11, `human_required` had no
+outgoing transitions at all. Five commands now let a human disposition an escalated feature run —
+`resolve, retry, skip, block, or resume` (§3.3):
+
+```text
+human_required → changes_requested   (ResolveDisagreementCommand — an open disagreement is
+                                       dispositioned "fix required"; requires an open
+                                       disagreement_records row)
+human_required → under_review        (ResumeFeatureExecutionCommand — the escalation is dismissed,
+                                       no fix needed)
+human_required → selected            (RetryFeatureCommand — retry automation from the top; only
+                                       valid when this run is still workflow_states.
+                                       active_feature_run_id)
+human_required → skipped             (SkipFeatureCommand — terminal; abandon automation for this
+                                       feature)
+human_required → blocked             (BlockFeatureCommand — human-initiated; distinct from the
+                                       automatic blocked → approved_pending_execution path)
+```
+
 ### 3.3 Failure / escalation states
 
 ```text
@@ -163,6 +182,10 @@ merge_failed       (a merge attempt failed after merge_ready; see §3.2 — auto
                    or escalates to human_required)
 human_required    (automation is intentionally stopped pending a human decision: resolve, retry,
                    skip, block, or resume; distinct from blocked, which needs no human)
+skipped           (terminal — Phase 11: a human explicitly abandoned automation for this feature via
+                   SkipFeatureCommand from human_required. Known limitation: any downstream feature
+                   depending on a skipped one via feature_dependencies will never see it reach
+                   merged, so its dependency guard never clears automatically.)
 ```
 
 `ci_failed` (§3.2) is a feature-execution state, not a generic failure state.
@@ -273,6 +296,11 @@ The canonical TypeScript source for all 8 machines lives in
 | `fixing`                     | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
 | `approved_by_policy`         | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
 | `merge_ready`                | `human_required`             | `EscalateToHumanCommand`           | system   | GitHub reconciliation: PR closed unmerged (docs/01 §5.7)                                                         |
+| `human_required`             | `changes_requested`          | `ResolveDisagreementCommand`       | approver | an open disagreement_records row is dispositioned "fix required" (Phase 11)                                      |
+| `human_required`             | `under_review`               | `ResumeFeatureExecutionCommand`    | approver | escalation dismissed, no fix needed (Phase 11)                                                                   |
+| `human_required`             | `selected`                   | `RetryFeatureCommand`              | approver | retry from the top; run must still be workflow_states.active_feature_run_id (Phase 11)                           |
+| `human_required`             | `skipped`                    | `SkipFeatureCommand`               | approver | human abandons automation for this feature; terminal (Phase 11)                                                  |
+| `human_required`             | `blocked`                    | `BlockFeatureCommand`              | approver | human identifies an external precondition (Phase 11)                                                             |
 
 #### Plan lifecycle matrix
 
@@ -481,6 +509,13 @@ minicoder github simulate-branch-protection-ok
 # GitHub webhook receiver (Phase 7; not env-guarded — intended for real deployments)
 minicoder github serve                                  # POST /webhooks/github; standalone Fastify app
 
+# Human escalation disposition (Phase 11; human_required exit commands)
+minicoder human resolve-disagreement --feature-run <id> --project <id> --actor <id> --resolution <text> [--disagreement <id>]
+minicoder human resume --feature-run <id> --project <id> --actor <id> --notes <text> [--disagreement <id>]
+minicoder human retry --feature-run <id> --project <id> --actor <id> --notes <text>
+minicoder human skip --feature-run <id> --project <id> --actor <id> --notes <text>
+minicoder human block --feature-run <id> --project <id> --actor <id> --notes <text>
+
 # Test scenario runner (non-zero exit on failure)
 minicoder test unit
 minicoder test integration
@@ -493,6 +528,10 @@ minicoder test scenario merge-gate
 minicoder test scenario trigger-retry
 minicoder test scenario github-race
 minicoder test scenario final-design-document
+minicoder test scenario execution-orchestrator
+minicoder test scenario coder-adapter-run
+minicoder test scenario review-fix-loop
+minicoder test scenario disagreement-arbiter
 ```
 
 Destructive commands (`db reset`, `trigger reset-dev`, `state repair --apply`) require an

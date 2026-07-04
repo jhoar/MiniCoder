@@ -44,6 +44,11 @@ export const FeatureExecutionState = {
   BLOCKED: 'blocked',
   FAILED: 'failed',
   SYSTEM_FAILED: 'system_failed',
+  // Phase 11: terminal disposition a human chooses via `SkipFeatureCommand` from
+  // `human_required` — the feature will not be automated further. Not in glossary §3.2/§3.3's
+  // original state lists; added here per glossary editing rule ("do not introduce a new state
+  // without adding it to 00-glossary-and-terms.md first" — see docs/00 §3.2 update).
+  SKIPPED: 'skipped',
 } as const;
 export type FeatureExecutionState =
   (typeof FeatureExecutionState)[keyof typeof FeatureExecutionState];
