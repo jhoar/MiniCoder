@@ -77,7 +77,7 @@ export class InMemoryAdapterDb implements DbClient {
     if (s.includes('INTO agent_runs')) {
       // Column order: id, adapter_id, project_id, feature_run_id, role, state, input_summary,
       //   adapter_name, adapter_implementation, adapter_version, capabilities_used,
-      //   version(literal 1), created_at, updated_at
+      //   prompt_template_version, version(literal 1), created_at, updated_at
       const [
         id,
         adapterId,
@@ -90,6 +90,7 @@ export class InMemoryAdapterDb implements DbClient {
         adapterImplementation,
         adapterVersion,
         capabilitiesUsed,
+        promptTemplateVersion,
         createdAt,
         updatedAt,
       ] = params;
@@ -105,6 +106,7 @@ export class InMemoryAdapterDb implements DbClient {
         adapter_implementation: adapterImplementation,
         adapter_version: adapterVersion,
         capabilities_used: capabilitiesUsed,
+        prompt_template_version: promptTemplateVersion,
         created_at: createdAt,
         updated_at: updatedAt,
       });

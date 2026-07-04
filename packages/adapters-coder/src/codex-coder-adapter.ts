@@ -3,7 +3,7 @@ import { AdapterRunError } from '@minicoder/core';
 import type { CodeGenerationProvider } from './code-generation-provider.js';
 import type { DiffGuardOptions } from './diff-guard.js';
 import { DiffGuardViolationError } from './diff-guard.js';
-import { prepareBranch, commitAndPush } from './workspace.js';
+import { prepareBranch, commitAndPush, listRepoFiles } from './workspace.js';
 import type { Sandbox } from './sandbox.js';
 
 /** One tool-operation record the caller (`run-coder.ts`) folds into `AgentRunRecorder`'s
@@ -71,7 +71,15 @@ export class CodexCoderAdapter implements CoderAgentAdapter {
         }),
       );
 
-      const repoContext = `Repository at ${this.options.repoUrl}, branch minicoder/${input.featureRunId}.`;
+      // MEDIUM-2 code-review fix: include a bounded file listing so the provider has real
+      // repository content to work from, not just the URL/branch name.
+      const files = await listRepoFiles(sandbox, repoDir);
+      const repoContext = [
+        `Repository at ${this.options.repoUrl}, branch minicoder/${input.featureRunId}.`,
+        files.length > 0
+          ? `Tracked files:\n${files.join('\n')}`
+          : 'Repository has no tracked files yet.',
+      ].join('\n\n');
       let generation;
       try {
         generation = await this.timedOp(toolOperations, 'code-generation', () =>

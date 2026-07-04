@@ -204,6 +204,32 @@ describe('AgentRunRecorder.record — context packs, cost/tool-operation provena
     expect(String(db.agentContextPacks[0]?.content)).toContain('Add widget');
   });
 
+  it('persists promptTemplateVersion on agent_runs (MEDIUM-1 code-review fix)', async () => {
+    const { agentRunId } = await recorder.record(
+      {
+        adapterId,
+        role: 'CoderAgentAdapter',
+        input: {},
+        capabilitiesUsed: [],
+        promptTemplateVersion: 'coder-v3',
+      },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    const row = db.agentRuns.find((r) => r.id === agentRunId);
+    expect(row?.prompt_template_version).toBe('coder-v3');
+  });
+
+  it('leaves promptTemplateVersion null when not supplied', async () => {
+    const { agentRunId } = await recorder.record(
+      { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: [] },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    const row = db.agentRuns.find((r) => r.id === agentRunId);
+    expect(row?.prompt_template_version ?? null).toBeNull();
+  });
+
   it('folds cost/token usage into agent_runs and writes one cost_records row on success', async () => {
     const { agentRunId } = await recorder.record(
       {

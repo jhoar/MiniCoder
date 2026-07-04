@@ -1,5 +1,11 @@
 import type { CommandRunner } from './command-runner.js';
-import { assertDiffWithinBounds, type ChangedFile, type DiffGuardOptions } from './diff-guard.js';
+import {
+  assertDiffWithinBounds,
+  validateRelativePath,
+  DiffGuardViolationError,
+  type ChangedFile,
+  type DiffGuardOptions,
+} from './diff-guard.js';
 import type { GeneratedFile } from './code-generation-provider.js';
 
 /** Trailer used to mark a commit as belonging to a specific feature run (docs/03 §11.6 —
@@ -36,6 +42,16 @@ function authenticatedRemote(repoUrl: string, githubToken: string): string {
   return url.toString();
 }
 
+/** Redacts userinfo (`user:token@`) from any URL embedded in `text` — HIGH-3 code-review fix:
+ * `authenticatedRemote()` embeds the GitHub token in the clone/push remote URL, and a failed git
+ * command previously threw an error containing the full argv (and often echoed the URL again in
+ * stderr), leaking the token into Trigger.dev logs/uncaught task errors. Applied to every error
+ * this module throws, not just the clone/push call sites, since any git subcommand can be run
+ * against a repo whose `origin` remote still carries the credential. */
+export function redactUrlCredentials(text: string): string {
+  return text.replace(/:\/\/[^/\s@]+@/g, '://***@');
+}
+
 async function run(
   runner: CommandRunner,
   cwd: string,
@@ -44,7 +60,11 @@ async function run(
 ): Promise<string> {
   const result = await runner.run(cmd, args, { cwd });
   if (result.exitCode !== 0) {
-    throw new Error(`${cmd} ${args.join(' ')} failed (exit ${result.exitCode}): ${result.stderr}`);
+    throw new Error(
+      redactUrlCredentials(
+        `${cmd} ${args.join(' ')} failed (exit ${result.exitCode}): ${result.stderr}`,
+      ),
+    );
   }
   return result.stdout.trim();
 }
@@ -90,6 +110,13 @@ export async function prepareBranch(opts: WorkspaceOptions): Promise<{ repoDir: 
   ]);
 
   const repoDirAbs = `${opts.workspaceDir}/${repoDir}`;
+
+  // HIGH-2 code-review fix: the sandbox has no global git config, so `git commit` fails with
+  // "Author identity unknown" without a repo-local identity. Set one unconditionally rather than
+  // relying on an ambient global config that may or may not exist.
+  await git(opts.runner, repoDirAbs, ['config', 'user.name', 'MiniCoder']);
+  await git(opts.runner, repoDirAbs, ['config', 'user.email', 'coder-adapter@minicoder.invalid']);
+
   const remoteBranches = await git(opts.runner, repoDirAbs, ['branch', '-r']);
   if (remoteBranches.includes(`origin/${branch}`)) {
     await git(opts.runner, repoDirAbs, ['checkout', '-B', branch, `origin/${branch}`]);
@@ -98,6 +125,22 @@ export async function prepareBranch(opts: WorkspaceOptions): Promise<{ repoDir: 
   }
 
   return { repoDir: repoDirAbs };
+}
+
+const DEFAULT_MAX_CONTEXT_FILES = 200;
+
+/** Lists tracked files in the clone (bounded), for assembling `CodeGenerationRequest.repoContext`
+ * (MEDIUM-2 code-review fix: the provider previously received only the repo URL/branch name, not
+ * any actual repository content — a bare file listing is a bounded, cheap-to-obtain improvement;
+ * richer context — file excerpts, selection heuristics — is left as future work). */
+export async function listRepoFiles(
+  runner: CommandRunner,
+  repoDir: string,
+  maxFiles: number = DEFAULT_MAX_CONTEXT_FILES,
+): Promise<readonly string[]> {
+  const output = await git(runner, repoDir, ['ls-files']);
+  if (!output) return [];
+  return output.split('\n').filter(Boolean).slice(0, maxFiles);
 }
 
 /** Returns the CoderOutput of an existing commit for this feature run at HEAD, if one exists
@@ -135,10 +178,17 @@ export async function commitAndPush(
     };
   }
 
+  // HIGH-3 code-review fix: validate every path *before* writing anything — a provider-generated
+  // path like `../outside`, `/tmp/x`, or `foo/../.git/config` must never reach disk, not just be
+  // flagged after the fact by assertDiffWithinBounds (which only runs once all writes are done).
   const changedFiles: ChangedFile[] = [];
   for (const file of files) {
-    await writeFile(opts.runner, repoDir, file.path, file.content);
-    changedFiles.push({ path: file.path, bytesChanged: Buffer.byteLength(file.content, 'utf8') });
+    const safePath = validateRelativePath(file.path, opts.diffGuard?.disallowedPathPatterns);
+    if (safePath === null) {
+      throw new DiffGuardViolationError(`diff touches a disallowed or unsafe path: ${file.path}`);
+    }
+    await writeFile(opts.runner, repoDir, safePath, file.content);
+    changedFiles.push({ path: safePath, bytesChanged: Buffer.byteLength(file.content, 'utf8') });
   }
   assertDiffWithinBounds(changedFiles, opts.diffGuard);
 

@@ -567,7 +567,7 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   a test suite before committing. The only new production behavior on `GitHubClient` is a new
   caller of the already-existing (previously uncalled) `createPullRequest`, from
   `packages/triggerdev/src/tasks/run-coder.ts`.
-- **`workspace.ts` is runner-agnostic — never touches host `fs` directly.** Git commands *and* file
+- **`workspace.ts` is runner-agnostic — never touches host `fs` directly.** Git commands _and_ file
   writes both go through an injected `CommandRunner` (`run(cmd, args, opts)`), so the identical
   orchestration code runs against `ChildProcessCommandRunner` (local, used by tests against a real
   throwaway git repo) or `CoderSandbox` (`docker exec` inside the ephemeral container) with zero
@@ -611,8 +611,8 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   and, just as importantly, avoids touching `start-next-feature.ts`'s logic, which has already
   been through six rounds of concurrency-bug code review (see the Execution Orchestrator section
   above) — every additional responsibility added to that file is another surface for a new race.
-- **`run-coder.ts` resolves the `CoderAgentAdapter` *DB record* via `AdapterRegistry` but takes the
-  actual runtime *instance* via a separate, caller-injected `CoderAdapterFactory`
+- **`run-coder.ts` resolves the `CoderAgentAdapter` _DB record_ via `AdapterRegistry` but takes the
+  actual runtime _instance_ via a separate, caller-injected `CoderAdapterFactory`
   (`(repoUrl) => Promise<CoderAgentAdapter>`) — these are not the same lookup.** The registry only
   ever stores metadata (name/role/capabilities/version); there is no live-object registry the way
   there is for, say, Express middleware. A factory (not a constructed singleton, and not a
@@ -663,7 +663,7 @@ failed`/`coding → blocked` matrix edge was added.** `RecordCodePushedCommand` 
   syntax-validated (`docker compose config`) but never run end-to-end, and no Docker-daemon-gated
   integration test exists yet proving egress denial actually blocks a disallowed host. Treat this
   as real, reviewed infrastructure that needs a live-daemon verification pass, not as
-  aspirational/未-built — see docs/07 §6's "Phase 9 implementation status" for the exact real-vs-
+  aspirational/un-built — see docs/07 §6's "Phase 9 implementation status" for the exact real-vs-
   aspirational split.
 - **`agent_context_packs`, `agent_tool_operations`, and `cost_records` get their first production
   writers in Phase 9.** All three tables (plus `agent_runs.provider`/`.model`/
@@ -671,6 +671,72 @@ failed`/`coding → blocked` matrix edge was added.** `RecordCodePushedCommand` 
   migration `0001` / Phase 5 with zero production INSERTs before this phase — only test-scenario
   fixtures wrote directly to `cost_records`. `agent_runs.triggerdev_run_id` was considered and
   rejected as a new column; `triggerdev_runs.linked_agent_run_id` already provides that join.
+
+**Post-implementation review fixes (round 1):**
+
+- **CRITICAL-1 (`feature.code_pushed` schema rejected real payloads).**
+  `FeatureCodePushedPayloadSchema` required `.uuid()` for `featureRunId`/`projectId`, but
+  `generateId()` (`packages/core/src/commands/helpers.ts`) returns `${Date.now()}-${random}`
+  strings, never UUIDs — every real payload `RecordCodePushedHandler` emits would fail
+  `InboxProcessor`'s `validateEventPayload()` check. This was a pre-existing, pre-Phase-7 latent
+  bug (a prior Phase 7 review round found and fixed the identical class of bug on sibling schemas
+  but explicitly left this one out of scope) — fixed here since Phase 9 directly extended this
+  schema. Changed to `.min(1)`, matching the sibling schemas already using that pattern. Regression
+  test in `packages/triggerdev/src/tasks/run-coder.test.ts` reads the actual emitted
+  `outbox_events` row and validates it against `EVENT_SCHEMAS['feature.code_pushed']`.
+- **HIGH-1 (`/workspace` was not writable in the sandbox).** `CoderSandbox` set
+  `ReadonlyRootfs: true` with only `/tmp` mounted as a writable tmpfs, but `workspace.ts` clones
+  into `/workspace` by default — every real sandbox run would fail at clone/write time despite
+  passing against the fake-`dockerode` unit tests. Fixed by adding a writable tmpfs mount at
+  `/workspace` (owned by the sandbox image's non-root uid/gid), matching the "nothing needs to
+  persist past container removal" rationale already documented for `/tmp`.
+- **HIGH-2 (git commits failed with no author identity).** The sandbox has no global git config,
+  so `git commit` fails with "Author identity unknown." Fixed by setting a repo-local
+  `user.name`/`user.email` in `prepareBranch()` unconditionally, rather than relying on an ambient
+  global config that may not exist. Caught by running `workspace.test.ts` with an isolated `HOME`.
+- **HIGH-3 (provider-controlled paths could escape the intended tree before the diff guard ever
+  ran).** `commitAndPush()` wrote every generated file _before_ calling `assertDiffWithinBounds()`,
+  and that function only checked raw path strings — `../outside`, `/tmp/x`, or
+  `foo/../.git/config` would already be written to disk by the time (or even before) any check
+  ran. Fixed with `diff-guard.ts`'s new `validateRelativePath()` — normalizes `.`/`..` segments,
+  rejects absolute paths (POSIX and Windows-drive) and paths escaping the repo root, and re-checks
+  the _normalized_ path against the disallowed-path patterns — called in `workspace.ts` before
+  each `writeFile()`, not after.
+- **HIGH-4 (the GitHub token could leak through command error messages).**
+  `authenticatedRemote()` embeds the token in the clone/push remote URL's userinfo, and a failed
+  git command's thrown error included the full `args.join(' ')` (and often stderr echoing the same
+  URL) — a failed clone/push could leak the token into Trigger.dev logs. Fixed with
+  `workspace.ts`'s new `redactUrlCredentials()`, applied to every error this module throws, not
+  just the clone/push call sites (any git subcommand can run against a repo whose `origin` still
+  carries the credential).
+- **HIGH-5 (coder runs never wrote `cost_records`, so budget gates saw zero coder spend).**
+  `run-coder.ts`'s `costExtractor` returned token counts but no `costUsd`, and
+  `AgentRunRecorder.insertCostRecord()` only writes a row when `costUsd` is present. Fixed by
+  adding `computeCostUsd()` — a configurable per-1K-token price (env-overridable,
+  `CODE_GEN_PRICE_PER_1K_INPUT_TOKENS`/`CODE_GEN_PRICE_PER_1K_OUTPUT_TOKENS`, defaulting to
+  gpt-4o-mini-class pricing) applied to the reported token counts. This is a deliberate
+  simplification, not real per-model pricing (that's Phase 16 observability scope) — but it makes
+  `cost_records`/budget-gate integration actually non-zero instead of silently absent.
+- **HIGH-6 (PRs were always opened against a hardcoded `main`).** `run-coder.ts` queried only
+  `owner`/`name` from `repositories` and passed a literal `'main'` as `baseBranch`, ignoring the
+  already-existing `repositories.default_branch` column — repos using `master`/`develop`/etc.
+  would get PRs opened against the wrong base. Fixed by selecting and using `default_branch`.
+- **MEDIUM-1 (`prompt_template_version` was declared but never persisted).** Migration 0010 added
+  the column and `RecordRunOptions` exposed `promptTemplateVersion`, but the `AgentRunRecorder`
+  INSERT never included it, so the column stayed `NULL` for every run regardless of what callers
+  passed. Fixed by adding it to the initial `agent_runs` INSERT.
+- **MEDIUM-2 (the code-generation provider received almost no repository context).**
+  `CodexCoderAdapter` passed only the repo URL and branch name as `repoContext`, despite
+  `CodeGenerationRequest`'s own doc comment describing it as "a file tree / relevant excerpts."
+  Fixed with `workspace.ts`'s new `listRepoFiles()` (a bounded `git ls-files`, capped at 200
+  entries) folded into `repoContext` — a deliberately modest improvement (a file listing, not file
+  content excerpts); richer context assembly remains future work.
+- **MEDIUM-3 (the production task payload defaulted to a test adapter name).**
+  `RunCoderPayload.coderAdapterName` defaulted to `'MockCoderAdapter'`, while the default runtime
+  resolver constructs a real `CodexCoderAdapter` — a production trigger omitting this field would
+  silently resolve the wrong `AdapterRegistry` entry. Fixed by removing the default, making the
+  field required; every production/test call site already passed it explicitly.
+- **LOW-1 (tracked files failed `format:check`).** Ran Prettier on the phase's touched files.
 
 ## Cross-Dialect Testing (Mandatory)
 

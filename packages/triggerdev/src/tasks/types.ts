@@ -103,7 +103,10 @@ export const GithubReconciliationPayload = BasePayload.extend({
 
 export const RunCoderPayload = BasePayload.extend({
   featureRunId: z.string(),
-  coderAdapterName: z.string().default('MockCoderAdapter'),
+  // MEDIUM-3 code-review fix: no default. A default of 'MockCoderAdapter' let a production
+  // trigger that omitted this field silently resolve a test adapter instead of the real
+  // CodexCoderAdapter the default resolver constructs — callers must name the adapter explicitly.
+  coderAdapterName: z.string(),
 });
 
 export const ExportPlanPayload = BasePayload.merge(ActorPayload).extend({

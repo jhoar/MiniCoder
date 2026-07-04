@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import type { CoderAgentAdapter, CoderInput, CoderOutput, DbClient, GitHubClient } from '@minicoder/core';
-import { FeatureExecutionState } from '@minicoder/core';
+import type {
+  CoderAgentAdapter,
+  CoderInput,
+  CoderOutput,
+  DbClient,
+  GitHubClient,
+} from '@minicoder/core';
+import { EVENT_SCHEMAS, FeatureExecutionState } from '@minicoder/core';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
 import { runImpl, type RunCoderDeps } from './run-coder.js';
 
@@ -12,7 +18,7 @@ interface FixtureIds {
 
 async function seedCodingFeatureRun(
   db: DbClient,
-  opts: { state?: string } = {},
+  opts: { state?: string; defaultBranch?: string } = {},
 ): Promise<FixtureIds> {
   const planId = `plan-${PROJECT_ID}`;
   const frId = `fr-${PROJECT_ID}-1`;
@@ -20,8 +26,8 @@ async function seedCodingFeatureRun(
 
   await db.execute(
     `INSERT OR IGNORE INTO repositories (id, project_id, owner, name, full_name, default_branch, version, created_at, updated_at)
-     VALUES (?, ?, 'minicoder-test', 'run-coder-repo', 'minicoder-test/run-coder-repo', 'main', 1, datetime('now'), datetime('now'))`,
-    [`repo-${PROJECT_ID}`, PROJECT_ID],
+     VALUES (?, ?, 'minicoder-test', 'run-coder-repo', 'minicoder-test/run-coder-repo', ?, 1, datetime('now'), datetime('now'))`,
+    [`repo-${PROJECT_ID}`, PROJECT_ID, opts.defaultBranch ?? 'main'],
   );
   await db.execute(
     `INSERT OR IGNORE INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
@@ -71,7 +77,9 @@ async function registerCoderAdapter(db: DbClient, name = 'FakeCoderAdapter'): Pr
 function fakeCoderAdapter(behavior: 'success' | 'fail' = 'success'): CoderAgentAdapter {
   return {
     role: 'CoderAgentAdapter',
-    async run(input: CoderInput): Promise<CoderOutput & { tokensUsed?: unknown; toolOperations?: unknown }> {
+    async run(
+      input: CoderInput,
+    ): Promise<CoderOutput & { tokensUsed?: unknown; toolOperations?: unknown }> {
       if (behavior === 'fail') {
         throw new Error('generation failed');
       }
@@ -87,9 +95,19 @@ function fakeCoderAdapter(behavior: 'success' | 'fail' = 'success'): CoderAgentA
 }
 
 function fakeGithubClient(opts: { fail?: boolean } = {}): GitHubClient & {
-  createdPullRequests: Array<{ owner: string; repo: string; branchName: string }>;
+  createdPullRequests: Array<{
+    owner: string;
+    repo: string;
+    branchName: string;
+    baseBranch: string;
+  }>;
 } {
-  const createdPullRequests: Array<{ owner: string; repo: string; branchName: string }> = [];
+  const createdPullRequests: Array<{
+    owner: string;
+    repo: string;
+    branchName: string;
+    baseBranch: string;
+  }> = [];
   return {
     createdPullRequests,
     async createBranch() {
@@ -97,7 +115,12 @@ function fakeGithubClient(opts: { fail?: boolean } = {}): GitHubClient & {
     },
     async createPullRequest(options) {
       if (opts.fail) throw new Error('github API unavailable');
-      createdPullRequests.push({ owner: options.owner, repo: options.repo, branchName: options.branchName });
+      createdPullRequests.push({
+        owner: options.owner,
+        repo: options.repo,
+        branchName: options.branchName,
+        baseBranch: options.baseBranch,
+      });
       return { prNumber: 42, branchName: options.branchName };
     },
     async getPullRequest() {
@@ -120,7 +143,13 @@ describe('run-coder', () => {
     await registerCoderAdapter(db);
 
     const result = await runImpl(
-      { projectId: PROJECT_ID, featureRunId, correlationId: 'corr-1', idempotencyKey: 'idem-1', coderAdapterName: 'FakeCoderAdapter' },
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-1',
+        idempotencyKey: 'idem-1',
+        coderAdapterName: 'FakeCoderAdapter',
+      },
       db,
     );
 
@@ -142,7 +171,13 @@ describe('run-coder', () => {
     };
 
     const result = await runImpl(
-      { projectId: PROJECT_ID, featureRunId, correlationId: 'corr-2', idempotencyKey: 'idem-2', coderAdapterName: 'FakeCoderAdapter' },
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-2',
+        idempotencyKey: 'idem-2',
+        coderAdapterName: 'FakeCoderAdapter',
+      },
       db,
       deps,
     );
@@ -167,6 +202,19 @@ describe('run-coder', () => {
     expect(agentRuns).toHaveLength(1);
     expect(agentRuns[0]?.state).toBe('succeeded');
     expect(agentRuns[0]?.tokens_used).toBe(140);
+    expect(agentRuns[0]?.cost_usd).toBeGreaterThan(0);
+
+    // HIGH-5 code-review fix regression: a coder run must write a cost_records row so budget
+    // gates summing cost_records actually see coder spend.
+    const costRecords = await db.query<{ amount: number; scope: string }>(
+      `SELECT cr.amount, cr.scope FROM cost_records cr
+       JOIN agent_runs ar ON ar.id = cr.agent_run_id
+       WHERE ar.feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(costRecords).toHaveLength(1);
+    expect(costRecords[0]?.amount).toBeGreaterThan(0);
+    expect(costRecords[0]?.scope).toBe('feature');
 
     const contextPacks = await db.query<{ id: string }>(
       `SELECT acp.id FROM agent_context_packs acp
@@ -183,6 +231,17 @@ describe('run-coder', () => {
       [featureRunId],
     );
     expect(toolOps.map((r) => r.tool_name)).toEqual(['git-clone']);
+
+    // CRITICAL-1 code-review fix regression: the emitted feature.code_pushed outbox payload must
+    // actually validate against its registered EVENT_SCHEMAS entry — featureRunId/projectId here
+    // are generateId() strings (`${Date.now()}-${random}`), never UUIDs, so a `.uuid()` schema
+    // would reject every real payload this handler emits.
+    const outboxRows = await db.query<{ payload: string }>(
+      `SELECT payload FROM outbox_events WHERE event_type = 'feature.code_pushed' ORDER BY created_at DESC LIMIT 1`,
+    );
+    expect(outboxRows).toHaveLength(1);
+    const payload: unknown = JSON.parse(outboxRows[0]?.payload ?? '{}');
+    expect(() => EVENT_SCHEMAS['feature.code_pushed']?.parse(payload)).not.toThrow();
   });
 
   it('does not roll back the code_pushed transition when PR creation fails', async () => {
@@ -195,7 +254,13 @@ describe('run-coder', () => {
     const client = fakeGithubClient({ fail: true });
 
     const result = await runImpl(
-      { projectId: PROJECT_ID, featureRunId, correlationId: 'corr-3', idempotencyKey: 'idem-3', coderAdapterName: 'FakeCoderAdapter' },
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-3',
+        idempotencyKey: 'idem-3',
+        coderAdapterName: 'FakeCoderAdapter',
+      },
       db,
       { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
     );
@@ -221,7 +286,13 @@ describe('run-coder', () => {
 
     await expect(
       runImpl(
-        { projectId: PROJECT_ID, featureRunId, correlationId: 'corr-4', idempotencyKey: 'idem-4', coderAdapterName: 'FakeCoderAdapter' },
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-4',
+          idempotencyKey: 'idem-4',
+          coderAdapterName: 'FakeCoderAdapter',
+        },
         db,
         { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
       ),
@@ -238,5 +309,30 @@ describe('run-coder', () => {
       [featureRunId],
     );
     expect(agentRuns[0]?.state).toBe('failed');
+  });
+
+  it('opens the PR against the repository default_branch, not a hardcoded main (HIGH-6 regression)', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedCodingFeatureRun(db, { defaultBranch: 'develop' });
+    await registerCoderAdapter(db);
+
+    const adapter = fakeCoderAdapter('success');
+    const client = fakeGithubClient();
+
+    await runImpl(
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-5',
+        idempotencyKey: 'idem-5',
+        coderAdapterName: 'FakeCoderAdapter',
+      },
+      db,
+      { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
+    );
+
+    expect(client.createdPullRequests).toHaveLength(1);
+    expect(client.createdPullRequests[0]?.baseBranch).toBe('develop');
   });
 });

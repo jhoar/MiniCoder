@@ -5,7 +5,13 @@ import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ChildProcessCommandRunner } from './command-runner.js';
-import { prepareBranch, commitAndPush, branchNameFor, FEATURE_RUN_TRAILER } from './workspace.js';
+import {
+  prepareBranch,
+  commitAndPush,
+  branchNameFor,
+  redactUrlCredentials,
+  FEATURE_RUN_TRAILER,
+} from './workspace.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -167,6 +173,39 @@ describe('workspace git orchestration (local, Docker-free)', () => {
         [{ path: '.github/workflows/evil.yml', content: 'oops' }],
         'Sneak in a workflow change',
       ),
-    ).rejects.toThrow(/disallowed path/);
+    ).rejects.toThrow(/disallowed or unsafe path/);
+  });
+
+  it('never leaks the GitHub token in a failed-clone error message (HIGH-4 regression)', async () => {
+    const secretToken = 'ghp_ThisTokenMustNeverAppearInAnErrorMessage123456';
+    let thrown: unknown;
+    try {
+      await prepareBranch({
+        workspaceDir,
+        repoUrl: 'https://github-host-that-does-not-exist.invalid/acme/widgets.git',
+        githubToken: secretToken,
+        featureRunId: 'fr-leak-check',
+        runner,
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeDefined();
+    expect(String(thrown)).not.toContain(secretToken);
+  }, 20_000);
+});
+
+describe('redactUrlCredentials', () => {
+  it('redacts userinfo from a URL embedded in arbitrary text', () => {
+    const message =
+      'git clone --depth 1 https://x-access-token:ghp_secret123@github.com/acme/widgets.git repo failed';
+    expect(redactUrlCredentials(message)).toBe(
+      'git clone --depth 1 https://***@github.com/acme/widgets.git repo failed',
+    );
+    expect(redactUrlCredentials(message)).not.toContain('ghp_secret123');
+  });
+
+  it('leaves text with no embedded credentials unchanged', () => {
+    expect(redactUrlCredentials('plain error, no url here')).toBe('plain error, no url here');
   });
 });

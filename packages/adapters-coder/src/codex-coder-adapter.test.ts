@@ -36,6 +36,7 @@ function fakeSandbox(opts: { existingCommitTrailer?: string } = {}): {
       if (cmd === 'git' && (joined.startsWith('checkout -b') || joined.startsWith('checkout -B')))
         return ok('');
       if (cmd === 'git' && joined.startsWith('log -1')) return ok(commitLog);
+      if (cmd === 'git' && joined.startsWith('ls-files')) return ok('README.md\nsrc/index.ts\n');
       if (cmd === 'sh') return ok(''); // writeFile
       if (cmd === 'git' && joined.startsWith('add')) return ok('');
       if (cmd === 'git' && joined.startsWith('commit')) return ok('');
@@ -47,9 +48,14 @@ function fakeSandbox(opts: { existingCommitTrailer?: string } = {}): {
       return ok('');
     },
   };
-  return { sandbox, started, removed, get pushed() {
-    return pushed;
-  } };
+  return {
+    sandbox,
+    started,
+    removed,
+    get pushed() {
+      return pushed;
+    },
+  };
 
   function ok(stdout: string): CommandResult {
     return { stdout, stderr: '', exitCode: 0 };
@@ -62,6 +68,22 @@ const workingProvider: CodeGenerationProvider = {
     tokensUsed: { input: 10, output: 5 },
   }),
 };
+
+function recordingProvider(): CodeGenerationProvider & {
+  requests: Array<{ repoContext: string }>;
+} {
+  const requests: Array<{ repoContext: string }> = [];
+  return {
+    requests,
+    generate: async (request) => {
+      requests.push({ repoContext: request.repoContext });
+      return {
+        files: [{ path: 'src/widget.ts', content: 'export const widget = 1;\n' }],
+        tokensUsed: { input: 10, output: 5 },
+      };
+    },
+  };
+}
 
 describe('CodexCoderAdapter', () => {
   it('produces a CoderOutput and always starts/removes the sandbox', async () => {
@@ -95,6 +117,29 @@ describe('CodexCoderAdapter', () => {
     expect(removed).toEqual([true]);
   });
 
+  it('passes a bounded repo file listing to the code-generation provider (MEDIUM-2 regression)', async () => {
+    const { sandbox } = fakeSandbox();
+    const provider = recordingProvider();
+    const adapter = new CodexCoderAdapter({
+      repoUrl: 'https://github.com/acme/repo.git',
+      githubToken: 'tok',
+      codeGenerationProvider: provider,
+      createSandbox: () => sandbox,
+    });
+
+    await adapter.run({
+      projectId: 'proj-1',
+      featureRunId: 'fr-context',
+      featureTitle: 'Add widget',
+      acceptanceCriteria: [],
+      correlationId: 'corr-context',
+    });
+
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0]?.repoContext).toContain('README.md');
+    expect(provider.requests[0]?.repoContext).toContain('src/index.ts');
+  });
+
   it('removes the sandbox even when code generation fails, and maps the error to provider_unavailable', async () => {
     const { sandbox, removed } = fakeSandbox();
     const failingProvider: CodeGenerationProvider = {
@@ -117,7 +162,9 @@ describe('CodexCoderAdapter', () => {
         acceptanceCriteria: [],
         correlationId: 'corr-2',
       }),
-    ).rejects.toMatchObject({ errorType: 'provider_unavailable' } satisfies Partial<AdapterRunError>);
+    ).rejects.toMatchObject({
+      errorType: 'provider_unavailable',
+    } satisfies Partial<AdapterRunError>);
 
     expect(removed).toEqual([true]);
   });

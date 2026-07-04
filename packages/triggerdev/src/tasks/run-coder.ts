@@ -7,7 +7,13 @@ import {
   TransactionalCommandExecutor,
   generateId,
 } from '@minicoder/core';
-import type { CommandEnvelope, CoderAgentAdapter, CoderInput, DbClient, GitHubClient } from '@minicoder/core';
+import type {
+  CommandEnvelope,
+  CoderAgentAdapter,
+  CoderInput,
+  DbClient,
+  GitHubClient,
+} from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import type { AcquiredLock } from '@minicoder/workflow';
 import type { RunCoderPayload } from './types.js';
@@ -90,9 +96,8 @@ function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
           'an OpenAI-compatible code-generation endpoint — see docs/07-security-and-secrets.md §3.',
       );
     }
-    const { CodexCoderAdapter, HttpCodeGenerationProvider, CoderSandbox } = await import(
-      '@minicoder/adapters-coder'
-    );
+    const { CodexCoderAdapter, HttpCodeGenerationProvider, CoderSandbox } =
+      await import('@minicoder/adapters-coder');
     return new CodexCoderAdapter({
       repoUrl,
       githubToken,
@@ -112,9 +117,26 @@ function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
   };
 }
 
+// Defaults approximate gpt-4o-mini-class pricing; override via env for the configured provider/model.
+// This is a simplification (per-model pricing tables are Phase 16 observability scope) — see the
+// costExtractor call site above.
+const DEFAULT_PRICE_PER_1K_INPUT_TOKENS = 0.00015;
+const DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS = 0.0006;
+
+function computeCostUsd(inputTokens: number, outputTokens: number): number {
+  const pricePerKInput = Number(
+    process.env['CODE_GEN_PRICE_PER_1K_INPUT_TOKENS'] ?? DEFAULT_PRICE_PER_1K_INPUT_TOKENS,
+  );
+  const pricePerKOutput = Number(
+    process.env['CODE_GEN_PRICE_PER_1K_OUTPUT_TOKENS'] ?? DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS,
+  );
+  return (inputTokens / 1000) * pricePerKInput + (outputTokens / 1000) * pricePerKOutput;
+}
+
 interface RepositoryRow {
   owner: string;
   name: string;
+  default_branch: string;
 }
 
 interface FeatureRunRow {
@@ -175,7 +197,7 @@ export async function runImpl(
     [run.feature_request_id],
   );
   const repoRows = await db.query<RepositoryRow>(
-    `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+    `SELECT owner, name, default_branch FROM repositories WHERE project_id = ? LIMIT 1`,
     [projectId],
   );
   const repo = repoRows[0];
@@ -215,6 +237,13 @@ export async function runImpl(
         return {
           inputTokens: out.tokensUsed.input,
           outputTokens: out.tokensUsed.output,
+          // HIGH-5 code-review fix: without a costUsd, AgentRunRecorder.insertCostRecord() never
+          // writes a cost_records row, so budget gates summing cost_records would see zero spend
+          // for every coder run. computeCostUsd() derives a dollar figure from token counts using
+          // a configurable per-1K-token price (env-configured, defaulting to gpt-4o-mini-class
+          // pricing) — a simplification (real per-model pricing tables are Phase 16 observability
+          // scope), but non-zero and budget-gate-visible rather than silently absent.
+          costUsd: computeCostUsd(out.tokensUsed.input, out.tokensUsed.output),
           provider: process.env['CODE_GEN_PROVIDER_NAME'] ?? 'openai-compatible',
           model: process.env['CODE_GEN_MODEL'],
         };
@@ -295,7 +324,10 @@ export async function runImpl(
       owner: repo.owner,
       repo: repo.name,
       branchName: output.branchName,
-      baseBranch: 'main',
+      // HIGH-6 code-review fix: use the repository's actual default branch (repositories.
+      // default_branch) rather than a hardcoded 'main' — repos using master/develop/etc. would
+      // otherwise get PRs opened against the wrong base.
+      baseBranch: repo.default_branch,
       title: `${feature.fr_id}: ${feature.title}`,
     });
     prNumber = created.prNumber;

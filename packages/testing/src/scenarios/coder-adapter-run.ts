@@ -160,7 +160,11 @@ export const coderAdapterRunScenario: Scenario = {
       `SELECT id, current_execution_state FROM feature_runs WHERE id = ?`,
       [fr2.id],
     );
-    assertEqual('FR-002 stays at coding after adapter failure', fr2After[0]?.current_execution_state, 'coding');
+    assertEqual(
+      'FR-002 stays at coding after adapter failure',
+      fr2After[0]?.current_execution_state,
+      'coding',
+    );
 
     const fr2AgentErrors = await db.query<{ error_type: string }>(
       `SELECT ae.error_type FROM agent_errors ae

@@ -66,7 +66,9 @@ export interface AdapterRunSnapshot {
 /** Either branch of a completed run, passed to cost/tool-operation extractors (docs/01 §5.11 —
  * a failed provider call can still carry partial token/cost usage, so extractors see both
  * branches rather than only the success path). */
-export type RunOutcome<O> = { readonly ok: true; readonly output: O } | { readonly ok: false; readonly error: unknown };
+export type RunOutcome<O> =
+  | { readonly ok: true; readonly output: O }
+  | { readonly ok: false; readonly error: unknown };
 
 /** Cost/token usage extracted from a run's outcome, folded into `agent_runs` and (when `costUsd`
  * is present) written as one `cost_records` row — Phase 9's first production writer of that
@@ -189,8 +191,8 @@ export class AgentRunRecorder {
       `INSERT INTO agent_runs
          (id, adapter_id, project_id, feature_run_id, role, state, input_summary,
           adapter_name, adapter_implementation, adapter_version, capabilities_used,
-          version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          prompt_template_version, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       [
         agentRunId,
         opts.adapterId,
@@ -203,6 +205,7 @@ export class AgentRunRecorder {
         snap.implementation,
         snap.version,
         JSON.stringify(snap.capabilitiesUsed),
+        opts.promptTemplateVersion ?? null,
         queuedAt,
         queuedAt,
       ],

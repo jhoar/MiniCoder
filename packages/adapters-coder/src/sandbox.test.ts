@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'node:stream';
-import { CoderSandbox, type DockerLike, type DockerContainerLike, type DockerExecLike } from './sandbox.js';
+import {
+  CoderSandbox,
+  type DockerLike,
+  type DockerContainerLike,
+  type DockerExecLike,
+} from './sandbox.js';
 
 /** Builds a Docker exec-stream frame: 8-byte header (stream type + big-endian length) + payload. */
 function frame(streamType: 1 | 2, payload: string): Buffer {
@@ -40,17 +45,35 @@ function fakeDocker(execFactory: () => DockerExecLike): {
 describe('CoderSandbox', () => {
   it('creates and starts a container attached only to the isolated network', async () => {
     const { docker, container } = fakeDocker(() => fakeExec('', '', 0));
-    const sandbox = new CoderSandbox({ image: 'coder-sandbox:latest', network: 'minicoder-coder-sandbox', docker });
+    const sandbox = new CoderSandbox({
+      image: 'coder-sandbox:latest',
+      network: 'minicoder-coder-sandbox',
+      docker,
+    });
 
     await sandbox.start();
 
     expect(docker.createContainer).toHaveBeenCalledWith(
       expect.objectContaining({
         Image: 'coder-sandbox:latest',
-        HostConfig: expect.objectContaining({ NetworkMode: 'minicoder-coder-sandbox', Privileged: false }),
+        HostConfig: expect.objectContaining({
+          NetworkMode: 'minicoder-coder-sandbox',
+          Privileged: false,
+        }),
       }),
     );
     expect(container.start).toHaveBeenCalledOnce();
+  });
+
+  it('mounts /workspace as writable despite the read-only root filesystem (HIGH-1 regression)', async () => {
+    const { docker } = fakeDocker(() => fakeExec('', '', 0));
+    const sandbox = new CoderSandbox({ image: 'coder-sandbox:latest', network: 'net', docker });
+
+    await sandbox.start();
+
+    const call = (docker.createContainer as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(call.HostConfig.ReadonlyRootfs).toBe(true);
+    expect(call.HostConfig.Tmpfs['/workspace']).toMatch(/rw/);
   });
 
   it('runs a command via docker exec and demultiplexes stdout/stderr', async () => {

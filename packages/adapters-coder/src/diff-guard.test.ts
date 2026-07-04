@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { assertDiffWithinBounds, DiffGuardViolationError } from './diff-guard.js';
+import {
+  assertDiffWithinBounds,
+  validateRelativePath,
+  DiffGuardViolationError,
+} from './diff-guard.js';
 
 describe('assertDiffWithinBounds', () => {
   it('passes for a small, allowed diff', () => {
@@ -30,9 +34,9 @@ describe('assertDiffWithinBounds', () => {
     expect(() =>
       assertDiffWithinBounds([{ path: '.github/workflows/ci.yml', bytesChanged: 10 }]),
     ).toThrow(/disallowed path/);
-    expect(() =>
-      assertDiffWithinBounds([{ path: 'packages/x/.env', bytesChanged: 10 }]),
-    ).toThrow(/disallowed path/);
+    expect(() => assertDiffWithinBounds([{ path: 'packages/x/.env', bytesChanged: 10 }])).toThrow(
+      /disallowed path/,
+    );
     expect(() =>
       assertDiffWithinBounds([{ path: 'config/secrets/keys.json', bytesChanged: 10 }]),
     ).toThrow(/disallowed path/);
@@ -44,5 +48,40 @@ describe('assertDiffWithinBounds', () => {
         disallowedPathPatterns: [/^src\//],
       }),
     ).toThrow(DiffGuardViolationError);
+  });
+});
+
+describe('validateRelativePath (HIGH-3 code-review fix)', () => {
+  it('accepts a normal relative path unchanged', () => {
+    expect(validateRelativePath('src/widget.ts')).toBe('src/widget.ts');
+  });
+
+  it('normalizes a redundant but safe path', () => {
+    expect(validateRelativePath('./src/./widget.ts')).toBe('src/widget.ts');
+    expect(validateRelativePath('src/sub/../widget.ts')).toBe('src/widget.ts');
+  });
+
+  it('rejects a path that escapes the repo root via ..', () => {
+    expect(validateRelativePath('../outside')).toBeNull();
+    expect(validateRelativePath('src/../../outside')).toBeNull();
+  });
+
+  it('rejects an absolute POSIX path', () => {
+    expect(validateRelativePath('/tmp/x')).toBeNull();
+  });
+
+  it('rejects an absolute Windows-drive path', () => {
+    expect(validateRelativePath('C:\\Windows\\x')).toBeNull();
+  });
+
+  it('rejects a path that normalizes into a disallowed path', () => {
+    expect(validateRelativePath('foo/../.git/config')).toBeNull();
+    expect(validateRelativePath('.github/workflows/evil.yml')).toBeNull();
+  });
+
+  it('rejects an empty or root-only path', () => {
+    expect(validateRelativePath('')).toBeNull();
+    expect(validateRelativePath('.')).toBeNull();
+    expect(validateRelativePath('./')).toBeNull();
   });
 });

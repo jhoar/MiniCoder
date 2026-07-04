@@ -36,7 +36,7 @@ export class ChildProcessCommandRunner implements CommandRunner {
         args as string[],
         { cwd: opts.cwd, env: opts.env ? { ...process.env, ...opts.env } : process.env },
         (error, stdout, stderr) => {
-          const exitCode = typeof error?.code === 'number' ? error.code : (error ? -1 : 0);
+          const exitCode = typeof error?.code === 'number' ? error.code : error ? -1 : 0;
           if (error && typeof error.code !== 'number') {
             reject(error);
             return;

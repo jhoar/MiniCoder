@@ -70,7 +70,7 @@ async function registerMockPlanner(db: DbClient, name = 'MockPlannerAdapter'): P
 // ── ALL_TASK_IDS ────────────────────────────────────────────────────────────
 
 describe('ALL_TASK_IDS', () => {
-  it('exports the 16 canonical task ID strings (15 from Phases 3/6/7 plus Phase 9\'s run-coder)', () => {
+  it("exports the 16 canonical task ID strings (15 from Phases 3/6/7 plus Phase 9's run-coder)", () => {
     expect(ALL_TASK_IDS).toHaveLength(16);
     expect(ALL_TASK_IDS).toContain('ingest-specification');
     expect(ALL_TASK_IDS).toContain('planning-readiness-assessment');

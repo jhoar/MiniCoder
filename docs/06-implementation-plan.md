@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.18
+> Version: 1.0.19
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -927,7 +927,7 @@ of adapters to "Phase 9+" (see Phase 5's "Deferred to Phase 9–10" note above) 
 
 1. **LLM codegen goes through a small injected interface, not a vendor SDK.** `CodexCoderAdapter`
    takes a `CodeGenerationProvider` (`generate({featureTitle, acceptanceCriteria, repoContext}) →
-   {files, tokensUsed?}`) via constructor injection. Ships exactly one concrete implementation,
+{files, tokensUsed?}`) via constructor injection. Ships exactly one concrete implementation,
    `HttpCodeGenerationProvider` — a plain `fetch`-based client against an OpenAI-compatible
    chat/completions endpoint (configurable base URL/API key/model), no vendor SDK dependency. Tests
    use a deterministic fake implementation of the interface.
@@ -965,7 +965,7 @@ of adapters to "Phase 9+" (see Phase 5's "Deferred to Phase 9–10" note above) 
 - `packages/core/src/adapters/run-recorder.ts` — `AgentRunRecorder`/`RecordRunOptions` gain
   additive, backward-compatible fields: `contextPack` (writes one `agent_context_packs` row before
   the wrapped call runs — Phase 9 is this table's first production writer), `costExtractor` (a
-  function of the run's `RunOutcome` — success *or* failure, since a failed provider call can
+  function of the run's `RunOutcome` — success _or_ failure, since a failed provider call can
   still carry partial usage — that folds `tokens_used`/`cost_usd`/`provider`/`model` into the
   existing `agent_runs` UPDATE and writes one `cost_records` row, `scope='feature'` when
   `featureRequestId` is supplied else `'project'`, **before** any budget evaluation the caller
@@ -1059,6 +1059,20 @@ adapter-failure-leaves-`coding`); the `coder-adapter-run` scenario described abo
   phase.
 - `RecordCodePushedCommand`'s idempotency key was **not** changed to include `{expectedVersion}` —
   see "Delivered modules" above; `commitSha` was already occurrence-unique.
+
+**Post-implementation review fixes (round 1):** a full code/architecture/security review found
+one Critical, six High, three Medium, and one Low finding, all fixed. Highlights: the
+`feature.code_pushed` event schema required `.uuid()` IDs but `generateId()` never produces one
+(a pre-existing, pre-Phase-7 latent bug newly exposed by this phase's schema extension); the
+sandbox's `/workspace` mount was missing entirely under `ReadonlyRootfs`, so every real run would
+have failed at clone time; commits had no git author identity configured; generated file paths
+were written before the diff guard's disallowed-path check ever ran, so `../`/absolute-path
+traversal could escape the intended tree; the GitHub token could leak through failed-git-command
+error messages; coder runs never actually wrote a `cost_records` row (no `costUsd`, only token
+counts), undermining the budget-gate integration claim; PR creation was hardcoded to `main`
+instead of using `repositories.default_branch`; and `prompt_template_version` was declared but
+never persisted. See CLAUDE.md's Reference Coder Adapter Operational Constraints section for the
+full fix-by-fix writeup and regression-test pointers.
 
 Acceptance: the adapter implements `CoderAgentAdapter`; the orchestrator does not call provider APIs
 directly (adapter resolution is always via `AdapterRegistry`); a coder run executes inside an

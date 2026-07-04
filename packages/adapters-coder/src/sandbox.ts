@@ -73,7 +73,16 @@ export class CoderSandbox implements Sandbox {
       HostConfig: {
         NetworkMode: this.options.network,
         ReadonlyRootfs: true,
-        Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=256m' },
+        // /workspace must be writable — it's where workspace.ts clones/writes/commits the repo
+        // (HIGH-1 code-review fix: ReadonlyRootfs previously left /workspace under the read-only
+        // root with no writable mount, so every real sandbox run would fail at clone/write time
+        // despite passing against the fake-Docker unit tests). A tmpfs (not a bind mount or named
+        // volume) is deliberate: nothing needs to persist past container removal, and this avoids
+        // host-path/ownership complexity for a non-root container user.
+        Tmpfs: {
+          '/tmp': 'rw,noexec,nosuid,size=256m',
+          '/workspace': 'rw,nosuid,size=2g,uid=10001,gid=10001',
+        },
         CapDrop: ['ALL'],
         Privileged: false,
         NanoCpus: this.options.cpus ? Math.round(this.options.cpus * 1e9) : undefined,
@@ -113,7 +122,9 @@ export class CoderSandbox implements Sandbox {
   }
 }
 
-function collectDemuxed(stream: NodeJS.ReadableStream): Promise<{ stdout: string; stderr: string }> {
+function collectDemuxed(
+  stream: NodeJS.ReadableStream,
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     stream.on('data', (chunk: Buffer) => chunks.push(chunk));
