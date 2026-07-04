@@ -948,6 +948,38 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   concerns isolated and avoids adding new failure surface to `start-next-feature.ts`, which has
   already been through multiple rounds of concurrency-bug code review.
 
+**Post-implementation review fixes (round 1):**
+
+- **HIGH-1 (`run-review` was never registered as a Trigger.dev SDK task).** `run-review` was added
+  to `ALL_TASK_IDS` with a real `runImpl`, payload schema, and tests, but
+  `packages/triggerdev/src/triggerdev-tasks.ts` never imported it or called `task({ id: 'run-review',
+... })` — a live deployment of this phase would therefore never register or schedule the reviewer
+  task at all. Fixed by adding the import and `runReviewTask` registration, mirroring
+  `runCoderTask`'s shape exactly. A new regression in `triggerdev.test.ts` statically scans
+  `triggerdev-tasks.ts`'s source for a `task({ id: '<id>' })` registration matching every entry in
+  `ALL_TASK_IDS`, so a future task-id addition without a matching registration fails a unit test
+  instead of only surfacing in production.
+- **HIGH-2 (the GitHub-human-review path in `reconcileGithubState()` could throw instead of
+  escalating at the fix-attempt threshold).** The `under_review` + GitHub `changes_requested`
+  branch dispatched `RecordChangesRequestedCommand` unconditionally; once
+  `fix_attempt_count >= FIX_ATTEMPT_THRESHOLD` that handler throws `fix-attempt-limit-exceeded`
+  (by design, as a defense-in-depth guard), which this caller did not catch — reconciliation would
+  fail/retry instead of taking the matrix-required `under_review -> human_required` escalation,
+  unlike the `ci_failed` branch immediately above it, which already checked the threshold first.
+  Fixed by mirroring that branch: read `fix_attempt_count` before dispatch and escalate
+  (`escalate-human-review:{featureRunId}`) instead of dispatching `RecordChangesRequestedCommand`
+  when at/over threshold.
+- **HIGH-3 (`run-review.ts` could strand a feature run at `changes_requested` on a lock-conflict
+  retry).** After `RecordChangesRequestedCommand` succeeds, the task acquires the execution-lane
+  lock to dispatch `StartFixingCommand`; if that acquire hit a transient race, the task returned a
+  "successful" result without ever dispatching `StartFixingCommand`, and — because the top-of-task
+  guard originally required `current_execution_state === UNDER_REVIEW` — a retry would see
+  `CHANGES_REQUESTED` and immediately no-op, permanently stranding the feature run short of
+  `fixing`. Fixed by making the task resumable: a feature run already at `CHANGES_REQUESTED` skips
+  the reviewer invocation entirely (it was already reviewed) and retries only the
+  `changes_requested -> fixing` hop, via a new shared `advanceToFixing()` helper used by both the
+  fresh-review path and this resumed path.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

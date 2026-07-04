@@ -287,4 +287,42 @@ describe('run-review', () => {
     );
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.HUMAN_REQUIRED);
   });
+
+  it('HIGH-3 (Phase 10 PR review): resumes a feature run stranded at changes_requested (a prior invocation recorded the review but never reached fixing) without re-invoking the reviewer', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedUnderReviewFeatureRun(db, {
+      state: FeatureExecutionState.CHANGES_REQUESTED,
+      fixAttemptCount: 1,
+    });
+    await registerReviewerAdapter(db);
+
+    const deps: RunReviewDeps = {
+      reviewerAdapterFactory: async () => {
+        throw new Error('reviewer must not be invoked when resuming from changes_requested');
+      },
+      githubClientFactory: async () => fakeGithubClient(),
+    };
+
+    const result = await runImpl(
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-6',
+        idempotencyKey: 'idem-6',
+        reviewerAdapterName: 'FakeReviewerAdapter',
+      },
+      db,
+      deps,
+    );
+
+    expect(result.reviewed).toBe(true);
+    expect(result.decision).toBe('changes_requested');
+
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.FIXING);
+  });
 });

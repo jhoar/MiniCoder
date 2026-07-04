@@ -202,7 +202,31 @@ export async function runImpl(
     [featureRunId, projectId],
   );
   const run = runRows[0];
-  if (!run || run.current_execution_state !== FeatureExecutionState.UNDER_REVIEW) {
+  if (!run) {
+    return { projectId, featureRunId, reviewed: false, decision: null };
+  }
+
+  // HIGH-3 code-review fix (Phase 10 PR review): a prior invocation may have already dispatched
+  // RecordChangesRequestedCommand (feature run now at CHANGES_REQUESTED) and then hit a transient
+  // lock-conflict/race acquiring the execution lane for StartFixingCommand — returning before that
+  // command ran. Because the guard above used to require UNDER_REVIEW, a retry would see
+  // CHANGES_REQUESTED and no-op forever, stranding the feature run instead of ever reaching
+  // `fixing`. Make this resumable: a feature run already at CHANGES_REQUESTED skips the reviewer
+  // invocation entirely (it was already reviewed) and just retries the StartFixingCommand hop.
+  if (run.current_execution_state === FeatureExecutionState.CHANGES_REQUESTED) {
+    const decision = await advanceToFixing(
+      db,
+      new TransactionalCommandExecutor(db),
+      systemActor(correlationId),
+      correlationId,
+      projectId,
+      featureRunId,
+      run.version,
+    );
+    return { projectId, featureRunId, reviewed: true, decision };
+  }
+
+  if (run.current_execution_state !== FeatureExecutionState.UNDER_REVIEW) {
     return { projectId, featureRunId, reviewed: false, decision: null };
   }
 
@@ -337,46 +361,76 @@ export async function runImpl(
       throw err;
     }
 
-    // StartFixingCommand needs the execution-lane lock (unlike RecordChangesRequestedCommand),
-    // mirroring run-coder.ts's ExecutionLane acquire/release/isTransientRace pattern.
-    const lane = new ExecutionLane(db);
-    let lock: AcquiredLock;
-    try {
-      lock = await lane.acquireForProject(projectId, 'run-review-task', EXECUTION_LANE_TTL_MS);
-    } catch (err) {
-      if (isTransientRace(err)) {
-        return { projectId, featureRunId, reviewed: true, decision: 'changes_requested' };
-      }
-      throw err;
-    }
-    try {
-      const startFixingEnvelope: CommandEnvelope<Record<string, unknown>> = {
-        commandId: generateId(),
-        idempotencyKey: `start-fixing:${featureRunId}:${changesRequestedVersion}`,
-        payload: { featureRunId, projectId, expectedVersion: changesRequestedVersion },
-        actor,
-        correlationId,
-        lockContext: {
-          lockId: lock.lockId,
-          fence: lock.fence,
-          holderId: lock.holderId,
-          projectId,
-          resourceKey: lock.resourceKey,
-        },
-      };
-      await executor.execute(startFixingHandler, startFixingEnvelope);
-    } catch (err) {
-      if (!isTransientRace(err)) throw err;
-    } finally {
-      await lane.releaseForProject(lock);
-    }
-
-    return { projectId, featureRunId, reviewed: true, decision: 'changes_requested' };
+    const decision = await advanceToFixing(
+      db,
+      executor,
+      actor,
+      correlationId,
+      projectId,
+      featureRunId,
+      changesRequestedVersion,
+    );
+    return { projectId, featureRunId, reviewed: true, decision };
   }
 
   // Only non_blocking/nit/question/out_of_scope findings (or none at all) — no transition;
   // the feature run stays at under_review (Phase 12's Merge Gate owns the next hop).
   return { projectId, featureRunId, reviewed: true, decision: 'approved' };
+}
+
+/**
+ * changes_requested -> fixing. Extracted so both the fresh-review path (right after
+ * RecordChangesRequestedCommand succeeds) and a resumed retry (a feature run already at
+ * CHANGES_REQUESTED from a prior invocation that stalled before this step — HIGH-3 code-review
+ * fix) share one implementation. `expectedVersion` must be the feature run's *current* version at
+ * CHANGES_REQUESTED, refetched by the caller. Always returns 'changes_requested': the review
+ * outcome is already durably recorded regardless of whether this hop itself completes or hits a
+ * transient race (a later retry — either another run-review invocation landing on the
+ * CHANGES_REQUESTED branch above, or another mechanism — will complete it).
+ */
+async function advanceToFixing(
+  db: DbClient,
+  executor: TransactionalCommandExecutor,
+  actor: ReturnType<typeof systemActor>,
+  correlationId: string,
+  projectId: string,
+  featureRunId: string,
+  expectedVersion: number,
+): Promise<'changes_requested'> {
+  // StartFixingCommand needs the execution-lane lock (unlike RecordChangesRequestedCommand),
+  // mirroring run-coder.ts's ExecutionLane acquire/release/isTransientRace pattern.
+  const lane = new ExecutionLane(db);
+  let lock: AcquiredLock;
+  try {
+    lock = await lane.acquireForProject(projectId, 'run-review-task', EXECUTION_LANE_TTL_MS);
+  } catch (err) {
+    if (isTransientRace(err)) {
+      return 'changes_requested';
+    }
+    throw err;
+  }
+  try {
+    const startFixingEnvelope: CommandEnvelope<Record<string, unknown>> = {
+      commandId: generateId(),
+      idempotencyKey: `start-fixing:${featureRunId}:${expectedVersion}`,
+      payload: { featureRunId, projectId, expectedVersion },
+      actor,
+      correlationId,
+      lockContext: {
+        lockId: lock.lockId,
+        fence: lock.fence,
+        holderId: lock.holderId,
+        projectId,
+        resourceKey: lock.resourceKey,
+      },
+    };
+    await executor.execute(startFixingHandler, startFixingEnvelope);
+  } catch (err) {
+    if (!isTransientRace(err)) throw err;
+  } finally {
+    await lane.releaseForProject(lock);
+  }
+  return 'changes_requested';
 }
 
 async function dispatchEscalation(

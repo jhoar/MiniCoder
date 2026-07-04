@@ -441,6 +441,31 @@ async function runStep(
     // round-6 HIGH-1: no `priorReviewState` pre-check here — see the module doc comment above.
     // Idempotency is entirely carried by the key below (includes `observed.headSha`), matching
     // every other branch in this file.
+    //
+    // HIGH-2 code-review fix (Phase 10 PR review): RecordChangesRequestedHandler now throws
+    // 'fix-attempt-limit-exceeded' once fix_attempt_count >= FIX_ATTEMPT_THRESHOLD (Phase 10) —
+    // dispatching it unconditionally here would surface that as an uncaught reconciliation
+    // failure instead of the matrix-required under_review -> human_required escalation. Check the
+    // threshold first, mirroring the CI_FAILED branch above.
+    const fixAttemptRows = await db.query<{ fix_attempt_count: number }>(
+      `SELECT fix_attempt_count FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    const fixAttemptCount = fixAttemptRows[0]?.fix_attempt_count ?? 0;
+    if (fixAttemptCount >= FIX_ATTEMPT_THRESHOLD) {
+      return escalate(
+        executor,
+        actor,
+        correlationId,
+        {
+          featureRunId,
+          projectId,
+          expectedVersion,
+          reason: `Fix-attempt threshold (${FIX_ATTEMPT_THRESHOLD}) reached after repeated review cycles`,
+        },
+        `escalate-human-review:${featureRunId}`,
+      );
+    }
     const envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
       idempotencyKey: `changes-requested:${featureRunId}:${observed.prNumber}:${observed.headSha ?? 'nosha'}`,

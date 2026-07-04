@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { DbClient, ConfigBackend, SecretBackend, PlannerAgentAdapter } from '@minicoder/core';
 import { MissingSecretError, FeatureExecutionState } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
@@ -89,6 +91,19 @@ describe('ALL_TASK_IDS', () => {
     expect(ALL_TASK_IDS).toContain('export-plan');
     expect(ALL_TASK_IDS).toContain('export-backlog');
     expect(ALL_TASK_IDS).toContain('import-backlog');
+  });
+
+  // HIGH-1 code-review fix (Phase 10 PR review): run-review was added to ALL_TASK_IDS with a
+  // runImpl/payload schema/tests, but was never registered as a Trigger.dev SDK task in
+  // triggerdev-tasks.ts, so a live deployment would never schedule it. A static source scan (not
+  // an import — @trigger.dev/sdk/v3's `task()` requires a live Trigger.dev context this unit test
+  // doesn't have) keeps every ALL_TASK_IDS entry synchronized with an actual `task({ id: ... })`
+  // registration going forward.
+  it('every ALL_TASK_IDS entry has a corresponding task({ id: ... }) registration in triggerdev-tasks.ts', () => {
+    const source = readFileSync(join(__dirname, 'triggerdev-tasks.ts'), 'utf-8');
+    for (const taskId of ALL_TASK_IDS) {
+      expect(source, `missing task registration for '${taskId}'`).toContain(`id: '${taskId}'`);
+    }
   });
 });
 

@@ -213,6 +213,25 @@ describe('reconcileGithubState', () => {
     expect(result.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
   });
 
+  it('HIGH-2 (Phase 10 PR review): escalates instead of throwing when a GitHub changes-requested review arrives at the fix-attempt threshold', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.UNDER_REVIEW);
+    await seedPullRequestRow(db, featureRunId, { prNumber: 16, ciStatus: 'passed' });
+    await db.execute(`UPDATE feature_runs SET fix_attempt_count = 5 WHERE id = ?`, [featureRunId]);
+
+    const result = await reconcileGithubState({
+      db,
+      featureRunId,
+      projectId: PROJECT_ID,
+      observed: observed({ prNumber: 16, ciStatus: 'passed', reviewState: 'changes_requested' }),
+      correlationId: 'corr-5b',
+    });
+
+    expect(result.action).toBe('escalated');
+    expect(result.resultingState).toBe(FeatureExecutionState.HUMAN_REQUIRED);
+  });
+
   it('escalates to human_required when the PR closes unmerged while CI is running', async () => {
     const db = createTestDb();
     await seedProject(db);
