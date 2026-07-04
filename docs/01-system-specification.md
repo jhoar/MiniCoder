@@ -325,12 +325,17 @@ Agent.
 
 **Delivered (Phase 11).** `packages/core/src/disagreement/` implements the detection and
 evidence-write side; `packages/triggerdev/src/tasks/run-review.ts` drives the flow end to end.
-"Repeated unresolved finding" is detected by matching a current `blocking`/
-`requires_human_decision` finding's exact description text against `review_findings` from an
-earlier `review_cycle` for the same feature run — the only available repeat signal, since a coder
-push always resolves every currently-open finding optimistically (docs/06 Phase 10's "optimistic
-fixed" design decision), so a genuinely unfixed problem reappears as a _new_ row rather than a
-reopened one. On a match: a `disagreement_records` row opens, `ArbiterAgentAdapter` is invoked
+"Repeated unresolved finding" is detected by matching a current `blocking` finding's exact
+description text against `review_findings` from an earlier `review_cycle` for the same feature run
+— the only available repeat signal, since a coder push always resolves every currently-open
+finding optimistically (docs/06 Phase 10's "optimistic fixed" design decision), so a genuinely
+unfixed problem reappears as a _new_ row rather than a reopened one. `requires_human_decision`
+findings are deliberately excluded from repeat detection: `run-review.ts` escalates that severity
+to `human_required` unconditionally, before disagreement detection ever runs — the Reviewer's own
+explicit call that something is beyond automation scope, which the Arbiter should not second-guess
+(the Arbiter's role is resolving a coder/reviewer disagreement over a recurring `blocking` finding,
+not vetting the Reviewer's decision to punt to a human). On a match: a `disagreement_records` row
+opens, `ArbiterAgentAdapter` is invoked
 (via `AgentRunRecorder`, the same pattern as the Reviewer/Coder adapters), and its `resolution`
 drives the outcome — `reviewer_correct`/`compromise` continues the ordinary fix loop
 (`under_review -> changes_requested -> fixing`); `coder_correct` downgrades the finding to

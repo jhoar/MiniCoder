@@ -15,7 +15,10 @@ import {
   fulfillIdempotencyKey,
   insertHumanApproval,
 } from '../../helpers.js';
-import { resolveDisagreementByHuman } from '../../../disagreement/write.js';
+import {
+  findDisagreementForFeatureRun,
+  resolveDisagreementByHuman,
+} from '../../../disagreement/write.js';
 
 export const ResumeFeatureExecutionPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -91,8 +94,38 @@ export class ResumeFeatureExecutionHandler implements CommandHandler<
         FeatureExecutionState.UNDER_REVIEW,
       );
 
+      // HIGH code-review fix: validate a caller-supplied disagreementId belongs to this feature
+      // run (and is still open/escalated) before resolving it — previously trusted bare, so a
+      // bogus or cross-feature-run id would silently no-op (or mutate someone else's disagreement)
+      // while this feature run's state transition proceeded regardless.
       if (disagreementId) {
-        await resolveDisagreementByHuman(tx, { disagreementId, resolution: notes });
+        const disagreement = await findDisagreementForFeatureRun(tx, {
+          featureRunId,
+          disagreementId,
+        });
+        if (!disagreement) {
+          throw new CommandError({
+            type: 'no-open-disagreement',
+            title: 'Disagreement not found for this feature run',
+            status: 409,
+            detail: `Disagreement ${disagreementId} is not an open/escalated disagreement for feature run ${featureRunId}`,
+            instance: envelope.correlationId,
+          });
+        }
+        const resolvedAffected = await resolveDisagreementByHuman(tx, {
+          disagreementId: disagreement.id,
+          featureRunId,
+          resolution: notes,
+        });
+        if (resolvedAffected === 0) {
+          throw new CommandError({
+            type: 'no-open-disagreement',
+            title: 'Disagreement was already resolved',
+            status: 409,
+            detail: `Disagreement ${disagreement.id} is no longer open/escalated`,
+            instance: envelope.correlationId,
+          });
+        }
       }
 
       const now = isoNow();

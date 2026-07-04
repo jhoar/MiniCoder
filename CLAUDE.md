@@ -1114,19 +1114,37 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   needed), `RetryFeatureCommand` (→ `selected`), `SkipFeatureCommand` (→ `skipped`, new terminal
   state), `BlockFeatureCommand` (→ `blocked`, human-initiated). All five are actor=`approver`.
 - **"Repeated unresolved finding" detection compares description text across review cycles,
-  because there is no other repeat signal.** `findRepeatedFinding()`
-  (`packages/core/src/disagreement/detect.ts`) matches a current `blocking`/
-  `requires_human_decision` finding's exact (trimmed) description against `review_findings` from an
-  earlier `review_cycle` for the same feature run. This is necessary, not merely convenient:
-  Phase 10's "optimistic fixed" `RecordCodePushedHandler` design resolves every currently-open
-  finding on any push, so a problem the coder didn't actually fix never shows up as the same row
-  reopened — it shows up as a brand-new row in a later cycle with the same text. There is no
-  per-finding fingerprint/hash column to match on instead.
+  because there is no other repeat signal — and is scoped to `blocking` severity only.**
+  `findRepeatedFinding()` (`packages/core/src/disagreement/detect.ts`) matches a current `blocking`
+  finding's exact (trimmed) description against `review_findings` from an earlier `review_cycle`
+  for the same feature run. This is necessary, not merely convenient: Phase 10's "optimistic fixed"
+  `RecordCodePushedHandler` design resolves every currently-open finding on any push, so a problem
+  the coder didn't actually fix never shows up as the same row reopened — it shows up as a
+  brand-new row in a later cycle with the same text. There is no per-finding fingerprint/hash
+  column to match on instead. **`requires_human_decision` findings are excluded, not merely an
+  oversight:** `run-review.ts`'s `hasRequiresHumanDecision` branch escalates that severity to
+  `human_required` unconditionally and returns before `findRepeatedFinding()` is ever called — a
+  code-review round caught an earlier draft where the doc comments claimed
+  `requires_human_decision` was included in repeat detection while the control flow made that
+  unreachable. Fixed by narrowing the detector to `blocking` only and documenting why: the Reviewer
+  itself already decided this needs a human, and the Arbiter's role is resolving a coder/reviewer
+  disagreement over a recurring `blocking` finding, not second-guessing that decision.
 - **The fix-attempt-threshold circuit breaker is checked before disagreement detection, and the
   Arbiter cannot override it.** `run-review.ts`'s `hasBlocking` branch still checks
   `fix_attempt_count >= FIX_ATTEMPT_THRESHOLD` first and escalates unconditionally if so — matching
   docs/01 §5.8/§5.9's framing that the review-cycle limit and the Disagreement Manager are
   independent circuit breakers. Disagreement detection only runs in the branch below that check.
+- **A caller-supplied `disagreementId` on `ResolveDisagreementCommand`/
+  `ResumeFeatureExecutionCommand` is never trusted bare.** An initial cut accepted it and passed it
+  straight to `resolveDisagreementByHuman()` with no existence/ownership check — a bogus id
+  silently updated 0 rows (query mismatch) while the feature run's state transition proceeded
+  anyway, and a valid id belonging to a _different_ feature run's disagreement would actually
+  mutate that other record. Fixed with `findDisagreementForFeatureRun()`
+  (`packages/core/src/disagreement/write.ts`), which scopes the lookup to
+  `id + feature_run_id + state IN (open, escalated)` before either handler proceeds, and
+  `resolveDisagreementByHuman()` now also scopes its `UPDATE` by `feature_run_id` and returns the
+  affected-row count so both handlers reject (409 `no-open-disagreement`) rather than silently
+  no-op when the count is 0.
 - **No `run-arbiter` Trigger.dev task was added.** Unlike Coder (`run-coder`) and Reviewer
   (`run-review`), which are each independently scheduled/triggered tasks per the "never inline"
   rule elsewhere in this document, the Arbiter is invoked inline inside the same `run-review.ts`

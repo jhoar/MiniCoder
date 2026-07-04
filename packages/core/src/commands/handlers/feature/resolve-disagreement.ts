@@ -15,7 +15,10 @@ import {
   fulfillIdempotencyKey,
   insertHumanApproval,
 } from '../../helpers.js';
-import { findOpenDisagreement, resolveDisagreementByHuman } from '../../../disagreement/write.js';
+import {
+  findDisagreementForFeatureRun,
+  resolveDisagreementByHuman,
+} from '../../../disagreement/write.js';
 
 export const ResolveDisagreementPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -93,19 +96,39 @@ export class ResolveDisagreementHandler implements CommandHandler<
         FeatureExecutionState.CHANGES_REQUESTED,
       );
 
-      const disagreement = disagreementId
-        ? { id: disagreementId }
-        : await findOpenDisagreement(tx, featureRunId);
+      // HIGH code-review fix: a caller-supplied disagreementId must be validated against this
+      // feature run (and its open/escalated state) before being acted on — it was previously
+      // trusted bare, so a bogus or another feature run's disagreement id would silently no-op
+      // the resolve while this feature run's state transition proceeded anyway.
+      const disagreement = await findDisagreementForFeatureRun(tx, {
+        featureRunId,
+        disagreementId,
+      });
       if (!disagreement) {
         throw new CommandError({
           type: 'no-open-disagreement',
           title: 'No open disagreement to resolve',
           status: 409,
-          detail: `Feature run ${featureRunId} has no open disagreement_records row`,
+          detail: disagreementId
+            ? `Disagreement ${disagreementId} is not an open/escalated disagreement for feature run ${featureRunId}`
+            : `Feature run ${featureRunId} has no open disagreement_records row`,
           instance: envelope.correlationId,
         });
       }
-      await resolveDisagreementByHuman(tx, { disagreementId: disagreement.id, resolution });
+      const resolvedAffected = await resolveDisagreementByHuman(tx, {
+        disagreementId: disagreement.id,
+        featureRunId,
+        resolution,
+      });
+      if (resolvedAffected === 0) {
+        throw new CommandError({
+          type: 'no-open-disagreement',
+          title: 'Disagreement was already resolved',
+          status: 409,
+          detail: `Disagreement ${disagreement.id} is no longer open/escalated`,
+          instance: envelope.correlationId,
+        });
+      }
 
       const now = isoNow();
       const affected = await tx.executeAffected(

@@ -9,10 +9,9 @@ export interface RepeatedFindingMatch {
 
 /**
  * Detects "repeated unresolved findings" (docs/01 §5.9, docs/06 Phase 11): the same substantive
- * blocking/requires_human_decision finding recurring across review cycles for a feature run —
- * the signal that the CoderAgentAdapter's fix attempt did not actually satisfy the
- * ReviewerAgentAdapter, i.e. a genuine coder/reviewer disagreement rather than a normal one-shot
- * fix cycle.
+ * `blocking` finding recurring across review cycles for a feature run — the signal that the
+ * CoderAgentAdapter's fix attempt did not actually satisfy the ReviewerAgentAdapter, i.e. a
+ * genuine coder/reviewer disagreement rather than a normal one-shot fix cycle.
  *
  * A push always resolves every currently-open finding optimistically (docs/06 Phase 10's
  * "optimistic fixed" design decision — `RecordCodePushedHandler`), so a recurring problem never
@@ -22,8 +21,13 @@ export interface RepeatedFindingMatch {
  * fingerprint/hash column in the schema.
  *
  * Only matches prior findings from a *lower* review cycle than the one about to be written, and
- * only compares against `blocking`/`requires_human_decision` severities (a repeated `nit` isn't a
- * disagreement worth arbitrating).
+ * only compares against `blocking` severity. `requires_human_decision` is deliberately excluded:
+ * `run-review.ts` escalates that severity unconditionally before this function is ever called
+ * (the Reviewer's own explicit call that something is beyond automation scope), and second-guessing
+ * that via the Arbiter would undermine the Reviewer's authority to make that call — the Arbiter's
+ * role (docs/03 §5) is resolving coder/reviewer disagreement over a recurring `blocking` finding,
+ * not vetting the Reviewer's decision to punt to a human. A repeated `nit`/`non_blocking` finding
+ * likewise isn't a disagreement worth arbitrating.
  */
 export async function findRepeatedFinding(
   db: DbClient | TxClient,
@@ -34,7 +38,7 @@ export async function findRepeatedFinding(
   },
 ): Promise<RepeatedFindingMatch | null> {
   const candidateDescriptions = opts.findings
-    .filter((f) => f.severity === 'blocking' || f.severity === 'requires_human_decision')
+    .filter((f) => f.severity === 'blocking')
     .map((f) => f.description.trim());
   if (candidateDescriptions.length === 0) return null;
 
@@ -42,7 +46,7 @@ export async function findRepeatedFinding(
     `SELECT id, description, review_cycle FROM review_findings
      WHERE feature_run_id = ?
        AND review_cycle < ?
-       AND severity IN ('blocking', 'requires_human_decision')
+       AND severity = 'blocking'
      ORDER BY review_cycle DESC`,
     [opts.featureRunId, opts.reviewCycle],
   );
