@@ -223,8 +223,13 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     guardDescription: 'fix-attempt count < per-feature threshold',
     sideEffects: ['increment_fix_attempt_count', 'write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.changes_requested'],
-    idempotencyKeyTemplate: 'changes-requested-after-ci:{featureRunId}',
-    recoveryPath: 'Idempotent: returns cached result if already transitioned',
+    // Phase 10 code-review fix: this edge can recur across multiple CI-failure cycles for the
+    // same feature run (ci_running -> ci_failed -> changes_requested -> fixing -> ... -> ci_failed
+    // again), so a key scoped to {featureRunId} alone would replay the first cycle's cached
+    // result for every later one within the idempotency TTL — the same class of bug already fixed
+    // for start-fixing/budget-control keys elsewhere in this matrix (see CLAUDE.md).
+    idempotencyKeyTemplate: 'changes-requested-after-ci:{featureRunId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per occurrence: retrying the same cycle returns cached result',
   },
   {
     fromState: FeatureExecutionState.CI_FAILED,

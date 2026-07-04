@@ -47,7 +47,13 @@ export interface ReviewFindingOutput {
   // Widened (Phase 10) to the full FindingSeverity domain (docs/00 §3.7) — 'out_of_scope' and
   // 'requires_human_decision' were missing from the adapter contract even though the domain enum
   // (packages/core/src/domain/states.ts's FindingSeverity) always had all 6 values.
-  severity: 'blocking' | 'non_blocking' | 'nit' | 'question' | 'out_of_scope' | 'requires_human_decision';
+  severity:
+    | 'blocking'
+    | 'non_blocking'
+    | 'nit'
+    | 'question'
+    | 'out_of_scope'
+    | 'requires_human_decision';
   category: string;
   description: string;
   filePath?: string;

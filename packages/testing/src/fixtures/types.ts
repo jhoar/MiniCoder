@@ -11,7 +11,8 @@ export type FixtureName =
   | 'github-race'
   | 'final-design-document'
   | 'execution-orchestrator'
-  | 'coder-adapter-run';
+  | 'coder-adapter-run'
+  | 'review-fix-loop';
 
 export interface Fixture {
   name: FixtureName;

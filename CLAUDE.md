@@ -391,6 +391,9 @@ failed}`, so the matrix must cover every state that check can reach; a mid-fligh
   counter or write `review_findings`.** `feature_runs` has no fix-attempt-count column yet — that
   counter and the blocking-findings write path are Phase 10 (review/fix loop) scope. Do not add
   ad hoc fix-attempt tracking to these handlers before Phase 10 lands the real column.
+  **Superseded by Phase 10:** `feature_runs.fix_attempt_count` (migration 0011) now exists and both
+  handlers increment it and write `review_findings` — see the Reference Reviewer Adapter and
+  Review/Fix Loop Operational Constraints section below.
 - **`github-reconciliation`'s scheduled fallback only re-checks feature runs that already have a
   `pull_requests` row.** Discovering a brand-new PR that no webhook has ever reported requires a
   `GitHubClient.listPullRequestsForBranch`-style method that does not exist yet — do not assume
@@ -436,6 +439,9 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   feature run to `blocked` in the first place. This is the same posture Phase 7 left
   `StartCodingHandler`/`RecordCodePushedHandler` in before Phase 8 gave them a caller — do not
   treat an orphaned-but-tested handler as dead code to delete.
+  **Superseded by Phase 10 for `StartFixingHandler`:** `run-review.ts` now calls it after a
+  blocking-finding-driven `RecordChangesRequestedCommand` succeeds. `UnblockFeatureHandler` remains
+  orphaned — nothing transitions a feature run to `blocked` yet.
 - **`ApproveBudgetOverrideHandler` serves two matrix edges from one handler** —
   `paused_budget_exceeded → running` and `waiting_for_budget_approval → running` both dispatch
   `ApproveBudgetOverrideCommand`; `StateTransitionValidator` resolves the correct matrix row from
@@ -459,12 +465,16 @@ active_feature_run_id = ? WHERE automation_state = 'running' AND active_feature_
   `RecordBudgetApprovalWaitingCommand` in `apply-budget-decision.ts`, and (MEDIUM-1 in a later
   round) for `PauseAutomationCommand`/`ResumeAutomationCommand`/`StartFixingCommand`'s matrix
   templates and handler doc comments — `ApproveBudgetOverrideCommand` already documented the same
-  caller obligation. None of `PauseAutomationCommand`/`ResumeAutomationCommand`/
-  `StartFixingCommand`/`ApproveBudgetOverrideCommand` has a real production caller yet (Phase 13's
-  API / Phase 10's review-fix loop will supply one), so the fix is the documented contract plus
-  `packages/testing/src/automation-control-race.test.ts`'s regression coverage, not a handler
-  code change — the handlers' own version-based CAS was already correct; only the caller-supplied
-  key was under-scoped. The `execution-orchestrator` scenario's step 4b exercises a repeated soft
+  caller obligation. At the time of that round, none of `PauseAutomationCommand`/
+  `ResumeAutomationCommand`/`StartFixingCommand`/`ApproveBudgetOverrideCommand` had a real
+  production caller yet (Phase 13's API / Phase 10's review-fix loop would supply one), so the fix
+  was the documented contract plus `packages/testing/src/automation-control-race.test.ts`'s
+  regression coverage, not a handler code change — the handlers' own version-based CAS was already
+  correct; only the caller-supplied key was under-scoped. **Phase 10 update:** `StartFixingCommand`
+  now has a real caller (`run-review.ts`, idempotency key `start-fixing:{featureRunId}:
+{expectedVersion}`, refetching `expectedVersion` after `RecordChangesRequestedCommand` succeeds) —
+  `PauseAutomationCommand`/`ResumeAutomationCommand`/`ApproveBudgetOverrideCommand` still await
+  Phase 13's API layer. The `execution-orchestrator` scenario's step 4b exercises a repeated soft
   breach for the one command (`RecordBudgetApprovalWaitingCommand`) that does have a real caller
   (`applyBudgetDecision()`).
 - **`StartCodingHandler` and `StartFixingHandler` atomically re-check
@@ -857,6 +867,86 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   infrastructure this repository doesn't have yet, the same category of item Phase 16
   ("observability") already owns elsewhere in this document. Recorded here rather than silently
   dropped.
+
+## Reference Reviewer Adapter and Review/Fix Loop Operational Constraints (`packages/adapters-reviewer/`, `packages/core/src/review/`, migration 0011)
+
+- **The Reviewer adapter needs no sandbox — a real simplification versus the Coder adapter
+  (Phase 9).** Reviewing a pull request is read-only: fetch the diff via
+  `GitHubClient.getPullRequestDiff()`, ask an LLM, return structured findings. `ClaudeReviewerAdapter`
+  (`packages/adapters-reviewer`) calls its injected `ReviewProvider` (`HttpReviewProvider`, the one
+  shipped implementation — a plain-`fetch` OpenAI-compatible client mirroring
+  `HttpCodeGenerationProvider`'s shape) directly from the `run-review` Trigger.dev task process,
+  with no container isolation to create/tear down and no egress-proxy allow-list to reason about.
+- **A single aggregate `feature_runs.fix_attempt_count` counter (migration 0011), not per-finding/
+  reopening granularity.** `FIX_ATTEMPT_THRESHOLD = 5`
+  (`packages/core/src/domain/constants.ts`) is checked everywhere the feature-execution matrix
+  requires a "fix-attempt count < threshold" guard: `RecordChangesRequestedHandler`
+  (`under_review -> changes_requested`) and `RequestChangesAfterCiFailHandler`
+  (`ci_failed -> changes_requested`) both increment it; `run-review.ts` and
+  `reconcileGithubState()` both read it before deciding whether to dispatch a changes-requested
+  command or escalate straight to `EscalateToHumanCommand`. docs/01 §5.8's finer-grained "two fix
+  attempts per finding, one reopening of the same finding" limits are deliberately **not**
+  implemented — this is a documented simplification, not an oversight; that granularity is future
+  work, tracked but not built in this phase.
+- **No `RecordApprovedByPolicyCommand` is dispatched on a clean review.** When `run-review.ts`'s
+  normalized findings contain no `blocking` and no `requires_human_decision` entries, the task
+  writes the (non-blocking/nit/question/out_of_scope) `review_findings` rows for audit and returns
+  without any state transition — the feature run stays at `under_review`. There is no merge gate
+  yet to block (Phase 12 scope), so "non-blocking findings do not block merge" holds because there
+  is nothing downstream to block on yet. Do not invent a partial `RecordApprovedByPolicyCommand`
+  to "complete" this loop before Phase 12.
+- **Single normalization point: the task normalizes, the adapter does not.** `run-review.ts`
+  always calls `@minicoder/core`'s `normalizeReviewerFindings()` on the raw `ReviewerOutput`
+  returned by whichever adapter ran (`ClaudeReviewerAdapter` or a test `MockReviewerAdapter`) —
+  neither adapter calls `normalizeReviewerFindings()` itself. This avoids a double-normalization
+  split between adapter and task; `insertReviewFindings()`
+  (`packages/core/src/review/write-findings.ts`) is a non-command evidence-data writer (the same
+  category as `agent_context_packs`/`agent_tool_operations`), not a `CommandHandler` — it uses
+  deterministic `review-finding:{featureRunId}:{reviewCycle}:{index}` ids with
+  `ON CONFLICT (id) DO NOTHING` for idempotent retry, the same "insert-with-a-conflict-clause"
+  posture `AdapterRegistry.register()` established for cross-dialect idempotency.
+- **`ci_failed`'s next-transition ownership stays inside `reconcileGithubState()`, not a separate
+  caller.** Immediately after a successful `ci_running -> ci_failed` transition, the same bounded
+  catch-up loop (`MAX_RECONCILE_STEPS`) reads the feature run's current `fix_attempt_count` and
+  dispatches `RequestChangesAfterCiFailCommand` (below threshold) or `EscalateToHumanCommand`
+  (`escalate-human-ci-limit:{featureRunId}`, at/over threshold) in the very same call — so both
+  the webhook-triggered path (`packages/github/src/inbox-handlers.ts`) and the scheduled
+  `github-reconciliation` task get this follow-up for free, matching this module's
+  single-algorithm design (CLAUDE.md's GitHub Integration Operational Constraints above). This
+  branch never needs the execution-lane lock — CI-outcome/review-outcome transitions are not
+  lock-gated (see `requiresExecutionLock()`).
+- **A pre-existing idempotency-key bug was fixed while touching this matrix row.** The
+  `ci_failed -> changes_requested` row's `idempotencyKeyTemplate` was
+  `changes-requested-after-ci:{featureRunId}` — no per-occurrence discriminator, even though this
+  edge can recur across multiple CI-failure cycles for the same feature run (the same class of bug
+  already fixed for `start-fixing`/budget-control keys in earlier phases). Fixed to
+  `changes-requested-after-ci:{featureRunId}:{expectedVersion}`.
+- **`RecordCiFailedHandler`'s blocking finding is written with `reviewer_run_id = NULL`.** A CI
+  failure is not a `ReviewerAgentAdapter` invocation — there is no `agent_runs` row to attribute it
+  to. `review_cycle` uses the run's current `fix_attempt_count + 1` so CI-failure findings
+  interleave sensibly with reviewer-driven findings' cycle numbering.
+- **`run-coder.ts`'s "optimistic fixed" coder-response write is a deliberate first-cut
+  simplification.** On a successful fix-cycle push (feature run at `fixing`, not just `coding`),
+  it writes one `coder_responses` row (`response_type='fixed'`) for **every** currently-unresolved
+  `review_findings` row on that feature run — blocking and non-blocking alike — and marks each
+  `resolved`, because `CoderOutput` (the shared, Phase-5-vintage adapter contract) carries no
+  per-finding disposition today. A repeat*finding-style reviewer behavior on the \_next* review
+  cycle inserts a **new** `review_findings` row (a new `review_cycle`) if an issue genuinely wasn't
+  fixed, preserving history rather than reopening/re-flagging the already-resolved row. Do not
+  read `resolved = 1` as "the coder adapter confirmed this specific finding was addressed" — it
+  only means "a push happened while this finding was open."
+- **`CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` are reused for the reviewer LLM
+  backend, not duplicated into a parallel `REVIEW_*` env-var family.** The default
+  `ReviewerAdapterFactory` (`packages/triggerdev/src/tasks/run-review.ts`) reads the same three env
+  vars `run-coder.ts` already reads, since the same OpenAI-compatible endpoint can serve both
+  roles — simpler than introducing a second configuration surface. A deployment wanting a distinct
+  reviewer model/endpoint can still inject a custom `ReviewerAdapterFactory` via `RunReviewDeps`
+  instead of using this default.
+- **`run-review.ts` is a separate, independently scheduled/triggered task from both `run-coder.ts`
+  and `start-next-feature.ts` — never inline any of the three.** Same rationale as Phase 9's
+  `run-coder.ts` (CLAUDE.md's Reference Coder Adapter Operational Constraints): keeps each task's
+  concerns isolated and avoids adding new failure surface to `start-next-feature.ts`, which has
+  already been through multiple rounds of concurrency-bug code review.
 
 ## Cross-Dialect Testing (Mandatory)
 

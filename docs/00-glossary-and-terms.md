@@ -376,6 +376,12 @@ import-backlog
 run-coder
 ```
 
+**Phase 10 addition** (Reference Reviewer Adapter and Review/Fix Loop — shipped with Phase 10):
+
+```text
+run-review
+```
+
 ---
 
 ## 4. Agent Roles and Adapters (canonical names)

@@ -105,6 +105,9 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
       async getRemainingRateLimit() {
         return 5000;
       },
+      async getPullRequestDiff() {
+        return 'diff --git a/x b/x\n';
+      },
     };
 
     const result = await runImpl(
@@ -176,6 +179,9 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
       async getRemainingRateLimit() {
         return 5000;
       },
+      async getPullRequestDiff() {
+        return 'diff --git a/x b/x\n';
+      },
     };
 
     const result = await runImpl(
@@ -214,6 +220,9 @@ describe('github-reconciliation runImpl (concurrency: a held execution lane skip
       },
       async getRemainingRateLimit() {
         return 5000;
+      },
+      async getPullRequestDiff() {
+        return 'diff --git a/x b/x\n';
       },
     };
   }

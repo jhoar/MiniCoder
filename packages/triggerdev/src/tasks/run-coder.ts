@@ -225,9 +225,18 @@ export async function runImpl(
     [featureRunId, projectId],
   );
   const run = runRows[0];
-  if (!run || run.current_execution_state !== FeatureExecutionState.CODING) {
+  // Phase 10: widened from CODING-only to also accept FIXING — a fix-cycle re-entry
+  // (changes_requested -> fixing) reuses this same task/handler, per the matrix's
+  // fixing -> code_pushed row (RecordCodePushedCommand, same idempotency key template as
+  // coding -> code_pushed; StateTransitionValidator resolves the right matrix row automatically).
+  if (
+    !run ||
+    (run.current_execution_state !== FeatureExecutionState.CODING &&
+      run.current_execution_state !== FeatureExecutionState.FIXING)
+  ) {
     return { projectId, featureRunId, pushed: false, prNumber: null };
   }
+  const isFixCycle = run.current_execution_state === FeatureExecutionState.FIXING;
 
   const featureRows = await db.query<FeatureRequestRow>(
     `SELECT title, fr_id FROM feature_requests WHERE id = ?`,
@@ -248,6 +257,15 @@ export async function runImpl(
   }
   const repoUrl = `https://github.com/${repo.owner}/${repo.name}.git`;
 
+  // Phase 10: unresolved review_findings for this feature run, folded into CoderInput.openFindings
+  // for a fix-cycle invocation only — a first-pass `coding` run has no findings yet.
+  const openFindingRows = isFixCycle
+    ? await db.query<{ id: string; description: string }>(
+        `SELECT id, description FROM review_findings WHERE feature_run_id = ? AND resolved = 0`,
+        [featureRunId],
+      )
+    : [];
+
   const registry = new AdapterRegistry(db);
   const recorder = new AgentRunRecorder(db, registry);
   const adapterRecord = await registry.resolve(AgentRole.CODER, coderAdapterName);
@@ -259,9 +277,10 @@ export async function runImpl(
     featureTitle: feature.title,
     acceptanceCriteria: acceptanceRows.map((r) => r.description),
     correlationId,
+    openFindings: openFindingRows.length > 0 ? openFindingRows : undefined,
   };
 
-  const { output } = await recorder.record(
+  const { agentRunId, output } = await recorder.record(
     {
       adapterId: adapterRecord.id,
       role: AgentRole.CODER,
@@ -357,6 +376,36 @@ export async function runImpl(
     throw err;
   } finally {
     await lane.releaseForProject(lock);
+  }
+
+  // Phase 10 "optimistic fixed" simplification: a successful fix-cycle push writes one
+  // coder_responses row (response_type='fixed') per currently-unresolved review_findings row on
+  // this feature run, and marks each resolved. CoderOutput (the shared, Phase-5-vintage adapter
+  // contract) carries no per-finding disposition today — a repeat_finding-style reviewer behavior
+  // on the *next* review cycle inserts a NEW review_findings row (a new review_cycle) if the issue
+  // truly wasn't fixed, preserving history rather than reopening/re-flagging this resolved one.
+  if (isFixCycle && openFindingRows.length > 0) {
+    const now = new Date().toISOString();
+    await db.transaction(async (tx) => {
+      for (const finding of openFindingRows) {
+        await tx.execute(
+          `INSERT INTO coder_responses (id, finding_id, coder_run_id, response_type, notes, version, created_at, updated_at)
+           VALUES (?, ?, ?, 'fixed', ?, 1, ?, ?)`,
+          [
+            generateId(),
+            finding.id,
+            agentRunId,
+            'Optimistic: coder push completed without per-finding disposition (Phase 10 simplification)',
+            now,
+            now,
+          ],
+        );
+        await tx.execute(
+          `UPDATE review_findings SET resolved = 1, resolved_by_run_id = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+          [agentRunId, now, finding.id],
+        );
+      }
+    });
   }
 
   // A PR-creation failure here is a non-fatal, logged side effect: the coder's work is already

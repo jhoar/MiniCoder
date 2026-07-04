@@ -165,7 +165,7 @@ describe('reconcileGithubState', () => {
     expect(result.resultingState).toBe(FeatureExecutionState.UNDER_REVIEW);
   });
 
-  it('transitions ci_running -> ci_failed when CI fails', async () => {
+  it('transitions ci_running -> ci_failed, then (Phase 10) auto-continues to changes_requested_after_ci_fail in the same call', async () => {
     const db = createTestDb();
     await seedProject(db);
     const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.CI_RUNNING);
@@ -179,8 +179,20 @@ describe('reconcileGithubState', () => {
       correlationId: 'corr-4',
     });
 
-    expect(result.action).toBe('ci_failed');
-    expect(result.resultingState).toBe(FeatureExecutionState.CI_FAILED);
+    // Phase 10: the bounded catch-up loop now continues past ci_failed to dispatch
+    // RequestChangesAfterCiFailCommand (fix_attempt_count starts at 0, well below
+    // FIX_ATTEMPT_THRESHOLD), landing at changes_requested in this same call.
+    expect(result.actions).toEqual(['ci_failed', 'changes_requested_after_ci_fail']);
+    expect(result.action).toBe('changes_requested_after_ci_fail');
+    expect(result.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+
+    const findings = await db.query<{ severity: string; category: string }>(
+      `SELECT severity, category FROM review_findings WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.severity).toBe('blocking');
+    expect(findings[0]?.category).toBe('ci_failure');
   });
 
   it('transitions under_review -> changes_requested on a changes-requested review', async () => {
@@ -267,7 +279,7 @@ describe('reconcileGithubState', () => {
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
   });
 
-  it('HIGH-2: catches up pr_opened -> ci_failed in one call when ci_running was missed and CI already failed', async () => {
+  it('HIGH-2: catches up pr_opened -> changes_requested in one call when ci_running was missed and CI already failed (Phase 10)', async () => {
     const db = createTestDb();
     await seedProject(db);
     const { featureRunId } = await seedFeatureRun(db, FeatureExecutionState.PR_OPENED);
@@ -283,9 +295,11 @@ describe('reconcileGithubState', () => {
       lockContext,
     });
 
-    expect(result.actions).toEqual(['ci_running', 'ci_failed']);
-    expect(result.action).toBe('ci_failed');
-    expect(result.resultingState).toBe(FeatureExecutionState.CI_FAILED);
+    // Phase 10 extends this catch-up chain one step further: ci_failed no longer ends the call —
+    // the bounded loop also dispatches RequestChangesAfterCiFailCommand in the same pass.
+    expect(result.actions).toEqual(['ci_running', 'ci_failed', 'changes_requested_after_ci_fail']);
+    expect(result.action).toBe('changes_requested_after_ci_fail');
+    expect(result.resultingState).toBe(FeatureExecutionState.CHANGES_REQUESTED);
   });
 
   it('HIGH-3: full observed-state mirror sync writes every column, not just ci_status/review_state', async () => {

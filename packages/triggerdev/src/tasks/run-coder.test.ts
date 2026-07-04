@@ -130,6 +130,9 @@ function fakeGithubClient(opts: { fail?: boolean } = {}): GitHubClient & {
     async getRemainingRateLimit() {
       return 5000;
     },
+    async getPullRequestDiff() {
+      return 'diff --git a/x b/x\n';
+    },
   };
 }
 

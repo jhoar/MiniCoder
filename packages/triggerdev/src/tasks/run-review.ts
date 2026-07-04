@@ -1,0 +1,404 @@
+import {
+  AdapterRegistry,
+  AgentRole,
+  AgentRunRecorder,
+  EscalateToHumanHandler,
+  FeatureExecutionState,
+  FindingSeverity,
+  FIX_ATTEMPT_THRESHOLD,
+  RecordChangesRequestedHandler,
+  StartFixingHandler,
+  TransactionalCommandExecutor,
+  generateId,
+  normalizeReviewerFindings,
+  insertReviewFindings,
+} from '@minicoder/core';
+import type {
+  CommandEnvelope,
+  DbClient,
+  GitHubClient,
+  ReviewerAgentAdapter,
+  ReviewerInput,
+  ReviewFindingInsert,
+} from '@minicoder/core';
+import { ExecutionLane } from '@minicoder/workflow';
+import type { AcquiredLock } from '@minicoder/workflow';
+import type { RunReviewPayload } from './types.js';
+import { systemActor } from './actor.js';
+import { isTransientRace as isTransientRaceShared } from './transient-race.js';
+import { requireNonBlankEnvVar } from './env.js';
+
+export type { RunReviewPayload };
+
+export interface RunReviewResult {
+  projectId: string;
+  featureRunId: string;
+  reviewed: boolean;
+  decision: 'approved' | 'changes_requested' | 'escalated' | null;
+}
+
+const recordChangesRequestedHandler = new RecordChangesRequestedHandler();
+const escalateToHumanHandler = new EscalateToHumanHandler();
+const startFixingHandler = new StartFixingHandler();
+const EXECUTION_LANE_TTL_MS = 30_000;
+
+// This task never attempts SelectFeature/StartCoding-style transitions; only an in-flight
+// idempotency-key race with a concurrent invocation of this same task, or the feature run
+// vanishing underneath us, are expected non-fatal races (mirrors run-coder.ts's narrower set).
+const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'not-found']);
+
+function isTransientRace(err: unknown): boolean {
+  return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
+}
+
+export type GithubClientFactory = () => Promise<GitHubClient>;
+/** Builds a fresh `ReviewerAgentAdapter` instance for this one run, given the project's repo
+ * owner/repo — a factory (not a singleton) because one deployment can serve multiple projects
+ * with different GitHub repos, and `ReviewerInput` itself carries no repo/credential fields,
+ * mirroring `CoderAdapterFactory` in run-coder.ts (docs/06 Phase 10). */
+export type ReviewerAdapterFactory = (opts: {
+  owner: string;
+  repo: string;
+  githubClient: GitHubClient;
+}) => Promise<ReviewerAgentAdapter>;
+
+function resolveDefaultGithubClientFactory(): GithubClientFactory {
+  return async () => {
+    const token = requireNonBlankEnvVar(
+      'GITHUB_TOKEN',
+      'run-review requires a GitHub credential (GitHub App installation token or PAT) to fetch ' +
+        'the pull request diff — see docs/07-security-and-secrets.md §3.',
+    );
+    const { OctokitGitHubClient } = await import('@minicoder/github');
+    return new OctokitGitHubClient({ auth: token });
+  };
+}
+
+/**
+ * Constructs the real reference `ClaudeReviewerAdapter` from env config. Deliberately reuses the
+ * same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars run-coder.ts uses for code
+ * generation — simpler than introducing a parallel `REVIEW_*` env-var family when the same
+ * OpenAI-compatible endpoint can serve both roles (docs/06 Phase 10 "Design decisions"). A
+ * deployment wanting a distinct reviewer model/endpoint can still inject a custom
+ * `ReviewerAdapterFactory` via `RunReviewDeps` instead of using this default.
+ */
+function resolveDefaultReviewerAdapterFactory(): ReviewerAdapterFactory {
+  return async ({ owner, repo, githubClient }) => {
+    const codeGenBaseUrl = requireNonBlankEnvVar(
+      'CODE_GEN_BASE_URL',
+      'run-review requires an OpenAI-compatible endpoint — see docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenApiKey = requireNonBlankEnvVar(
+      'CODE_GEN_API_KEY',
+      'run-review requires an OpenAI-compatible endpoint — see docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenModel = requireNonBlankEnvVar(
+      'CODE_GEN_MODEL',
+      'run-review requires an OpenAI-compatible endpoint — see docs/07-security-and-secrets.md §3.',
+    );
+    const { ClaudeReviewerAdapter, HttpReviewProvider } =
+      await import('@minicoder/adapters-reviewer');
+    return new ClaudeReviewerAdapter({
+      owner,
+      repo,
+      githubClient,
+      reviewProvider: new HttpReviewProvider({
+        baseUrl: codeGenBaseUrl,
+        apiKey: codeGenApiKey,
+        model: codeGenModel,
+      }),
+    });
+  };
+}
+
+const DEFAULT_PRICE_PER_1K_INPUT_TOKENS = 0.00015;
+const DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS = 0.0006;
+const REVIEWER_PROMPT_TEMPLATE_VERSION = 'reviewer-v1';
+
+function parsePriceEnvVar(envVarName: string, fallback: number): number {
+  const raw = process.env[envVarName];
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    // eslint-disable-next-line no-console
+    console.error(`run-review: ${envVarName} is set but blank; falling back to ${fallback}`);
+    return fallback;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `run-review: ${envVarName}="${raw}" is not a finite, non-negative number; falling back to ${fallback}`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
+function computeCostUsd(inputTokens: number, outputTokens: number): number {
+  // Reuses run-coder.ts's CODE_GEN_PRICE_PER_1K_* env vars — same backend, same pricing knobs.
+  const pricePerKInput = parsePriceEnvVar(
+    'CODE_GEN_PRICE_PER_1K_INPUT_TOKENS',
+    DEFAULT_PRICE_PER_1K_INPUT_TOKENS,
+  );
+  const pricePerKOutput = parsePriceEnvVar(
+    'CODE_GEN_PRICE_PER_1K_OUTPUT_TOKENS',
+    DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS,
+  );
+  return (inputTokens / 1000) * pricePerKInput + (outputTokens / 1000) * pricePerKOutput;
+}
+
+interface RepositoryRow {
+  owner: string;
+  name: string;
+}
+
+interface FeatureRunRow {
+  id: string;
+  feature_request_id: string;
+  version: number;
+  current_execution_state: string;
+  fix_attempt_count: number;
+}
+
+interface PullRequestRow {
+  pr_number: number;
+}
+
+export interface RunReviewDeps {
+  readonly reviewerAdapterFactory?: ReviewerAdapterFactory;
+  readonly githubClientFactory?: GithubClientFactory;
+}
+
+/**
+ * Bridges the `under_review` state to a real reviewer-adapter invocation and back into the state
+ * machine (docs/06 Phase 10): resolves the active `ReviewerAgentAdapter` via `AdapterRegistry`,
+ * invokes it through `AgentRunRecorder`, normalizes its output (the single normalization point —
+ * see `@minicoder/core`'s `normalizeReviewerFindings()` doc comment), writes `review_findings`
+ * unconditionally (covers the "approved but with non-blocking findings" case, which has no state
+ * transition to piggyback on), then dispatches `RecordChangesRequestedCommand`/
+ * `EscalateToHumanCommand`/nothing depending on the findings. A separate, independently
+ * scheduled/triggered task from `run-coder.ts` and `start-next-feature.ts` (CLAUDE.md's "never
+ * inline" rule for GitHub-facing/execution tasks).
+ *
+ * No `RecordApprovedByPolicyCommand` is dispatched on approval (Phase 12 — Merge Gate — owns that
+ * transition); a clean review simply leaves the feature run at `under_review` with its
+ * non-blocking findings recorded for audit, satisfying "non-blocking findings do not block merge"
+ * because there is no merge gate yet to block.
+ */
+export async function runImpl(
+  payload: RunReviewPayload,
+  db: DbClient,
+  deps: RunReviewDeps = {},
+): Promise<RunReviewResult> {
+  const githubClientFactory = deps.githubClientFactory ?? resolveDefaultGithubClientFactory();
+  const { projectId, featureRunId, correlationId, reviewerAdapterName } = payload;
+
+  const runRows = await db.query<FeatureRunRow>(
+    `SELECT fr.id, fr.feature_request_id, fr.version, fr.current_execution_state, fr.fix_attempt_count
+     FROM feature_runs fr
+     JOIN feature_requests freq ON fr.feature_request_id = freq.id
+     WHERE fr.id = ? AND freq.project_id = ?`,
+    [featureRunId, projectId],
+  );
+  const run = runRows[0];
+  if (!run || run.current_execution_state !== FeatureExecutionState.UNDER_REVIEW) {
+    return { projectId, featureRunId, reviewed: false, decision: null };
+  }
+
+  const repoRows = await db.query<RepositoryRow>(
+    `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+    [projectId],
+  );
+  const prRows = await db.query<PullRequestRow>(
+    `SELECT pr_number FROM pull_requests WHERE feature_run_id = ?`,
+    [featureRunId],
+  );
+  const repo = repoRows[0];
+  const pr = prRows[0];
+  if (!repo || !pr) {
+    return { projectId, featureRunId, reviewed: false, decision: null };
+  }
+
+  const cycleRows = await db.query<{ maxCycle: number | null }>(
+    `SELECT MAX(review_cycle) as maxCycle FROM review_findings WHERE feature_run_id = ?`,
+    [featureRunId],
+  );
+  const reviewCycle = (cycleRows[0]?.maxCycle ?? 0) + 1;
+
+  const githubClient = await githubClientFactory();
+  const reviewerAdapterFactory =
+    deps.reviewerAdapterFactory ?? resolveDefaultReviewerAdapterFactory();
+
+  const registry = new AdapterRegistry(db);
+  const recorder = new AgentRunRecorder(db, registry);
+  const adapterRecord = await registry.resolve(AgentRole.REVIEWER, reviewerAdapterName);
+  const adapter = await reviewerAdapterFactory({
+    owner: repo.owner,
+    repo: repo.name,
+    githubClient,
+  });
+
+  const input: ReviewerInput = {
+    projectId,
+    featureRunId,
+    prNumber: pr.pr_number,
+    reviewCycle,
+    correlationId,
+  };
+
+  const { agentRunId, output } = await recorder.record(
+    {
+      adapterId: adapterRecord.id,
+      role: AgentRole.REVIEWER,
+      projectId,
+      featureRunId,
+      featureRequestId: run.feature_request_id,
+      input,
+      capabilitiesUsed: ['can_review_pull_request', 'can_return_structured_findings'],
+      contextPack: { content: input },
+      promptTemplateVersion: REVIEWER_PROMPT_TEMPLATE_VERSION,
+      costExtractor: (outcome) => {
+        if (!outcome.ok) return null;
+        const out = outcome.output as { tokensUsed?: { input: number; output: number } };
+        if (!out.tokensUsed) return null;
+        return {
+          inputTokens: out.tokensUsed.input,
+          outputTokens: out.tokensUsed.output,
+          costUsd: computeCostUsd(out.tokensUsed.input, out.tokensUsed.output),
+          provider: process.env['CODE_GEN_PROVIDER_NAME'] ?? 'openai-compatible',
+          model: process.env['CODE_GEN_MODEL'],
+        };
+      },
+    },
+    () => adapter.run(input),
+  );
+
+  // Single normalization point (Phase 10 design decision): every adapter (ClaudeReviewerAdapter
+  // or a test MockReviewerAdapter) returns a raw ReviewerOutput; this is the one place that
+  // validates/shapes it into insert-ready ReviewFindingInsert rows.
+  const findings: ReviewFindingInsert[] = normalizeReviewerFindings(output);
+
+  // Written unconditionally, regardless of which branch below fires — this is what makes the
+  // "approved but with non-blocking findings" case (no state transition) still durably recorded.
+  await insertReviewFindings(db, {
+    featureRunId,
+    reviewerRunId: agentRunId,
+    reviewCycle,
+    findings,
+  });
+
+  const executor = new TransactionalCommandExecutor(db);
+  const actor = systemActor(correlationId);
+
+  const hasRequiresHumanDecision = findings.some(
+    (f) => f.severity === FindingSeverity.REQUIRES_HUMAN_DECISION,
+  );
+  const hasBlocking = findings.some((f) => f.severity === FindingSeverity.BLOCKING);
+
+  if (hasRequiresHumanDecision) {
+    await dispatchEscalation(executor, actor, correlationId, projectId, featureRunId, run.version);
+    return { projectId, featureRunId, reviewed: true, decision: 'escalated' };
+  }
+
+  if (hasBlocking) {
+    if (run.fix_attempt_count >= FIX_ATTEMPT_THRESHOLD) {
+      await dispatchEscalation(
+        executor,
+        actor,
+        correlationId,
+        projectId,
+        featureRunId,
+        run.version,
+      );
+      return { projectId, featureRunId, reviewed: true, decision: 'escalated' };
+    }
+
+    const reviewId = `review-${featureRunId}-${reviewCycle}`;
+    let changesRequestedVersion: number;
+    try {
+      const envelope: CommandEnvelope<Record<string, unknown>> = {
+        commandId: generateId(),
+        idempotencyKey: `changes-requested:${featureRunId}:${reviewId}`,
+        payload: { featureRunId, projectId, expectedVersion: run.version, reviewId },
+        actor,
+        correlationId,
+      };
+      await executor.execute(recordChangesRequestedHandler, envelope);
+      const versionRows = await db.query<{ version: number }>(
+        `SELECT version FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      changesRequestedVersion = versionRows[0]?.version ?? run.version + 1;
+    } catch (err) {
+      if (isTransientRace(err)) {
+        return { projectId, featureRunId, reviewed: false, decision: null };
+      }
+      throw err;
+    }
+
+    // StartFixingCommand needs the execution-lane lock (unlike RecordChangesRequestedCommand),
+    // mirroring run-coder.ts's ExecutionLane acquire/release/isTransientRace pattern.
+    const lane = new ExecutionLane(db);
+    let lock: AcquiredLock;
+    try {
+      lock = await lane.acquireForProject(projectId, 'run-review-task', EXECUTION_LANE_TTL_MS);
+    } catch (err) {
+      if (isTransientRace(err)) {
+        return { projectId, featureRunId, reviewed: true, decision: 'changes_requested' };
+      }
+      throw err;
+    }
+    try {
+      const startFixingEnvelope: CommandEnvelope<Record<string, unknown>> = {
+        commandId: generateId(),
+        idempotencyKey: `start-fixing:${featureRunId}:${changesRequestedVersion}`,
+        payload: { featureRunId, projectId, expectedVersion: changesRequestedVersion },
+        actor,
+        correlationId,
+        lockContext: {
+          lockId: lock.lockId,
+          fence: lock.fence,
+          holderId: lock.holderId,
+          projectId,
+          resourceKey: lock.resourceKey,
+        },
+      };
+      await executor.execute(startFixingHandler, startFixingEnvelope);
+    } catch (err) {
+      if (!isTransientRace(err)) throw err;
+    } finally {
+      await lane.releaseForProject(lock);
+    }
+
+    return { projectId, featureRunId, reviewed: true, decision: 'changes_requested' };
+  }
+
+  // Only non_blocking/nit/question/out_of_scope findings (or none at all) — no transition;
+  // the feature run stays at under_review (Phase 12's Merge Gate owns the next hop).
+  return { projectId, featureRunId, reviewed: true, decision: 'approved' };
+}
+
+async function dispatchEscalation(
+  executor: TransactionalCommandExecutor,
+  actor: ReturnType<typeof systemActor>,
+  correlationId: string,
+  projectId: string,
+  featureRunId: string,
+  expectedVersion: number,
+): Promise<void> {
+  const envelope: CommandEnvelope<Record<string, unknown>> = {
+    commandId: generateId(),
+    idempotencyKey: `escalate-human-review:${featureRunId}`,
+    payload: {
+      featureRunId,
+      projectId,
+      expectedVersion,
+      reason:
+        'Reviewer produced a requires_human_decision finding or exceeded the fix-attempt threshold',
+    },
+    actor,
+    correlationId,
+  };
+  await executor.execute(escalateToHumanHandler, envelope);
+}

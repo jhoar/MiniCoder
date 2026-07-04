@@ -11,6 +11,7 @@ export const ALL_TASK_IDS = [
   'activate-approved-backlog',
   'start-next-feature',
   'run-coder',
+  'run-review',
   'github-reconciliation',
   'export-plan',
   'export-backlog',

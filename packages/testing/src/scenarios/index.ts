@@ -9,6 +9,7 @@ import { githubRaceScenario } from './github-race.js';
 import { finalDesignDocumentScenario } from './final-design-document.js';
 import { executionOrchestratorScenario } from './execution-orchestrator.js';
 import { coderAdapterRunScenario } from './coder-adapter-run.js';
+import { reviewFixLoopScenario } from './review-fix-loop.js';
 
 export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['planning-basic', planningBasicScenario],
@@ -21,6 +22,7 @@ export const SCENARIO_REGISTRY: Map<string, Scenario> = new Map([
   ['final-design-document', finalDesignDocumentScenario],
   ['execution-orchestrator', executionOrchestratorScenario],
   ['coder-adapter-run', coderAdapterRunScenario],
+  ['review-fix-loop', reviewFixLoopScenario],
 ]);
 
 export function getScenario(name: string): Scenario {

@@ -1142,10 +1142,97 @@ observability). Git Data API methods on `GitHubClient` and an `agent_runs.trigge
 were both considered and explicitly rejected (see "Delivered modules" above) — do not re-propose
 either without new information.
 
-## Phase 10 — Reference Reviewer Adapter and Review/Fix Loop
+## Phase 10 — Reference Reviewer Adapter and Review/Fix Loop ✓
 
-Deliver a reference Reviewer adapter (e.g., `ClaudeReviewerAdapter`), a structured review-finding
-parser/normalizer, the review/fix loop task, coder-response records, and review-cycle counting.
+> **Status: Complete** (2026-07-04)
+
+Delivers a reference Reviewer adapter (`ClaudeReviewerAdapter`), a structured review-finding
+parser/normalizer, the `run-review` Workflow Layer task, coder-response records, and a
+feature-level fix-attempt counter. This is where everything downstream of `under_review` stops
+being dead code: before this phase, the matrix's review/fix-loop rows (`under_review ->
+changes_requested`, `changes_requested -> fixing`, `ci_failed -> changes_requested`) were declared
+but had no real reviewer-adapter-driven caller, `review_findings`/`coder_responses` had zero
+production writers, and `feature_runs` had no fix-attempt-count column at all.
+
+**Scope decisions:**
+
+1. **The Reviewer adapter needs no sandbox — a real simplification versus Phase 9.** Reviewing a
+   pull request is read-only (fetch the diff, ask an LLM, return findings); `ClaudeReviewerAdapter`
+   calls its injected `ReviewProvider` directly from the `run-review` Trigger.dev task process, with
+   no container isolation to manage. `HttpReviewProvider` is the one shipped implementation — a
+   plain `fetch`-based OpenAI-compatible client, mirroring `HttpCodeGenerationProvider`'s shape.
+2. **Single feature-level `fix_attempt_count` counter, not per-finding/reopening tracking.**
+   `FIX_ATTEMPT_THRESHOLD = 5` (`packages/core/src/domain/constants.ts`) is checked everywhere the
+   matrix calls for a fix-attempt guard. docs/01 §5.8's finer-grained "two fix attempts per
+   finding, one reopening" limits are explicitly deferred, not designed away.
+3. **No `RecordApprovedByPolicyCommand` invented.** A clean review (no blocking, no
+   `requires_human_decision` findings) writes its (non-blocking) `review_findings` rows and leaves
+   the feature run at `under_review` — there is no merge gate yet to block, so "non-blocking
+   findings do not block merge" holds trivially until Phase 12 adds a real gate.
+4. **One normalization point.** `run-review.ts` always calls `@minicoder/core`'s
+   `normalizeReviewerFindings()` on the adapter's raw output, regardless of which adapter produced
+   it (`ClaudeReviewerAdapter` or a test `MockReviewerAdapter`) — the adapter itself returns raw,
+   unvalidated `ReviewFindingOutput[]`.
+5. **`ci_failed` next-transition ownership stays inside `reconcileGithubState()`.** Immediately
+   after a `ci_running -> ci_failed` transition, the same bounded catch-up loop dispatches
+   `RequestChangesAfterCiFailCommand` (below threshold) or `EscalateToHumanCommand` (at/over) — so
+   both the webhook path and the scheduled `github-reconciliation` task get this for free.
+6. **The `CODE_GEN_*` env vars are reused for the reviewer LLM backend**, rather than introducing a
+   parallel `REVIEW_*` family — the same OpenAI-compatible endpoint can serve both roles by default;
+   a deployment wanting a distinct reviewer model can still inject a custom `ReviewerAdapterFactory`.
+7. **A pre-existing idempotency-key bug was fixed while touching this matrix row.** `ci_failed ->
+changes_requested`'s template lacked a per-occurrence discriminator
+   (`changes-requested-after-ci:{featureRunId}`) even though this edge can recur across multiple
+   CI-failure cycles for the same feature run — fixed to
+   `changes-requested-after-ci:{featureRunId}:{expectedVersion}`.
+
+**Delivered modules:**
+
+- `packages/migrations/migrations/0011_fix_attempt_count.*` — adds `feature_runs.fix_attempt_count
+INTEGER NOT NULL DEFAULT 0` (additive only; `EXPECTED_TABLES` count is unchanged — no new table).
+- `packages/core/src/adapters/types.ts` — `ReviewFindingOutput.severity` widened to the full
+  6-value `FindingSeverity` domain (`out_of_scope`/`requires_human_decision` were missing from the
+  adapter contract); `CoderInput` gains an optional `openFindings` field for fix-cycle re-entry.
+- `packages/core/src/review/` (new) — `normalize-findings.ts` (`ReviewFindingInsertSchema`,
+  `normalizeReviewerFindings()`) and `write-findings.ts` (`insertReviewFindings()`, a non-command
+  evidence-data writer with deterministic `review-finding:{featureRunId}:{reviewCycle}:{index}`
+  ids and `ON CONFLICT (id) DO NOTHING` for idempotent retry — the same category of writer as
+  `agent_context_packs`).
+- `packages/core/src/domain/constants.ts` (new) — `FIX_ATTEMPT_THRESHOLD`.
+- `packages/core/src/commands/handlers/github/record-changes-requested.ts` — extended with the
+  fix-attempt-threshold guard, `increment_fix_attempt_count` side effect, and optional
+  `findings`/`reviewerRunId` payload fields (populated by `run-review.ts`, absent for
+  `reconcileGithubState()`'s GitHub-human-review caller).
+- `packages/core/src/commands/handlers/github/record-ci-failed.ts` — extended to insert one
+  blocking `review_findings` row (category `ci_failure`) in the same transaction as the state
+  transition — the matrix's `record_blocking_finding` side effect.
+- `packages/core/src/commands/handlers/github/request-changes-after-ci-fail.ts` (new) —
+  `RequestChangesAfterCiFailHandler`, `ci_failed -> changes_requested`.
+- `packages/core/src/github/client.ts` / `packages/github/src/octokit-client.ts` /
+  `packages/testing/src/services/mock-github-client.ts` — new `GitHubClient.getPullRequestDiff()`
+  method (Octokit's diff media type; a deterministic fake in the mock).
+- `packages/core/src/github/reconcile.ts` — new `CI_FAILED` branch dispatching
+  `RequestChangesAfterCiFailCommand`/`EscalateToHumanCommand`.
+- `packages/adapters-reviewer/` (new package, `@minicoder/adapters-reviewer`) — `review-provider.ts`
+  (`ReviewProvider` interface), `http-review-provider.ts` (`HttpReviewProvider`),
+  `claude-reviewer-adapter.ts` (`ClaudeReviewerAdapter`).
+- `packages/triggerdev/src/tasks/run-review.ts` (new) — the 17th canonical task id (`run-review`),
+  bridging `under_review` to a real reviewer-adapter invocation and back into the state machine,
+  mirroring `run-coder.ts`'s shape (`AgentRunRecorder`, `ExecutionLane`, `isTransientRace()`).
+- `packages/triggerdev/src/tasks/run-coder.ts` — extended to also accept `fixing` (not just
+  `coding`); on a fix-cycle push, writes one `coder_responses` row (`response_type='fixed'`) per
+  currently-unresolved `review_findings` row and marks each resolved (the "optimistic fixed"
+  simplification — `CoderOutput` carries no per-finding disposition today).
+- Testing: `packages/testing/src/fixtures/review-fix-loop.ts` and
+  `packages/testing/src/scenarios/review-fix-loop.ts` (new) exercise the real handlers/task end to
+  end (main loop, fix-attempt-threshold escalation, CI-failure auto-blocking-finding path) — unlike
+  the older `review-loop` fixture/scenario, which is left untouched.
+
+**Explicitly deferred to later phases:** `RecordApprovedByPolicyCommand`/`MergeIfReadyCommand`/the
+merge path and `merge_gate_evaluations` (Phase 12); `ArbiterAgentAdapter` wiring, disagreement
+records, `human_required` disposition UI/API (Phase 11) — a coder response of `'disputed'` is
+simply left for Phase 11 to pick up; per-finding/reopening fix-attempt granularity (docs/01 §5.8,
+deliberately simplified to one aggregate counter — see scope decision #2 above).
 
 Acceptance: reviewer output becomes structured findings; blocking findings trigger fixes;
 non-blocking findings do not block merge; review-loop limits are enforced.

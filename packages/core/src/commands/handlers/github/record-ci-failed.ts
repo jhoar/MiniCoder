@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FeatureExecutionState, UserRole } from '../../../domain/states.js';
+import { FeatureExecutionState, UserRole, FindingSeverity } from '../../../domain/states.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { FEATURE_EXECUTION_MATRIX } from '../../../statemachine/machines/feature-execution.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
@@ -13,6 +13,7 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
+import { insertReviewFindings } from '../../../review/write-findings.js';
 
 export const RecordCiFailedPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -30,15 +31,21 @@ interface FeatureRunRow {
   id: string;
   current_execution_state: string;
   version: number;
+  fix_attempt_count: number;
 }
 
 /**
- * The matrix's 'record_blocking_finding' side effect for ci_running -> ci_failed is deferred:
- * ReviewerAgentAdapter-driven blocking findings and the review_findings write path are Phase 10
- * scope (review/fix loop). This handler performs the state transition, pull_requests.ci_status
- * mirror, and workflow/outbox events only — the fix-attempt threshold check and
- * RequestChangesAfterCiFailCommand dispatch remain Phase 8/10 scope (start-next-feature /
- * review-fix loop), consistent with CLAUDE.md's Phase 7 scope boundary.
+ * The matrix's 'record_blocking_finding' side effect for ci_running -> ci_failed (Phase 10):
+ * inserts one blocking `review_findings` row (category 'ci_failure') referencing the failing
+ * `checkRunId`/`reason` in the same transaction as the state transition.
+ * `reviewer_run_id` is null — a CI failure is not a `ReviewerAgentAdapter` invocation, so there is
+ * no `agent_runs` row to attribute it to. `review_cycle` uses the run's current
+ * `fix_attempt_count + 1` (i.e. the cycle this failure is about to trigger a fix for) so CI-
+ * failure findings interleave sensibly with reviewer-driven findings' cycle numbering.
+ * `RequestChangesAfterCiFailCommand`/`EscalateToHumanCommand` dispatch (the matrix's next-hop
+ * decision, gated on `fix_attempt_count`) stays outside this handler — see
+ * `reconcileGithubState()`, which owns that follow-up for both the webhook and scheduled-fallback
+ * paths (CLAUDE.md's Reference Reviewer Adapter and Review/Fix Loop Operational Constraints).
  */
 export class RecordCiFailedHandler implements CommandHandler<
   RecordCiFailedPayload,
@@ -64,7 +71,7 @@ export class RecordCiFailedHandler implements CommandHandler<
       if (!claim.owned) return claim.result;
 
       const rows = await tx.query<FeatureRunRow>(
-        `SELECT fr.id, fr.current_execution_state, fr.version
+        `SELECT fr.id, fr.current_execution_state, fr.version, fr.fix_attempt_count
          FROM feature_runs fr
          JOIN feature_requests freq ON fr.feature_request_id = freq.id
          WHERE fr.id = ? AND freq.project_id = ?`,
@@ -88,6 +95,18 @@ export class RecordCiFailedHandler implements CommandHandler<
       if (affected === 0) {
         throw new OptimisticLockError('feature_runs', featureRunId, expectedVersion, -1);
       }
+      await insertReviewFindings(tx, {
+        featureRunId,
+        reviewerRunId: null,
+        reviewCycle: run.fix_attempt_count + 1,
+        findings: [
+          {
+            severity: FindingSeverity.BLOCKING,
+            category: 'ci_failure',
+            description: `CI check ${checkRunId} failed${reason ? `: ${reason}` : ''}`,
+          },
+        ],
+      });
       // pull_requests.ci_status is written by reconcileGithubState's unconditional
       // syncPullRequestObservedState() top-level mirror sync, not here (HIGH-3 fix).
       const eventId = await writeWorkflowEvent(tx, {

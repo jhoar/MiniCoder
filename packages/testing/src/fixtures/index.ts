@@ -10,6 +10,7 @@ import { githubRaceFixture } from './github-race.js';
 import { finalDesignDocumentFixture } from './final-design-document.js';
 import { executionOrchestratorFixture } from './execution-orchestrator.js';
 import { coderAdapterRunFixture } from './coder-adapter-run.js';
+import { reviewFixLoopFixture } from './review-fix-loop.js';
 
 export const FIXTURE_REGISTRY: Map<FixtureName, Fixture> = new Map([
   ['planning-basic', planningBasicFixture],
@@ -23,6 +24,7 @@ export const FIXTURE_REGISTRY: Map<FixtureName, Fixture> = new Map([
   ['final-design-document', finalDesignDocumentFixture],
   ['execution-orchestrator', executionOrchestratorFixture],
   ['coder-adapter-run', coderAdapterRunFixture],
+  ['review-fix-loop', reviewFixLoopFixture],
 ]);
 
 export function getFixture(name: FixtureName): Fixture {
