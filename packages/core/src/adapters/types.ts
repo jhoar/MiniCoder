@@ -21,6 +21,10 @@ export interface CoderInput {
   featureTitle: string;
   acceptanceCriteria: string[];
   correlationId: string;
+  /** Unresolved review_findings for this feature run (Phase 10 fix-cycle re-entry), if any —
+   * only populated when run-coder.ts invokes the adapter against a run in `fixing` rather than
+   * `coding`. Absent/empty for a first-pass `coding` invocation. */
+  openFindings?: Array<{ id: string; description: string }>;
 }
 
 export interface CoderOutput {
@@ -40,9 +44,15 @@ export interface ReviewerInput {
 }
 
 export interface ReviewFindingOutput {
-  severity: 'blocking' | 'non_blocking' | 'nit' | 'question';
+  // Widened (Phase 10) to the full FindingSeverity domain (docs/00 §3.7) — 'out_of_scope' and
+  // 'requires_human_decision' were missing from the adapter contract even though the domain enum
+  // (packages/core/src/domain/states.ts's FindingSeverity) always had all 6 values.
+  severity: 'blocking' | 'non_blocking' | 'nit' | 'question' | 'out_of_scope' | 'requires_human_decision';
   category: string;
   description: string;
+  filePath?: string;
+  lineStart?: number;
+  lineEnd?: number;
 }
 
 export interface ReviewerOutput {
