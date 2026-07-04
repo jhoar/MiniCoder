@@ -125,13 +125,30 @@ const DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS = 0.0006;
 
 const CODER_PROMPT_TEMPLATE_VERSION = 'coder-v1';
 
-// MEDIUM-3 code-review fix (round 2): a malformed, negative, or non-finite pricing env var must
-// never silently poison a persisted cost_records row — fall back to the default (with a logged
-// warning) instead of letting NaN/Infinity/a negative number through.
+// MEDIUM-1 code-review fix (round 3): a blank/whitespace-only override must not silently degrade
+// run provenance to an empty string — fall back to the default, same posture as parsePriceEnvVar.
+function resolvePromptTemplateVersion(): string {
+  const raw = process.env['CODER_PROMPT_TEMPLATE_VERSION'];
+  if (raw === undefined) return CODER_PROMPT_TEMPLATE_VERSION;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : CODER_PROMPT_TEMPLATE_VERSION;
+}
+
+// MEDIUM-3 code-review fix (round 2, hardened round 3): a malformed, negative, non-finite, or
+// blank/whitespace-only pricing env var must never silently poison a persisted cost_records row —
+// fall back to the default (with a logged warning) instead. `Number('')`/`Number('   ')` both
+// evaluate to `0`, which would otherwise be silently accepted as a valid (if unlikely) real price;
+// trimming and explicitly rejecting the empty string closes that gap.
 function parsePriceEnvVar(envVarName: string, fallback: number): number {
   const raw = process.env[envVarName];
   if (raw === undefined) return fallback;
-  const parsed = Number(raw);
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    // eslint-disable-next-line no-console
+    console.error(`run-coder: ${envVarName} is set but blank; falling back to ${fallback}`);
+    return fallback;
+  }
+  const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed < 0) {
     // eslint-disable-next-line no-console
     console.error(
@@ -254,8 +271,7 @@ export async function runImpl(
       // MEDIUM-1 code-review fix (round 2): AgentRunRecorder persists promptTemplateVersion when
       // supplied, but this call site never passed one, so the column stayed NULL for every real
       // coder run despite the fix proving out fine for synthetic/test calls.
-      promptTemplateVersion:
-        process.env['CODER_PROMPT_TEMPLATE_VERSION'] ?? CODER_PROMPT_TEMPLATE_VERSION,
+      promptTemplateVersion: resolvePromptTemplateVersion(),
       costExtractor: (outcome) => {
         if (!outcome.ok) return null;
         const out = outcome.output as { tokensUsed?: { input: number; output: number } };

@@ -360,7 +360,7 @@ describe('run-coder', () => {
       }
     });
 
-    it.each(['not-a-number', 'NaN', 'Infinity', '-1'])(
+    it.each(['not-a-number', 'NaN', 'Infinity', '-1', '', '   '])(
       'falls back to the default price when the env var is invalid (%s)',
       async (badValue) => {
         process.env['CODE_GEN_PRICE_PER_1K_INPUT_TOKENS'] = badValue;
@@ -426,6 +426,83 @@ describe('run-coder', () => {
         [featureRunId],
       );
       expect(agentRuns[0]?.cost_usd).toBeCloseTo((100 / 1000) * 1 + (40 / 1000) * 2, 6);
+    });
+  });
+
+  describe('prompt template version env var validation (MEDIUM-1 code-review fix, round 3)', () => {
+    const ENV_VAR = 'CODER_PROMPT_TEMPLATE_VERSION';
+    let original: string | undefined;
+
+    beforeEach(() => {
+      original = process.env[ENV_VAR];
+    });
+
+    afterEach(() => {
+      if (original === undefined) delete process.env[ENV_VAR];
+      else process.env[ENV_VAR] = original;
+    });
+
+    it.each(['', '   '])(
+      'falls back to the default prompt template version when the env var is blank (%j)',
+      async (blankValue) => {
+        process.env[ENV_VAR] = blankValue;
+
+        const db = createTestDb();
+        insertTestProject(db, PROJECT_ID);
+        const { featureRunId } = await seedCodingFeatureRun(db);
+        await registerCoderAdapter(db);
+
+        await runImpl(
+          {
+            projectId: PROJECT_ID,
+            featureRunId,
+            correlationId: 'corr-prompt-version',
+            idempotencyKey: 'idem-prompt-version',
+            coderAdapterName: 'FakeCoderAdapter',
+          },
+          db,
+          {
+            coderAdapterFactory: async () => fakeCoderAdapter('success'),
+            githubClientFactory: async () => fakeGithubClient(),
+          },
+        );
+
+        const agentRuns = await db.query<{ prompt_template_version: string | null }>(
+          `SELECT prompt_template_version FROM agent_runs WHERE feature_run_id = ?`,
+          [featureRunId],
+        );
+        expect(agentRuns[0]?.prompt_template_version).toBe('coder-v1');
+      },
+    );
+
+    it('honors a valid custom prompt template version', async () => {
+      process.env[ENV_VAR] = 'coder-v2-custom';
+
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedCodingFeatureRun(db);
+      await registerCoderAdapter(db);
+
+      await runImpl(
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-prompt-version-2',
+          idempotencyKey: 'idem-prompt-version-2',
+          coderAdapterName: 'FakeCoderAdapter',
+        },
+        db,
+        {
+          coderAdapterFactory: async () => fakeCoderAdapter('success'),
+          githubClientFactory: async () => fakeGithubClient(),
+        },
+      );
+
+      const agentRuns = await db.query<{ prompt_template_version: string | null }>(
+        `SELECT prompt_template_version FROM agent_runs WHERE feature_run_id = ?`,
+        [featureRunId],
+      );
+      expect(agentRuns[0]?.prompt_template_version).toBe('coder-v2-custom');
     });
   });
 });

@@ -96,10 +96,15 @@ export const PlanApprovedPayloadSchema = z.object({
 });
 export type PlanApprovedPayload = z.infer<typeof PlanApprovedPayloadSchema>;
 
+// HIGH-1 code-review fix (round 3): the real producer (ActivatePlanHandler) emits
+// `activatedFeatureCount`, not `featureRequestCount` — the round-2 schema-level test hand-built a
+// payload with the schema's own (wrong) field name, so it passed while every real `plan.activated`
+// event would still fail InboxProcessor validation. Renamed to match the actual producer rather
+// than changing the handler, since nothing else in the codebase depended on the old field name.
 export const PlanActivatedPayloadSchema = z.object({
   planId: z.string().min(1),
   projectId: z.string().min(1),
-  featureRequestCount: z.number().int().nonnegative(),
+  activatedFeatureCount: z.number().int().nonnegative(),
 });
 export type PlanActivatedPayload = z.infer<typeof PlanActivatedPayloadSchema>;
 

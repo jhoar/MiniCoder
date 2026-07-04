@@ -39,12 +39,14 @@ async function timed<T>(fn: () => Promise<T>): Promise<{ result: T; durationMs: 
 }
 
 /**
- * Reference `CoderAgentAdapter` implementation (docs/06 Phase 9). Runs entirely inside an
- * ephemeral, egress-restricted sandbox container (docs/03 §11.1, docs/07 §6): clones the repo,
- * calls the injected `CodeGenerationProvider`, writes/tests/commits/pushes the result, and always
- * tears the container down in a `finally` — success, failure, or a thrown error. Never merges
- * (docs/03 §11.3). Never imports a provider SDK directly; `CodeGenerationProvider` is the only
- * external-call seam (docs/06 Phase 9 "Scope decisions" #1).
+ * Reference `CoderAgentAdapter` implementation (docs/06 Phase 9). Clone/list-files/write/test/
+ * commit/push all run inside an ephemeral, egress-restricted sandbox container (docs/03 §11.1,
+ * docs/07 §6), and the container is always torn down in a `finally` — success, failure, or a
+ * thrown error. The code-generation call itself is deliberately host-side, not sandboxed (see the
+ * call site below and docs/07 §6 "Phase 9 implementation status") — the sandbox is the untrusted-
+ * code-execution boundary, so `CODE_GEN_API_KEY` must never be reachable from inside it. Never
+ * merges (docs/03 §11.3). Never imports a provider SDK directly; `CodeGenerationProvider` is the
+ * only external-call seam (docs/06 Phase 9 "Scope decisions" #1).
  */
 export class CodexCoderAdapter implements CoderAgentAdapter {
   readonly role = 'CoderAgentAdapter' as const;

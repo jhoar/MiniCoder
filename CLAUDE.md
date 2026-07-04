@@ -783,6 +783,35 @@ failed`/`coding → blocked` matrix edge was added.** `RecordCodePushedCommand` 
   verbatim would hit a Zod validation error instead of recovering the stuck run. Fixed to include
   `coderAdapterName: 'CodexCoderAdapter'` (the production registry name) in the example.
 
+**Post-implementation review fixes (round 3):**
+
+- **HIGH-1 (`PlanActivatedPayloadSchema` required a field the real producer never emits).**
+  `ActivatePlanHandler` emits `{ planId, projectId, activatedFeatureCount }`, but the schema
+  required `featureRequestCount` — every real `plan.activated` event would fail
+  `InboxProcessor.validateEventPayload()`. Round 2's `schemas.test.ts` missed this because it
+  hand-built a payload using the schema's own (wrong) field name rather than checking against the
+  actual producer. Fixed by renaming the schema field to `activatedFeatureCount` to match the
+  producer (nothing else in the codebase depended on the old name). Round 2's schema-level test
+  alone is not sufficient evidence a payload is real — `packages/testing/src/scenarios/
+backlog-activation.ts` now also parses the actual emitted `plan.activated` outbox row against
+  `EVENT_SCHEMAS['plan.activated']`, a producer-level regression test that would have caught this
+  the first time.
+- **MEDIUM-1 (blank pricing/prompt-template env vars bypassed validation).**
+  `Number('')`/`Number('   ')` both evaluate to `0` in JavaScript, so round 2's
+  `parsePriceEnvVar()` silently accepted a blank `CODE_GEN_PRICE_PER_1K_*_TOKENS` value as valid
+  zero pricing instead of falling back to the default. Fixed by trimming and explicitly rejecting
+  blank values (logs a warning, falls back to the default). Applied the same treatment to
+  `CODER_PROMPT_TEMPLATE_VERSION` via a new `resolvePromptTemplateVersion()` helper, since a blank
+  override would otherwise persist an empty-string `prompt_template_version` instead of the
+  intended default. Tested in `run-coder.test.ts` for `''`/`'   '` on both env vars.
+- **LOW-1 (two stale doc/comment inconsistencies from round 2's trust-boundary decision).**
+  `codex-coder-adapter.ts`'s class-level comment still said the adapter "runs entirely inside" the
+  sandbox, contradicting round 2's documented host-side LLM call. `docs/03`'s Phase 9
+  implementation note incorrectly said `prompt_template_version` is "populated automatically by
+  `AgentRunRecorder`'s `costExtractor` extension" — it is a separate, caller-supplied
+  `RecordRunOptions` field unrelated to `costExtractor`. Both fixed to match the actual
+  implementation.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

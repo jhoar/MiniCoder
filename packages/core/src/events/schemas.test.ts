@@ -69,7 +69,7 @@ describe('event schemas accept generateId()-shaped IDs, never require .uuid()', 
       PlanActivatedPayloadSchema.parse({
         planId: realisticId('plan'),
         projectId: realisticId('proj'),
-        featureRequestCount: 3,
+        activatedFeatureCount: 3,
       }),
     ).not.toThrow();
   });

@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.20
+> Version: 1.0.21
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1086,6 +1086,19 @@ still omitted the now-required `coderAdapterName`. Also clarified (docs-only, no
 the code-generation LLM call is deliberately host-process, not routed through the sandbox's egress
 proxy — the sandbox is the untrusted-code-execution boundary, so the LLM credential must stay out
 of it. See CLAUDE.md's Reference Coder Adapter Operational Constraints "round 2" section for detail.
+
+**Post-implementation review fixes (round 3):** a third re-review found `PlanActivatedPayloadSchema`
+required `featureRequestCount`, a field the real producer (`ActivatePlanHandler`) never emits — it
+emits `activatedFeatureCount` — so every real `plan.activated` event still failed validation
+despite round 2's schema-level test suite, which had hand-built its payload using the schema's own
+(wrong) field name instead of checking the actual producer. Fixed by renaming the schema field and
+adding a producer-level regression test (`backlog-activation` scenario now parses the real emitted
+outbox row against `EVENT_SCHEMAS`, not a hand-built payload). Also fixed: blank
+(empty-string/whitespace) `CODE_GEN_PRICE_PER_1K_*_TOKENS`/`CODER_PROMPT_TEMPLATE_VERSION` env
+vars were silently accepted (`Number('')` evaluates to `0` in JavaScript), bypassing round 2's
+validation — both now explicitly reject blank values and fall back to the default; and two stale
+doc/comment inconsistencies from round 2's trust-boundary decision were corrected. See CLAUDE.md's
+Reference Coder Adapter Operational Constraints "round 3" section for detail.
 
 Acceptance: the adapter implements `CoderAgentAdapter`; the orchestrator does not call provider APIs
 directly (adapter resolution is always via `AdapterRegistry`); a coder run executes inside an

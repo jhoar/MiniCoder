@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_agent_adapter_architecture_specification.md,
 > minicoder_agent_adapter_architecture_specification_testing_updated.md
-> Version: 1.0.1
+> Version: 1.0.2
 > Last-updated: 2026-07-04
 
 Role and adapter names are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md) §4.
@@ -78,8 +78,11 @@ Every adapter invocation creates an `agent_runs` record with `agent_run_id`, `pr
 `estimated_cost`, `actual_cost`, `error_code`, and `error_summary`.
 
 **Phase 9 implementation note.** `provider`/`model`/`prompt_template_version` are real columns on
-`agent_runs` as of migration `0010_agent_run_provider_tracking.*`, populated automatically by
-`AgentRunRecorder`'s `costExtractor` extension. `input_artifact_references`/
+`agent_runs` as of migration `0010_agent_run_provider_tracking.*`. `provider`/`model` are populated
+by `AgentRunRecorder`'s `costExtractor` extension; `prompt_template_version` is a separate,
+caller-supplied `RecordRunOptions` field (`run-coder.ts` passes a `CODER_PROMPT_TEMPLATE_VERSION`
+constant, env-overridable) persisted directly by `AgentRunRecorder` on the initial `agent_runs`
+insert — not derived from `costExtractor`. `input_artifact_references`/
 `output_artifact_references` are **not** separate columns — input maps onto the new
 `agent_context_packs` row id (`AgentRunRecorder`'s `contextPack` option), and output stays in the
 existing `output_summary` JSON; a dedicated join column was considered and rejected as redundant

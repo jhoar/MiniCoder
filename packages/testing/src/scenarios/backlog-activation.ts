@@ -1,4 +1,5 @@
 import { runActivateApprovedBacklog } from '@minicoder/triggerdev';
+import { EVENT_SCHEMAS } from '@minicoder/core';
 import type { Scenario, ScenarioContext } from './types.js';
 
 export const backlogActivationScenario: Scenario = {
@@ -65,5 +66,18 @@ export const backlogActivationScenario: Scenario = {
         `Expected all feature_runs at approved_pending_execution, but ${notPending.length} are not`,
       );
     }
+
+    // HIGH-1 code-review fix (round 3): validate the actual emitted plan.activated outbox
+    // payload against its registered schema, rather than a hand-built payload — this is exactly
+    // how the round-2 fix missed that ActivatePlanHandler emits `activatedFeatureCount`, not the
+    // schema's then-`featureRequestCount`.
+    const outboxRows = await db.query<{ payload: string }>(
+      `SELECT payload FROM outbox_events WHERE event_type = 'plan.activated' ORDER BY created_at DESC LIMIT 1`,
+    );
+    if (outboxRows.length !== 1) {
+      throw new Error(`Expected exactly 1 plan.activated outbox row, found ${outboxRows.length}`);
+    }
+    const payload: unknown = JSON.parse(outboxRows[0]!.payload);
+    EVENT_SCHEMAS['plan.activated']!.parse(payload);
   },
 };
