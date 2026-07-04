@@ -7,6 +7,10 @@ export interface MockPrState {
   checks: Array<{ id: string; state: 'passed' | 'failed' }>;
   mergedAt: string | null;
   mergeSha: string | null;
+  /** Phase 12 (Merge Gate) test seam: when set, `MockGitHubClient.mergePullRequest` throws a
+   * `GithubMergeRejectedError` classified by this reason instead of succeeding — see
+   * `simulateMergeConflict`. */
+  mergeShouldFail: 'sha_mismatch' | 'not_mergeable' | null;
 }
 
 export interface SimulatedEvent {
@@ -30,8 +34,16 @@ export class MockGitHubProvider {
       checks: [],
       mergedAt: null,
       mergeSha: null,
+      mergeShouldFail: null,
     });
     this.recordEvent('pull_request.opened', prNumber, { featureRunId, headSha });
+  }
+
+  /** Phase 12 test seam: makes the next `MockGitHubClient.mergePullRequest` call for this PR
+   * throw a classified `GithubMergeRejectedError` instead of succeeding. */
+  simulateMergeConflict(prNumber: number, reason: 'sha_mismatch' | 'not_mergeable'): void {
+    const pr = this.requirePr(prNumber);
+    pr.mergeShouldFail = reason;
   }
 
   simulatePrSynchronized(prNumber: number, headSha: string): void {

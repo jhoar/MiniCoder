@@ -56,7 +56,14 @@ branch (Phase 10); and the Disagreement, Arbiter, and Human Escalation implement
 (`ResolveDisagreementCommand`, `ResumeFeatureExecutionCommand`, `RetryFeatureCommand`,
 `SkipFeatureCommand`, `BlockFeatureCommand`) and their `minicoder human ...` CLI surface, the new
 terminal `skipped` feature-execution state, and `human_approvals`'s first production writers
-(Phase 11, no new migration).
+(Phase 11, no new migration); and the Merge Gate and Branch Protection implementation — the
+`evaluateMergeGate()` merge-policy engine (`packages/core/src/merge-gate/`), the real
+`RecordApprovedByPolicyCommand`/`MergeIfReadyCommand`/`RecordMergedCommand`/
+`RecordMergeFailedCommand`/`ReconcileMergeFailedCommand` handlers (matrix rows defined since
+Phase 2, given real handlers here), `GitHubClient.mergePullRequest()` and the first production
+caller of `GitHubClient.publishStatusCheck()` (the `minicoder/review-gate` status check), the new
+`run-merge-gate` Trigger.dev task, and the `minicoder merge merge-if-ready` CLI command (Phase 12,
+no new migration — `merge_gate_evaluations` and `pull_requests` already existed).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -901,13 +908,17 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   attempts per finding, one reopening of the same finding" limits are deliberately **not**
   implemented — this is a documented simplification, not an oversight; that granularity is future
   work, tracked but not built in this phase.
-- **No `RecordApprovedByPolicyCommand` is dispatched on a clean review.** When `run-review.ts`'s
-  normalized findings contain no `blocking` and no `requires_human_decision` entries, the task
-  writes the (non-blocking/nit/question/out_of_scope) `review_findings` rows for audit and returns
-  without any state transition — the feature run stays at `under_review`. There is no merge gate
-  yet to block (Phase 12 scope), so "non-blocking findings do not block merge" holds because there
-  is nothing downstream to block on yet. Do not invent a partial `RecordApprovedByPolicyCommand`
-  to "complete" this loop before Phase 12.
+- **No `RecordApprovedByPolicyCommand` is dispatched on a clean review, from `run-review.ts` itself.**
+  When `run-review.ts`'s normalized findings contain no `blocking` and no `requires_human_decision`
+  entries, the task writes the (non-blocking/nit/question/out_of_scope) `review_findings` rows for
+  audit and returns without any state transition — the feature run stays at `under_review`. At the
+  time this was written there was no merge gate yet to block, so "non-blocking findings do not
+  block merge" held because there was nothing downstream to block on yet.
+  **Superseded by Phase 12:** the new, separately-triggered `run-merge-gate` task now provides the
+  follow-up — it evaluates the real Merge Gate and dispatches `RecordApprovedByPolicyCommand` for
+  any feature run it finds at `under_review`, including one left there by this clean-review path.
+  `run-review.ts` itself still does not dispatch it directly (deliberately — see the Merge Gate and
+  Branch Protection Operational Constraints section's "never inline" rule below).
 - **Single normalization point: the task normalizes, the adapter does not.** `run-review.ts`
   always calls `@minicoder/core`'s `normalizeReviewerFindings()` on the raw `ReviewerOutput`
   returned by whichever adapter ran (`ClaudeReviewerAdapter` or a test `MockReviewerAdapter`) —
@@ -1209,6 +1220,125 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   No migration was needed: both tables' columns (plain `TEXT`, no `CHECK` constraints) already
   accommodated every value this phase writes, including the new `human_escalation_resolution`
   `human_approvals.context_type` convention for dispositions unrelated to a specific disagreement.
+
+## Merge Gate and Branch Protection Operational Constraints (`packages/core/src/merge-gate/`, `packages/core/src/commands/handlers/feature/{record-approved-by-policy,merge-if-ready,record-merged,record-merge-failed,reconcile-merge-failed}.ts`)
+
+- **`merge_gate_evaluations`, `RecordApprovedByPolicyCommand`, `MergeIfReadyCommand`,
+  `RecordMergedCommand`, `RecordMergeFailedCommand`, and `ReconcileMergeFailedCommand` all existed
+  since Phase 2/Phase 1 — Phase 12 is "give these already-defined matrix rows and this
+  already-defined table their first real implementation," the same posture Phase 6/7/8/9/10
+  already established for other rows built ahead of their handler.** No new migration: the
+  `merge_gate_evaluations` table (43-table initial schema) and `pull_requests` (migration 0009)
+  already had every column this phase needs.
+- **`evaluateMergeGate()` writes its evidence row in a transaction _separate_ from the state
+  transition it gates — not one atomic unit.** A single all-or-nothing transaction covering both
+  would roll the `merge_gate_evaluations` INSERT back along with a deliberately-not-taken
+  transition whenever the gate rejects, silently losing the audit trail for exactly the runs where
+  "every merge-gate run writes a structured record" (docs/01 §12) matters most. Both
+  `RecordApprovedByPolicyHandler` and `MergeIfReadyHandler` are two-phase: phase one opens its own
+  transaction, evaluates the gate, and always commits the evidence row (unless the feature run
+  itself doesn't exist — nothing to write evidence against); phase two only runs when the
+  evaluation passed, and is the one that claims the idempotency key and performs the actual
+  transition. A rejected evaluation throws `CommandError({ type: 'merge-gate-blocked' })` after
+  phase one commits — the caller (`run-merge-gate.ts`, `minicoder merge merge-if-ready`) catches
+  this specific type as an expected "not ready yet" outcome, not an infrastructure failure. Retries
+  after a rejection re-run phase one (a fresh, harmless evidence row — `merge_gate_evaluations` has
+  no unique key, same append-only-audit-log posture as `adapter_conformance_results`), not a stale
+  cached result.
+- **`evaluateBudget()`'s parameter type was widened from `DbClient` to `TxClient`** (it only ever
+  calls `.query()`, never opens its own transaction) so `evaluateMergeGate()` can call it from
+  inside a caller-supplied transaction. Every existing Phase 8 call site passing a full `DbClient`
+  still type-checks (`DbClient extends TxClient`) — this is a pure widening, not a behavior change.
+- **`evaluateMergeGate()` deliberately never reads `pull_requests.conversations_resolved`.** That
+  field has been a hardcoded `false` placeholder since Phase 7 (GitHub REST has no "conversations
+  resolved" flag; GraphQL support is tracked in issue #36) — gating on a permanently-`false` value
+  would make every real merge permanently blocked. The Phase 7 architectural fitness test
+  `no-conversations-resolved-gate.test.ts` was **not modified**: `evaluate-merge-gate.ts` is not on
+  its `ALLOWED_BASENAMES` allow-list, so any future change wiring this field into the gate must
+  edit that test's allow-list as a visible, deliberate decision, not a silent one. Real
+  conversation-resolution enforcement is tracked, real future work, not silently dropped.
+- **Blocking labels are a single, deployment-wide policy, not a per-project policy table.**
+  `resolveBlockingLabelsPolicy()` (`packages/core/src/merge-gate/constants.ts`) reads
+  `MERGE_GATE_BLOCKING_LABELS` (comma-separated, case-insensitive) via `EnvConfigBackend` — never
+  bare `process.env` (core's `no-restricted-syntax` ESLint rule forbids that outside
+  `config/secrets.ts`/`config/config.ts`) — defaulting to `do-not-merge`/`wip`/`blocked`.
+  `pull_requests.blocking_labels` (Phase 7) is unchanged: it still mirrors every label GitHub
+  reports, with no per-project filtering at the observation layer; the policy filtering happens
+  only in the gate.
+- **"Branch protection / mergeability" is derived from the observed `pull_requests.mergeable`
+  flag, not a separate GitHub branch-protection-rules API call.** GitHub's own mergeability
+  computation already accounts for required status checks and branch-protection rules.
+  `minicoder github simulate-branch-protection-ok` (Phase 7 dev-tooling, writes a
+  `branch.protection_ok` inbox event with a no-op handler) remains exactly that — dev-tooling only,
+  never consumed by the gate.
+- **"Required human approvals exist" is evaluated as "no outstanding `rejected`/`deferred`
+  `human_approvals` row for this feature run," not a new approval type minted for the merge-if-ready
+  invocation itself** — docs/01 §12 is explicit that "required human approvals exist" refers to
+  upstream approvals (assumption acceptance, budget override, etc.), not to the merge-if-ready
+  action. `insertHumanApproval()`'s doc comment already anticipated a `merge_gate` `context_type`
+  value for this table; no schema change was needed.
+- **A pre-existing idempotency-key bug was fixed on two matrix rows while giving them their first
+  real handler.** `record-merge-failed:{featureRunId}` and `reconcile-merge-failed:{featureRunId}`
+  (both defined in Phase 2) lacked an `{expectedVersion}` discriminator — the same class of bug
+  already fixed for `start-fixing`/budget-control keys in earlier phases. A feature run can cycle
+  through `merge_failed` more than once (an auto-cleared failure returns to `under_review`, which
+  can reach `merge_ready` and fail again); a key scoped to `{featureRunId}` alone would replay the
+  first failure's cached result for every later one within the idempotency TTL. Fixed to
+  `record-merge-failed:{featureRunId}:{expectedVersion}` / `reconcile-merge-failed:{featureRunId}:
+{expectedVersion}`.
+- **`merge_ready -> human_required` reuses the existing, already-generic `EscalateToHumanHandler`
+  — no new handler was added for it.** `EscalateToHumanCommand` has resolved every non-terminal
+  `fromState` via `StateTransitionValidator`'s matrix lookup since the Phase 7 code-review round
+  that extended its matrix coverage to all 14 non-terminal states; `merge_failed -> human_required`
+  is simply another matrix row that same handler already satisfies.
+- **`GitHubClient.mergePullRequest()` (Phase 12) is the first GitHub-facing method whose real
+  implementation classifies HTTP status codes into a typed, caller-actionable error
+  (`GithubMergeRejectedError`) rather than an opaque rethrow.** `OctokitGitHubClient`'s
+  classification: 409 (the PR's real head has moved past the caller-supplied `expectedHeadSha`,
+  i.e. someone pushed after the gate re-evaluated) → `reason: 'sha_mismatch'`,
+  `autoClearable: true`; 405 (covers both branch-protection rejection and a real merge conflict —
+  GitHub's response does not distinguish the two) → `reason: 'not_mergeable'`,
+  `autoClearable: false`; any error with **no** HTTP status (a genuine infrastructure/auth failure,
+  not a merge-gate rejection at all) is rethrown as the original error, not wrapped — misclassifying
+  an infra failure as a routine merge rejection would incorrectly drive a `RecordMergeFailedCommand`
+  state transition for something that isn't actually a merge-gate outcome.
+- **A GitHub merge-rejection is recorded via `RecordMergeFailedCommand`, then a _separate_ explicit
+  follow-up command (`ReconcileMergeFailedCommand` or `EscalateToHumanCommand`) — never inferred
+  automatically inside `RecordMergeFailedHandler` itself.** The handler stays pure state-transition
+  logic (matching the established `RecordBudgetExceededHandler`/`RecordChangesRequestedHandler`
+  convention of not deciding what happens next); the caller (`minicoder merge merge-if-ready`, the
+  only production caller of `GitHubClient.mergePullRequest()`) already has the
+  `GithubMergeRejectedError.autoClearable` classification in hand and dispatches the matching
+  follow-up command in the same invocation.
+- **`publishMergeGateStatusCheck()` is the first production caller of
+  `GitHubClient.publishStatusCheck()`**, which existed on the `GitHubClient` interface unwritten
+  since Phase 7. Two call sites publish it: the new `run-merge-gate` Trigger.dev task (after
+  `RecordApprovedByPolicyCommand`, win or lose) and `minicoder merge merge-if-ready` (after its own
+  re-evaluation, win or lose, and again is not reached if the initial re-gate already rejected).
+  A status-check publish failure is logged and swallowed, never thrown — mirrors `run-coder.ts`'s
+  established "PR-creation failure after a successful push is never re-thrown" contract: the state
+  transition (or lack of one) this status check merely reports is already durably recorded by the
+  time the publish is attempted, so a transient GitHub API hiccup here is not a reason to fail the
+  task/command.
+- **`run-merge-gate` (18th canonical Trigger.dev task ID) is a separate, independently
+  scheduled/triggered task from `run-review.ts`/`run-coder.ts`/`start-next-feature.ts` — never
+  inlined into any of them**, matching this document's established "never inline" rule for
+  GitHub-facing/execution tasks. It is the operator-triggered "recompute merge gate" action
+  (docs/00 §4.4's `operator` capability list) and the follow-up Phase 10 left unbuilt: a clean
+  review leaves a feature run at `under_review` with no automatic next step ("Phase 12's Merge Gate
+  owns that transition" — `run-review.ts`'s doc comment). It is safe to invoke repeatedly/on a
+  schedule: a feature run not at `under_review` is a clean no-op, and every real invocation writes
+  a fresh `merge_gate_evaluations` audit row regardless of outcome.
+- **`minicoder merge merge-if-ready` is the second CLI surface (after `minicoder human ...`) to
+  dispatch real state-machine commands directly via `TransactionalCommandExecutor`**, for the same
+  reason: a human-approved merge action has no async/durable-retry need that would justify a
+  Trigger.dev task. Unlike `minicoder human ...`, this command also makes a real external API call
+  (`GitHubClient.mergePullRequest()`) partway through — the command sequence is deliberately
+  ordered so that call only happens _after_ `MergeIfReadyCommand`'s re-gate has already durably
+  committed the `merge_ready` transition, so a crash between the GitHub call and recording its
+  outcome leaves the feature run at a real, recoverable `merge_ready` state (a human can re-run
+  `merge-if-ready`, which re-gates again) rather than silently accepting a merge no local state
+  reflects.
 
 ## Cross-Dialect Testing (Mandatory)
 

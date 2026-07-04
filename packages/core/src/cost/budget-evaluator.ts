@@ -1,4 +1,4 @@
-import type { DbClient } from '../persistence/types.js';
+import type { TxClient } from '../persistence/types.js';
 import type { BudgetScope } from '../domain/states.js';
 
 export type BudgetEvaluationStatus = 'ok' | 'soft_breach' | 'hard_breach';
@@ -48,9 +48,15 @@ function toNumber(value: number | string | null): number | null {
  * insert) — the ORDER BY below picks the most recently updated active row deterministically,
  * the same "most recent wins" tiebreaker convention AdapterRegistry.getConfiguration() already
  * uses for an analogous ambiguity, rather than relying on unspecified SQL result ordering.
+ *
+ * Takes a `TxClient` (not `DbClient`) — it only ever reads via `.query()`, never opens its own
+ * transaction, so it can be called both standalone (existing Phase 8 callers, passing a full
+ * `DbClient`, which structurally satisfies `TxClient`) and from inside an already-open handler
+ * transaction (Phase 12's merge-gate evaluator, which needs the budget read to participate in
+ * the same transaction as the state transition it gates).
  */
 export async function evaluateBudget(
-  db: DbClient,
+  db: TxClient,
   params: EvaluateBudgetParams,
 ): Promise<BudgetEvaluation | null> {
   const { projectId, featureRequestId, scope } = params;

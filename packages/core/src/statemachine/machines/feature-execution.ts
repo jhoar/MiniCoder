@@ -339,7 +339,12 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     guardDescription: 'GitHub merge attempt rejected after merge_ready',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.merge_failed'],
-    idempotencyKeyTemplate: 'record-merge-failed:{featureRunId}',
+    // Phase 12 fix (matches the {expectedVersion}-discriminator rule already applied to
+    // start-fixing/budget-control keys): merge_ready -> merge_failed can recur across more than
+    // one merge attempt for the same feature run (merge_failed auto-clears back to under_review,
+    // which can reach merge_ready again) — a key scoped to {featureRunId} alone would replay the
+    // first failure's cached result for every later attempt within the idempotency TTL.
+    idempotencyKeyTemplate: 'record-merge-failed:{featureRunId}:{expectedVersion}',
     recoveryPath: 'Reconciliation re-checks; routes to under_review or human_required',
   },
   {
@@ -350,7 +355,9 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     guardDescription: 'merge failure is auto-clearable (e.g. stale SHA; re-push resolves it)',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.returned_to_review'],
-    idempotencyKeyTemplate: 'reconcile-merge-failed:{featureRunId}',
+    // Phase 12 fix: same {expectedVersion}-discriminator rationale as record-merge-failed above —
+    // a feature run can cycle through merge_failed more than once over its lifetime.
+    idempotencyKeyTemplate: 'reconcile-merge-failed:{featureRunId}:{expectedVersion}',
     recoveryPath: 'Idempotent: returns cached result',
   },
   {

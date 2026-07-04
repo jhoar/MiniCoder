@@ -106,6 +106,9 @@ function fakeGithubClient(): GitHubClient {
     async createPullRequest() {
       throw new Error('not used in this test');
     },
+    async mergePullRequest() {
+      throw new Error('not used in this test');
+    },
     async getPullRequest() {
       return null;
     },

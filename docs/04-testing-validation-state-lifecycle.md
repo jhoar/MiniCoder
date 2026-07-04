@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.7
+> Version: 1.3.8
 > Last-updated: 2026-07-04
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -1038,7 +1038,11 @@ Available fixture names:
 - `clarification-required` — project, spec, assessment (insufficient), 2 unanswered questions
 - `backlog-activation` — project, plan (approved), 3 features at `approved_pending_execution`
 - `review-loop` — feature at `under_review`, 2 blocking findings
-- `merge-gate` — feature at `merge_ready`, 1 approved MergeGateEvaluation
+- `merge-gate` — four feature runs covering every Merge Gate outcome (Phase 12): a clean
+  `under_review` run that reaches `approved_by_policy`/`merge_ready`/`merged`; a rejected gate
+  (unresolved blocking finding); an `approved_by_policy` run whose simulated GitHub merge fails
+  with a `sha_mismatch` (auto-clears back to `under_review`); and one whose merge fails with
+  `not_mergeable` (escalates to `human_required`)
 - `trigger-retry` — feature at `selected`, triggerdev_runs row at `failed`
 - `github-race` — feature at `ci_running`, inbox_events row with `pr.closed`
 - `final-design-document` — project (implementation_complete), artifact_exports (pending), design_documents row

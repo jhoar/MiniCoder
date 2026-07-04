@@ -62,6 +62,36 @@ export const FeatureMergedPayloadSchema = z.object({
 });
 export type FeatureMergedPayload = z.infer<typeof FeatureMergedPayloadSchema>;
 
+// ── Phase 12: Merge Gate and Branch Protection events ─────────────────────
+
+export const FeatureApprovedByPolicyPayloadSchema = z.object({
+  featureRunId: z.string().min(1),
+  projectId: z.string().min(1),
+  mergeGateEvaluationId: z.string().min(1),
+});
+export type FeatureApprovedByPolicyPayload = z.infer<typeof FeatureApprovedByPolicyPayloadSchema>;
+
+export const FeatureMergeReadyPayloadSchema = z.object({
+  featureRunId: z.string().min(1),
+  projectId: z.string().min(1),
+  mergeGateEvaluationId: z.string().min(1),
+});
+export type FeatureMergeReadyPayload = z.infer<typeof FeatureMergeReadyPayloadSchema>;
+
+export const FeatureMergeFailedPayloadSchema = z.object({
+  featureRunId: z.string().min(1),
+  projectId: z.string().min(1),
+  reason: z.string().min(1),
+  autoClearable: z.boolean(),
+});
+export type FeatureMergeFailedPayload = z.infer<typeof FeatureMergeFailedPayloadSchema>;
+
+export const FeatureReturnedToReviewPayloadSchema = z.object({
+  featureRunId: z.string().min(1),
+  projectId: z.string().min(1),
+});
+export type FeatureReturnedToReviewPayload = z.infer<typeof FeatureReturnedToReviewPayloadSchema>;
+
 export const FeatureHumanRequiredPayloadSchema = z.object({
   featureRunId: z.string().min(1),
   projectId: z.string().min(1),
@@ -151,6 +181,10 @@ export const EVENT_SCHEMAS: Record<string, z.ZodTypeAny> = {
   'feature.ci_passed': FeatureCiResultPayloadSchema,
   'feature.ci_failed': FeatureCiResultPayloadSchema,
   'feature.merged': FeatureMergedPayloadSchema,
+  'feature.approved_by_policy': FeatureApprovedByPolicyPayloadSchema,
+  'feature.merge_ready': FeatureMergeReadyPayloadSchema,
+  'feature.merge_failed': FeatureMergeFailedPayloadSchema,
+  'feature.returned_to_review': FeatureReturnedToReviewPayloadSchema,
   'feature.human_required': FeatureHumanRequiredPayloadSchema,
   'feature.pr_opened': FeaturePrOpenedPayloadSchema,
   'feature.changes_requested': FeatureChangesRequestedPayloadSchema,

@@ -6,6 +6,7 @@ import { createTriggerCommand } from './commands/trigger.js';
 import { createGithubCommand } from './commands/github.js';
 import { createTestCommand } from './commands/test.js';
 import { createHumanCommand } from './commands/human.js';
+import { createMergeCommand } from './commands/merge.js';
 
 const program = new Command();
 
@@ -20,6 +21,7 @@ program.addCommand(createTriggerCommand());
 program.addCommand(createGithubCommand());
 program.addCommand(createTestCommand());
 program.addCommand(createHumanCommand());
+program.addCommand(createMergeCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error('Fatal error:', err);

@@ -12,6 +12,7 @@ export const ALL_TASK_IDS = [
   'start-next-feature',
   'run-coder',
   'run-review',
+  'run-merge-gate',
   'github-reconciliation',
   'export-plan',
   'export-backlog',

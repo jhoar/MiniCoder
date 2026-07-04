@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.0.1
+> Version: 1.0.2
 > Last-updated: 2026-07-04
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
@@ -605,38 +605,86 @@ to the `merge-if-ready` invocation itself.
 
 A pull request may be merged only when it belongs to the active feature, targets the correct base
 branch, matches the database branch record, CI checks pass, no unresolved blocking findings remain,
-no unresolved `requires_human_decision` findings remain, required conversations are resolved,
-review-cycle limits are not exceeded, the PR is mergeable, no blocking labels exist, budget gates
-pass, required human approvals exist, and GitHub branch protection permits merge. **"Required
-conversations are resolved" and "no blocking labels exist" are not yet implemented as real
-evaluated preconditions** — `pull_requests.conversations_resolved` is currently a hardcoded
-`false` placeholder (REST has no such flag; GraphQL support is unimplemented — see §5.7/§8) and
-`pull_requests.blocking_labels` currently mirrors every observed PR label with no per-project
-"which labels actually block merge" policy defined anywhere yet. Both are Phase 12 (Merge Gate)
-implementation scope.
+no unresolved `requires_human_decision` findings remain, review-cycle limits are not exceeded, the
+PR is mergeable, no blocking labels exist, budget gates pass, required human approvals exist, and
+GitHub branch protection permits merge — implemented as `evaluateMergeGate()`
+(`packages/core/src/merge-gate/evaluate-merge-gate.ts`, Phase 12).
+
+**"Required conversations are resolved" remains a deliberate non-gate, not an oversight.**
+`pull_requests.conversations_resolved` is still a hardcoded `false` placeholder (GitHub REST has no
+such flag; GraphQL support — `reviewThreads.nodes[].isResolved` — is tracked in issue #36).
+Wiring a permanently-`false` value into a hard precondition would make every real merge
+permanently blocked, so `evaluateMergeGate()` deliberately never reads this field — the
+architectural fitness test `no-conversations-resolved-gate.test.ts` (added in Phase 7) enforces
+this by excluding `evaluate-merge-gate.ts` from its allow-list, so a future change wiring this
+field into the gate must be a visible, deliberate edit to that test, not a silent one. Real
+conversation-resolution enforcement remains tracked future work behind issue #36.
+
+**"No blocking labels exist" is implemented as a single, deployment-wide policy** (Phase 12):
+`resolveBlockingLabelsPolicy()` (env-overridable via `MERGE_GATE_BLOCKING_LABELS`, comma-separated;
+default `do-not-merge`/`wip`/`blocked`) is intersected against the observed
+`pull_requests.blocking_labels` mirror (unchanged since Phase 7 — it still mirrors every label
+GitHub reports, with no per-project policy table). A per-project override can be layered on top of
+this function without changing the gate's shape; none exists yet.
+
+**Branch protection / mergeability** is evaluated from the observed `pull_requests.mergeable` flag
+(GitHub's own mergeability computation already accounts for required status checks and
+branch-protection rules) — there is no separate branch-protection-rules API call.
+`minicoder github simulate-branch-protection-ok` remains dev-tooling only (§5.7) and is not
+consumed by the gate.
 
 **Merge-gate evidence.** Every merge-gate run writes a structured `merge_gate_evaluations` record
 capturing the inputs and outcome: CI result, review result, unresolved blocking-findings count,
-unresolved `requires_human_decision` count, conversation-resolution status, branch-protection
-status, budget status, human-approval status, and the final decision (allow / block, with reason).
-These records make every merge decision auditable and replayable.
+budget status, human-approval status, branch-protection status, and the final decision (`approved`
+/ `rejected`, with reasons). These records make every merge decision auditable and replayable.
+`evaluateMergeGate()` writes this record **unconditionally** — win or lose — via a two-phase
+handler design (`RecordApprovedByPolicyHandler`/`MergeIfReadyHandler`): the evaluation runs in its
+own transaction first (so the evidence row survives a rejection), and only a passing evaluation
+proceeds to a second transaction that claims the idempotency key and performs the state
+transition. A single all-or-nothing transaction covering both would roll the evidence write back
+along with a deliberately-not-taken transition, silently losing the audit trail for every blocked
+merge attempt.
+
+**The real GitHub merge** is performed by `GitHubClient.mergePullRequest()` (Phase 12), invoked
+only by `minicoder merge merge-if-ready` (an approver/admin-initiated CLI action — the same
+"synchronous, no Trigger.dev task needed" shape as `minicoder human ...`) after
+`MergeIfReadyCommand` re-gates and transitions to `merge_ready`. A rejection is classified via
+`GithubMergeRejectedError.reason`/`.autoClearable`: GitHub's 409 (the PR's head moved since the
+gate re-evaluated) is `sha_mismatch`/auto-clearable and drives `RecordMergeFailedCommand` +
+`ReconcileMergeFailedCommand` back to `under_review`; GitHub's 405 (branch protection or a real
+conflict — GitHub does not distinguish the two in its response) is `not_mergeable`/not
+auto-clearable and drives `RecordMergeFailedCommand` + `EscalateToHumanCommand` to
+`human_required`. An error with no HTTP status (a genuine infrastructure/auth failure) is rethrown
+as-is rather than misclassified as a merge-gate rejection.
+
+**The `minicoder/review-gate` status check** (§5.7's glossary reference) is published by
+`publishMergeGateStatusCheck()` — the first production caller of
+`GitHubClient.publishStatusCheck()`, which existed unwritten since Phase 7. It is published after
+every gate evaluation: by the `run-merge-gate` Trigger.dev task (the operator-triggered "recompute
+merge gate" action, docs/00 §4.4) following `RecordApprovedByPolicyCommand`, and by
+`minicoder merge merge-if-ready` following its own re-evaluation. A status-check publish failure
+is logged and swallowed, never thrown — the state transition (or lack of one) is already durably
+recorded by that point, so a transient GitHub API hiccup publishing the check is not a reason to
+fail the task/command.
 
 **Gate-input traceability** (each input, the subsystem that produces it, and the phase that delivers
 it):
 
-| Merge-gate input                                     | Produced by                                 | Phase |
-| ---------------------------------------------------- | ------------------------------------------- | ----- |
-| CI result                                            | GitHub Actions → GitHub Integration         | 7     |
-| Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop          | 10 ✓  |
-| Conversation resolution                              | GitHub Integration                          | 7     |
-| Branch protection / mergeability                     | GitHub Integration                          | 7     |
-| Budget status                                        | Budget-gate primitive (Cost Manager)        | 8     |
-| Human approvals                                      | Human-required workflow / `human_approvals` | 11    |
+| Merge-gate input                                     | Produced by                                 | Phase | Consumed by the gate  |
+| ---------------------------------------------------- | ------------------------------------------- | ----- | --------------------- |
+| CI result                                            | GitHub Actions → GitHub Integration         | 7     | ✓ (12)                |
+| Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop          | 10 ✓  | ✓ (12)                |
+| Conversation resolution                              | GitHub Integration                          | 7     | not gated — see above |
+| Branch protection / mergeability                     | GitHub Integration                          | 7     | ✓ (12)                |
+| Blocking labels                                      | GitHub Integration                          | 7     | ✓ (12)                |
+| Budget status                                        | Budget-gate primitive (Cost Manager)        | 8     | ✓ (12)                |
+| Human approvals                                      | Human-required workflow / `human_approvals` | 11    | ✓ (12)                |
 
-Phase 10 has shipped: `review_findings` (blocking / `requires_human_decision`) is a real, populated
-input today, produced by `ClaudeReviewerAdapter` + the `run-review` task's review/fix loop
-(`packages/adapters-reviewer`, `packages/triggerdev/src/tasks/run-review.ts`) — the Merge Gate
-itself (consuming this input to actually allow/block a merge) remains Phase 12 scope.
+All inputs above except conversation resolution (deliberately excluded — see above) are now
+consumed by `evaluateMergeGate()` (Phase 12): `review_findings` (blocking / `requires_human_decision`)
+is produced by `ClaudeReviewerAdapter` + the `run-review` task's review/fix loop
+(`packages/adapters-reviewer`, `packages/triggerdev/src/tasks/run-review.ts`), and the Merge Gate
+itself now consumes it to actually allow/block a merge, closing the gap Phase 10 left open.
 
 ## 13. Final System Design Document
 

@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.8
+> Version: 1.0.9
 > Last-updated: 2026-07-04
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -410,6 +410,12 @@ run-coder
 run-review
 ```
 
+**Phase 12 addition** (Merge Gate and Branch Protection — shipped with Phase 12):
+
+```text
+run-merge-gate
+```
+
 ---
 
 ## 4. Agent Roles and Adapters (canonical names)
@@ -515,6 +521,9 @@ minicoder human resume --feature-run <id> --project <id> --actor <id> --notes <t
 minicoder human retry --feature-run <id> --project <id> --actor <id> --notes <text>
 minicoder human skip --feature-run <id> --project <id> --actor <id> --notes <text>
 minicoder human block --feature-run <id> --project <id> --actor <id> --notes <text>
+
+# Merge Gate (Phase 12; approver/admin-initiated merge)
+minicoder merge merge-if-ready --feature-run <id> --project <id> --actor <id> [--actor-role approver] [--merge-method squash|merge|rebase]
 
 # Test scenario runner (non-zero exit on failure)
 minicoder test unit

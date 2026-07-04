@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.24
+> Version: 1.0.25
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1364,7 +1364,9 @@ repair` to recover. Both are the same "documented, not solved" posture this code
   coder/reviewer disagreement over a recurring `blocking` finding, not vetting a Reviewer decision
   to punt to a human. docs/01 §5.9 and this section were updated to match.
 
-## Phase 12 — Merge Gate and Branch Protection
+## Phase 12 — Merge Gate and Branch Protection ✓
+
+> **Status: Complete** (2026-07-04)
 
 Deliver the merge-policy engine, the `minicoder/review-gate` status check, the
 merge-if-ready command (approver/admin-initiated; re-gates before the GitHub merge),
@@ -1375,6 +1377,99 @@ see [`01-system-specification.md`](01-system-specification.md) §12).
 Acceptance: unsafe PRs cannot be merged by MiniCoder; safe PRs merge through policy; every gate run
 writes an evidence record; the database updates after merge; the next feature starts only after
 merge.
+
+**Delivered modules:**
+
+- `packages/core/src/merge-gate/` (new directory) — `evaluateMergeGate(tx, {featureRunId,
+projectId, featureRequestId})`: the merge-policy engine. Reads CI status and review state from
+  the `pull_requests` mirror, unresolved `blocking`/`requires_human_decision` `review_findings`,
+  a blocking-labels policy (`resolveBlockingLabelsPolicy()`, env-overridable via
+  `MERGE_GATE_BLOCKING_LABELS`, default `do-not-merge`/`wip`/`blocked`), `evaluateBudget()`'s
+  feature-scoped budget status, outstanding (`rejected`/`deferred`) `human_approvals` rows, and
+  `pull_requests.mergeable` as the `branch_protection_ok` proxy — then **always** writes a
+  `merge_gate_evaluations` evidence row (win or lose) before returning `approved`/`rejected` plus
+  the list of failing reasons. `evaluateBudget()`'s parameter type was widened from `DbClient` to
+  `TxClient` (it only ever calls `.query()`) so this evaluator can run inside a caller's own
+  transaction. Deliberately does **not** evaluate `pull_requests.conversations_resolved` — see the
+  file's doc comment and the `no-conversations-resolved-gate.test.ts` fitness test, which
+  intentionally excludes this file from its allow-list.
+- `packages/core/src/commands/handlers/feature/record-approved-by-policy.ts` —
+  `RecordApprovedByPolicyHandler` (`under_review -> approved_by_policy`). Two-phase, not one
+  atomic transaction: `evaluateMergeGate` runs first in its own transaction (always commits the
+  evidence row), and only on `approved` does a second transaction claim the idempotency key and
+  perform the state transition — a single all-or-nothing transaction would roll the evidence
+  write back along with a rejected transition, losing the audit trail for every blocked attempt.
+  A rejection throws a non-fatal `CommandError` (`type: 'merge-gate-blocked'`).
+- `packages/core/src/commands/handlers/feature/merge-if-ready.ts` — `MergeIfReadyHandler`
+  (`approved_by_policy -> merge_ready`, actor = `approver`/`admin`). Same two-phase shape;
+  re-evaluates the gate from scratch immediately before the real GitHub merge call (docs/01 §12).
+- `packages/core/src/commands/handlers/feature/record-merged.ts` — `RecordMergedHandler`
+  (`merge_ready -> merged`): records the merge SHA onto `pull_requests` and clears
+  `workflow_states.active_feature_run_id` (mirroring `SkipFeatureHandler`/`BlockFeatureHandler`'s
+  identical clear), satisfying "the next feature starts only after merge."
+- `packages/core/src/commands/handlers/feature/record-merge-failed.ts` /
+  `reconcile-merge-failed.ts` — `RecordMergeFailedHandler` (`merge_ready -> merge_failed`, records
+  an `autoClearable` classification) and `ReconcileMergeFailedHandler`
+  (`merge_failed -> under_review`, the auto-clear path). `EscalateToHumanCommand` (already generic
+  across every non-terminal state since Phase 7) handles `merge_failed -> human_required` — no new
+  handler needed. Fixed two pre-existing matrix rows' idempotency keys while implementing them:
+  `record-merge-failed`/`reconcile-merge-failed` gained an `{expectedVersion}` discriminator (the
+  same class of bug documented elsewhere in this file for `start-fixing`/budget-control keys — a
+  feature run can cycle through `merge_failed` more than once).
+- `packages/core/src/github/client.ts` — new `GitHubClient.mergePullRequest()` method,
+  `MergePullRequestOptions`, and `GithubMergeRejectedError` (`reason: 'sha_mismatch' |
+'not_mergeable' | 'unknown'`, `autoClearable: boolean`). `OctokitGitHubClient.mergePullRequest()`
+  (`packages/github`) classifies GitHub's rejection status codes: 409 (head moved since the gate
+  re-evaluated) → `sha_mismatch`/auto-clearable; 405 (branch protection or a real conflict — GitHub
+  does not distinguish the two) → `not_mergeable`/not auto-clearable; anything with no HTTP status
+  (a genuine infra/auth failure) is rethrown as-is rather than misclassified as a merge rejection.
+- `packages/core/src/merge-gate/publish-status-check.ts` — `publishMergeGateStatusCheck()`, a thin
+  shared wrapper publishing the `minicoder/review-gate` status check (docs/00 §3.11) — the first
+  production caller of `GitHubClient.publishStatusCheck()`, which existed unwritten since Phase 7.
+- `packages/triggerdev/src/tasks/run-merge-gate.ts` — new `run-merge-gate` task (18th canonical
+  task ID): the operator-triggered "recompute merge gate" action (docs/00 §4.4). A feature run at
+  `under_review` with no automatic follow-up (Phase 10's documented posture — "Phase 12's Merge
+  Gate owns that transition") gets one here. Dispatches `RecordApprovedByPolicyCommand` and
+  publishes the status check afterward regardless of outcome; a status-check publish failure is
+  logged and swallowed, never thrown (mirrors `run-coder.ts`'s "PR-creation failure after a
+  successful push is never re-thrown" contract) — the state transition is already durably recorded
+  by that point. A separate, independently scheduled/triggered task from `run-review.ts`/
+  `run-coder.ts`/`start-next-feature.ts` (CLAUDE.md's "never inline" rule).
+- `packages/cli/src/commands/merge.ts` — new `minicoder merge merge-if-ready` CLI command: the
+  only synchronous, approver-initiated action in the merge path, mirroring `minicoder human ...`'s
+  "one-shot dispatch, no Trigger.dev task needed" shape (a human-approved merge has no
+  async/durable-retry need). Sequence: `MergeIfReadyCommand` re-gates and transitions to
+  `merge_ready`; only on success does it call the real `GitHubClient.mergePullRequest()`; the
+  outcome is recorded via `RecordMergedCommand` or `RecordMergeFailedCommand` +
+  `ReconcileMergeFailedCommand`/`EscalateToHumanCommand` (classified by
+  `GithubMergeRejectedError.autoClearable`). Publishes the status check both on a rejected re-gate
+  and on a passed one before attempting the merge.
+- `packages/testing/src/services/mock-github-provider.ts` / `mock-github-client.ts` — new
+  `MockGitHubProvider.simulateMergeConflict(prNumber, reason)` test seam and
+  `MockGitHubClient.mergePullRequest()` (succeeds via `simulatePrMerged`, or throws a classified
+  `GithubMergeRejectedError` per the seam).
+- `packages/testing/src/fixtures/merge-gate.ts` / `scenarios/merge-gate.ts` — rewrote the
+  pre-existing placeholder scenario (which drove `feature_runs`/`feature_requests.state` via raw
+  SQL rather than the real state machine, in violation of the documented "`feature_requests.state`
+  is a static label" invariant) into four feature runs exercising every Merge Gate outcome: a clean
+  happy path all the way to `merged`; a rejected gate (unresolved blocking finding); a
+  `sha_mismatch` merge rejection auto-clearing back to `under_review`; and a `not_mergeable`
+  rejection escalating to `human_required`.
+- `packages/core/src/events/schemas.ts` — four new event schemas
+  (`feature.approved_by_policy`/`feature.merge_ready`/`feature.merge_failed`/
+  `feature.returned_to_review`), following the existing `.min(1)` (never `.uuid()`) ID convention.
+
+**Deviations from the original plan:**
+
+- "Required conversations are resolved" (docs/01 §12) remains a documented, deliberate non-gate:
+  `pull_requests.conversations_resolved` is still a hardcoded `false` placeholder (GitHub REST has
+  no such flag; GraphQL support is tracked in issue #36) and wiring it into a hard gate would
+  permanently block every real merge. The architectural fitness test guarding this
+  (`no-conversations-resolved-gate.test.ts`) was left unmodified — `evaluate-merge-gate.ts` is not
+  on its allow-list, so it cannot reference this field even by accident.
+- Blocking labels use a single, deployment-wide policy list (env-overridable), not a per-project
+  policy table — a future per-project override can be layered on top of
+  `resolveBlockingLabelsPolicy()` without changing the gate's shape.
 
 ## Phase 13 — Orchestrator API
 

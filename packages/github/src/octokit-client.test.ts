@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { deriveCiStatus, deriveReviewState } from './octokit-client.js';
-import { PrReviewState } from '@minicoder/core';
+import { GithubMergeRejectedError, PrReviewState } from '@minicoder/core';
 
 /**
  * HIGH-4 code-review fix: OctokitGitHubClient.getPullRequest() combines GitHub Checks
@@ -378,5 +378,93 @@ describe('OctokitGitHubClient.getPullRequest (HIGH-4 conversationsResolved place
     const observed = await client.getPullRequest('acme', 'widgets', 7);
 
     expect(observed?.conversationsResolved).toBe(false);
+  });
+});
+
+/**
+ * Phase 12 (Merge Gate): `mergePullRequest` classifies GitHub's merge-rejection status codes
+ * into `GithubMergeRejectedError.reason`/`.autoClearable` — 409 (head moved since the gate
+ * re-evaluated) is auto-clearable, 405 (branch protection or a real conflict — GitHub does not
+ * distinguish the two) is not, and anything without an HTTP status (a genuine infra/auth
+ * failure) is rethrown as-is rather than misclassified as a merge-gate rejection.
+ */
+describe('OctokitGitHubClient.mergePullRequest', () => {
+  afterEach(() => {
+    vi.doUnmock('@octokit/rest');
+    vi.resetModules();
+  });
+
+  async function buildClient(mergeImpl: () => Promise<unknown>) {
+    vi.doMock('@octokit/rest', () => ({
+      Octokit: vi.fn().mockImplementation(() => ({
+        pulls: { merge: mergeImpl },
+      })),
+    }));
+    vi.resetModules();
+    const { OctokitGitHubClient } = await import('./octokit-client.js');
+    return new OctokitGitHubClient({ auth: 'token' });
+  }
+
+  it('returns the merge SHA on success', async () => {
+    const client = await buildClient(async () => ({ data: { sha: 'merged-sha-1' } }));
+    const result = await client.mergePullRequest({
+      owner: 'acme',
+      repo: 'widgets',
+      prNumber: 9,
+      mergeMethod: 'squash',
+    });
+    expect(result).toEqual({ mergeSha: 'merged-sha-1' });
+  });
+
+  it('classifies a 409 as sha_mismatch (auto-clearable)', async () => {
+    const client = await buildClient(async () => {
+      const err = new Error('sha does not match') as Error & { status: number };
+      err.status = 409;
+      throw err;
+    });
+    await expect(
+      client.mergePullRequest({
+        owner: 'acme',
+        repo: 'widgets',
+        prNumber: 9,
+        mergeMethod: 'squash',
+      }),
+    ).rejects.toMatchObject({
+      reason: 'sha_mismatch',
+      autoClearable: true,
+    });
+  });
+
+  it('classifies a 405 as not_mergeable (not auto-clearable)', async () => {
+    const client = await buildClient(async () => {
+      const err = new Error('Pull Request is not mergeable') as Error & { status: number };
+      err.status = 405;
+      throw err;
+    });
+    await expect(
+      client.mergePullRequest({
+        owner: 'acme',
+        repo: 'widgets',
+        prNumber: 9,
+        mergeMethod: 'squash',
+      }),
+    ).rejects.toMatchObject({
+      reason: 'not_mergeable',
+      autoClearable: false,
+    });
+  });
+
+  it('rethrows an error with no HTTP status instead of misclassifying it as a merge rejection', async () => {
+    const client = await buildClient(async () => {
+      throw new Error('network unreachable');
+    });
+    await expect(
+      client.mergePullRequest({
+        owner: 'acme',
+        repo: 'widgets',
+        prNumber: 9,
+        mergeMethod: 'squash',
+      }),
+    ).rejects.not.toBeInstanceOf(GithubMergeRejectedError);
   });
 });

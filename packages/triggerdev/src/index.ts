@@ -5,6 +5,7 @@ export * from './mock-runner.js';
 export * from './task-ids.js';
 export * from './tasks/types.js';
 export * from './tasks/actor.js';
+export * from './tasks/env.js';
 
 // Task run implementations (SDK-free, directly testable)
 export { runImpl as runIngestSpecification } from './tasks/ingest-specification.js';
@@ -26,6 +27,8 @@ export type {
   ReviewerAdapterFactory,
   ArbiterAdapterFactory,
 } from './tasks/run-review.js';
+export { runImpl as runRunMergeGate } from './tasks/run-merge-gate.js';
+export type { RunMergeGateDeps } from './tasks/run-merge-gate.js';
 export { runImpl as runGithubReconciliation } from './tasks/github-reconciliation.js';
 export { runImpl as runExportPlan } from './tasks/export-plan.js';
 export { runImpl as runExportBacklog } from './tasks/export-backlog.js';
