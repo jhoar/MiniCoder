@@ -30,6 +30,7 @@ import { runImpl as runActivateBacklog } from './tasks/activate-approved-backlog
 import { runImpl as runStartNextFeature } from './tasks/start-next-feature.js';
 import { runImpl as runRunCoder } from './tasks/run-coder.js';
 import { runImpl as runRunReview } from './tasks/run-review.js';
+import { runImpl as runRunMergeGate } from './tasks/run-merge-gate.js';
 import { runImpl as runGithubReconciliation } from './tasks/github-reconciliation.js';
 import { runImpl as runExportPlan } from './tasks/export-plan.js';
 import { runImpl as runExportBacklog } from './tasks/export-backlog.js';
@@ -49,6 +50,7 @@ import {
   StartNextFeaturePayload as StartNextFeatureSchema,
   RunCoderPayload as RunCoderSchema,
   RunReviewPayload as RunReviewSchema,
+  RunMergeGatePayload as RunMergeGateSchema,
   GithubReconciliationPayload as GithubReconciliationSchema,
   ExportPlanPayload as ExportPlanSchema,
   ExportBacklogPayload as ExportBacklogSchema,
@@ -216,6 +218,13 @@ export const runReviewTask = task({
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
   run: makeTaskRunner('run-review', RunReviewSchema, runRunReview),
+});
+
+export const runMergeGateTask = task({
+  id: 'run-merge-gate',
+  queue: { concurrencyLimit: 1 },
+  retry: RETRY_CONFIG,
+  run: makeTaskRunner('run-merge-gate', RunMergeGateSchema, runRunMergeGate),
 });
 
 export const githubReconciliationTask = task({

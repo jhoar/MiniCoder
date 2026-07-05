@@ -2,9 +2,10 @@ import type {
   CreateBranchOptions,
   CreatePullRequestOptions,
   GitHubClient,
+  MergePullRequestOptions,
   ObservedPullRequestState,
 } from '@minicoder/core';
-import { PrReviewState } from '@minicoder/core';
+import { GithubMergeRejectedError, PrReviewState } from '@minicoder/core';
 import type { MockGitHubProvider, MockPrState } from './mock-github-provider.js';
 
 /**
@@ -62,6 +63,35 @@ export class MockGitHubClient implements GitHubClient {
 
   async publishStatusCheck(): Promise<void> {
     // No-op: MockGitHubProvider does not model status-check publication.
+  }
+
+  /** Phase 12 (Merge Gate) test seam — see `MockGitHubProvider.simulateMergeConflict`. */
+  async mergePullRequest(options: MergePullRequestOptions): Promise<{ mergeSha: string }> {
+    const pr = this.provider.getPrState(options.prNumber);
+    if (!pr) {
+      throw new GithubMergeRejectedError(
+        `PR #${options.prNumber} not found`,
+        'not_mergeable',
+        false,
+      );
+    }
+    if (pr.mergeShouldFail === 'sha_mismatch') {
+      throw new GithubMergeRejectedError(
+        `PR #${options.prNumber} head moved since the merge gate was evaluated`,
+        'sha_mismatch',
+        true,
+      );
+    }
+    if (pr.mergeShouldFail === 'not_mergeable' || pr.state !== 'open') {
+      throw new GithubMergeRejectedError(
+        `PR #${options.prNumber} is not mergeable`,
+        'not_mergeable',
+        false,
+      );
+    }
+    const mergeSha = `mock-merge-${options.prNumber}-${Date.now()}`;
+    this.provider.simulatePrMerged(options.prNumber, mergeSha);
+    return { mergeSha };
   }
 
   async getRemainingRateLimit(): Promise<number> {

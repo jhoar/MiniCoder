@@ -72,8 +72,8 @@ async function registerMockPlanner(db: DbClient, name = 'MockPlannerAdapter'): P
 // ── ALL_TASK_IDS ────────────────────────────────────────────────────────────
 
 describe('ALL_TASK_IDS', () => {
-  it("exports the 17 canonical task ID strings (15 from Phases 3/6/7 plus Phase 9's run-coder and Phase 10's run-review)", () => {
-    expect(ALL_TASK_IDS).toHaveLength(17);
+  it("exports the 18 canonical task ID strings (15 from Phases 3/6/7 plus Phase 9's run-coder, Phase 10's run-review, and Phase 12's run-merge-gate)", () => {
+    expect(ALL_TASK_IDS).toHaveLength(18);
     expect(ALL_TASK_IDS).toContain('ingest-specification');
     expect(ALL_TASK_IDS).toContain('planning-readiness-assessment');
     expect(ALL_TASK_IDS).toContain('start-clarification');
@@ -87,6 +87,7 @@ describe('ALL_TASK_IDS', () => {
     expect(ALL_TASK_IDS).toContain('start-next-feature');
     expect(ALL_TASK_IDS).toContain('run-coder');
     expect(ALL_TASK_IDS).toContain('run-review');
+    expect(ALL_TASK_IDS).toContain('run-merge-gate');
     expect(ALL_TASK_IDS).toContain('github-reconciliation');
     expect(ALL_TASK_IDS).toContain('export-plan');
     expect(ALL_TASK_IDS).toContain('export-backlog');

@@ -64,6 +64,39 @@ export interface PublishStatusCheckOptions {
   targetUrl?: string;
 }
 
+export type GithubMergeMethod = 'merge' | 'squash' | 'rebase';
+
+export interface MergePullRequestOptions {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  mergeMethod: GithubMergeMethod;
+  commitTitle?: string;
+  commitMessage?: string;
+  /** Optimistic-concurrency guard against GitHub's own head-sha check (docs/01 §12). */
+  expectedHeadSha?: string;
+}
+
+/**
+ * Thrown by `GitHubClient.mergePullRequest()` (Phase 12 — Merge Gate) when GitHub rejects a
+ * merge attempt. `autoClearable` distinguishes a transient condition a re-push naturally resolves
+ * (`'sha_mismatch'` — GitHub's 409 when the supplied `expectedHeadSha` no longer matches the PR's
+ * real head, i.e. someone pushed after the gate re-evaluated) from one that cannot self-clear
+ * (`'not_mergeable'` — GitHub's 405, covering both branch-protection rejection and a real merge
+ * conflict) — see the `merge_failed -> under_review` / `merge_failed -> human_required` matrix
+ * rows (docs/00 §3.2) this classification feeds.
+ */
+export class GithubMergeRejectedError extends Error {
+  constructor(
+    message: string,
+    public readonly reason: 'sha_mismatch' | 'not_mergeable' | 'unknown',
+    public readonly autoClearable: boolean,
+  ) {
+    super(message);
+    this.name = 'GithubMergeRejectedError';
+  }
+}
+
 /** GitHub API client seam. Real implementation is Octokit-backed (`packages/github`). */
 export interface GitHubClient {
   createBranch(options: CreateBranchOptions): Promise<{ branchName: string; sha: string }>;
@@ -80,6 +113,14 @@ export interface GitHubClient {
   ): Promise<ObservedPullRequestState | null>;
 
   publishStatusCheck(options: PublishStatusCheckOptions): Promise<void>;
+
+  /**
+   * Performs the real GitHub merge (Phase 12 — `minicoder merge merge-if-ready`'s only
+   * GitHub-facing call). Throws `GithubMergeRejectedError` on rejection; the caller classifies
+   * `autoClearable` from that error to decide between `ReconcileMergeFailedCommand` and
+   * `EscalateToHumanCommand`.
+   */
+  mergePullRequest(options: MergePullRequestOptions): Promise<{ mergeSha: string }>;
 
   /** Remaining GitHub API rate-limit budget, for the capacity pre-flight check. */
   getRemainingRateLimit(): Promise<number>;

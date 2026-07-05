@@ -95,6 +95,9 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
       async createPullRequest() {
         throw new Error('not used in this test');
       },
+      async mergePullRequest() {
+        throw new Error('not used in this test');
+      },
       async getPullRequest(owner, repo, prNumber) {
         getPullRequestCalls.push({ owner, repo, prNumber });
         return observedPrOpenedState('newsha0000');
@@ -169,6 +172,9 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
       async createPullRequest() {
         throw new Error('not used in this test');
       },
+      async mergePullRequest() {
+        throw new Error('not used in this test');
+      },
       async getPullRequest() {
         getPullRequestCallCount += 1;
         return observedPrOpenedState('irrelevant');
@@ -210,6 +216,9 @@ describe('github-reconciliation runImpl (concurrency: a held execution lane skip
         throw new Error('not used in this test');
       },
       async createPullRequest() {
+        throw new Error('not used in this test');
+      },
+      async mergePullRequest() {
         throw new Error('not used in this test');
       },
       async getPullRequest() {

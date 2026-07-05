@@ -12,10 +12,11 @@ import type {
   CreateBranchOptions,
   CreatePullRequestOptions,
   GitHubClient,
+  MergePullRequestOptions,
   ObservedPullRequestState,
   PublishStatusCheckOptions,
 } from '@minicoder/core';
-import { PrReviewState } from '@minicoder/core';
+import { GithubMergeRejectedError, PrReviewState } from '@minicoder/core';
 import { classifyCheckConclusion } from './check-conclusion.js';
 
 export interface OctokitGitHubClientOptions {
@@ -145,6 +146,53 @@ export class OctokitGitHubClient implements GitHubClient {
   async getRemainingRateLimit(): Promise<number> {
     const { data } = await this.octokit.rateLimit.get();
     return data.resources.core.remaining;
+  }
+
+  /**
+   * Phase 12 — the only GitHub-facing call `minicoder merge merge-if-ready` makes. GitHub's
+   * `sha` request param on `pulls.merge` is itself an optimistic-concurrency guard (a 409 if the
+   * PR's real head has moved past `expectedHeadSha`); a 405 covers both branch-protection
+   * rejection and a real merge conflict — GitHub does not distinguish the two in the response, so
+   * both classify as the non-auto-clearable `'not_mergeable'` reason.
+   */
+  async mergePullRequest(options: MergePullRequestOptions): Promise<{ mergeSha: string }> {
+    try {
+      const { data } = await this.octokit.pulls.merge({
+        owner: options.owner,
+        repo: options.repo,
+        pull_number: options.prNumber,
+        merge_method: options.mergeMethod,
+        commit_title: options.commitTitle,
+        commit_message: options.commitMessage,
+        sha: options.expectedHeadSha,
+      });
+      return { mergeSha: data.sha };
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const message = err instanceof Error ? err.message : String(err);
+      if (status === 409) {
+        throw new GithubMergeRejectedError(
+          `PR #${options.prNumber} head moved since the merge gate was evaluated: ${message}`,
+          'sha_mismatch',
+          true,
+        );
+      }
+      if (status === 405) {
+        throw new GithubMergeRejectedError(
+          `PR #${options.prNumber} is not mergeable (branch protection or conflict): ${message}`,
+          'not_mergeable',
+          false,
+        );
+      }
+      // A genuine infrastructure/auth/validation failure (no HTTP status, or any status other
+      // than the two known merge-policy rejections above — e.g. 401/403/404/422/429/5xx) is not
+      // a merge-gate rejection at all — rethrow the original error so the caller fails loudly
+      // instead of misrecording an operational failure as a merge_failed state transition
+      // (code-review fix: this previously wrapped every other status into
+      // `GithubMergeRejectedError('unknown', false)`, which drove `RecordMergeFailedCommand` +
+      // `EscalateToHumanCommand` for e.g. a transient 500 or a bad-credentials 401).
+      throw err;
+    }
   }
 
   /**

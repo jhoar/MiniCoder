@@ -100,3 +100,11 @@ export * from './commands/handlers/feature/resume-feature-execution.js';
 export * from './commands/handlers/feature/retry-feature.js';
 export * from './commands/handlers/feature/skip-feature.js';
 export * from './commands/handlers/feature/block-feature.js';
+
+// Phase 12: Merge Gate and Branch Protection
+export * from './merge-gate/index.js';
+export * from './commands/handlers/feature/record-approved-by-policy.js';
+export * from './commands/handlers/feature/merge-if-ready.js';
+export * from './commands/handlers/feature/record-merged.js';
+export * from './commands/handlers/feature/record-merge-failed.js';
+export * from './commands/handlers/feature/reconcile-merge-failed.js';

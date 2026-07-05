@@ -123,6 +123,9 @@ function fakeGithubClient(opts: { fail?: boolean } = {}): GitHubClient & {
       });
       return { prNumber: 42, branchName: options.branchName };
     },
+    async mergePullRequest() {
+      throw new Error('not used in this test');
+    },
     async getPullRequest() {
       return null;
     },
