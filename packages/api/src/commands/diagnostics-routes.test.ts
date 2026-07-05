@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildTestApp, TEST_OPERATOR_KEY, seedProjectWithWorkflowState } from '../test-helpers.js';
+import {
+  buildTestApp,
+  TEST_OPERATOR_KEY,
+  TEST_VIEWER_KEY,
+  seedProjectWithWorkflowState,
+} from '../test-helpers.js';
 
 describe('diagnostics command routes', () => {
   it('POST /commands/validate returns a healthy result for a clean DB', async () => {
@@ -52,4 +57,20 @@ describe('diagnostics command routes', () => {
     expect(body.project.id).toBe(projectId);
     expect(body.globalOperationalState.scope).toBe('global');
   });
+
+  it.each(['validate', 'doctor', 'reconcile', 'export-diagnostics'])(
+    'rejects a viewer-role key from calling POST /commands/%s (finding 3)',
+    async (route) => {
+      const { app, db } = await buildTestApp();
+      const { projectId } = await seedProjectWithWorkflowState(db);
+      const res = await app.inject({
+        method: 'POST',
+        url: `/commands/${route}`,
+        headers: { authorization: `Bearer ${TEST_VIEWER_KEY}` },
+        payload: { projectId, all: true },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).type).toBe('authorization-error');
+    },
+  );
 });

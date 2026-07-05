@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTestApp, TEST_OPERATOR_KEY } from '../test-helpers.js';
+import { buildTestApp, TEST_OPERATOR_KEY, TEST_VIEWER_KEY } from '../test-helpers.js';
 import type { TaskTriggerClient } from './task-trigger-routes.js';
 
 function fakeTaskTriggerClient(): TaskTriggerClient & { calls: unknown[] } {
@@ -108,7 +108,34 @@ describe('task-trigger enqueue routes', () => {
     expect(client.calls[0]).toMatchObject({ task: 'run-merge-gate' });
   });
 
-  it('fails fast with an actionable error when no TaskTriggerClient is configured', async () => {
+  it.each([
+    ['request-coder-run', { coderAdapterName: 'CodexCoderAdapter' }],
+    ['request-review', { reviewerAdapterName: 'ClaudeReviewerAdapter' }],
+    ['request-fixes', { reviewerAdapterName: 'ClaudeReviewerAdapter' }],
+    ['recompute-merge-gate', {}],
+  ])(
+    'rejects a viewer-role key from calling POST /commands/%s (finding 2)',
+    async (route, extraFields) => {
+      const client = fakeTaskTriggerClient();
+      const { app } = await buildTestApp({ taskTriggerClient: client });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/commands/${route}`,
+        headers: {
+          authorization: `Bearer ${TEST_VIEWER_KEY}`,
+          'idempotency-key': `viewer-${route}`,
+        },
+        payload: { projectId: 'proj-1', featureRunId: 'run-1', ...extraFields },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).type).toBe('authorization-error');
+      expect(client.calls).toHaveLength(0);
+    },
+  );
+
+  it('fails with a redacted 500 when no TaskTriggerClient is configured', async () => {
     const { app } = await buildTestApp();
     const res = await app.inject({
       method: 'POST',
@@ -124,6 +151,10 @@ describe('task-trigger enqueue routes', () => {
       },
     });
     expect(res.statusCode).toBe(500);
-    expect(JSON.parse(res.body).detail).toContain('No TaskTriggerClient configured');
+    // The actionable "No TaskTriggerClient configured..." message is logged server-side (see
+    // errors.ts) but must not be echoed to the client — only a stable, generic body is returned.
+    const body = JSON.parse(res.body);
+    expect(body.type).toBe('internal-error');
+    expect(body.detail).not.toContain('No TaskTriggerClient configured');
   });
 });

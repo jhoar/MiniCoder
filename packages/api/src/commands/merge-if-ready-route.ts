@@ -6,6 +6,24 @@
  * GitHub merge call runs; (3) the outcome is recorded via `RecordMergedCommand` (success) or
  * `RecordMergeFailedCommand` + `ReconcileMergeFailedCommand`/`EscalateToHumanCommand` (rejection,
  * classified by `GithubMergeRejectedError.autoClearable`).
+ *
+ * The three follow-up commands dispatched after the real GitHub call
+ * (`RecordMergedCommand`/`RecordMergeFailedCommand`/`ReconcileMergeFailedCommand`) all require an
+ * `admin`-role `system`-actorKind actor per their own matrix rows — the same `systemActor()`
+ * identity `packages/cli/src/commands/merge.ts` and every Trigger.dev task already use for this
+ * category of internal follow-up write, not the approver's own role (an approver's role rank is
+ * always below admin, so building a "system" actor that merely copies the caller's role would
+ * make every one of these three dispatches fail `assertRole` for every real approver).
+ *
+ * Route-level idempotent replay: this route makes a real external GitHub API call partway
+ * through, so unlike a single `CommandHandler`, retrying the same `Idempotency-Key` after a
+ * completed request cannot simply re-run the same command dispatches — by the time of a retry the
+ * feature run has already moved past `merge_ready` to a terminal state, and re-dispatching would
+ * fail rather than replay the original outcome. The whole HTTP response (status + body) for every
+ * exit path from `githubClientFactory()` onward is cached against the client-supplied
+ * `Idempotency-Key` in `idempotency_keys` (a distinct `merge-if-ready-route` scope, so it can't
+ * collide with the per-command sub-keys derived from the same header), and a retry with the same
+ * header replays that exact response without touching GitHub or dispatching anything again.
  */
 import type { FastifyInstance } from 'fastify';
 import {
@@ -19,12 +37,62 @@ import {
   MergeGateBlockedError,
   FeatureExecutionState,
   generateId,
+  isoNow,
+  ttlIso,
   publishMergeGateStatusCheck,
 } from '@minicoder/core';
 import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
-import { requireNonBlankEnvVar } from '@minicoder/triggerdev';
+import { requireNonBlankEnvVar, systemActor } from '@minicoder/triggerdev';
 import { MissingIdempotencyKeyError, NotFoundError, RequestValidationError } from '../errors.js';
 import { toCommandEnvelopeResponse, type CommandEnvelopeResponse } from './command-response.js';
+
+const ROUTE_IDEMPOTENCY_SCOPE = 'merge-if-ready-route';
+const ROUTE_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface CachedRouteResponse {
+  status: number;
+  body: unknown;
+}
+
+async function getCachedRouteResponse(
+  db: DbClient,
+  key: string,
+): Promise<CachedRouteResponse | null> {
+  const rows = await db.query<{ result: string }>(
+    `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ? AND result IS NOT NULL`,
+    [key, ROUTE_IDEMPOTENCY_SCOPE, isoNow()],
+  );
+  const row = rows[0];
+  return row ? (JSON.parse(row.result) as CachedRouteResponse) : null;
+}
+
+async function storeRouteResponse(
+  db: DbClient,
+  key: string,
+  response: CachedRouteResponse,
+): Promise<void> {
+  const now = isoNow();
+  try {
+    await db.execute(
+      `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        generateId(),
+        key,
+        ROUTE_IDEMPOTENCY_SCOPE,
+        JSON.stringify(response),
+        ttlIso(ROUTE_IDEMPOTENCY_TTL_MS),
+        now,
+        now,
+      ],
+    );
+  } catch (err) {
+    // UNIQUE(key, scope) conflict: a concurrent/earlier request already cached this route's
+    // response — that write wins, this one is a harmless no-op.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/unique/i.test(msg)) throw err;
+  }
+}
 
 export type GithubClientFactory = () => Promise<GitHubClient>;
 
@@ -117,6 +185,15 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
     const correlationId = actor.correlationId;
     const executor = new TransactionalCommandExecutor(db);
 
+    const cached = await getCachedRouteResponse(db, idempotencyKeyHeader);
+    if (cached) {
+      return reply.code(cached.status).send(cached.body);
+    }
+    const respond = async (status: number, body: unknown): Promise<void> => {
+      await storeRouteResponse(db, idempotencyKeyHeader, { status, body });
+      void reply.code(status).send(body);
+    };
+
     const run = await fetchFeatureRun(db, featureRunId, projectId);
     const prRows = await db.query<PullRequestRow>(
       `SELECT pr_number, branch_name, base_branch, head_sha FROM pull_requests WHERE feature_run_id = ?`,
@@ -170,17 +247,17 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
             featureRunId,
           );
         }
-        return reply.code(409).send({ merged: false, reasons: err.reasons });
+        await respond(409, { merged: false, reasons: err.reasons });
+        return;
       }
       throw err;
     }
 
-    const system = {
-      id: 'orchestrator-api',
-      role: actor.role,
-      actorKind: 'system' as const,
-      correlationId,
-    };
+    // RecordMergedCommand/RecordMergeFailedCommand/ReconcileMergeFailedCommand all require an
+    // admin-role system actor per their own matrix rows — the same identity every Trigger.dev
+    // task and packages/cli/src/commands/merge.ts already use, not the approver's own role (see
+    // module doc comment above).
+    const system = systemActor(correlationId);
     const mergeReadyRun = await fetchFeatureRun(db, featureRunId, projectId);
     if (mergeReadyRun.current_execution_state !== FeatureExecutionState.MERGE_READY) {
       throw new RequestValidationError(
@@ -209,7 +286,8 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
         merged: true,
         mergeSha,
       };
-      return reply.code(200).send(body);
+      await respond(200, body);
+      return;
     } catch (err) {
       if (!(err instanceof GithubMergeRejectedError)) throw err;
 
@@ -238,12 +316,13 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
           correlationId,
         };
         await executor.execute(new ReconcileMergeFailedHandler(), reconcileEnvelope);
-        return reply.code(409).send({
+        await respond(409, {
           merged: false,
           reason: err.message,
           autoClearable: true,
           resolution: 'under_review',
         });
+        return;
       }
 
       const escalateEnvelope: CommandEnvelope<Record<string, unknown>> = {
@@ -259,12 +338,13 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
         correlationId,
       };
       await executor.execute(new EscalateToHumanHandler(), escalateEnvelope);
-      return reply.code(409).send({
+      await respond(409, {
         merged: false,
         reason: err.message,
         autoClearable: false,
         resolution: 'human_required',
       });
+      return;
     }
   });
 }

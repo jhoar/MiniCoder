@@ -84,9 +84,10 @@ describe('toProblemDetails', () => {
     expect(status).toBe(502);
   });
 
-  it('maps an unrecognized error to a redacted 500', () => {
+  it('maps an unrecognized error to a redacted 500 that never echoes the raw message', () => {
     const { status, body } = toProblemDetails(new Error('secret internal detail'), INSTANCE);
     expect(status).toBe(500);
     expect(body.type).toBe('internal-error');
+    expect(body.detail).not.toContain('secret internal detail');
   });
 });

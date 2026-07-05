@@ -114,14 +114,16 @@ export function toProblemDetails(err: unknown, instance: string): ProblemRespons
   if (err instanceof RequestValidationError) {
     return problem(400, err.type, 'Request validation failed', err.detail, instance);
   }
-  const message = err instanceof Error ? err.message : String(err);
-  // Never leak stack traces or raw internals to the client; log server-side instead.
+  // Never leak the raw exception message to the client — an unrecognized error can be a DB
+  // driver error, a provider/SDK error, or anything else that may echo connection strings,
+  // credentials, or other secret-bearing internals. Log the full detail server-side only; the
+  // client gets a stable, generic body regardless of what the underlying error actually said.
   console.error(`[api] unhandled error at ${instance}:`, err);
   return problem(
     500,
     'internal-error',
     'Internal server error',
-    `An unexpected error occurred: ${message}`,
+    'An unexpected error occurred. See server logs for details.',
     instance,
   );
 }

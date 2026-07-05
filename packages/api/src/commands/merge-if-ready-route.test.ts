@@ -105,4 +105,62 @@ describe('POST /commands/merge-if-ready', () => {
     expect(body.merged).toBe(false);
     expect(body.reasons.join(' ')).toContain("not the project's active feature run");
   });
+
+  it('succeeds end-to-end for an approver actor and replays the cached response on retry (findings 1 & 4)', async () => {
+    const { app, db } = await buildTestApp({ githubClientFactory: fakeGithubClientFactory });
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId } = await seedFeatureRun(db, projectId);
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 1, ?, ?)`,
+      [generateId(), projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO pull_requests (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'minicoder/FR-001', 'main', 'abc123', 'open', 'approved', 'passed', TRUE, '[]', FALSE, 1, ?, ?)`,
+      [generateId(), featureRunId, now, now],
+    );
+    // The feature run must be the project's active feature for the gate to pass.
+    await db.execute(`UPDATE workflow_states SET active_feature_run_id = ? WHERE project_id = ?`, [
+      featureRunId,
+      projectId,
+    ]);
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-happy-path',
+      },
+      payload: { featureRunId, projectId },
+    });
+
+    // Prior to the fix, this failed with a 403 authorization-error because the route built its
+    // internal "system" actor with the approver's own role instead of admin.
+    expect(first.statusCode).toBe(200);
+    const firstBody = JSON.parse(first.body);
+    expect(firstBody).toMatchObject({ merged: true, mergeSha: 'unused' });
+
+    const featureRunRow = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(featureRunRow[0]?.current_execution_state).toBe('merged');
+
+    // Retrying with the same Idempotency-Key must replay the exact original response, not fail
+    // because the run has since moved past merge_ready to a terminal merged state.
+    const second = await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-happy-path',
+      },
+      payload: { featureRunId, projectId },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(JSON.parse(second.body)).toEqual(firstBody);
+  });
 });

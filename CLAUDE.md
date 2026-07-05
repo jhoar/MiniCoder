@@ -1536,6 +1536,59 @@ MergeGateBlockedError` branch (checking it after `CommandError` would never be r
 serve`'s shape exactly (`--port`/`--host` options, does not close the DB connection, stays alive
   until terminated) — the CLI is a thin wrapper around `packages/api/src/server.ts`'s `serve()`.
 
+**Post-implementation review fixes (round 1):**
+
+- **HIGH-1 (`merge-if-ready`'s internal follow-up commands used the caller's own role, not
+  admin).** `RecordMergedCommand`/`RecordMergeFailedCommand`/`ReconcileMergeFailedCommand` all
+  require `UserRole.ADMIN` + `actorKind: 'system'` per their own matrix rows — the same identity
+  every Trigger.dev task and `packages/cli/src/commands/merge.ts` already build via
+  `systemActor()`. The route instead built `{..., role: actor.role, actorKind: 'system'}`, copying
+  the approver's own role (rank 2) into a "system" actor — since `admin` is rank 3, every real
+  approver-initiated merge would pass `MergeIfReadyHandler` (approver-gated), succeed against
+  GitHub, and then fail `RecordMergedHandler`/`RecordMergeFailedHandler` with a 403
+  `authorization-error`, having already merged the PR with no local record of it. Fixed by using
+  `systemActor(correlationId)` from `@minicoder/triggerdev` for these three dispatches, matching
+  the CLI reference implementation exactly. A new happy-path test in
+  `merge-if-ready-route.test.ts` exercises the full approver flow end-to-end and would have caught
+  this (the existing tests only covered blocked-gate and not-found paths, never a passing gate).
+- **HIGH-2 (task-trigger and diagnostics routes authenticated but never authorized).**
+  `task-trigger-routes.ts` (`request-coder-run`/`request-review`/`request-fixes`/
+  `recompute-merge-gate`) and `diagnostics-routes.ts` (`validate`/`doctor`/`reconcile`/
+  `export-diagnostics`) don't dispatch through `TransactionalCommandExecutor`, so neither got
+  `assertRole` for free — unlike every command reachable via the generic dispatch route or the
+  dedicated `merge-if-ready` route (both of which enforce a role floor through the handler they
+  call). A `viewer`-role API key could otherwise trigger real coder/reviewer/merge-gate work, or
+  call `reconcile` (which mutates `workflow_locks` and can mark `outbox_events`/`inbox_events` rows
+  `failed` globally). Fixed with a shared `requireRole()` helper (`auth/require-role.ts`, wrapping
+  `assertRole()`), called first thing in every one of these eight route handlers with an
+  `operator` floor (docs/00 §4.4 names `request coder/review run`, `recompute merge gate`, and
+  `reconcile` as operator-level capabilities; `validate`/`doctor`/`export-diagnostics` are held to
+  the same floor for consistency, since `export-diagnostics` can surface workflow-event payload
+  contents a viewer shouldn't pull). Regression tests assert a `viewer` key gets `403`
+  `authorization-error` on all eight routes and that the injected `TaskTriggerClient`/mutating
+  read-models are never actually invoked.
+- **HIGH-3 (`merge-if-ready` had no whole-route idempotent replay).** The route splits the
+  client-supplied `Idempotency-Key` into per-command suffixed keys (`:merge-ready`,
+  `:record-merged`, etc.), which does make each individual command dispatch replay-safe — but nothing
+  cached the overall HTTP response. Retrying the same `Idempotency-Key` after a completed request
+  would replay `:merge-ready` (a no-op, already merge_ready or already past it), then hit the
+  `current_execution_state !== MERGE_READY` guard and fail with a `400`, even though the original
+  request had already succeeded (or definitively failed) — a client-side retry after a network
+  timeout could see a spurious failure for a merge that actually went through. Fixed by caching
+  the full `{status, body}` response against the client's `Idempotency-Key` in `idempotency_keys`
+  under a distinct `merge-if-ready-route` scope (so it can't collide with the per-command
+  sub-keys), checked before any work begins and written on every terminal exit path from
+  `githubClientFactory()` onward. A regression test performs the same request twice with the same
+  header and asserts byte-identical responses without a second GitHub call.
+- **MEDIUM-1 (fallback 500 responses echoed the raw exception message).** `toProblemDetails()`'s
+  generic branch interpolated `err.message` directly into the client-facing `detail` field —
+  an unrecognized DB driver error, provider/SDK error, or anything else routed here could leak
+  connection strings, credentials, or other internals to the caller. Fixed to always return a
+  stable, generic detail string for unrecognized errors; the real message is still logged
+  server-side via `console.error` for operator debugging. `errors.test.ts` and
+  `task-trigger-routes.test.ts` both assert the client-visible body never contains the original
+  message.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
