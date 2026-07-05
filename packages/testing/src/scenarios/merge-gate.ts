@@ -313,7 +313,7 @@ export const mergeGateScenario: Scenario = {
 
     const escalate204Envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `escalate-human-merge-failed:${fr204.id}`,
+      idempotencyKey: `escalate-human-merge-failed:${fr204.id}:${fr204AtFailed.version}`,
       payload: {
         featureRunId: fr204.id,
         projectId,
@@ -328,6 +328,36 @@ export const mergeGateScenario: Scenario = {
     assertEqual(
       'FR-204 escalates to human_required',
       fr204Final.current_execution_state,
+      'human_required',
+    );
+
+    // Regression (code-review re-review fix): a second non-auto-clearable merge failure for the
+    // same feature run — simulating a human `resume` back through the loop and another
+    // merge_ready -> merge_failed cycle happening elsewhere — must escalate again rather than
+    // replaying the first escalation's cached idempotency result. Fast-forward the row directly
+    // to a later merge_failed occurrence (the same shorthand run-merge-gate.test.ts's version-cycle
+    // regression uses) rather than replaying the full human-resume/re-approve/re-merge sequence.
+    await db.execute(
+      `UPDATE feature_runs SET current_execution_state = 'merge_failed', version = 42 WHERE id = ?`,
+      [fr204.id],
+    );
+    const escalate204AgainEnvelope: CommandEnvelope<Record<string, unknown>> = {
+      commandId: generateId(),
+      idempotencyKey: `escalate-human-merge-failed:${fr204.id}:42`,
+      payload: {
+        featureRunId: fr204.id,
+        projectId,
+        expectedVersion: 42,
+        reason: 'second not_mergeable rejection',
+      },
+      actor: system,
+      correlationId,
+    };
+    await executor.execute(new EscalateToHumanHandler(), escalate204AgainEnvelope);
+    const fr204SecondEscalation = await getFeatureRunByFrId(ctx, 'FR-204');
+    assertEqual(
+      'FR-204 escalates to human_required again on a later occurrence',
+      fr204SecondEscalation.current_execution_state,
       'human_required',
     );
   },

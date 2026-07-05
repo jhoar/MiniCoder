@@ -380,7 +380,12 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     guardDescription: 'merge failure cannot be auto-cleared (branch protection, conflict)',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.human_required'],
-    idempotencyKeyTemplate: 'escalate-human-merge-failed:{featureRunId}',
+    // {expectedVersion}-scoped (code-review fix, Phase 12 PR re-review): a feature run can cycle
+    // merge_failed -> human_required -> under_review -> approved_by_policy -> merge_ready ->
+    // merge_failed more than once — a key scoped to {featureRunId} alone would replay the first
+    // escalation's cached result on a later non-auto-clearable failure without actually
+    // transitioning the current merge_failed row, while the caller still reports success.
+    idempotencyKeyTemplate: 'escalate-human-merge-failed:{featureRunId}:{expectedVersion}',
     recoveryPath: 'Human resolves via human_required disposition',
   },
   // ── Failure / escalation states ───────────────────────────────────────────

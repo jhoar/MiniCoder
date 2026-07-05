@@ -288,7 +288,9 @@ export function createMergeCommand(): Command {
             } else {
               const escalateEnvelope: CommandEnvelope<Record<string, unknown>> = {
                 commandId: generateId(),
-                idempotencyKey: `escalate-human-merge-failed:${opts.featureRun}`,
+                // {expectedVersion}-scoped (code-review fix): this escalation can recur across
+                // separate merge_failed occurrences for the same feature run.
+                idempotencyKey: `escalate-human-merge-failed:${opts.featureRun}:${failedRun.version}`,
                 payload: {
                   featureRunId: opts.featureRun,
                   projectId: opts.project,
