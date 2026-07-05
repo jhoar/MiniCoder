@@ -1340,6 +1340,90 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   `merge-if-ready`, which re-gates again) rather than silently accepting a merge no local state
   reflects.
 
+**Post-implementation review fixes (round 1):**
+
+- **HIGH-1 (`approved-by-policy`/`merge-ready` idempotency keys were not `{expectedVersion}`-scoped).**
+  `under_review -> approved_by_policy` and `approved_by_policy -> merge_ready` can each recur for
+  the same feature run (e.g. after a `merge_failed` auto-clear returns it to `under_review` and it
+  is re-approved) — a key scoped to `{featureRunId}` alone would replay the _first_ occurrence's
+  cached `CommandResult` for every later one within the idempotency TTL, most dangerously letting
+  `minicoder merge merge-if-ready` proceed to the real GitHub merge call against a run that never
+  actually re-transitioned to `merge_ready` this time. Fixed both matrix templates and their
+  callers (`run-merge-gate.ts`, `merge.ts`) to `...:{featureRunId}:{expectedVersion}`; added a
+  `run-merge-gate.test.ts` regression that cycles a run back to `under_review` at a later version
+  and asserts it is genuinely re-approved rather than replaying stale state.
+- **HIGH-2 (`OctokitGitHubClient.mergePullRequest()` misclassified every non-409/405 HTTP status as
+  a merge-gate rejection).** The doc comment already claimed infra/auth failures were rethrown
+  as-is, but the code wrapped any status other than 409/405 — including 401/403/404/422/429/5xx —
+  into `GithubMergeRejectedError('unknown', false)`, which the CLI's catch block would then record
+  as `RecordMergeFailedCommand` + `EscalateToHumanCommand`, misrepresenting a transient operational
+  failure (bad credentials, rate limiting, a GitHub outage) as a genuine merge-policy rejection.
+  Fixed to only classify 409/405; every other status (or none) is rethrown untouched. Added
+  parameterized tests covering 401/403/404/422/429/500/503.
+- **MEDIUM-1 (the CLI didn't swallow status-check publish failures the way the Trigger.dev task
+  does).** `run-merge-gate.ts`'s `publishStatusCheckSafely` logs-and-swallows a
+  `publishMergeGateStatusCheck()` failure so a transient commit-status API hiccup can't abort an
+  already-durable state transition; `minicoder merge merge-if-ready` originally `await`ed the same
+  call directly, so the identical hiccup could throw between a rejected-gate response (or a
+  successful `merge_ready` transition) and the caller ever seeing a result. Fixed by adding the same
+  safe wrapper to the CLI. Also added a defense-in-depth re-check that the feature run is genuinely
+  at `merge_ready` immediately before the real GitHub merge call (redundant with the HIGH-1 fix, but
+  cheap insurance against a future caller reusing this code path differently).
+- **MEDIUM-2 (blocked-gate reasons were reconstructed by parsing `CommandError.problem.detail`
+  prose).** `run-merge-gate.ts` used to recover the structured reasons array via
+  `detail.split(': ').slice(1).join(': ').split('; ')` — fragile, and would silently corrupt if a
+  reason's own text ever contained those delimiters. Replaced with `MergeGateBlockedError`, a typed
+  `CommandError` subclass carrying `reasons: string[]` directly; both `RecordApprovedByPolicyHandler`
+  and `MergeIfReadyHandler` throw it, and both callers read `.reasons` structurally.
+- **LOW-1 (a stale doc comment on `evaluateMergeGate()` described one-transaction atomicity).** The
+  comment hadn't been updated when the handlers moved to the two-phase evidence-then-transition
+  design; fixed to describe the actual contract.
+
+**Post-implementation review fixes (round 2):**
+
+- **MEDIUM-1 (`escalate-human-merge-failed` had the same un-scoped idempotency key bug as round 1's
+  HIGH-1, just on a row round 1 didn't touch).** `merge_failed -> human_required` can recur for the
+  same feature run across separate merge-failure cycles (`merge_failed -> human_required ->
+under_review -> approved_by_policy -> merge_ready -> merge_failed`, repeated); a key scoped to
+  `{featureRunId}` alone would replay the first escalation's cached result on a later
+  non-auto-clearable failure without transitioning the current `merge_failed` row, while the CLI
+  still reported `resolution: 'human_required'`. Fixed the matrix template and the CLI call site to
+  `escalate-human-merge-failed:{featureRunId}:{expectedVersion}`; added a scenario regression
+  forcing a second non-auto-clearable failure and asserting it re-escalates.
+- **HIGH-1 (`evaluateMergeGate()` didn't enforce three of docs/01 §12's documented hard
+  preconditions).** "Belongs to the active feature," "PR is open," and "targets the correct base
+  branch" were absent — a stale or wrong-base PR, or a feature run that wasn't actually the
+  project's active one, could otherwise slip through a drift/repair/race case even when every other
+  mirrored predicate looked green. Fixed by checking `workflow_states.active_feature_run_id ===
+featureRunId`, `pull_requests.state === 'open'`, and `pull_requests.base_branch ===
+repositories.default_branch`. "Matches the database branch record" needed no new check — it's
+  satisfied by construction, since the evaluator only ever loads the one `pull_requests` row
+  tracked for `featureRunId`; there is no other branch record a wrong PR could diverge from.
+  **This required reworking the `merge-gate` test scenario**, which had deliberately kept four
+  feature runs simultaneously `under_review`/`approved_by_policy` in one project for test
+  convenience — a setup that itself violated the real one-active-feature-per-project invariant
+  (Phase 8) the new check enforces. The scenario now explicitly hands `active_feature_run_id` off
+  between cases as each is evaluated, matching how the orchestrator actually behaves in production,
+  rather than a testing-only shortcut. Added three new `run-merge-gate.test.ts` regressions
+  (not-active, PR-closed, wrong-base-branch).
+
+**Round 3 (clean re-review — no findings; two non-blocking watchlist notes, not fixed):**
+
+- A final PR/repository re-fetch immediately before `mergePullRequest()` was suggested as extra
+  defense-in-depth against a same-head PR retarget race. Not implemented: GitHub's own `sha`
+  parameter on `pulls.merge` is itself an optimistic-concurrency check against the PR's real
+  current head, so the described race is already covered by the existing `sha_mismatch`
+  classification (HIGH-2 above) — a same-head retarget without a new commit is not a scenario
+  `sha` alone would catch, but is also not a realistic GitHub state transition (retargeting a PR
+  does not change its head SHA, and the base-branch predicate added in round 2 already rejects a
+  PR that isn't targeting the repository's default branch).
+- The base-branch predicate's `repositories WHERE project_id = ? LIMIT 1` query assumes one
+  repository per project. Not changed: every other repository lookup in this codebase
+  (`run-review.ts`, `run-coder.ts`, `github-reconciliation.ts`) already makes the identical
+  assumption — this predicate does not introduce new row-order fragility, it inherits an existing,
+  deployment-wide invariant. Enforcing "one repository per project" as a real constraint (or
+  linking a PR to a canonical repository row) is future schema work, not a Phase 12 gap.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

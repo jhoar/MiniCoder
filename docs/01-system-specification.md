@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.0.2
+> Version: 1.0.3
 > Last-updated: 2026-07-04
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
@@ -632,6 +632,15 @@ this function without changing the gate's shape; none exists yet.
 branch-protection rules) — there is no separate branch-protection-rules API call.
 `minicoder github simulate-branch-protection-ok` remains dev-tooling only (§5.7) and is not
 consumed by the gate.
+
+**"Belongs to the active feature," "targets the correct base branch," and "matches the database
+branch record"** are all evaluated as real hard preconditions: the feature run must be
+`workflow_states.active_feature_run_id` for its project (the sequential-execution invariant —
+only one feature run is ever a project's active one), the tracked PR must still be `state = 'open'`,
+and its `base_branch` must match the linked repository's `default_branch`. "Matches the database
+branch record" needs no separate check — it is satisfied by construction, since the evaluator only
+ever loads the one `pull_requests` row tracked for the feature run being evaluated; there is no
+other branch record a wrong PR could diverge from.
 
 **Merge-gate evidence.** Every merge-gate run writes a structured `merge_gate_evaluations` record
 capturing the inputs and outcome: CI result, review result, unresolved blocking-findings count,

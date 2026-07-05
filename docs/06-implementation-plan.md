@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.25
+> Version: 1.0.26
 > Last-updated: 2026-07-04
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1470,6 +1470,24 @@ projectId, featureRequestId})`: the merge-policy engine. Reads CI status and rev
 - Blocking labels use a single, deployment-wide policy list (env-overridable), not a per-project
   policy table — a future per-project override can be layered on top of
   `resolveBlockingLabelsPolicy()` without changing the gate's shape.
+
+**Post-implementation review fixes:** two rounds of code review found and fixed real correctness
+bugs before this phase's PR merged — see CLAUDE.md's Merge Gate and Branch Protection Operational
+Constraints section for the full rationale. Round 1 (HIGH): the `approved-by-policy`/`merge-ready`
+idempotency keys were not `{expectedVersion}`-scoped, and `OctokitGitHubClient.mergePullRequest()`
+misclassified every non-409/405 HTTP status (401/403/404/422/429/5xx) as a merge-gate rejection
+instead of rethrowing genuine operational failures; also fixed (MEDIUM/LOW): the CLI didn't swallow
+status-check publish failures the way the Trigger.dev task does, blocked-gate reasons were
+reconstructed by parsing error-message prose instead of a typed `MergeGateBlockedError`, and a
+stale doc comment described one-transaction atomicity after the handlers moved to a two-phase
+evidence-then-transition design. Round 2 (HIGH): `evaluateMergeGate()` didn't enforce three
+documented preconditions — belongs to the active feature, PR is open, targets the correct base
+branch — closing a real gap between docs/01 §12 and the implementation; also fixed (MEDIUM): the
+`escalate-human-merge-failed` idempotency key had the same un-scoped-key bug as round 1's HIGH
+finding, just on a row round 1 didn't touch. A third re-review found no further blocking issues;
+two non-blocking watchlist notes (a redundant pre-merge re-fetch, and the single-repo-per-project
+assumption already shared by every other repository lookup in the codebase) were evaluated and
+left as-is with documented rationale rather than fixed.
 
 ## Phase 13 — Orchestrator API
 
