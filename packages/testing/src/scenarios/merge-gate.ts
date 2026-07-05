@@ -161,6 +161,14 @@ export const mergeGateScenario: Scenario = {
 
     // ── Case 2: rejected gate (FR-202) — unresolved blocking finding ─────────
     const fr202 = await getFeatureRunByFrId(ctx, 'FR-202');
+    // Sequential-execution invariant (Phase 8): only one feature run is ever the project's
+    // active one. Case 1 already cleared active_feature_run_id on merge; each subsequent case
+    // must claim it before its own gate evaluation so the new "belongs to the active feature"
+    // precondition (code-review re-review fix) evaluates this case's run, not a stale/absent one.
+    await db.execute(
+      `UPDATE workflow_states SET active_feature_run_id = ?, version = version + 1 WHERE project_id = ?`,
+      [fr202.id, projectId],
+    );
     const mgResult202 = await ctx.runner.run(
       'run-merge-gate',
       {
@@ -192,6 +200,10 @@ export const mergeGateScenario: Scenario = {
 
     // ── Case 3: merge failure, sha_mismatch (auto-clearable) (FR-203) ────────
     const fr203 = await getFeatureRunByFrId(ctx, 'FR-203');
+    await db.execute(
+      `UPDATE workflow_states SET active_feature_run_id = ?, version = version + 1 WHERE project_id = ?`,
+      [fr203.id, projectId],
+    );
     ctx.github.simulatePrOpened(MERGE_GATE_SHA_MISMATCH_PR_NUMBER, fr203.id, '203-headsha');
     ctx.github.simulateMergeConflict(MERGE_GATE_SHA_MISMATCH_PR_NUMBER, 'sha_mismatch');
 
@@ -263,6 +275,10 @@ export const mergeGateScenario: Scenario = {
 
     // ── Case 4: merge failure, not_mergeable (escalates to human) (FR-204) ───
     const fr204 = await getFeatureRunByFrId(ctx, 'FR-204');
+    await db.execute(
+      `UPDATE workflow_states SET active_feature_run_id = ?, version = version + 1 WHERE project_id = ?`,
+      [fr204.id, projectId],
+    );
     ctx.github.simulatePrOpened(MERGE_GATE_NOT_MERGEABLE_PR_NUMBER, fr204.id, '204-headsha');
     ctx.github.simulateMergeConflict(MERGE_GATE_NOT_MERGEABLE_PR_NUMBER, 'not_mergeable');
 

@@ -12,7 +12,12 @@ interface FixtureIds {
 
 async function seedFeatureRun(
   db: DbClient,
-  opts: { hasBlockingFinding?: boolean } = {},
+  opts: {
+    hasBlockingFinding?: boolean;
+    notActive?: boolean;
+    prClosed?: boolean;
+    wrongBaseBranch?: boolean;
+  } = {},
 ): Promise<FixtureIds> {
   const planId = `plan-${PROJECT_ID}`;
   const frId = `fr-${PROJECT_ID}-1`;
@@ -42,13 +47,18 @@ async function seedFeatureRun(
     `INSERT OR IGNORE INTO pull_requests
        (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
         ci_status, mergeable, blocking_labels, conversations_resolved, version, created_at, updated_at)
-     VALUES (?, ?, 9, 'minicoder/FR-001', 'main', 'headsha1', 'open', 'approved', 'passed', 1, '[]', 0, 1, datetime('now'), datetime('now'))`,
-    [`pr-${featureRunId}`, featureRunId],
+     VALUES (?, ?, 9, 'minicoder/FR-001', ?, 'headsha1', ?, 'approved', 'passed', 1, '[]', 0, 1, datetime('now'), datetime('now'))`,
+    [
+      `pr-${featureRunId}`,
+      featureRunId,
+      opts.wrongBaseBranch ? 'develop' : 'main',
+      opts.prClosed ? 'closed' : 'open',
+    ],
   );
   await db.execute(
     `INSERT OR IGNORE INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
      VALUES (?, ?, ?, 'running', 1, datetime('now'), datetime('now'))`,
-    [`ws-${PROJECT_ID}`, PROJECT_ID, featureRunId],
+    [`ws-${PROJECT_ID}`, PROJECT_ID, opts.notActive ? 'some-other-run' : featureRunId],
   );
   if (opts.hasBlockingFinding) {
     await db.execute(
@@ -227,5 +237,53 @@ describe('run-merge-gate', () => {
       [featureRunId],
     );
     expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.APPROVED_BY_POLICY);
+  });
+
+  it("rejects a feature run that is not the project's active feature run (code-review re-review fix)", async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedFeatureRun(db, { notActive: true });
+    const client = fakeGithubClient();
+
+    const result = await runImpl(
+      { projectId: PROJECT_ID, correlationId: 'corr-6', idempotencyKey: 'idem-6', featureRunId },
+      db,
+      { githubClientFactory: async () => client },
+    );
+
+    expect(result.approved).toBe(false);
+    expect(result.reasons.join(' ')).toContain('active feature run');
+  });
+
+  it('rejects a feature run whose PR is closed (code-review re-review fix)', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedFeatureRun(db, { prClosed: true });
+    const client = fakeGithubClient();
+
+    const result = await runImpl(
+      { projectId: PROJECT_ID, correlationId: 'corr-7', idempotencyKey: 'idem-7', featureRunId },
+      db,
+      { githubClientFactory: async () => client },
+    );
+
+    expect(result.approved).toBe(false);
+    expect(result.reasons.join(' ')).toContain("not 'open'");
+  });
+
+  it('rejects a feature run whose PR targets the wrong base branch (code-review re-review fix)', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedFeatureRun(db, { wrongBaseBranch: true });
+    const client = fakeGithubClient();
+
+    const result = await runImpl(
+      { projectId: PROJECT_ID, correlationId: 'corr-8', idempotencyKey: 'idem-8', featureRunId },
+      db,
+      { githubClientFactory: async () => client },
+    );
+
+    expect(result.approved).toBe(false);
+    expect(result.reasons.join(' ')).toContain('base branch');
   });
 });

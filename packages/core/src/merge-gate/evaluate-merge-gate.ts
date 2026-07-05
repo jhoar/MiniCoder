@@ -85,6 +85,19 @@ interface OutstandingHumanApprovalRow {
  * rules) — there is no separate branch-protection-rules API call in this implementation;
  * `minicoder github simulate-branch-protection-ok` remains dev-tooling only (docs/01 §5.7) and is
  * not consumed here.
+ *
+ * "Matches the database branch record" (docs/01 §12) is satisfied by construction, not a separate
+ * check: this function only ever loads the one `pull_requests` row tracked for `featureRunId`
+ * (`getPullRequestByFeatureRun`), so there is no other "branch record" a wrong PR could diverge
+ * from — the tracked row *is* the database branch record for this feature run.
+ *
+ * "Belongs to the active feature" / "targets the correct base branch" (code-review fix, Phase 12
+ * PR re-review): a stale or wrong-base PR can otherwise slip through in a drift/repair/race case
+ * even when the mirrored `pull_requests` row looks green on every other predicate. Checked here as
+ * hard preconditions: the feature run must be `workflow_states.active_feature_run_id` for its
+ * project (the sequential-execution invariant established in Phase 8 — only one feature run is
+ * ever the project's active one), the PR must still be `state = 'open'`, and its `base_branch`
+ * must match the linked repository's `default_branch`.
  */
 export async function evaluateMergeGate(
   tx: TxClient,
@@ -93,6 +106,26 @@ export async function evaluateMergeGate(
   const { featureRunId, projectId, featureRequestId } = params;
   const reasons: string[] = [];
 
+  const workflowStateRows = await tx.query<{ active_feature_run_id: string | null }>(
+    `SELECT active_feature_run_id FROM workflow_states WHERE project_id = ?`,
+    [projectId],
+  );
+  const activeFeatureRunId = workflowStateRows[0]?.active_feature_run_id ?? null;
+  if (activeFeatureRunId !== featureRunId) {
+    reasons.push(
+      `feature run is not the project's active feature run (active: ${activeFeatureRunId ?? 'none'})`,
+    );
+  }
+
+  const repoRows = await tx.query<{ default_branch: string }>(
+    `SELECT default_branch FROM repositories WHERE project_id = ? LIMIT 1`,
+    [projectId],
+  );
+  const defaultBranch = repoRows[0]?.default_branch ?? null;
+  if (defaultBranch === null) {
+    reasons.push('no repository is linked for this project; cannot verify the target base branch');
+  }
+
   const pr = await getPullRequestByFeatureRun(tx, featureRunId);
   const ciStatus = pr?.ci_status ?? null;
   const reviewStatus = pr?.review_state ?? null;
@@ -100,6 +133,14 @@ export async function evaluateMergeGate(
   if (!pr) {
     reasons.push('no pull request is tracked for this feature run yet');
   } else {
+    if (pr.state !== 'open') {
+      reasons.push(`pull request state is '${pr.state}', not 'open'`);
+    }
+    if (defaultBranch !== null && pr.base_branch !== defaultBranch) {
+      reasons.push(
+        `pull request targets base branch '${pr.base_branch}', not the repository's default branch '${defaultBranch}'`,
+      );
+    }
     if (ciStatus !== 'passed') {
       reasons.push(`CI status is '${ciStatus}', not 'passed'`);
     }
