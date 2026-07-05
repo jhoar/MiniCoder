@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.0.3
-> Last-updated: 2026-07-04
+> Version: 1.0.4
+> Last-updated: 2026-07-05
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) and are authoritative there.
@@ -575,6 +575,15 @@ validation rules, transaction boundary, emitted events, outbox records, failure 
 idempotency behavior. Core command contracts are **introduced in implementation Phase 2** (alongside
 the command layer and the state-transition matrix) and **completed and exposed via OpenAPI in Phase
 13**.
+
+Not every command endpoint is meant to be clicked by a human operator. Most command endpoints
+dispatch a `human`-actorKind command handler on behalf of an authenticated operator/approver/admin
+session. A small allow-list of `system`-actorKind command handlers is additionally reachable
+through the same generic dispatch route, but only via a distinct `system`-kind API credential
+(never a human session's key) — these exist solely for manually replaying a stuck system-owned
+transition (e.g. after a failed Trigger.dev task), not as a normal operator action. A future UI
+(Phase 14/15) should only ever surface the `human`-actorKind commands as clickable operator
+actions; `CLAUDE.md`'s Orchestrator API Operational Constraints lists the exact allow-list.
 
 ## 10. Agent Adapter Contracts
 

@@ -12,6 +12,7 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@minicoder/api": "workspace:*",
     "@minicoder/core": "workspace:*",
     "@minicoder/github": "workspace:*",
     "@minicoder/migrations": "workspace:*",

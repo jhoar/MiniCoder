@@ -29,7 +29,13 @@ declare module 'fastify' {
  * parser re-serializing `request.body` would not byte-match, silently breaking verification.
  * This content-type parser captures the raw string on `request.rawBody` before parsing JSON.
  */
-function addRawBodyCapture(app: FastifyInstance): void {
+/**
+ * Exported (not just used internally by `createWebhookApp`) so Phase 13's Orchestrator API can
+ * install the same raw-body capture on its own shared Fastify instance before mounting
+ * `registerGithubWebhookRoute()` — GitHub's HMAC signature must be verified against the exact raw
+ * request bytes, so any app hosting this route needs this content-type parser registered first.
+ */
+export function addRawBodyCapture(app: FastifyInstance): void {
   app.addContentTypeParser(
     'application/json',
     { parseAs: 'string' },

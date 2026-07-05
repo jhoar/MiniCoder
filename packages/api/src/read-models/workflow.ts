@@ -1,0 +1,112 @@
+/**
+ * Read models for "workflow events", "merge gate evaluations", and "status" (docs/01 §9).
+ * `merge_gate_evaluations` is added as an explicit read group beyond docs/01's original list —
+ * it has existed as a table with a production writer since Phase 12 and has no other read path.
+ */
+import type { DbClient } from '@minicoder/core';
+import { listByCreatedAt, type CursorPage, type ListParams } from '../pagination.js';
+
+export interface WorkflowEventRow {
+  id: string;
+  feature_run_id: string | null;
+  project_id: string;
+  event_type: string;
+  from_state: string | null;
+  to_state: string | null;
+  actor: string | null;
+  payload: unknown;
+  payload_schema_version: string;
+  occurred_at: string;
+  created_at: string;
+}
+
+export function listWorkflowEvents(
+  db: DbClient,
+  filters: { projectId?: string; featureRunId?: string },
+  params: ListParams,
+): Promise<CursorPage<WorkflowEventRow>> {
+  const clauses: string[] = [];
+  const queryParams: unknown[] = [];
+  if (filters.projectId) {
+    clauses.push('project_id = ?');
+    queryParams.push(filters.projectId);
+  }
+  if (filters.featureRunId) {
+    clauses.push('feature_run_id = ?');
+    queryParams.push(filters.featureRunId);
+  }
+  return listByCreatedAt<WorkflowEventRow>(
+    db,
+    {
+      table: 'workflow_events',
+      columns:
+        'id, feature_run_id, project_id, event_type, from_state, to_state, actor, payload, payload_schema_version, occurred_at, created_at',
+      where: clauses.length > 0 ? clauses.join(' AND ') : undefined,
+      params: queryParams,
+    },
+    params,
+  );
+}
+
+export interface MergeGateEvaluationRow {
+  id: string;
+  feature_run_id: string;
+  ci_status: string | null;
+  review_status: string | null;
+  unresolved_blocking_findings: number;
+  budget_status: string | null;
+  human_approval_required: boolean;
+  human_approval_id: string | null;
+  branch_protection_ok: boolean;
+  final_decision: string;
+  evaluated_at: string;
+  created_at: string;
+}
+
+export function listMergeGateEvaluations(
+  db: DbClient,
+  featureRunId: string,
+  params: ListParams,
+): Promise<CursorPage<MergeGateEvaluationRow>> {
+  return listByCreatedAt<MergeGateEvaluationRow>(
+    db,
+    {
+      table: 'merge_gate_evaluations',
+      columns:
+        'id, feature_run_id, ci_status, review_status, unresolved_blocking_findings, budget_status, human_approval_required, human_approval_id, branch_protection_ok, final_decision, evaluated_at, created_at',
+      where: 'feature_run_id = ?',
+      params: [featureRunId],
+    },
+    params,
+  );
+}
+
+/** "status" group: a coarse-grained project health summary (mirrors `state inspect`). */
+export async function getProjectStatus(
+  db: DbClient,
+  projectId: string,
+): Promise<{
+  project: { id: string; name: string; state: string } | null;
+  workflowState: { automation_state: string; active_feature_run_id: string | null } | null;
+  pendingOutboxCount: number;
+}> {
+  const projectRows = await db.query<{ id: string; name: string; state: string }>(
+    'SELECT id, name, state FROM projects WHERE id = ?',
+    [projectId],
+  );
+  const wsRows = await db.query<{
+    automation_state: string;
+    active_feature_run_id: string | null;
+  }>('SELECT automation_state, active_feature_run_id FROM workflow_states WHERE project_id = ?', [
+    projectId,
+  ]);
+  const outboxRows = await db.query<{ cnt: number }>(
+    `SELECT COUNT(*) as cnt FROM outbox_events WHERE status IN ('pending', 'processing')`,
+    [],
+  );
+  return {
+    project: projectRows[0] ?? null,
+    workflowState: wsRows[0] ?? null,
+    pendingOutboxCount: outboxRows[0]?.cnt ?? 0,
+  };
+}

@@ -68,8 +68,42 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  packages/api:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      '@minicoder/github':
+        specifier: workspace:*
+        version: link:../github
+      '@minicoder/triggerdev':
+        specifier: workspace:*
+        version: link:../triggerdev
+      ajv:
+        specifier: ^8.17.1
+        version: 8.20.0
+      fastify:
+        specifier: ^5.9.0
+        version: 5.9.0
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.2.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@minicoder/testing':
+        specifier: workspace:*
+        version: link:../testing
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
+
   packages/cli:
     dependencies:
+      '@minicoder/api':
+        specifier: workspace:*
+        version: link:../api
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core
@@ -1066,6 +1100,9 @@ packages:
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
+
+  '@types/js-yaml@4.0.9':
+    resolution: {integrity: sha512-k4MGaQl5TGo/iipqb2UDG2UwjXziSWkh0uysQelTlJpX1qGlpUZYm8PnO4DxG1qBomtJUdYJ6qR6xdIah10JLg==}
 
   '@types/json5@0.0.29':
     resolution: {integrity: sha512-dRLjCWHYg4oaA77cxO64oO+7JwCwnIzkZPdrrC71jQmQtlhM556pwKo5bUzqvZndkVbeFLIIi+9TC40JNF5hNQ==}
@@ -3654,6 +3691,8 @@ snapshots:
       '@types/ssh2': 1.15.5
 
   '@types/estree@1.0.9': {}
+
+  '@types/js-yaml@4.0.9': {}
 
   '@types/json5@0.0.29': {}
 

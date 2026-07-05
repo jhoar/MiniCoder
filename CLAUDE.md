@@ -1424,6 +1424,118 @@ repositories.default_branch`. "Matches the database branch record" needed no new
   deployment-wide invariant. Enforcing "one repository per project" as a real constraint (or
   linking a PR to a canonical repository row) is future schema work, not a Phase 12 gap.
 
+## Orchestrator API Operational Constraints (`packages/api/`)
+
+- **Auth is a static, env-config-driven API-key map — there is no session/JWT infra anywhere in
+  this repository.** `MINICODER_API_KEYS` is a JSON array of `{key, id, role, actorKind,
+displayName?}`; `ApiKeyProvider` hashes each key with SHA-256 at boot and never stores or
+  compares raw key material, so a leaked log line can't leak a usable credential. Requests
+  authenticate via `Authorization: Bearer <api-key>`; the resolved identity is placed on
+  `request.actor: ActorIdentity` by a global `onRequest` hook (`auth/middleware.ts`), which every
+  route downstream (read, command, or diagnostic) relies on being already populated. `LocalAuthProvider`
+  (`packages/core/src/auth/local-auth.ts`) is a CLI-facing dev seam, not an HTTP auth provider —
+  this is a deliberately separate, new implementation, not a reuse of that class. Real hosted
+  OAuth/SSO sessions remain explicitly deferred future/hosted-profile work (docs/07 §4); this
+  phase only wires the existing `ActorIdentity`/role model into a network-facing surface.
+- **The webhook route is the one exception to the auth hook** — `/webhooks/*` and
+  `/healthz`/`/readyz` are excluded inside the hook itself (a URL-prefix check), since GitHub
+  authenticates via HMAC signature (`registerGithubWebhookRoute()`'s own verification), not a
+  bearer token. Do not add per-route auth bypass logic elsewhere; the hook's exemption list is the
+  single place this is decided.
+- **`Idempotency-Key` is a required, client-supplied header used verbatim as
+  `CommandEnvelope.idempotencyKey`** — deliberately not a server-synthesized
+  `{commandName}:{resourceId}:{expectedVersion}` template the way CLI/task callers already build
+  their own keys. This is a considered API-contract decision (not an oversight that happens to
+  diverge from the established CLI convention): a client-supplied key gives real replay-safety
+  across network retries/double-clicks, which a server-derived key cannot, and matches docs/01
+  §9's literal wording ("`Idempotency-Key` header mapped to the `idempotency_keys` table"). A
+  mutating request without this header is rejected with `400`/`missing-idempotency-key` before any
+  handler runs — `TransactionalCommandExecutor` has no fallback for a missing key.
+- **Command routing is a three-way split, not one generic dispatcher for everything.** (1)
+  `POST /commands/:commandSlug` — generic dispatch over a `CommandRegistry` populated once at boot
+  (`commands/registry.ts`, the registry's first production consumer anywhere in this codebase).
+  Only handlers with a no-argument constructor are registered: every `human`-actorKind handler
+  except `MergeIfReadyHandler`, plus a narrow `system`-actorKind allow-list
+  (`GenerateImplementationPlanHandler`, `GenerateFeatureBacklogHandler`, `ValidateBacklogHandler`)
+  reachable only via a `system`-kind API key, for manual replay of a stuck system-owned transition.
+  `AssessPlanningReadinessHandler` is deliberately excluded from this allow-list — unlike its
+  siblings, its constructor requires a live `PlannerAgentAdapter` instance, and no reference planner
+  adapter has shipped yet (docs/02 §7). (2) `POST /commands/merge-if-ready` — a dedicated route,
+  since it chains `MergeIfReadyHandler` → a real `GitHubClient.mergePullRequest()` call →
+  `RecordMergedHandler`/`RecordMergeFailedHandler`+follow-up, exactly mirroring
+  `packages/cli/src/commands/merge.ts`'s existing sequence; this cannot be a single generic
+  dispatch. (3) `POST /commands/{request-coder-run,request-review,request-fixes,recompute-merge-gate}`
+  — "enqueue" routes returning `{triggerdevRunId, accepted}` (a deliberate deviation from the
+  standard `CommandResult` envelope, since these correspond to whole Trigger.dev task
+  orchestrations, not a single synchronous command). `request-fixes` (docs/01 §9) has no standalone
+  handler or task of its own — `StartFixingCommand` lives inside `run-review.ts`'s own
+  `changes_requested -> fixing` decision chain — so it is served by re-triggering `request-review`,
+  not a new task.
+- **No default Trigger.dev SDK client is constructed for the enqueue routes.** `TaskTriggerClient`
+  must be injected at server startup (`app.ts`'s `BuildAppOptions.taskTriggerClient`); the
+  unconfigured default (`unconfiguredTaskTriggerClient()`) throws a fail-fast, actionable error
+  only when one of these routes is actually invoked. This mirrors the established "no default
+  PlannerAgentAdapter/ArbiterAgentAdapter, inject only" posture for capabilities with no shipped
+  reference wiring at this layer — it was a deliberate choice to avoid importing
+  `packages/triggerdev/src/triggerdev-tasks.ts` (which calls `task()` for all 18 canonical tasks at
+  module load, a real Trigger.dev-runtime side effect) directly into the API process.
+- **`generate final design document` / `approve final design document` (docs/01 §9) are not
+  built.** No core command handler exists for either yet — the Design Document Generator is Phase
+  17 scope. Building a route with no command behind it would violate this phase's own "API
+  commands call core commands; no arbitrary state-mutation endpoints" acceptance criterion — these
+  two endpoints are deferred wholesale to Phase 17, not stubbed as `501`.
+- **The Trigger.dev _management_-API client (`minicoder trigger deploy/list-runs/inspect-run/
+cancel-run/replay-run/drain-queue/reset-dev/reconcile`) is explicitly out of scope for this
+  phase**, despite `packages/cli/src/commands/trigger.ts`'s stub comments saying "wired in Phase
+  13." That refers to a different, external system (Trigger.dev's own control-plane API,
+  authenticated via `TRIGGERDEV_API_URL`/`TRIGGERDEV_API_KEY`) — not the Orchestrator API this
+  phase builds. Only the Orchestrator API's own `state`/diagnostics endpoints
+  (`validate`/`doctor`/`reconcile`/`export-diagnostics`) are in scope; those CLI `trigger`
+  subcommands remain stubbed until a future phase builds a real Trigger.dev management client.
+- **`state repair --apply` stays CLI-only — it is not exposed via the API.** Its
+  confirmation-token flow is a local file (`~/.minicoder/pending-repair-token.json`), which does
+  not translate to a stateless HTTP API; only `validate`/`doctor`/`reconcile`/`export-diagnostics`
+  (docs/01 §9's own diagnostics-action list, which excludes "repair") get command endpoints,
+  wrapping shared query functions extracted into `packages/api/src/read-models/diagnostics.ts`
+  and re-imported by `packages/cli/src/commands/state.ts` — the CLI and the API now share one
+  implementation of this SQL instead of two independently-maintained copies.
+- **Read-model query functions live in `packages/api/src/read-models/`, not `packages/core`.**
+  `packages/core`'s architectural fitness tests are about keeping domain/state-transition logic out
+  of task wrappers; read-only query helpers shaped around HTTP concerns (cursor pagination, DTO
+  row shapes) don't belong in a "provider-SDK-free domain core" and would blur that boundary.
+  `packages/cli/src/commands/state.ts` imports these functions from `@minicoder/api` rather than
+  duplicating them — the CLI depending on the API package (not the reverse) is intentional, since
+  the API is the newer, dependent surface.
+- **`ApprovePlanHandler`/`ApprovePlanCommand`** (`packages/core/src/commands/handlers/plan/
+approve-plan.ts`) was built in Phase 6 but never exported from `packages/core/src/index.ts` nor
+  called anywhere — a real gap, closed here by exporting it and giving it a command endpoint
+  (`approve-plan`) via the generic dispatch route.
+- **OpenAPI contract**: hand-authored `packages/api/openapi/openapi.yaml` (not code-generated), a
+  deliberate choice to avoid ESM-only/heavy codegen tooling fighting this repo's CommonJS build
+  target. Validated at runtime by `ajv`/`js-yaml` (both CJS-safe). An `onRoute` Fastify hook
+  (`openapi/register-openapi-hooks.ts`) throws **at route-registration time** — not just in a
+  separate test — if a registered route has no matching operation in the spec, so spec drift fails
+  the build immediately. Per-command request-body schemas are intentionally left as a generic
+  `CommandPayload: type: object` rather than hand-transcribing 20+ Zod schemas into JSON Schema —
+  real payload validation is enforced by each dispatched handler's own Zod schema (already tested
+  since the phase that introduced it); this layer's runtime validation focuses on route/method/
+  parameter-shape conformance (e.g. `limit` must be an integer in `[1, 100]`).
+- **Problem-details error mapping (`errors.ts`) checks `CommandError` before any of its
+  subclasses.** `MergeGateBlockedError extends CommandError` and already carries a fully-formed
+  `merge-gate-blocked` `ProblemDetail` — there is deliberately no separate `instanceof
+MergeGateBlockedError` branch (checking it after `CommandError` would never be reached; checking
+  it before would just duplicate what `CommandError`'s own branch already does correctly).
+- **`packages/github/src/webhook-app.ts`'s `addRawBodyCapture()` was changed from a private
+  helper to an exported function** so the Orchestrator API can install the same raw-body-capturing
+  content-type parser on its own shared Fastify instance before mounting
+  `registerGithubWebhookRoute()` — GitHub's HMAC signature must be verified against the exact raw
+  request bytes. `routes/webhooks.ts` calls both `addRawBodyCapture()` and
+  `registerGithubWebhookRoute()` directly; it does not use `createWebhookApp()`, which builds a
+  _standalone_ app for `minicoder github serve` and is unrelated to this composition.
+- **`minicoder api serve`** (`packages/cli/src/commands/api.ts`) mirrors `minicoder github
+serve`'s shape exactly (`--port`/`--host` options, does not close the DB connection, stays alive
+  until terminated) — the CLI is a thin wrapper around `packages/api/src/server.ts`'s `serve()`.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

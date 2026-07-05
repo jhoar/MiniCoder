@@ -22,6 +22,7 @@ export default defineConfig({
       ),
       '@minicoder/triggerdev': path.resolve(__dirname, 'packages/triggerdev/src/index.ts'),
       '@minicoder/testing': path.resolve(__dirname, 'packages/testing/src/index.ts'),
+      '@minicoder/api': path.resolve(__dirname, 'packages/api/src/index.ts'),
     },
   },
   test: {
