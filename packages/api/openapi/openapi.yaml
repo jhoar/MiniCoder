@@ -116,7 +116,10 @@ paths:
         content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
       responses:
         '200': { description: Merged }
-        '409': { description: Merge gate blocked or merge rejected }
+        '409':
+          {
+            description: 'Merge gate blocked, merge rejected, or a same-key request is already in progress',
+          }
   /commands/request-coder-run:
     post:
       operationId: requestCoderRun
@@ -160,9 +163,13 @@ paths:
   /commands/reconcile:
     post:
       operationId: diagnosticsReconcile
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
       requestBody:
         content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
-      responses: { '200': { description: OK } }
+      responses:
+        '200': { description: OK }
+        '400': { description: Validation error or missing Idempotency-Key }
+        '409': { description: A same-key reconcile request is already in progress }
   /commands/export-diagnostics:
     post:
       operationId: diagnosticsExport

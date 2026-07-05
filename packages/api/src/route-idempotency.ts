@@ -11,7 +11,7 @@
  * CONFLICT DO NOTHING` first closes that race — the UNIQUE constraint, not application logic, is
  * what serializes concurrent claims, exactly as it does for command dispatch.
  */
-import { generateId, isoNow, ttlIso, type DbClient } from '@minicoder/core';
+import { generateId, isoNow, ttlIso, parseJsonField, type DbClient } from '@minicoder/core';
 
 export interface RouteResponse {
   status: number;
@@ -57,13 +57,17 @@ export async function claimRouteIdempotencyKey(
     return { outcome: 'owned', claimId };
   }
 
-  const rows = await db.query<{ result: string | null }>(
+  const rows = await db.query<{ result: unknown }>(
     `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ?`,
     [key, scope, now],
   );
   const row = rows[0];
   if (row?.result) {
-    return { outcome: 'fulfilled', response: JSON.parse(row.result) as RouteResponse };
+    // `result` is TEXT in SQLite (a JSON string) but JSONB in PostgreSQL — the `pg` driver
+    // auto-parses JSON/JSONB columns into JS objects, so this value is a string on one dialect
+    // and already an object on the other. `parseJsonField` (the same helper
+    // `TransactionalCommandExecutor`'s own idempotency-cache read already uses) handles both.
+    return { outcome: 'fulfilled', response: parseJsonField<RouteResponse>(row.result) };
   }
   return { outcome: 'in-progress' };
 }

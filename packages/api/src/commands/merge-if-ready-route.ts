@@ -30,7 +30,16 @@
  * before either response was stored. Claiming first means a second concurrent request sees
  * `in-progress` and gets a retryable `409`, never re-running the side effect. If the claiming
  * request throws before producing a response (a pre-check failure, an infra error), the claim is
- * released rather than left to block every retry until the TTL expires.
+ * released rather than left to block every retry until the TTL expires — **except** once
+ * `githubClient.mergePullRequest()` has actually succeeded. Past that point the GitHub merge is
+ * irreversible; if `RecordMergedHandler` (or anything after it) then throws, releasing the claim
+ * would let a same-key retry re-enter this handler, replay the (idempotency-cached, so harmless)
+ * `:merge-ready` dispatch, find the run still sitting at `merge_ready`, and call
+ * `mergePullRequest()` a second time against an already-merged PR — misrecording a real success as
+ * a failure/escalation, not just a wasted retry. `mergeSucceeded` tracks this boundary: once set,
+ * the outer catch leaves the claim in its unfulfilled `in-progress` state rather than releasing
+ * it, so a retry gets a `409` and an operator must inspect/resolve the discrepancy directly,
+ * instead of the API silently repeating an already-completed external action.
  */
 import type { FastifyInstance } from 'fastify';
 import {
@@ -172,6 +181,9 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
       await fulfillRouteIdempotencyKey(db, claimId, { status, body });
       void reply.code(status).send(body);
     };
+    // Set to true only after githubClient.mergePullRequest() actually succeeds — see the module
+    // doc comment's "point of no return" note.
+    let mergeSucceeded = false;
 
     try {
       const run = await fetchFeatureRun(db, featureRunId, projectId);
@@ -253,6 +265,7 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
           mergeMethod,
           expectedHeadSha: pr.head_sha ?? undefined,
         });
+        mergeSucceeded = true;
         const recordMergedEnvelope: CommandEnvelope<Record<string, unknown>> = {
           commandId: generateId(),
           idempotencyKey: `${idempotencyKeyHeader}:record-merged`,
@@ -327,9 +340,22 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
         return;
       }
     } catch (err) {
-      // The claiming request failed before producing a cacheable response — release the claim so
-      // a retry (once whatever caused this is fixed) isn't stuck seeing "in-progress" until the
-      // 7-day TTL expires.
+      if (mergeSucceeded) {
+        // GitHub has already merged the PR — releasing the claim here would let a retry redo the
+        // GitHub call against an already-merged PR (see module doc comment). Leave the claim
+        // in its unfulfilled state: a retry gets a 409 in-progress rather than a silent
+        // double-merge attempt, and an operator must inspect/resolve this discrepancy directly.
+        console.error(
+          `POST /commands/merge-if-ready: GitHub merge for feature run ${featureRunId} succeeded ` +
+            `but recording it failed after the fact — claim '${idempotencyKeyHeader}' left ` +
+            'in-progress for manual operator investigation (see CLAUDE.md).',
+          err,
+        );
+        throw err;
+      }
+      // The claiming request failed before any irreversible side effect occurred — release the
+      // claim so a retry (once whatever caused this is fixed) isn't stuck seeing "in-progress"
+      // until the 7-day TTL expires.
       await releaseRouteIdempotencyKey(db, claimId);
       throw err;
     }

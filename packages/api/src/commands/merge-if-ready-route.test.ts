@@ -219,4 +219,74 @@ describe('POST /commands/merge-if-ready', () => {
     });
     expect(second.statusCode).toBe(404);
   });
+
+  it('does not release the claim if GitHub merges but recording it fails (finding 2, re-review)', async () => {
+    // A mutable holder so the fake client's mergePullRequest (defined before the DB/featureRunId
+    // exist) can reach into the same DB and row the route itself uses.
+    const ctx: { db?: DbClient; featureRunId?: string } = {};
+    const raceGithubClientFactory = async (): Promise<GitHubClient> =>
+      ({
+        publishStatusCheck: async () => undefined,
+        mergePullRequest: async () => {
+          // Simulate another actor bumping feature_runs.version concurrently, between the real
+          // GitHub merge succeeding and this route dispatching RecordMergedHandler with the
+          // expectedVersion it read earlier — RecordMergedHandler's own optimistic-lock check
+          // will now fail even though the GitHub merge already, irreversibly, happened.
+          await ctx.db!.execute(
+            `UPDATE feature_runs SET version = version + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+            [ctx.featureRunId],
+          );
+          return { mergeSha: 'race-merge-sha' };
+        },
+      }) as unknown as GitHubClient;
+
+    const { app, db } = await buildTestApp({ githubClientFactory: raceGithubClientFactory });
+    ctx.db = db;
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId } = await seedFeatureRun(db, projectId);
+    ctx.featureRunId = featureRunId;
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 1, ?, ?)`,
+      [generateId(), projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO pull_requests (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'minicoder/FR-001', 'main', 'abc123', 'open', 'approved', 'passed', TRUE, '[]', FALSE, 1, ?, ?)`,
+      [generateId(), featureRunId, now, now],
+    );
+    await db.execute(`UPDATE workflow_states SET active_feature_run_id = ? WHERE project_id = ?`, [
+      featureRunId,
+      projectId,
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-race-after-github',
+      },
+      payload: { featureRunId, projectId },
+    });
+    // RecordMergedHandler's optimistic-lock check fails because the version moved out from under
+    // it — the route correctly surfaces this as a failure rather than silently swallowing it.
+    expect(res.statusCode).toBe(500);
+
+    // The critical assertion: a retry must NOT be allowed to silently redo the GitHub call. If the
+    // claim had been released (the pre-fix behavior), this would 200 and call mergePullRequest()
+    // a second time against an already-merged PR. Instead it must see the claim still in-progress.
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-race-after-github',
+      },
+      payload: { featureRunId, projectId },
+    });
+    expect(retry.statusCode).toBe(409);
+    expect(JSON.parse(retry.body).type).toBe('request-in-progress');
+  });
 });

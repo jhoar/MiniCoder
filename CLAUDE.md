@@ -1620,6 +1620,46 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   once the TTL lapses, unlike a merge outcome). Regression tests cover the missing-header `400`,
   a repeated-key replay, and a simulated in-flight `409`.
 
+**Post-implementation review fixes (round 3 — re-review):**
+
+- **HIGH (route idempotency replay was not Postgres-safe).** `idempotency_keys.result` is `JSONB`
+  in PostgreSQL but `TEXT` in SQLite; the `pg` driver auto-parses JSON/JSONB columns into JS
+  objects, so a fulfilled row's `result` comes back as an already-parsed object on Postgres, not a
+  string. `route-idempotency.ts`'s `claimRouteIdempotencyKey()` unconditionally called
+  `JSON.parse(row.result)`, which throws when `row.result` is already an object — every replayed
+  `merge-if-ready`/`reconcile` request would 500 on a real Postgres deployment despite passing
+  every SQLite-backed test. Fixed by reusing `packages/core/src/commands/helpers.ts`'s existing
+  `parseJsonField()` (accepts `unknown`, parses only strings, passes objects through unchanged) —
+  the exact pattern `TransactionalCommandExecutor`'s own idempotency-cache read already uses for
+  this identical cross-dialect shape difference. A new unit test
+  (`route-idempotency.test.ts`) mocks `DbClient.query` to return both a SQLite-shaped string
+  result and a Postgres-shaped already-parsed-object result, asserting the same correct output for
+  both without throwing.
+- **HIGH (`merge-if-ready`'s release-on-error was unsafe once GitHub had already merged).** Round 2
+  made the route release its claim on any thrown error so a corrected retry isn't stuck — but that
+  is only safe _before_ `githubClient.mergePullRequest()` succeeds. If the GitHub merge succeeds
+  and `RecordMergedHandler` (or anything after it) then throws, releasing the claim would let a
+  same-key retry re-enter the handler, replay the already-idempotency-cached `:merge-ready`
+  sub-dispatch as a no-op, find the run still sitting at `merge_ready`, and call
+  `mergePullRequest()` a **second** time against an already-merged PR — misrecording a real
+  success as a failure/escalation, not merely a wasted retry. Fixed with a `mergeSucceeded` flag
+  set only immediately after a successful `mergePullRequest()` call; the outer catch now checks it
+  before deciding whether to release the claim. Once true, the claim is deliberately left in its
+  unfulfilled `in-progress` state (logged via `console.error` for operator visibility) rather than
+  released — a retry then gets `409 request-in-progress` instead of a silent double-merge attempt,
+  and an operator must inspect/resolve the discrepancy directly. Building a fully automatic
+  recovery path (e.g. detecting the PR is already merged and completing the recording on retry) is
+  future work; leaving the claim in place is the safe interim posture, not a placeholder pretending
+  to be a full fix. A new regression test forces exactly this window (a fake `GitHubClient` whose
+  `mergePullRequest()` succeeds but also mutates `feature_runs.version` first, so
+  `RecordMergedHandler`'s own optimistic-lock check fails immediately afterward) and asserts a
+  same-key retry gets `409`, not a second merge attempt.
+- **MEDIUM (the OpenAPI contract didn't reflect `reconcile`'s new idempotency requirement).**
+  `POST /commands/reconcile`'s operation had no `Idempotency-Key` parameter and no documented `409`
+  response even though round 2 made the header required at runtime — `openapi/openapi.yaml` now
+  declares both, matching `merge-if-ready`'s existing parameter/response shape (whose `409`
+  description was also broadened to mention the in-progress case introduced in round 2).
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
