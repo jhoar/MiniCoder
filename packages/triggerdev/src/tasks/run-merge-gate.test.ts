@@ -191,4 +191,41 @@ describe('run-merge-gate', () => {
     expect(result.approved).toBe(true);
     expect(client.publishedChecks).toHaveLength(0);
   });
+
+  it('re-approves a feature run that cycled back to under_review at a later version (code-review regression: idempotency key must be version-scoped)', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedFeatureRun(db);
+    const client = fakeGithubClient();
+
+    const firstResult = await runImpl(
+      { projectId: PROJECT_ID, correlationId: 'corr-5a', idempotencyKey: 'idem-5a', featureRunId },
+      db,
+      { githubClientFactory: async () => client },
+    );
+    expect(firstResult.approved).toBe(true);
+
+    // Simulate a full merge_ready -> merge_failed -> under_review cycle having happened
+    // elsewhere: the row is back at under_review, at a materially later version. A key scoped
+    // only to featureRunId (the pre-fix behavior) would replay the first call's cached
+    // CommandResult here without ever re-running the state-transition UPDATE, leaving this row
+    // stranded at under_review while falsely reporting success.
+    await db.execute(
+      `UPDATE feature_runs SET current_execution_state = 'under_review', version = 9 WHERE id = ?`,
+      [featureRunId],
+    );
+
+    const secondResult = await runImpl(
+      { projectId: PROJECT_ID, correlationId: 'corr-5b', idempotencyKey: 'idem-5b', featureRunId },
+      db,
+      { githubClientFactory: async () => client },
+    );
+    expect(secondResult.approved).toBe(true);
+
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.APPROVED_BY_POLICY);
+  });
 });

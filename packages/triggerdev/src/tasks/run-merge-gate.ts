@@ -1,6 +1,6 @@
 import {
-  CommandError,
   FeatureExecutionState,
+  MergeGateBlockedError,
   RecordApprovedByPolicyHandler,
   TransactionalCommandExecutor,
   generateId,
@@ -110,7 +110,11 @@ export async function runImpl(
   const actor = systemActor(correlationId);
   const envelope: CommandEnvelope<Record<string, unknown>> = {
     commandId: generateId(),
-    idempotencyKey: `approved-by-policy:${featureRunId}`,
+    // {expectedVersion}-scoped (code-review fix): under_review -> approved_by_policy can recur
+    // for the same feature run (e.g. after a merge_failed auto-clear returns it to under_review
+    // and it is re-approved) — a key scoped to featureRunId alone would replay the *first*
+    // approval's cached result for every later occurrence within the idempotency TTL.
+    idempotencyKey: `approved-by-policy:${featureRunId}:${run.version}`,
     payload: { featureRunId, projectId, expectedVersion: run.version },
     actor,
     correlationId,
@@ -121,9 +125,8 @@ export async function runImpl(
     await executor.execute(recordApprovedByPolicyHandler, envelope);
     outcome = { evaluated: true, approved: true, reasons: [] };
   } catch (err) {
-    if (err instanceof CommandError && err.problem.type === 'merge-gate-blocked') {
-      const reasons = err.problem.detail.split(': ').slice(1).join(': ').split('; ');
-      outcome = { evaluated: true, approved: false, reasons };
+    if (err instanceof MergeGateBlockedError) {
+      outcome = { evaluated: true, approved: false, reasons: err.reasons };
     } else if (isTransientRace(err)) {
       return { projectId, featureRunId, evaluated: false, approved: false, reasons: [] };
     } else {

@@ -184,15 +184,14 @@ export class OctokitGitHubClient implements GitHubClient {
           false,
         );
       }
-      // A genuine infrastructure/auth failure (no HTTP status, or an unrecognized one) is not a
-      // merge-gate rejection at all — rethrow the original error so the CLI command fails loudly
-      // instead of misrecording it as a merge_failed state transition.
-      if (status === undefined) throw err;
-      throw new GithubMergeRejectedError(
-        `PR #${options.prNumber} merge failed with unexpected status ${status}: ${message}`,
-        'unknown',
-        false,
-      );
+      // A genuine infrastructure/auth/validation failure (no HTTP status, or any status other
+      // than the two known merge-policy rejections above — e.g. 401/403/404/422/429/5xx) is not
+      // a merge-gate rejection at all — rethrow the original error so the caller fails loudly
+      // instead of misrecording an operational failure as a merge_failed state transition
+      // (code-review fix: this previously wrapped every other status into
+      // `GithubMergeRejectedError('unknown', false)`, which drove `RecordMergeFailedCommand` +
+      // `EscalateToHumanCommand` for e.g. a transient 500 or a bad-credentials 401).
+      throw err;
     }
   }
 

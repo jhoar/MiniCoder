@@ -385,8 +385,11 @@ describe('OctokitGitHubClient.getPullRequest (HIGH-4 conversationsResolved place
  * Phase 12 (Merge Gate): `mergePullRequest` classifies GitHub's merge-rejection status codes
  * into `GithubMergeRejectedError.reason`/`.autoClearable` — 409 (head moved since the gate
  * re-evaluated) is auto-clearable, 405 (branch protection or a real conflict — GitHub does not
- * distinguish the two) is not, and anything without an HTTP status (a genuine infra/auth
- * failure) is rethrown as-is rather than misclassified as a merge-gate rejection.
+ * distinguish the two) is not, and *any other* error (no HTTP status, or a status other than
+ * 409/405 — e.g. 401/403/404/422/429/5xx) is rethrown as-is rather than misclassified as a
+ * merge-gate rejection (code-review fix: an earlier version wrapped every other status into
+ * `GithubMergeRejectedError('unknown', false)`, which would have driven `RecordMergeFailedCommand`
+ * for a routine operational failure like a transient 500 or bad credentials).
  */
 describe('OctokitGitHubClient.mergePullRequest', () => {
   afterEach(() => {
@@ -467,4 +470,23 @@ describe('OctokitGitHubClient.mergePullRequest', () => {
       }),
     ).rejects.not.toBeInstanceOf(GithubMergeRejectedError);
   });
+
+  it.each([401, 403, 404, 422, 429, 500, 503])(
+    'rethrows a %i status instead of misclassifying it as a merge rejection',
+    async (status) => {
+      const client = await buildClient(async () => {
+        const err = new Error(`operational failure ${status}`) as Error & { status: number };
+        err.status = status;
+        throw err;
+      });
+      await expect(
+        client.mergePullRequest({
+          owner: 'acme',
+          repo: 'widgets',
+          prNumber: 9,
+          mergeMethod: 'squash',
+        }),
+      ).rejects.not.toBeInstanceOf(GithubMergeRejectedError);
+    },
+  );
 });

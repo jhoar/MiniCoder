@@ -273,8 +273,14 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     guardDescription: 'merge gate passes: no blocking findings, CI green, required approvals met',
     sideEffects: ['write_merge_gate_evaluation', 'write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.approved_by_policy'],
-    idempotencyKeyTemplate: 'approved-by-policy:{featureRunId}',
-    recoveryPath: 'Idempotent: returns cached result if already approved',
+    // {expectedVersion}-scoped (code-review fix, Phase 12 PR review): under_review ->
+    // approved_by_policy can recur for the same feature run (e.g. after a merge_failed
+    // auto-clear returns it to under_review and it is re-approved) — a key scoped to
+    // {featureRunId} alone would replay the first approval's cached result for every later
+    // occurrence within the idempotency TTL, the same class of bug already fixed for
+    // start-fixing/budget-control keys.
+    idempotencyKeyTemplate: 'approved-by-policy:{featureRunId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per occurrence: retrying the same approval returns cached result',
   },
   {
     fromState: FeatureExecutionState.CHANGES_REQUESTED,
@@ -312,8 +318,14 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     guardDescription: 'merge gate re-evaluated immediately; all conditions still met',
     sideEffects: ['write_merge_gate_evaluation', 'write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.merge_ready'],
-    idempotencyKeyTemplate: 'merge-ready:{featureRunId}',
-    recoveryPath: 'Idempotent: returns cached result if already merge_ready',
+    // {expectedVersion}-scoped (code-review fix, Phase 12 PR review): approved_by_policy ->
+    // merge_ready can recur for the same feature run across separate merge attempts (a prior
+    // merge_ready -> merge_failed -> under_review -> approved_by_policy cycle) — a key scoped to
+    // {featureRunId} alone would let a stale cached result short-circuit re-evaluation and let
+    // `minicoder merge merge-if-ready` proceed to the real GitHub merge call against a run that
+    // never actually re-transitioned to merge_ready this time.
+    idempotencyKeyTemplate: 'merge-ready:{featureRunId}:{expectedVersion}',
+    recoveryPath: 'Idempotent per occurrence: retrying the same attempt returns cached result',
   },
   {
     fromState: FeatureExecutionState.MERGE_READY,

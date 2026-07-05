@@ -114,7 +114,7 @@ export const mergeGateScenario: Scenario = {
 
     const mergeReadyEnvelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `merge-ready:${fr201.id}`,
+      idempotencyKey: `merge-ready:${fr201.id}:${fr201AfterGate.version}`,
       payload: { featureRunId: fr201.id, projectId, expectedVersion: fr201AfterGate.version },
       actor: approver,
       correlationId,
@@ -197,7 +197,7 @@ export const mergeGateScenario: Scenario = {
 
     const mergeReady203Envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `merge-ready:${fr203.id}`,
+      idempotencyKey: `merge-ready:${fr203.id}:${fr203.version}`,
       payload: { featureRunId: fr203.id, projectId, expectedVersion: fr203.version },
       actor: approver,
       correlationId,
@@ -268,7 +268,7 @@ export const mergeGateScenario: Scenario = {
 
     const mergeReady204Envelope: CommandEnvelope<Record<string, unknown>> = {
       commandId: generateId(),
-      idempotencyKey: `merge-ready:${fr204.id}`,
+      idempotencyKey: `merge-ready:${fr204.id}:${fr204.version}`,
       payload: { featureRunId: fr204.id, projectId, expectedVersion: fr204.version },
       actor: approver,
       correlationId,

@@ -3,9 +3,33 @@ import { generateId, isoNow, parseJsonField } from '../commands/helpers.js';
 import { getPullRequestByFeatureRun } from '../commands/handlers/github/pull-request-row.js';
 import { evaluateBudget } from '../cost/budget-evaluator.js';
 import { BudgetScope, FindingSeverity } from '../domain/states.js';
+import { CommandError } from '../commands/types.js';
 import { resolveBlockingLabelsPolicy } from './constants.js';
 
 export type MergeGateDecision = 'approved' | 'rejected';
+
+/**
+ * Thrown by `RecordApprovedByPolicyHandler`/`MergeIfReadyHandler` when `evaluateMergeGate()`
+ * returns `rejected`. Carries the structured `reasons` array directly (code-review fix) rather
+ * than requiring callers to parse it back out of `CommandError.problem.detail` prose — a caller
+ * that only has the rendered detail string has no reliable way to recover the individual reasons
+ * if any reason's own text happens to contain the `'; '`/`': '` delimiters used to join them.
+ */
+export class MergeGateBlockedError extends CommandError {
+  constructor(
+    public readonly reasons: string[],
+    featureRunId: string,
+    correlationId?: string,
+  ) {
+    super({
+      type: 'merge-gate-blocked',
+      title: 'Merge gate did not pass',
+      status: 409,
+      detail: `Merge gate rejected feature run ${featureRunId}: ${reasons.join('; ')}`,
+      instance: correlationId,
+    });
+  }
+}
 
 export interface MergeGateEvaluationResult {
   evaluationId: string;
@@ -39,10 +63,13 @@ interface OutstandingHumanApprovalRow {
  * The Merge Gate (docs/01 §12, docs/06 Phase 12): evaluates every documented precondition and
  * writes a structured `merge_gate_evaluations` evidence record — win or lose — so every merge
  * decision is auditable and replayable. Callers (`RecordApprovedByPolicyHandler`,
- * `MergeIfReadyHandler`) run this *inside their own transaction*, so the evidence write and the
- * state transition it gates commit atomically (or roll back together) — the same atomicity
- * discipline Phase 10's review-findings fix established for `RecordChangesRequestedHandler`/
- * `EscalateToHumanHandler`.
+ * `MergeIfReadyHandler`) run this *inside its own transaction, separate from the state transition
+ * it gates* (a two-phase design, not one atomic unit): phase one (this function) always commits
+ * the evidence row regardless of outcome; only a passing evaluation proceeds to phase two, a
+ * second transaction that claims the idempotency key and performs the actual transition. A single
+ * all-or-nothing transaction covering both would roll the evidence write back along with a
+ * deliberately-not-taken transition on rejection, losing the audit trail for exactly the runs
+ * where it matters most — see each handler's own doc comment for the full rationale.
  *
  * Deliberately NOT evaluated: `pull_requests.conversations_resolved`. GitHub's REST API has no
  * "conversations resolved" flag (only GraphQL's `reviewThreads.nodes[].isResolved` exposes it —
@@ -89,7 +116,9 @@ export async function evaluateMergeGate(
   );
   const unresolvedBlockingFindings = Number(findingRows[0]?.count ?? 0);
   if (unresolvedBlockingFindings > 0) {
-    reasons.push(`${unresolvedBlockingFindings} unresolved blocking/requires-human-decision finding(s)`);
+    reasons.push(
+      `${unresolvedBlockingFindings} unresolved blocking/requires-human-decision finding(s)`,
+    );
   }
 
   const blockingLabelsPolicy = resolveBlockingLabelsPolicy();
@@ -105,7 +134,9 @@ export async function evaluateMergeGate(
 
   const branchProtectionOk = pr ? Boolean(pr.mergeable) : false;
   if (!branchProtectionOk) {
-    reasons.push('pull request is not currently mergeable (branch protection / mergeability check)');
+    reasons.push(
+      'pull request is not currently mergeable (branch protection / mergeability check)',
+    );
   }
 
   const budgetEvaluation = await evaluateBudget(tx, {

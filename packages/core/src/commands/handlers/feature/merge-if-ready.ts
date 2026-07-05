@@ -14,7 +14,10 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
-import { evaluateMergeGate } from '../../../merge-gate/evaluate-merge-gate.js';
+import {
+  evaluateMergeGate,
+  MergeGateBlockedError,
+} from '../../../merge-gate/evaluate-merge-gate.js';
 
 export const MergeIfReadyPayloadSchema = z.object({
   featureRunId: z.string(),
@@ -89,13 +92,7 @@ export class MergeIfReadyHandler implements CommandHandler<
     });
 
     if (evaluation.decision !== 'approved') {
-      throw new CommandError({
-        type: 'merge-gate-blocked',
-        title: 'Merge gate did not pass on re-evaluation',
-        status: 409,
-        detail: `Merge gate rejected feature run ${featureRunId}: ${evaluation.reasons.join('; ')}`,
-        instance: envelope.correlationId,
-      });
+      throw new MergeGateBlockedError(evaluation.reasons, featureRunId, envelope.correlationId);
     }
 
     return db.transaction(async (tx) => {
