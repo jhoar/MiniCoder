@@ -1589,6 +1589,37 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   `task-trigger-routes.test.ts` both assert the client-visible body never contains the original
   message.
 
+**Post-implementation review fixes (round 2 — re-review):**
+
+- **HIGH-1 (`merge-if-ready`'s round-1 idempotency fix was post-hoc, not concurrency-safe).**
+  Round 1's fix checked for a cached response, did all the work (including the real GitHub merge
+  call), and only stored the response at the end — two concurrent requests carrying the same
+  `Idempotency-Key` could both miss the cache and both reach `githubClient.mergePullRequest()`
+  before either response was written, reopening the exact duplicate-side-effect race idempotency
+  exists to close. Fixed with a real claim-first pattern
+  (`route-idempotency.ts`'s `claimRouteIdempotencyKey()`/`fulfillRouteIdempotencyKey()`/
+  `releaseRouteIdempotencyKey()`), mirroring `packages/core/src/commands/helpers.ts`'s existing
+  `claimIdempotencyKey`/`fulfillIdempotencyKey` command-level pattern but reusable at the route
+  layer for routes that span a real external side effect: the `(key, scope)` row is reserved via
+  `INSERT ... ON CONFLICT DO NOTHING` _before_ any GitHub call or command dispatch, so the UNIQUE
+  constraint — not application logic — serializes concurrent claims. A second concurrent request
+  with the same key sees `in-progress` and gets a retryable `409` (`request-in-progress`), never
+  re-running the side effect. If the claiming request throws before producing a response (a
+  pre-check failure, an infra error), the claim is released rather than left to block every retry
+  until the 7-day TTL expires. Two new regression tests: a simulated in-flight claim asserts `409`
+  or a same-key retry, and a forced pre-check failure (missing PR/repo) asserts the claim is
+  released so an identical retry deterministically re-fails the same way instead of getting stuck
+  at `in-progress`.
+- **HIGH-2 (`reconcile` remained a mutating route with no idempotency of its own).** Round 1 added
+  role authorization to all four diagnostics routes but only `reconcile` has a real side effect
+  (clearing stale `workflow_locks`, marking `outbox_events`/`inbox_events` `failed`) — `validate`/
+  `doctor`/`export-diagnostics` are pure reads and need none. Fixed by requiring an
+  `Idempotency-Key` header on `reconcile` specifically and wrapping its mutation in the same
+  claim-first `route-idempotency.ts` helpers (a distinct `reconcile-route` scope, 24h TTL — shorter
+  than `merge-if-ready-route`'s 7 days, since a stale reconcile decision is cheap to safely re-run
+  once the TTL lapses, unlike a merge outcome). Regression tests cover the missing-header `400`,
+  a repeated-key replay, and a simulated in-flight `409`.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

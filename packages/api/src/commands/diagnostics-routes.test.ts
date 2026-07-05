@@ -43,6 +43,64 @@ describe('diagnostics command routes', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('POST /commands/reconcile requires an Idempotency-Key header', async () => {
+    const { app } = await buildTestApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/reconcile',
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+      payload: { all: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).type).toBe('missing-idempotency-key');
+  });
+
+  it('POST /commands/reconcile replays the cached result on a repeated Idempotency-Key (finding 2)', async () => {
+    const { app } = await buildTestApp();
+    const first = await app.inject({
+      method: 'POST',
+      url: '/commands/reconcile',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'reconcile-replay-1',
+      },
+      payload: { all: true },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/commands/reconcile',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'reconcile-replay-1',
+      },
+      payload: { all: true },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(JSON.parse(second.body)).toEqual(JSON.parse(first.body));
+  });
+
+  it('POST /commands/reconcile returns 409 for a same-key request while another is still in-flight', async () => {
+    const { app, db } = await buildTestApp();
+    const { claimRouteIdempotencyKey } = await import('../route-idempotency.js');
+    // Simulate a concurrent in-flight request by claiming the key ourselves first, without
+    // fulfilling it — mirrors the state a real concurrent request would leave mid-flight.
+    await claimRouteIdempotencyKey(db, 'reconcile-in-flight', 'reconcile-route', 60_000);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/reconcile',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'reconcile-in-flight',
+      },
+      payload: { all: true },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).type).toBe('request-in-progress');
+  });
+
   it('POST /commands/export-diagnostics returns a diagnostics snapshot', async () => {
     const { app, db } = await buildTestApp();
     const { projectId } = await seedProjectWithWorkflowState(db);

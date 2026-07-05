@@ -19,11 +19,18 @@
  * through, so unlike a single `CommandHandler`, retrying the same `Idempotency-Key` after a
  * completed request cannot simply re-run the same command dispatches — by the time of a retry the
  * feature run has already moved past `merge_ready` to a terminal state, and re-dispatching would
- * fail rather than replay the original outcome. The whole HTTP response (status + body) for every
- * exit path from `githubClientFactory()` onward is cached against the client-supplied
- * `Idempotency-Key` in `idempotency_keys` (a distinct `merge-if-ready-route` scope, so it can't
- * collide with the per-command sub-keys derived from the same header), and a retry with the same
- * header replays that exact response without touching GitHub or dispatching anything again.
+ * fail rather than replay the original outcome. The whole HTTP response (status + body) is cached
+ * against the client-supplied `Idempotency-Key` under a distinct `merge-if-ready-route` scope (so
+ * it can't collide with the per-command sub-keys derived from the same header).
+ *
+ * This is claim-first, not post-hoc: `claimRouteIdempotencyKey()` reserves the `(key, scope)` row
+ * via `INSERT ... ON CONFLICT DO NOTHING` *before* any GitHub call or command dispatch. A post-hoc
+ * "check cache, do work, store result" approach is not concurrency-safe — two concurrent requests
+ * with the same key could both miss the cache and both reach `githubClient.mergePullRequest()`
+ * before either response was stored. Claiming first means a second concurrent request sees
+ * `in-progress` and gets a retryable `409`, never re-running the side effect. If the claiming
+ * request throws before producing a response (a pre-check failure, an infra error), the claim is
+ * released rather than left to block every retry until the TTL expires.
  */
 import type { FastifyInstance } from 'fastify';
 import {
@@ -37,62 +44,25 @@ import {
   MergeGateBlockedError,
   FeatureExecutionState,
   generateId,
-  isoNow,
-  ttlIso,
   publishMergeGateStatusCheck,
 } from '@minicoder/core';
 import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
 import { requireNonBlankEnvVar, systemActor } from '@minicoder/triggerdev';
-import { MissingIdempotencyKeyError, NotFoundError, RequestValidationError } from '../errors.js';
+import {
+  MissingIdempotencyKeyError,
+  NotFoundError,
+  RequestValidationError,
+  RequestInProgressError,
+} from '../errors.js';
 import { toCommandEnvelopeResponse, type CommandEnvelopeResponse } from './command-response.js';
+import {
+  claimRouteIdempotencyKey,
+  fulfillRouteIdempotencyKey,
+  releaseRouteIdempotencyKey,
+} from '../route-idempotency.js';
 
 const ROUTE_IDEMPOTENCY_SCOPE = 'merge-if-ready-route';
 const ROUTE_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-interface CachedRouteResponse {
-  status: number;
-  body: unknown;
-}
-
-async function getCachedRouteResponse(
-  db: DbClient,
-  key: string,
-): Promise<CachedRouteResponse | null> {
-  const rows = await db.query<{ result: string }>(
-    `SELECT result FROM idempotency_keys WHERE key = ? AND scope = ? AND expires_at > ? AND result IS NOT NULL`,
-    [key, ROUTE_IDEMPOTENCY_SCOPE, isoNow()],
-  );
-  const row = rows[0];
-  return row ? (JSON.parse(row.result) as CachedRouteResponse) : null;
-}
-
-async function storeRouteResponse(
-  db: DbClient,
-  key: string,
-  response: CachedRouteResponse,
-): Promise<void> {
-  const now = isoNow();
-  try {
-    await db.execute(
-      `INSERT INTO idempotency_keys (id, key, scope, result, expires_at, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-      [
-        generateId(),
-        key,
-        ROUTE_IDEMPOTENCY_SCOPE,
-        JSON.stringify(response),
-        ttlIso(ROUTE_IDEMPOTENCY_TTL_MS),
-        now,
-        now,
-      ],
-    );
-  } catch (err) {
-    // UNIQUE(key, scope) conflict: a concurrent/earlier request already cached this route's
-    // response — that write wins, this one is a harmless no-op.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!/unique/i.test(msg)) throw err;
-  }
-}
 
 export type GithubClientFactory = () => Promise<GitHubClient>;
 
@@ -185,55 +155,50 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
     const correlationId = actor.correlationId;
     const executor = new TransactionalCommandExecutor(db);
 
-    const cached = await getCachedRouteResponse(db, idempotencyKeyHeader);
-    if (cached) {
-      return reply.code(cached.status).send(cached.body);
+    const claim = await claimRouteIdempotencyKey(
+      db,
+      idempotencyKeyHeader,
+      ROUTE_IDEMPOTENCY_SCOPE,
+      ROUTE_IDEMPOTENCY_TTL_MS,
+    );
+    if (claim.outcome === 'fulfilled') {
+      return reply.code(claim.response.status).send(claim.response.body);
     }
+    if (claim.outcome === 'in-progress') {
+      throw new RequestInProgressError(idempotencyKeyHeader);
+    }
+    const claimId = claim.claimId;
     const respond = async (status: number, body: unknown): Promise<void> => {
-      await storeRouteResponse(db, idempotencyKeyHeader, { status, body });
+      await fulfillRouteIdempotencyKey(db, claimId, { status, body });
       void reply.code(status).send(body);
     };
 
-    const run = await fetchFeatureRun(db, featureRunId, projectId);
-    const prRows = await db.query<PullRequestRow>(
-      `SELECT pr_number, branch_name, base_branch, head_sha FROM pull_requests WHERE feature_run_id = ?`,
-      [featureRunId],
-    );
-    const repoRows = await db.query<RepositoryRow>(
-      `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
-      [projectId],
-    );
-    const pr = prRows[0];
-    const repo = repoRows[0];
-    if (!pr || !repo) {
-      throw new NotFoundError('pull-request-or-repository', featureRunId);
-    }
-    const githubClient = await githubClientFactory();
-
-    const mergeReadyEnvelope: CommandEnvelope<Record<string, unknown>> = {
-      commandId: generateId(),
-      idempotencyKey: `${idempotencyKeyHeader}:merge-ready`,
-      payload: { featureRunId, projectId, expectedVersion: run.version },
-      actor,
-      correlationId,
-    };
     try {
-      await executor.execute(new MergeIfReadyHandler(), mergeReadyEnvelope);
-      if (pr.head_sha) {
-        await publishStatusCheckSafely(
-          githubClient,
-          {
-            owner: repo.owner,
-            repo: repo.name,
-            sha: pr.head_sha,
-            decision: 'approved',
-            reasons: [],
-          },
-          featureRunId,
-        );
+      const run = await fetchFeatureRun(db, featureRunId, projectId);
+      const prRows = await db.query<PullRequestRow>(
+        `SELECT pr_number, branch_name, base_branch, head_sha FROM pull_requests WHERE feature_run_id = ?`,
+        [featureRunId],
+      );
+      const repoRows = await db.query<RepositoryRow>(
+        `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+        [projectId],
+      );
+      const pr = prRows[0];
+      const repo = repoRows[0];
+      if (!pr || !repo) {
+        throw new NotFoundError('pull-request-or-repository', featureRunId);
       }
-    } catch (err) {
-      if (err instanceof MergeGateBlockedError) {
+      const githubClient = await githubClientFactory();
+
+      const mergeReadyEnvelope: CommandEnvelope<Record<string, unknown>> = {
+        commandId: generateId(),
+        idempotencyKey: `${idempotencyKeyHeader}:merge-ready`,
+        payload: { featureRunId, projectId, expectedVersion: run.version },
+        actor,
+        correlationId,
+      };
+      try {
+        await executor.execute(new MergeIfReadyHandler(), mergeReadyEnvelope);
         if (pr.head_sha) {
           await publishStatusCheckSafely(
             githubClient,
@@ -241,110 +206,132 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
               owner: repo.owner,
               repo: repo.name,
               sha: pr.head_sha,
-              decision: 'rejected',
-              reasons: err.reasons,
+              decision: 'approved',
+              reasons: [],
             },
             featureRunId,
           );
         }
-        await respond(409, { merged: false, reasons: err.reasons });
-        return;
+      } catch (err) {
+        if (err instanceof MergeGateBlockedError) {
+          if (pr.head_sha) {
+            await publishStatusCheckSafely(
+              githubClient,
+              {
+                owner: repo.owner,
+                repo: repo.name,
+                sha: pr.head_sha,
+                decision: 'rejected',
+                reasons: err.reasons,
+              },
+              featureRunId,
+            );
+          }
+          await respond(409, { merged: false, reasons: err.reasons });
+          return;
+        }
+        throw err;
       }
-      throw err;
-    }
 
-    // RecordMergedCommand/RecordMergeFailedCommand/ReconcileMergeFailedCommand all require an
-    // admin-role system actor per their own matrix rows — the same identity every Trigger.dev
-    // task and packages/cli/src/commands/merge.ts already use, not the approver's own role (see
-    // module doc comment above).
-    const system = systemActor(correlationId);
-    const mergeReadyRun = await fetchFeatureRun(db, featureRunId, projectId);
-    if (mergeReadyRun.current_execution_state !== FeatureExecutionState.MERGE_READY) {
-      throw new RequestValidationError(
-        `Feature run ${featureRunId} is not at merge_ready (found '${mergeReadyRun.current_execution_state}')`,
-      );
-    }
+      // RecordMergedCommand/RecordMergeFailedCommand/ReconcileMergeFailedCommand all require an
+      // admin-role system actor per their own matrix rows — the same identity every Trigger.dev
+      // task and packages/cli/src/commands/merge.ts already use, not the approver's own role (see
+      // module doc comment above).
+      const system = systemActor(correlationId);
+      const mergeReadyRun = await fetchFeatureRun(db, featureRunId, projectId);
+      if (mergeReadyRun.current_execution_state !== FeatureExecutionState.MERGE_READY) {
+        throw new RequestValidationError(
+          `Feature run ${featureRunId} is not at merge_ready (found '${mergeReadyRun.current_execution_state}')`,
+        );
+      }
 
-    try {
-      const { mergeSha } = await githubClient.mergePullRequest({
-        owner: repo.owner,
-        repo: repo.name,
-        prNumber: pr.pr_number,
-        mergeMethod,
-        expectedHeadSha: pr.head_sha ?? undefined,
-      });
-      const recordMergedEnvelope: CommandEnvelope<Record<string, unknown>> = {
-        commandId: generateId(),
-        idempotencyKey: `${idempotencyKeyHeader}:record-merged`,
-        payload: { featureRunId, projectId, expectedVersion: mergeReadyRun.version, mergeSha },
-        actor: system,
-        correlationId,
-      };
-      const result = await executor.execute(new RecordMergedHandler(), recordMergedEnvelope);
-      const body: CommandEnvelopeResponse & { merged: true; mergeSha: string } = {
-        ...toCommandEnvelopeResponse(result),
-        merged: true,
-        mergeSha,
-      };
-      await respond(200, body);
-      return;
-    } catch (err) {
-      if (!(err instanceof GithubMergeRejectedError)) throw err;
-
-      const failedEnvelope: CommandEnvelope<Record<string, unknown>> = {
-        commandId: generateId(),
-        idempotencyKey: `${idempotencyKeyHeader}:record-merge-failed`,
-        payload: {
-          featureRunId,
-          projectId,
-          expectedVersion: mergeReadyRun.version,
-          reason: err.message,
-          autoClearable: err.autoClearable,
-        },
-        actor: system,
-        correlationId,
-      };
-      await executor.execute(new RecordMergeFailedHandler(), failedEnvelope);
-      const failedRun = await fetchFeatureRun(db, featureRunId, projectId);
-
-      if (err.autoClearable) {
-        const reconcileEnvelope: CommandEnvelope<Record<string, unknown>> = {
+      try {
+        const { mergeSha } = await githubClient.mergePullRequest({
+          owner: repo.owner,
+          repo: repo.name,
+          prNumber: pr.pr_number,
+          mergeMethod,
+          expectedHeadSha: pr.head_sha ?? undefined,
+        });
+        const recordMergedEnvelope: CommandEnvelope<Record<string, unknown>> = {
           commandId: generateId(),
-          idempotencyKey: `${idempotencyKeyHeader}:reconcile-merge-failed`,
-          payload: { featureRunId, projectId, expectedVersion: failedRun.version },
+          idempotencyKey: `${idempotencyKeyHeader}:record-merged`,
+          payload: { featureRunId, projectId, expectedVersion: mergeReadyRun.version, mergeSha },
           actor: system,
           correlationId,
         };
-        await executor.execute(new ReconcileMergeFailedHandler(), reconcileEnvelope);
+        const result = await executor.execute(new RecordMergedHandler(), recordMergedEnvelope);
+        const body: CommandEnvelopeResponse & { merged: true; mergeSha: string } = {
+          ...toCommandEnvelopeResponse(result),
+          merged: true,
+          mergeSha,
+        };
+        await respond(200, body);
+        return;
+      } catch (err) {
+        if (!(err instanceof GithubMergeRejectedError)) throw err;
+
+        const failedEnvelope: CommandEnvelope<Record<string, unknown>> = {
+          commandId: generateId(),
+          idempotencyKey: `${idempotencyKeyHeader}:record-merge-failed`,
+          payload: {
+            featureRunId,
+            projectId,
+            expectedVersion: mergeReadyRun.version,
+            reason: err.message,
+            autoClearable: err.autoClearable,
+          },
+          actor: system,
+          correlationId,
+        };
+        await executor.execute(new RecordMergeFailedHandler(), failedEnvelope);
+        const failedRun = await fetchFeatureRun(db, featureRunId, projectId);
+
+        if (err.autoClearable) {
+          const reconcileEnvelope: CommandEnvelope<Record<string, unknown>> = {
+            commandId: generateId(),
+            idempotencyKey: `${idempotencyKeyHeader}:reconcile-merge-failed`,
+            payload: { featureRunId, projectId, expectedVersion: failedRun.version },
+            actor: system,
+            correlationId,
+          };
+          await executor.execute(new ReconcileMergeFailedHandler(), reconcileEnvelope);
+          await respond(409, {
+            merged: false,
+            reason: err.message,
+            autoClearable: true,
+            resolution: 'under_review',
+          });
+          return;
+        }
+
+        const escalateEnvelope: CommandEnvelope<Record<string, unknown>> = {
+          commandId: generateId(),
+          idempotencyKey: `${idempotencyKeyHeader}:escalate-human-merge-failed`,
+          payload: {
+            featureRunId,
+            projectId,
+            expectedVersion: failedRun.version,
+            reason: err.message,
+          },
+          actor: system,
+          correlationId,
+        };
+        await executor.execute(new EscalateToHumanHandler(), escalateEnvelope);
         await respond(409, {
           merged: false,
           reason: err.message,
-          autoClearable: true,
-          resolution: 'under_review',
+          autoClearable: false,
+          resolution: 'human_required',
         });
         return;
       }
-
-      const escalateEnvelope: CommandEnvelope<Record<string, unknown>> = {
-        commandId: generateId(),
-        idempotencyKey: `${idempotencyKeyHeader}:escalate-human-merge-failed`,
-        payload: {
-          featureRunId,
-          projectId,
-          expectedVersion: failedRun.version,
-          reason: err.message,
-        },
-        actor: system,
-        correlationId,
-      };
-      await executor.execute(new EscalateToHumanHandler(), escalateEnvelope);
-      await respond(409, {
-        merged: false,
-        reason: err.message,
-        autoClearable: false,
-        resolution: 'human_required',
-      });
-      return;
+    } catch (err) {
+      // The claiming request failed before producing a cacheable response — release the claim so
+      // a retry (once whatever caused this is fixed) isn't stuck seeing "in-progress" until the
+      // 7-day TTL expires.
+      await releaseRouteIdempotencyKey(db, claimId);
+      throw err;
     }
   });
 }

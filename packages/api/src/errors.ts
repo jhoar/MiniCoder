@@ -46,6 +46,15 @@ export class UnauthenticatedError extends Error {
   }
 }
 
+/** Thrown when a request's `Idempotency-Key` is currently claimed by another in-flight request
+ * (see `route-idempotency.ts`) — the caller should retry shortly, not assume failure. */
+export class RequestInProgressError extends Error {
+  constructor(key: string) {
+    super(`A request with Idempotency-Key '${key}' is already in progress; retry shortly`);
+    this.name = 'RequestInProgressError';
+  }
+}
+
 export interface ProblemResponse {
   status: number;
   body: ProblemDetail;
@@ -113,6 +122,15 @@ export function toProblemDetails(err: unknown, instance: string): ProblemRespons
   }
   if (err instanceof RequestValidationError) {
     return problem(400, err.type, 'Request validation failed', err.detail, instance);
+  }
+  if (err instanceof RequestInProgressError) {
+    return problem(
+      409,
+      'request-in-progress',
+      'Request already in progress',
+      err.message,
+      instance,
+    );
   }
   // Never leak the raw exception message to the client — an unrecognized error can be a DB
   // driver error, a provider/SDK error, or anything else that may echo connection strings,

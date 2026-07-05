@@ -163,4 +163,60 @@ describe('POST /commands/merge-if-ready', () => {
     expect(second.statusCode).toBe(200);
     expect(JSON.parse(second.body)).toEqual(firstBody);
   });
+
+  it('returns 409 for a same-key request while another is still in-flight (finding 1, re-review)', async () => {
+    const { app, db } = await buildTestApp({ githubClientFactory: fakeGithubClientFactory });
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId } = await seedFeatureRun(db, projectId);
+    const { claimRouteIdempotencyKey } = await import('../route-idempotency.js');
+    // Simulate a concurrent in-flight request by claiming the route's idempotency key ourselves
+    // first, without fulfilling it — this is exactly the state a real concurrent request would
+    // leave mid-flight, between claiming and the GitHub call completing.
+    await claimRouteIdempotencyKey(db, 'merge-in-flight', 'merge-if-ready-route', 60_000);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-in-flight',
+      },
+      payload: { featureRunId, projectId },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).type).toBe('request-in-progress');
+  });
+
+  it('releases the claim when a pre-check fails, so a corrected retry is not stuck as in-progress', async () => {
+    const { app, db } = await buildTestApp({ githubClientFactory: fakeGithubClientFactory });
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId } = await seedFeatureRun(db, projectId);
+    // No pull_requests/repositories row yet — this request will fail with 404.
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-release-on-failure',
+      },
+      payload: { featureRunId, projectId },
+    });
+    expect(first.statusCode).toBe(404);
+
+    // A retry with the same key must not see "in-progress" forever — the failed claim was
+    // released, so this retry can claim the key fresh (and fails 404 again, deterministically,
+    // rather than 409).
+    const second = await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-release-on-failure',
+      },
+      payload: { featureRunId, projectId },
+    });
+    expect(second.statusCode).toBe(404);
+  });
 });
