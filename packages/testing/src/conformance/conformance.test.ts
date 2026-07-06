@@ -248,17 +248,59 @@ describe('Phase 5 smoke adapter conformance suite', () => {
     expect(newRows).toHaveLength(6);
   });
 
-  it('the most recent adapter_conformance_results row per adapter is queryable via ORDER BY run_at DESC LIMIT 1', async () => {
+  it('the most recent adapter_conformance_results row per adapter is queryable via ORDER BY run_at DESC, id DESC LIMIT 1', async () => {
     await runConformanceSuite({ db, registry, recorder });
 
     for (const suite of results) {
       const rows = await db.query<{ id: string; run_at: string }>(
         `SELECT id, run_at FROM adapter_conformance_results
          WHERE test_suite = 'phase5-smoke-conformance' AND adapter_id = ?
-         ORDER BY run_at DESC LIMIT 1`,
+         ORDER BY run_at DESC, id DESC LIMIT 1`,
         [suite.adapterId],
       );
       expect(rows).toHaveLength(1);
+    }
+  });
+
+  it('issue #27: ORDER BY run_at DESC, id DESC LIMIT 1 is deterministic even when two rows share the exact same run_at', async () => {
+    const adapterId = results[0]!.adapterId;
+
+    // Force a tie: two rows for the same adapter with an identical run_at timestamp, differing
+    // only by id. Without the `id DESC` tiebreaker, `ORDER BY run_at DESC LIMIT 1` alone would
+    // pick between them via unspecified SQL result ordering.
+    const tiedRunAt = '2026-01-01T00:00:00.000Z';
+    await db.execute(
+      `INSERT INTO adapter_conformance_results
+         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, skipped_tests, details, run_at, created_at)
+       VALUES ('conf-tie-a', ?, 'CoderAgentAdapter', 'phase5-smoke-conformance', 1, 1, 0, 0, '{}', ?, ?)`,
+      [adapterId, tiedRunAt, tiedRunAt],
+    );
+    await db.execute(
+      `INSERT INTO adapter_conformance_results
+         (id, adapter_id, role, test_suite, passed, total_tests, failed_tests, skipped_tests, details, run_at, created_at)
+       VALUES ('conf-tie-b', ?, 'CoderAgentAdapter', 'phase5-smoke-conformance', 0, 1, 1, 0, '{}', ?, ?)`,
+      [adapterId, tiedRunAt, tiedRunAt],
+    );
+
+    const rows = await db.query<{ id: string }>(
+      `SELECT id FROM adapter_conformance_results
+       WHERE test_suite = 'phase5-smoke-conformance' AND adapter_id = ? AND run_at = ?
+       ORDER BY run_at DESC, id DESC LIMIT 1`,
+      [adapterId, tiedRunAt],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe('conf-tie-b');
+
+    // Re-running the identical query must return the same row every time — proving determinism,
+    // not merely "some" stable-but-arbitrary engine-default ordering that could differ across runs.
+    for (let i = 0; i < 5; i++) {
+      const repeat = await db.query<{ id: string }>(
+        `SELECT id FROM adapter_conformance_results
+         WHERE test_suite = 'phase5-smoke-conformance' AND adapter_id = ? AND run_at = ?
+         ORDER BY run_at DESC, id DESC LIMIT 1`,
+        [adapterId, tiedRunAt],
+      );
+      expect(repeat[0]!.id).toBe('conf-tie-b');
     }
   });
 });

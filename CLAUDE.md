@@ -317,7 +317,10 @@ ORDER BY updated_at DESC, id DESC)`, never `MAX(rowid)`.** `rowid` reflects inse
   `(test_suite, adapter_id)` and `runConformanceSuite()` never upserts — every call inserts a
   fresh row per adapter, even when re-run against the same DB with the same (idempotently
   re-registered) adapters. It is a historical audit log, not a current-gate-state row; query
-  `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)` for "the current result".
+  `ORDER BY run_at DESC, id DESC LIMIT 1` scoped to `(test_suite, adapter_id)` for "the current
+  result" — the `id DESC` tiebreaker is required (issue #27), not optional: `run_at` is an
+  ISO-8601 string with only millisecond resolution, so two rows written within the same
+  millisecond leave `ORDER BY run_at DESC` alone to unspecified result ordering.
   The conformance runner's `configuration_resolution` scenario upserts (SELECT-then-UPDATE-or-
   INSERT) its own default config row rather than using an unconditional `INSERT`, so
   `runConformanceSuite()` is safe to re-run against a persistent DB.

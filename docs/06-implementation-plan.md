@@ -335,9 +335,12 @@ id` on the read query) makes the returned capability array deterministic across 
   fresh row per adapter even when re-run against the same DB with the same adapters. This is
   intentional: the table is a historical audit log of every conformance run, not a single
   current-gate-state row. Consumers that want "the current result for an adapter" must query
-  `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)`. `conformance.test.ts` has
-  tests asserting a rerun appends exactly 6 new rows (documenting the intended semantics as a
-  regression guard) and demonstrating the latest-row query pattern.
+  `ORDER BY run_at DESC, id DESC LIMIT 1` scoped to `(test_suite, adapter_id)` — the `id DESC`
+  tiebreaker (issue #27) is required for determinism, since `run_at`'s millisecond-resolution
+  ISO-8601 string can tie across rows written in the same millisecond.
+  `conformance.test.ts` has tests asserting a rerun appends exactly 6 new rows (documenting the
+  intended semantics as a regression guard), demonstrating the latest-row query pattern, and
+  proving the tiebreaker resolves a forced `run_at` tie deterministically.
 - The SQLite preflight remediation comments in migrations `0003_unique_adapter_role_name.sqlite.sql`
   and `0006_unique_agent_configurations.sqlite.sql` previously suggested `MAX(rowid)` to select
   which duplicate row to keep, but `rowid` reflects insertion order, not `updated_at` — it did not
