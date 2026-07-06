@@ -1225,7 +1225,7 @@ minicoder state doctor
 minicoder state doctor --project proj-1
 ```
 
-The doctor runs 5 checks:
+The doctor runs 6 checks:
 
 | Check                 | Severity | Auto-clearable      |
 | --------------------- | -------- | ------------------- |
@@ -1234,6 +1234,14 @@ The doctor runs 5 checks:
 | `stuck_inbox`         | error    | yes                 |
 | `orphaned_runs`       | error    | manually repairable |
 | `triggerdev_mismatch` | warning  | no (future phase)   |
+| `skipped_dependency`  | error    | manually repairable |
+
+`skipped_dependency` (issue #52) flags a feature run at `approved_pending_execution` whose
+`feature_dependencies` target has been transitioned to `skipped` — a state that can never satisfy
+the "merged" dependency guard. `SkipFeatureHandler` proactively transitions any such dependent to
+`blocked` at skip time (a new `approved_pending_execution -> blocked` matrix row), so this check
+exists mainly as defense-in-depth for cases that predate that fix, surfaced via `blocked`
+diagnostics going forward instead.
 
 Exits with code 1 if any error-severity issues are found.
 

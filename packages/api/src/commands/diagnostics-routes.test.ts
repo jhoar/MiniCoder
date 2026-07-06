@@ -20,6 +20,61 @@ describe('diagnostics command routes', () => {
     expect(JSON.parse(res.body)).toMatchObject({ valid: true, checkedRuns: 0 });
   });
 
+  // Issue #52: a feature run at approved_pending_execution depending (via feature_dependencies)
+  // on a feature whose run has been transitioned to 'skipped' can never satisfy the merged-
+  // dependency guard. state doctor's skipped_dependency check flags this as defense-in-depth for
+  // any case that predates SkipFeatureHandler's proactive cascade-to-blocked fix.
+  it('POST /commands/doctor flags skipped_dependency for a dependent stuck on a skipped feature', async () => {
+    const { app, db } = await buildTestApp();
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const now = new Date().toISOString();
+    const planId = `plan-${projectId}`;
+    const targetFrId = `fr-${projectId}-target`;
+    const sourceFrId = `fr-${projectId}-source`;
+
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, ?, ?)`,
+      [planId, projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-TARGET', 'Target feature', 'Description', 'feature', 1, 'skipped', 0, 1, ?, ?)`,
+      [targetFrId, planId, projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-SOURCE', 'Dependent feature', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, ?, ?)`,
+      [sourceFrId, planId, projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO feature_dependencies (id, source_fr_id, target_fr_id, created_at) VALUES (?, ?, ?, ?)`,
+      [`dep-${projectId}`, sourceFrId, targetFrId, now],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'skipped', 1, ?, ?)`,
+      [`run-${projectId}-target`, targetFrId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'approved_pending_execution', 1, ?, ?)`,
+      [`run-${projectId}-source`, sourceFrId, now, now],
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/doctor',
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+      payload: { projectId },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.healthy).toBe(false);
+    const check = body.checks.find((c: { name: string }) => c.name === 'skipped_dependency');
+    expect(check).toMatchObject({ severity: 'error', count: 1 });
+  });
+
   it('POST /commands/doctor reports healthy for a clean DB', async () => {
     const { app } = await buildTestApp();
     const res = await app.inject({

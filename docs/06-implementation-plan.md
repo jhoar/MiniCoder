@@ -1345,6 +1345,13 @@ actor.ts`, already exported from `@minicoder/triggerdev`) to build the human `Ac
   human-blocked feature with no unmet dependency currently requires a direct `minicoder state
 repair` to recover. Both are the same "documented, not solved" posture this codebase already
   applies elsewhere to a deliberate human decision's cross-cutting consequences.
+  **The first of these two is now closed (issue #52):** `SkipFeatureHandler` now cascades, in the
+  same transaction as the skip itself, transitioning every dependent feature run still at
+  `approved_pending_execution` to `blocked` (a new `approved_pending_execution -> blocked` matrix
+  row triggered by `SkipFeatureCommand`) — surfacing the problem via the existing `blocked`-state
+  diagnostics instead of leaving the dependent silently stuck forever. `state doctor` gained a
+  `skipped_dependency` check as defense-in-depth for any case that predates this fix. The second
+  limitation (human-blocked has no human-driven unblock) remains open — see issue #53.
 
 **Post-implementation review fixes (round 1):**
 

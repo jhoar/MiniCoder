@@ -493,4 +493,23 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     recoveryPath:
       'Human-initiated block; UnblockFeatureCommand only clears once dependencies are merged — a human-blocked feature with no unmet dependency requires RetryFeatureCommand instead (known limitation, see docs/06 Phase 11)',
   },
+  // Issue #52: a skipped feature never reaches `merged`, so SelectFeatureHandler's dependency
+  // guard would otherwise leave any dependent feature silently stuck at
+  // approved_pending_execution forever with no visible signal. SkipFeatureHandler itself
+  // (cascading side effect of the same SkipFeatureCommand dispatch, not a separately-triggerable
+  // command) transitions every dependent still at approved_pending_execution into blocked instead,
+  // so the existing blocked-state diagnostics surface the problem immediately.
+  {
+    fromState: FeatureExecutionState.APPROVED_PENDING_EXECUTION,
+    toState: FeatureExecutionState.BLOCKED,
+    triggeringCommand: 'SkipFeatureCommand',
+    actor: 'system',
+    guardDescription:
+      'a feature this run depends on (feature_dependencies) was just transitioned to skipped, which can never satisfy the merged-dependency guard',
+    sideEffects: ['write_workflow_event', 'write_outbox_event'],
+    emittedEvents: ['feature.blocked_by_skipped_dependency'],
+    idempotencyKeyTemplate: 'skip-feature-cascade-block:{featureRunId}:{expectedVersion}',
+    recoveryPath:
+      'Recovering requires a human disposition once the dependency is resolved (e.g. minicoder state repair, or a future dependency edit) — the same recovery posture as any other human-driven block',
+  },
 ] as const;

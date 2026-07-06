@@ -1,10 +1,24 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { DbClient, ConfigBackend, SecretBackend, PlannerAgentAdapter } from '@minicoder/core';
-import { MissingSecretError, FeatureExecutionState, GapSeverity } from '@minicoder/core';
+import type {
+  DbClient,
+  ConfigBackend,
+  SecretBackend,
+  PlannerAgentAdapter,
+  CommandEnvelope,
+} from '@minicoder/core';
+import {
+  MissingSecretError,
+  FeatureExecutionState,
+  GapSeverity,
+  TransactionalCommandExecutor,
+  SkipFeatureHandler,
+  type SkipFeaturePayload,
+} from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from './test-helpers.js';
+import { humanActor } from './tasks/actor.js';
 import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
 import { ALL_TASK_IDS } from './task-ids.js';
@@ -544,6 +558,126 @@ describe('start-next-feature real wiring', () => {
       [featureRunId],
     );
     expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.CODING);
+  });
+});
+
+// ── Issue #52: SkipFeatureCommand cascades a blocked transition to dependents ──────────────
+
+describe('SkipFeatureCommand cascading dependency guard (issue #52)', () => {
+  const projectId = 'proj-skip-cascade';
+
+  async function seedFixture(db: DbClient): Promise<{
+    skippedRunId: string;
+    dependentRunId: string;
+  }> {
+    const planId = `plan-${projectId}`;
+    const targetFrId = `fr-${projectId}-target`;
+    const sourceFrId = `fr-${projectId}-source`;
+    const skippedRunId = `run-${projectId}-target`;
+    const dependentRunId = `run-${projectId}-source`;
+
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-TARGET', 'Target feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [targetFrId, planId, projectId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-SOURCE', 'Dependent feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [sourceFrId, planId, projectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    await db.execute(
+      `INSERT INTO feature_dependencies (id, source_fr_id, target_fr_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
+      [`dep-${projectId}`, sourceFrId, targetFrId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [skippedRunId, targetFrId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [dependentRunId, sourceFrId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    return { skippedRunId, dependentRunId };
+  }
+
+  it('transitions a dependent feature run at approved_pending_execution to blocked when its dependency is skipped', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db);
+
+    const executor = new TransactionalCommandExecutor(db);
+    const handler = new SkipFeatureHandler();
+    const envelope: CommandEnvelope<SkipFeaturePayload> = {
+      commandId: 'cmd-skip-1',
+      idempotencyKey: 'idem-skip-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    };
+    await executor.execute(handler, envelope);
+
+    const skippedRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [skippedRunId],
+    );
+    expect(skippedRows[0]?.current_execution_state).toBe(FeatureExecutionState.SKIPPED);
+
+    const dependentRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
+    expect(dependentRows[0]?.version).toBe(2);
+
+    const events = await db.query<{ event_type: string }>(
+      `SELECT event_type FROM workflow_events WHERE feature_run_id = ? ORDER BY created_at`,
+      [dependentRunId],
+    );
+    expect(events.map((e) => e.event_type)).toContain('feature.blocked_by_skipped_dependency');
+  });
+
+  it('does not touch a dependent that is not at approved_pending_execution', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db);
+    await db.execute(
+      `UPDATE feature_runs SET current_execution_state = 'coding', version = version + 1 WHERE id = ?`,
+      [dependentRunId],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    const handler = new SkipFeatureHandler();
+    await executor.execute(handler, {
+      commandId: 'cmd-skip-2',
+      idempotencyKey: 'idem-skip-2',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-2' }),
+      correlationId: 'corr-2',
+    });
+
+    const dependentRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe('coding');
   });
 });
 
