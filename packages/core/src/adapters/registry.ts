@@ -118,8 +118,56 @@ export class AdapterRegistry {
         );
       }
 
+      // Append-only audit provenance (issue #26): agent_adapters/agent_capabilities above are
+      // mutable operational registry state — a later re-registration overwrites both, so a
+      // historical agent_runs row cannot reconstruct "what capability set was declared at the
+      // moment this run happened" by joining to the current agent_capabilities rows. Snapshot
+      // the full declared capability set into adapter_revisions on every register() call (fresh
+      // insert or version-bump update); AgentRunRecorder.record() looks this row up by
+      // (adapter_id, version) and stamps agent_runs.adapter_revision_id with it.
+      const versionRows = await tx.query<{ version: number }>(
+        `SELECT version FROM agent_adapters WHERE id = ?`,
+        [adapterId],
+      );
+      const currentVersion = versionRows[0]?.version ?? 1;
+      await tx.execute(
+        `INSERT INTO adapter_revisions
+           (id, adapter_id, role, name, implementation, version, capabilities, is_active, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          generateId(),
+          adapterId,
+          input.role,
+          input.name,
+          input.implementation,
+          currentVersion,
+          JSON.stringify(capabilities),
+          (input.isActive ?? true) ? 1 : 0,
+          now,
+        ],
+      );
+
       return adapterId;
     });
+  }
+
+  /**
+   * Looks up the immutable `adapter_revisions` row snapshotting an adapter's declared capability
+   * set at a specific version — the audit-provenance counterpart to `getById()`'s current,
+   * mutable registry state (issue #26). Returns `null` if no revision row exists for this
+   * (adapter_id, version) pair (e.g. an adapter registered before this table existed). The
+   * `created_at DESC, id DESC` ordering follows the same determinism convention as the
+   * "latest conformance result" query (issue #27) in case more than one revision row somehow
+   * shares a version.
+   */
+  async getRevisionId(adapterId: string, version: number): Promise<string | null> {
+    const rows = await this.db.query<{ id: string }>(
+      `SELECT id FROM adapter_revisions
+       WHERE adapter_id = ? AND version = ?
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [adapterId, version],
+    );
+    return rows[0]?.id ?? null;
   }
 
   async resolve(role: string, name: string): Promise<AdapterRecord> {

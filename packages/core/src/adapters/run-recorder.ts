@@ -187,15 +187,25 @@ export class AgentRunRecorder {
       capabilitiesUsed,
     };
 
+    // Issue #26: stamp the immutable adapter_revisions row matching this adapter's exact
+    // version at invocation time, so a later re-registration (which overwrites the mutable
+    // agent_capabilities rows) cannot alter what this run's provenance says was declared.
+    // null only for an adapter registered before adapter_revisions existed.
+    const adapterRevisionId = await this.registry.getRevisionId(
+      opts.adapterId,
+      adapterRecord.version,
+    );
+
     await this.db.execute(
       `INSERT INTO agent_runs
-         (id, adapter_id, project_id, feature_run_id, role, state, input_summary,
+         (id, adapter_id, adapter_revision_id, project_id, feature_run_id, role, state, input_summary,
           adapter_name, adapter_implementation, adapter_version, capabilities_used,
           prompt_template_version, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       [
         agentRunId,
         opts.adapterId,
+        adapterRevisionId,
         opts.projectId ?? null,
         opts.featureRunId ?? null,
         adapterRecord.role,

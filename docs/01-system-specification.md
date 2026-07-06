@@ -502,7 +502,9 @@ groups:
   `triggerdev_runs` (correlation: `triggerdev_run_id`, `triggerdev_task_id`, `triggerdev_status`,
   `last_seen_at`, `linked_workflow_event_id`, `linked_agent_run_id`, `linked_feature_run_id`)
 - **Agents:** `agent_adapters`, `agent_capabilities`, `agent_configurations`, `agent_runs`,
-  `agent_errors`, `agent_tool_operations`, `agent_context_packs`, `adapter_conformance_results`
+  `agent_errors`, `agent_tool_operations`, `agent_context_packs`, `adapter_conformance_results`,
+  `adapter_revisions` (append-only audit provenance — see the note below distinguishing this from
+  `agent_adapters`/`agent_capabilities`)
 - **Review and disagreement:** `review_findings`, `coder_responses`, `disagreement_records`
 - **Cost and observability:** `budget_policies` (scope ∈ {project, feature, review_cycle};
   `scope_ref`; `soft_limit`; `hard_limit`; `currency`; `window`; `active`), `cost_records`
@@ -523,12 +525,13 @@ constraints, and indexes — is authored as an implementation Phase 1 deliverabl
 carry only `created_at` (no `version` or `updated_at`) because their rows are immutable once
 written:
 
-| Category                 | Tables                                  | Rationale                                                                              |
-| ------------------------ | --------------------------------------- | -------------------------------------------------------------------------------------- |
-| Append-only event log    | `workflow_events`                       | Records a past state transition; never mutated                                         |
-| Immutable audit records  | `agent_errors`, `agent_tool_operations` | Each row is a point-in-time observation                                                |
-| Immutable test snapshots | `adapter_conformance_results`           | Each row is a completed test run result                                                |
-| Link / edge tables       | `feature_dependencies`                  | Rows are created or deleted atomically; the owning feature_request carries the version |
+| Category                   | Tables                                  | Rationale                                                                                                                                                                                                                                                        |
+| -------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Append-only event log      | `workflow_events`                       | Records a past state transition; never mutated                                                                                                                                                                                                                   |
+| Immutable audit records    | `agent_errors`, `agent_tool_operations` | Each row is a point-in-time observation                                                                                                                                                                                                                          |
+| Immutable test snapshots   | `adapter_conformance_results`           | Each row is a completed test run result                                                                                                                                                                                                                          |
+| Immutable audit provenance | `adapter_revisions`                     | One row per `AdapterRegistry.register()` call, snapshotting the exact declared capability set at that version — never updated, distinct from `agent_adapters`/`agent_capabilities` (mutable, current operational registry state, overwritten on re-registration) |
+| Link / edge tables         | `feature_dependencies`                  | Rows are created or deleted atomically; the owning feature_request carries the version                                                                                                                                                                           |
 
 All other tables — including `outbox_events`, `inbox_events`, and `idempotency_keys` — carry
 `version` and `updated_at` because their fields are mutated after the initial insert (status

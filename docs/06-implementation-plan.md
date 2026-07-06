@@ -341,6 +341,15 @@ id` on the read query) makes the returned capability array deterministic across 
   `conformance.test.ts` has tests asserting a rerun appends exactly 6 new rows (documenting the
   intended semantics as a regression guard), demonstrating the latest-row query pattern, and
   proving the tiebreaker resolves a forced `run_at` tie deterministically.
+- **Migration 0013 (issue #26) adds `adapter_revisions`**, an append-only audit log distinct from
+  `agent_adapters`/`agent_capabilities` (mutable current registry state, overwritten in place on
+  each re-registration). `AdapterRegistry.register()` now writes one `adapter_revisions` row per
+  call, snapshotting the adapter's full declared capability set at that exact version.
+  `agent_runs` gains a nullable `adapter_revision_id` column; `AgentRunRecorder.record()` stamps
+  it via the new `AdapterRegistry.getRevisionId(adapterId, version)` lookup, so a historical run's
+  provenance can reconstruct exactly what capability set was declared at invocation time even
+  after a later re-registration has overwritten `agent_capabilities`. `null` for adapters
+  registered before this migration.
 - The SQLite preflight remediation comments in migrations `0003_unique_adapter_role_name.sqlite.sql`
   and `0006_unique_agent_configurations.sqlite.sql` previously suggested `MAX(rowid)` to select
   which duplicate row to keep, but `rowid` reflects insertion order, not `updated_at` — it did not

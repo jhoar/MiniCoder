@@ -324,6 +324,23 @@ ORDER BY updated_at DESC, id DESC)`, never `MAX(rowid)`.** `rowid` reflects inse
   The conformance runner's `configuration_resolution` scenario upserts (SELECT-then-UPDATE-or-
   INSERT) its own default config row rather than using an unconditional `INSERT`, so
   `runConformanceSuite()` is safe to re-run against a persistent DB.
+- **`adapter_revisions` (migration 0013, issue #26) is immutable audit provenance, distinct from
+  `agent_adapters`/`agent_capabilities`'s mutable current operational registry state.**
+  `AdapterRegistry.register()` writes one `adapter_revisions` row per call (fresh insert or
+  version-bump update) snapshotting the adapter's full declared capability set at that exact
+  version — never updated afterward, the same append-only posture as
+  `adapter_conformance_results`. This closes a real provenance gap: re-registering an adapter
+  replaces its `agent_capabilities` rows in place, so a historical `agent_runs` row's
+  `adapter_id`/`adapter_version` alone could no longer answer "what capabilities were actually
+  declared when this run happened" once a later re-registration overwrote the current
+  capabilities. `AgentRunRecorder.record()` resolves `adapter_revisions_id` via
+  `AdapterRegistry.getRevisionId(adapterId, adapterRecord.version)` (looked up with the same
+  `ORDER BY created_at DESC, id DESC LIMIT 1` determinism convention as issue #27) and stamps it
+  on the new `agent_runs` row, alongside the existing denormalized `adapter_name`/
+  `adapter_implementation`/`adapter_version`/`capabilities_used` snapshot columns —
+  `adapter_revision_id` is additive audit provenance, not a replacement for those columns.
+  `getRevisionId()` returns `null` for an adapter registered before this migration existed;
+  `agent_runs.adapter_revision_id` is nullable to accommodate that.
 - **Phase 5 delivers smoke-level conformance only.** The 9-scenario suite verifies adapter
   wiring (capability declaration, successful run, failure handling, invalid-output handling,
   secret redaction, configuration resolution, state-transition sequence, output shape,

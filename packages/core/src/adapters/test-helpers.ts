@@ -9,6 +9,7 @@ export class InMemoryAdapterDb implements DbClient {
   readonly agentAdapters: Record<string, unknown>[] = [];
   readonly agentCapabilities: Record<string, unknown>[] = [];
   readonly agentConfigurations: Record<string, unknown>[] = [];
+  readonly adapterRevisions: Record<string, unknown>[] = [];
   readonly agentRuns: Record<string, unknown>[] = [];
   readonly agentErrors: Record<string, unknown>[] = [];
   readonly agentContextPacks: Record<string, unknown>[] = [];
@@ -74,13 +75,39 @@ export class InMemoryAdapterDb implements DbClient {
       });
       return;
     }
-    if (s.includes('INTO agent_runs')) {
-      // Column order: id, adapter_id, project_id, feature_run_id, role, state, input_summary,
-      //   adapter_name, adapter_implementation, adapter_version, capabilities_used,
-      //   prompt_template_version, version(literal 1), created_at, updated_at
+    if (s.includes('INTO adapter_revisions')) {
       const [
         id,
         adapterId,
+        role,
+        name,
+        implementation,
+        version,
+        capabilities,
+        isActive,
+        createdAt,
+      ] = params;
+      this.adapterRevisions.push({
+        id,
+        adapter_id: adapterId,
+        role,
+        name,
+        implementation,
+        version,
+        capabilities,
+        is_active: isActive,
+        created_at: createdAt,
+      });
+      return;
+    }
+    if (s.includes('INTO agent_runs')) {
+      // Column order: id, adapter_id, adapter_revision_id, project_id, feature_run_id, role,
+      //   state, input_summary, adapter_name, adapter_implementation, adapter_version,
+      //   capabilities_used, prompt_template_version, version(literal 1), created_at, updated_at
+      const [
+        id,
+        adapterId,
+        adapterRevisionId,
         projectId,
         featureRunId,
         role,
@@ -97,6 +124,7 @@ export class InMemoryAdapterDb implements DbClient {
       this.agentRuns.push({
         id,
         adapter_id: adapterId,
+        adapter_revision_id: adapterRevisionId,
         project_id: projectId,
         feature_run_id: featureRunId,
         role,
@@ -277,9 +305,21 @@ export class InMemoryAdapterDb implements DbClient {
       const [role, name] = params;
       return this.agentAdapters.filter((r) => r.role === role && r.name === name);
     }
+    if (s.startsWith('SELECT version FROM agent_adapters WHERE id')) {
+      const [id] = params;
+      return this.agentAdapters.filter((r) => r.id === id).map((r) => ({ version: r.version }));
+    }
     if (s.includes('FROM agent_adapters WHERE id')) {
       const [id] = params;
       return this.agentAdapters.filter((r) => r.id === id);
+    }
+    if (s.startsWith('SELECT id FROM adapter_revisions WHERE adapter_id')) {
+      const [adapterId, version] = params;
+      const matches = this.adapterRevisions.filter(
+        (r) => r.adapter_id === adapterId && Number(r.version) === Number(version),
+      );
+      matches.sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+      return matches.slice(0, 1).map((r) => ({ id: r.id }));
     }
     if (s.startsWith('SELECT capability FROM agent_capabilities')) {
       const [adapterId] = params;

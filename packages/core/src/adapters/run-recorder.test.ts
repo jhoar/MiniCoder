@@ -135,6 +135,49 @@ describe('AgentRunRecorder.record', () => {
     expect(row2?.adapter_implementation).toBe('@minicoder/testing:TestAdapter-v2');
   });
 
+  it('issue #26: stamps adapter_revision_id pointing at the immutable capability-set snapshot active at invocation time', async () => {
+    const { agentRunId: runId1 } = await recorder.record(
+      { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: ['can_modify_files'] },
+      async () => ({ commitSha: 'abc', branchName: 'minicoder/FR-001', filesChanged: 1 }),
+    );
+
+    // Re-register: bumps to version 2 and REPLACES the declared capability set (a real
+    // agent_capabilities mutation, not just a version bump) — this is the exact operation that
+    // would make "what capabilities were declared for run 1" unreconstructable from the current
+    // (now-overwritten) agent_capabilities rows alone.
+    await registry.register({
+      role: 'CoderAgentAdapter',
+      name: 'TestAdapter',
+      implementation: '@minicoder/testing:TestAdapter-v2',
+      capabilities: ['can_commit', 'can_push_branch'], // no longer includes can_modify_files
+    });
+
+    const { agentRunId: runId2 } = await recorder.record(
+      { adapterId, role: 'CoderAgentAdapter', input: {}, capabilitiesUsed: ['can_commit'] },
+      async () => ({ commitSha: 'def', branchName: 'minicoder/FR-002', filesChanged: 2 }),
+    );
+
+    const row1 = db.agentRuns.find((r) => r.id === runId1);
+    const row2 = db.agentRuns.find((r) => r.id === runId2);
+    expect(row1?.adapter_revision_id).toBeTruthy();
+    expect(row2?.adapter_revision_id).toBeTruthy();
+    expect(row1?.adapter_revision_id).not.toBe(row2?.adapter_revision_id);
+
+    const revision1 = db.adapterRevisions.find((r) => r.id === row1?.adapter_revision_id);
+    const revision2 = db.adapterRevisions.find((r) => r.id === row2?.adapter_revision_id);
+    expect(revision1?.version).toBe(1);
+    expect(JSON.parse(revision1?.capabilities as string)).toContain('can_modify_files');
+    expect(revision2?.version).toBe(2);
+    expect(JSON.parse(revision2?.capabilities as string)).not.toContain('can_modify_files');
+
+    // The current, mutable agent_capabilities rows have already moved on — proving the
+    // immutable revision snapshot above is genuinely independent of that live registry state.
+    const currentCapabilities = db.agentCapabilities
+      .filter((r) => r.adapter_id === adapterId)
+      .map((r) => r.capability);
+    expect(currentCapabilities).not.toContain('can_modify_files');
+  });
+
   it('rejects recording under a role that does not match the adapter registration', async () => {
     await expect(
       recorder.record(

@@ -101,6 +101,46 @@ describe('AdapterRegistry.register', () => {
     const record = await registry.getById(adapterId);
     expect(record.capabilities).toEqual(['can_modify_files', 'can_commit']);
   });
+
+  it('issue #26: writes an append-only adapter_revisions row snapshotting each registration', async () => {
+    const adapterId = await registry.register({
+      role: 'CoderAgentAdapter',
+      name: 'RevisionAdapter',
+      implementation: 'v1',
+      capabilities: ['can_modify_files'],
+    });
+    await registry.register({
+      role: 'CoderAgentAdapter',
+      name: 'RevisionAdapter',
+      implementation: 'v2',
+      capabilities: ['can_modify_files', 'can_commit'],
+    });
+
+    // Two register() calls -> two immutable adapter_revisions rows, never an update-in-place.
+    const revisions = db.adapterRevisions.filter((r) => r.adapter_id === adapterId);
+    expect(revisions).toHaveLength(2);
+
+    const v1RevisionId = await registry.getRevisionId(adapterId, 1);
+    const v2RevisionId = await registry.getRevisionId(adapterId, 2);
+    expect(v1RevisionId).not.toBeNull();
+    expect(v2RevisionId).not.toBeNull();
+    expect(v1RevisionId).not.toBe(v2RevisionId);
+
+    const v1Row = db.adapterRevisions.find((r) => r.id === v1RevisionId);
+    const v2Row = db.adapterRevisions.find((r) => r.id === v2RevisionId);
+    expect(JSON.parse(v1Row?.capabilities as string)).toEqual(['can_modify_files']);
+    expect(JSON.parse(v2Row?.capabilities as string)).toEqual(['can_modify_files', 'can_commit']);
+  });
+
+  it('getRevisionId returns null for a version that was never registered', async () => {
+    const adapterId = await registry.register({
+      role: 'CoderAgentAdapter',
+      name: 'NoSuchVersionAdapter',
+      implementation: 'v1',
+      capabilities: ['can_modify_files'],
+    });
+    expect(await registry.getRevisionId(adapterId, 99)).toBeNull();
+  });
 });
 
 describe('AdapterRegistry.resolve', () => {

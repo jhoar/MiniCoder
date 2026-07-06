@@ -48,6 +48,7 @@ export const EXPECTED_TABLES = [
   'merge_gate_evaluations',
   'pull_requests',
   'review_occurrence_markers',
+  'adapter_revisions',
 ] as const;
 
 export type TableName = (typeof EXPECTED_TABLES)[number];
