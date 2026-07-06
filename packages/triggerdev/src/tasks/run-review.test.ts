@@ -195,6 +195,61 @@ describe('run-review', () => {
   // and re-invoke the reviewer adapter, duplicating audit-only findings under a new cycle for a
   // commit that was already fully reviewed. The occurrence-marker check must short-circuit before
   // ever calling the adapter again.
+  // Issue #49: an adapter reporting a promptSnapshot (ClaudeReviewerAdapter's real shape) gets it
+  // persisted as a second, redacted agent_context_packs row keyed to the same agentRunId, with
+  // the PR head SHA as the "which diff" reference.
+  it('persists a redacted reviewer prompt snapshot when the adapter reports one', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedUnderReviewFeatureRun(db);
+    await registerReviewerAdapter(db);
+
+    const adapter: ReviewerAgentAdapter = {
+      role: 'ReviewerAgentAdapter',
+      async run() {
+        return {
+          decision: 'approved',
+          findings: [],
+          promptSnapshot: {
+            model: 'test-model',
+            messages: [
+              {
+                role: 'user',
+                content: 'token sk-abcdEFGH12345678901234567890123456 diff content',
+              },
+            ],
+          },
+        } as ReviewerOutput;
+      },
+    };
+    const deps: RunReviewDeps = {
+      reviewerAdapterFactory: async () => adapter,
+      githubClientFactory: async () => fakeGithubClient(),
+    };
+
+    await runImpl(
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-2c',
+        idempotencyKey: 'idem-2c',
+        reviewerAdapterName: 'FakeReviewerAdapter',
+      },
+      db,
+      deps,
+    );
+
+    const rows = await db.query<{ content: string; content_schema_version: string }>(
+      `SELECT content, content_schema_version FROM agent_context_packs WHERE content_schema_version = ?`,
+      ['reviewer-prompt-snapshot-v1'],
+    );
+    expect(rows).toHaveLength(1);
+    const parsed = JSON.parse(rows[0]!.content) as { headSha: string; promptSnapshot: unknown };
+    expect(parsed.headSha).toBe('sha1');
+    // The redactor scrubs the secret-shaped value out of the persisted snapshot.
+    expect(rows[0]!.content).not.toContain('sk-abcdEFGH12345678901234567890123456');
+  });
+
   it('a retry for the same PR head commit does not re-invoke the adapter or duplicate findings', async () => {
     const db = createTestDb();
     insertTestProject(db, PROJECT_ID);

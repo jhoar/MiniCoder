@@ -15,9 +15,12 @@ export interface ClaudeReviewerAdapterOptions {
 
 /** `ReviewerOutput` plus token usage — mirrors `CodexCoderOutput extends CoderOutput`
  * (`@minicoder/adapters-coder`) so `run-review.ts` can fold token usage into a `costExtractor`
- * the same way `run-coder.ts` does. */
+ * the same way `run-coder.ts` does. `promptSnapshot` (issue #49) carries the exact assembled
+ * request `ReviewProvider.review()` sent, for `run-review.ts` to persist as replayable audit
+ * provenance. */
 export interface ClaudeReviewerOutput extends ReviewerOutput {
   readonly tokensUsed?: { readonly input: number; readonly output: number };
+  readonly promptSnapshot?: unknown;
 }
 
 /**
@@ -68,6 +71,7 @@ export class ClaudeReviewerAdapter implements ReviewerAgentAdapter {
         lineEnd: finding.lineEnd,
       })),
       tokensUsed: result.tokensUsed,
+      promptSnapshot: result.promptSnapshot,
     };
   }
 }

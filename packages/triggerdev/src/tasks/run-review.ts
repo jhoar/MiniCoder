@@ -17,6 +17,8 @@ import {
   findRepeatedFinding,
   insertDisagreementRecord,
   recordArbiterDisposition,
+  defaultRedactor,
+  isoNow,
 } from '@minicoder/core';
 import type {
   ArbiterAgentAdapter,
@@ -385,6 +387,36 @@ export async function runImpl(
     },
     () => adapter.run(input),
   );
+
+  // Issue #49: persist a replayable snapshot of the exact prompt sent to the reviewer LLM (if the
+  // adapter reports one — MockReviewerAdapter and other test doubles don't), plus the PR head SHA
+  // as the "which diff" reference (avoids duplicating the diff itself; a commit reference is
+  // already sufficient to identify it). Written as a second agent_context_packs row (distinct
+  // content_schema_version) keyed to the same agentRunId, applying the same redaction convention
+  // AgentRunRecorder's own context-pack write already uses — this one is written directly since
+  // it's only knowable after the adapter call returns, while AgentRunRecorder's own contextPack
+  // option is written before the call.
+  const reviewerPromptSnapshot = (output as { promptSnapshot?: unknown }).promptSnapshot;
+  if (reviewerPromptSnapshot !== undefined) {
+    const now = isoNow();
+    await db.execute(
+      `INSERT INTO agent_context_packs (id, agent_run_id, content, content_schema_version, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 1, ?, ?)`,
+      [
+        generateId(),
+        agentRunId,
+        JSON.stringify(
+          defaultRedactor.redactObject({
+            promptSnapshot: reviewerPromptSnapshot,
+            headSha: pr.head_sha,
+          }),
+        ),
+        'reviewer-prompt-snapshot-v1',
+        now,
+        now,
+      ],
+    );
+  }
 
   // Single normalization point (Phase 10 design decision): every adapter (ClaudeReviewerAdapter
   // or a test MockReviewerAdapter) returns a raw ReviewerOutput; this is the one place that

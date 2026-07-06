@@ -942,6 +942,19 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   deterministic `review-finding:{featureRunId}:{reviewCycle}:{index}` ids with
   `ON CONFLICT (id) DO NOTHING` for idempotent retry, the same "insert-with-a-conflict-clause"
   posture `AdapterRegistry.register()` established for cross-dialect idempotency.
+- **The exact reviewer prompt is persisted as a replayable audit snapshot (issue #49).**
+  `ReviewProvider.review()`'s `ReviewResult` gained an optional `promptSnapshot: unknown` field
+  (`HttpReviewProvider` populates it with the literal `{model, messages}` request body it POSTs);
+  `ClaudeReviewerOutput extends ReviewerOutput` passes it through. `run-review.ts` writes it as a
+  **second** `agent_context_packs` row keyed to the same `agentRunId` (distinct
+  `content_schema_version = 'reviewer-prompt-snapshot-v1'`, alongside the PR's `head_sha` as the
+  "which diff" reference — storing a commit reference rather than the diff itself, since
+  `headSha` already identifies it without duplicating storage), redacted with the same
+  `defaultRedactor.redactObject()` `AgentRunRecorder`'s own context-pack write already uses. This
+  is a direct `db.execute()`, not routed through `AgentRunRecorder`, because `AgentRunRecorder`'s
+  `contextPack` option is written **before** the wrapped adapter call runs, while the prompt
+  snapshot is only knowable after it returns. A test double (`MockReviewerAdapter`) that doesn't
+  report a `promptSnapshot` simply skips this write — no schema change, no required field.
 - **`ci_failed`'s next-transition ownership stays inside `reconcileGithubState()`, not a separate
   caller.** Immediately after a successful `ci_running -> ci_failed` transition, the same bounded
   catch-up loop (`MAX_RECONCILE_STEPS`) reads the feature run's current `fix_attempt_count` and

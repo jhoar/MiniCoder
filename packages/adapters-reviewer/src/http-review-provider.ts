@@ -27,35 +27,36 @@ export class HttpReviewProvider implements ReviewProvider {
   }
 
   async review(request: ReviewRequest): Promise<ReviewResult> {
+    const requestBody = {
+      model: this.options.model,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are a code reviewer. Respond with a JSON object ' +
+            '{"decision": "approved"|"changes_requested", "findings": [{"severity": ' +
+            '"blocking"|"non_blocking"|"nit"|"question"|"out_of_scope"|"requires_human_decision", ' +
+            '"category": string, "description": string, "filePath"?: string, "lineStart"?: number, ' +
+            '"lineEnd"?: number}]} reviewing the given diff against the feature\'s acceptance ' +
+            'criteria. No prose, JSON only.',
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            featureTitle: request.featureTitle,
+            acceptanceCriteria: request.acceptanceCriteria,
+            diff: request.diff,
+          }),
+        },
+      ],
+    };
     const response = await this.fetchImpl(`${this.options.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.options.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.options.model,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a code reviewer. Respond with a JSON object ' +
-              '{"decision": "approved"|"changes_requested", "findings": [{"severity": ' +
-              '"blocking"|"non_blocking"|"nit"|"question"|"out_of_scope"|"requires_human_decision", ' +
-              '"category": string, "description": string, "filePath"?: string, "lineStart"?: number, ' +
-              '"lineEnd"?: number}]} reviewing the given diff against the feature\'s acceptance ' +
-              'criteria. No prose, JSON only.',
-          },
-          {
-            role: 'user',
-            content: JSON.stringify({
-              featureTitle: request.featureTitle,
-              acceptanceCriteria: request.acceptanceCriteria,
-              diff: request.diff,
-            }),
-          },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -87,6 +88,7 @@ export class HttpReviewProvider implements ReviewProvider {
       tokensUsed: body.usage
         ? { input: body.usage.prompt_tokens ?? 0, output: body.usage.completion_tokens ?? 0 }
         : undefined,
+      promptSnapshot: requestBody,
     };
   }
 }
