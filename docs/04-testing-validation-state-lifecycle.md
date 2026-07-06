@@ -1440,6 +1440,21 @@ way a production hosted/team deployment actually would. Locally, with no `MINICO
 set, this suite reports as skipped (same posture as the other Postgres-gated suites) — it runs for
 real in CI's postgres job.
 
+**Issue #41** adds a second suite in the same tier,
+`packages/testing/src/phase8-concurrency-guards.postgres.test.ts`, covering the specific Phase 8
+concurrency guards CLAUDE.md's Execution Orchestrator Operational Constraints document, each
+proven against real concurrent PostgreSQL connections rather than sequential re-dispatch: (1)
+`SelectFeatureHandler`'s `workflow_states.active_feature_run_id` compare-and-swap (exactly one of
+two concurrent `SelectFeatureCommand`s wins, the other gets `feature-already-active`); (2)
+`StartCodingHandler`'s atomic `automation_state = 'running'` re-check racing a concurrent
+`PauseAutomationCommand` (the two outcomes — coding started under `running`, or coding rejected
+with `automation-paused` — are proven mutually exclusive and exhaustive, never both "winning"); (3)
+the `idempotency_keys` claim-first `INSERT ... ON CONFLICT DO NOTHING` (two concurrent dispatches
+of the identical command + idempotency key produce exactly one `workflow_events` row, with the
+loser transparently returning the winner's cached `CommandResult`); (4) `WorkflowLockManager`'s
+fence-token compare-and-swap (exactly one of two concurrent `acquire()` calls for the same lock
+resource wins, and the fence strictly increases across a release/re-acquire cycle).
+
 #### SQLite test teardown — do not call `db.close()`
 
 Never call `db.close()` in Vitest tests or scenario runner code. `better-sqlite3` registers native

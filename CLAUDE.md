@@ -1761,6 +1761,11 @@ overlapping write from a second connection either never truly overlaps or deadlo
 `busy_timeout` (confirmed empirically: a same-file multi-connection SQLite version of this exact
 scenario reliably deadlocked every iteration). PostgreSQL's client-server architecture has no such
 limitation. Gated by `MINICODER_TEST_PG_URL`, same posture as the other Postgres-only suites.
+Issue #41 adds a sibling suite in this same tier,
+`packages/testing/src/phase8-concurrency-guards.postgres.test.ts`, proving the specific Phase 8
+guards above (`SelectFeatureHandler`'s CAS, `StartCodingHandler`'s automation-state re-check,
+`idempotency_keys`' claim-first `ON CONFLICT DO NOTHING`, `WorkflowLockManager`'s fence-token CAS)
+against real concurrent PostgreSQL connections rather than sequential re-dispatch.
 
 ## Vitest Test Command Tiers
 
