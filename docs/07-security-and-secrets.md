@@ -23,12 +23,22 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 
 ## 2. Secrets Management
 
-- **Secret backend abstraction.** Secrets are resolved through a backend interface:
-  `EnvSecretBackend` (environment variables) for local/single-node; `ManagedSecretBackend`
-  (cloud KMS/secret manager) for hosted/team. Code never hard-codes secrets. A plaintext
-  `FileSecretBackend` was considered and rejected: reading unencrypted JSON from disk violates
-  the "encrypted at rest" invariant below. Local developers use OS keychain, a secrets manager
-  CLI exporting env vars, or Docker/CI secrets injection — never a committed plaintext file.
+- **Secret backend abstraction.** Secrets are resolved through a `SecretBackend` interface
+  (`get`/`set`/`delete`/`list`): `EnvSecretBackend` (environment variables) for local/single-node;
+  `ManagedSecretBackend` (cloud KMS/secret manager) for hosted/team. Code never hard-codes secrets.
+  A plaintext `FileSecretBackend` was considered and rejected: reading unencrypted JSON from disk
+  violates the "encrypted at rest" invariant below. Local developers use OS keychain, a secrets
+  manager CLI exporting env vars, or Docker/CI secrets injection — never a committed plaintext file.
+  `ManagedSecretBackend` (`packages/core/src/config/secrets.ts`) is a plain `fetch`-based HTTP
+  client against a secrets-manager-compatible REST facade, configured via `MANAGED_SECRETS_URL`/
+  `MANAGED_SECRETS_API_KEY` (or an injected `{baseUrl, apiKey}`) — the same "provider-neutral,
+  plain-`fetch`" seam pattern used for `HttpCodeGenerationProvider`/`HttpReviewProvider`. It
+  deliberately does not read or write MiniCoder's own database: backing it with an in-app
+  `secrets` table was considered and rejected, since it would put plaintext-adjacent secret
+  material inside application state, directly contradicting "no plaintext at rest in MiniCoder
+  state" below. Point it at a facade in front of the actual KMS/secret manager (HashiCorp Vault's
+  KV v2 REST API, a thin AWS Secrets Manager/Azure Key Vault proxy, or an internal secrets
+  service); encryption at rest and in transit (TLS) is that facade's responsibility.
 - **No plaintext at rest in MiniCoder state.** Secrets are never stored in the database, never
   written to Markdown artifacts, and never placed in `agent_context_packs` or logs.
 - **Per-adapter scoping.** Each adapter receives only the credentials it needs; the orchestrator is
