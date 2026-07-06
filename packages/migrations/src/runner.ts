@@ -1,5 +1,7 @@
 #!/usr/bin/env tsx
+import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import Database from 'better-sqlite3';
 import { Pool } from 'pg';
@@ -27,6 +29,26 @@ const OWNED_TABLES_DROP_ORDER = [...EXPECTED_TABLES].reverse();
 // Environments where destructive operations are permitted.
 const SAFE_ENVS = new Set(['development', 'test', 'ci']);
 
+// Reset-target confirmation-token lifecycle: a single-use, time-boxed token bound to the exact
+// database target being reset, mirroring `minicoder state repair`'s dry-run/apply/--confirmation
+// pattern (packages/cli/src/commands/state.ts). A caller must run --dry-run first (which performs
+// no mutation) to obtain a token, then re-run with --apply --confirmation <token>.
+const CONFIRMATION_TOKEN_TTL_MS = 5 * 60 * 1000;
+const RESET_PENDING_DIR = path.join(os.homedir(), '.minicoder');
+const RESET_PENDING_FILE = path.join(RESET_PENDING_DIR, 'pending-reset-token.json');
+
+// Postgres hosts a reset is permitted against by default when MINICODER_ALLOWED_RESET_HOSTS is
+// unset. Anything else requires the explicit, visible --force-host override.
+const DEFAULT_ALLOWED_RESET_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+function isoNow(): string {
+  return new Date().toISOString();
+}
+
+function ttlIso(ms: number): string {
+  return new Date(Date.now() + ms).toISOString();
+}
+
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
   if (idx === -1 || idx + 1 >= args.length) return undefined;
@@ -35,17 +57,57 @@ function parseFlag(args: string[], flag: string): string | undefined {
   return val?.startsWith('--') ? undefined : val;
 }
 
-// Remove username and password from a PostgreSQL URL before logging.
+// Reduce a PostgreSQL URL to protocol + hostname + port + pathname before logging or
+// fingerprinting. Username, password, query string, and fragment are dropped entirely — any of
+// those can carry secrets (query-string `password`/token params, SSL key paths, provider-specific
+// credentials), not just the URL authority.
 function sanitizeDbIdentifier(identifier: string, dialect: Dialect): string {
   if (dialect !== 'postgres') return identifier;
   try {
     const u = new URL(identifier);
-    u.username = '';
-    u.password = '';
-    return u.toString();
+    const portSuffix = u.port ? `:${u.port}` : '';
+    return `postgresql://${u.hostname}${portSuffix}${u.pathname}`;
   } catch {
     return '(unparseable URL)';
   }
+}
+
+// A stable, non-sensitive fingerprint of the reset target, used to bind a confirmation token to
+// the exact database it was issued for (a token issued while previewing one target must not be
+// usable to apply a reset against a different one).
+function fingerprintTarget(dialect: Dialect, identifier: string): string {
+  if (dialect === 'sqlite') return `sqlite:${path.resolve(identifier)}`;
+  return `postgres:${sanitizeDbIdentifier(identifier, dialect)}`;
+}
+
+// Verifies the reset target's identity for PostgreSQL (SQLite files are inherently local — see
+// CLAUDE.md's "SQLite is never used over a network filesystem" locked decision, so hosted/shared
+// PostgreSQL targets are the actual risk this guards against). Returns an error string, or null if
+// the target is acceptable.
+function checkDatabaseIdentity(
+  dialect: Dialect,
+  identifier: string,
+  args: string[],
+): string | null {
+  if (dialect !== 'postgres') return null;
+  let hostname: string;
+  try {
+    hostname = new URL(identifier).hostname.toLowerCase();
+  } catch {
+    return 'reset is blocked: DB_URL could not be parsed to verify target host identity.';
+  }
+  const configured = (process.env['MINICODER_ALLOWED_RESET_HOSTS'] ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const allowed = configured.length > 0 ? new Set(configured) : DEFAULT_ALLOWED_RESET_HOSTS;
+  if (allowed.has(hostname)) return null;
+  if (args.includes('--force-host')) return null;
+  return (
+    `reset is blocked: PostgreSQL host "${hostname}" is not in the allowed reset-target list ` +
+    `(${[...allowed].join(', ')}). Set MINICODER_ALLOWED_RESET_HOSTS to allow it, or pass ` +
+    '--force-host to explicitly override (visible in the audit log).'
+  );
 }
 
 interface ResetContext {
@@ -84,20 +146,126 @@ function auditAndGuardReset(args: string[], ctx: ResetContext): void {
     process.exit(1);
   }
 
+  // 1c. When the system environment is known, --env must agree with it exactly. A caller-supplied
+  //     flag alone must never be able to reclassify a database running under a different
+  //     deployment environment.
+  if (sysEnv && sysEnv !== env) {
+    console.error(
+      `  reset is blocked: --env "${env}" does not match the deployment environment ` +
+        `"${sysEnv}" (APP_ENV/NODE_ENV). The two must match exactly.`,
+    );
+    process.exit(1);
+  }
+
+  // 1d. An unset system environment cannot be inferred as safe — the caller must explicitly
+  //     acknowledge this is a known disposable target.
+  if (!sysEnv && !args.includes('--disposable-db')) {
+    console.error(
+      '  reset is blocked: APP_ENV/NODE_ENV is unset, so the deployment environment cannot be ' +
+        'verified.\n' +
+        '  Pass --disposable-db to confirm this is a known throwaway local/CI database ' +
+        '(e.g. a temp SQLite file or an ephemeral test PostgreSQL instance).',
+    );
+    process.exit(1);
+  }
+
+  // 1e. Actor identity. Phase 1's CLI has no session/role system (see docs/07 — real
+  //     hosted OAuth/SSO sessions are deferred future work), so this is a caller-declared
+  //     identity recorded for audit purposes, not an authenticated principal — the strongest
+  //     authorization this profile can offer today. Reset is refused without one.
+  const actor = parseFlag(args, '--actor');
+  if (!actor) {
+    console.error(
+      '  reset requires --actor <name> identifying who is authorizing this destructive action.',
+    );
+    process.exit(1);
+  }
+
+  // 1f. Backup evidence — a bare warning is not enforcement. Require either a verified backup or
+  //     an explicit, logged exemption reason.
+  const backupExempt = parseFlag(args, '--backup-exempt');
+  const backupVerified = args.includes('--backup-verified');
+  if (!backupVerified && !backupExempt) {
+    console.error(
+      '  reset requires backup evidence: pass --backup-verified (a backup was taken) or\n' +
+        '  --backup-exempt "<reason>" (explicitly document why no backup is needed, e.g. a ' +
+        'disposable test database).',
+    );
+    process.exit(1);
+  }
+
+  // 1g. Database target identity (PostgreSQL only).
+  const identityError = checkDatabaseIdentity(ctx.dialect, ctx.dbIdentifier, args);
+  if (identityError) {
+    console.error(`  ${identityError}`);
+    process.exit(1);
+  }
+
+  // 1h. Two-step confirmation, bound to this exact target: --dry-run previews and issues a
+  //     single-use, time-boxed token; --apply requires that token and performs the mutation.
+  //     This mirrors `minicoder state repair`'s dry-run/apply/--confirmation contract.
+  const dryRun = args.includes('--dry-run');
+  const applyFlag = args.includes('--apply');
+  const target = fingerprintTarget(ctx.dialect, ctx.dbIdentifier);
+
+  if (!dryRun && !applyFlag) {
+    console.error(
+      '  reset requires either --dry-run (preview and issue a confirmation token) or\n' +
+        '  --apply --confirmation <token> (perform the reset after a --dry-run).',
+    );
+    process.exit(1);
+  }
+
+  if (applyFlag) {
+    const confirmation = parseFlag(args, '--confirmation');
+    if (!confirmation) {
+      console.error('  reset --apply requires --confirmation <token> (run --dry-run first).');
+      process.exit(1);
+    }
+    let pending: { token: string; expiresAt: string; target: string };
+    try {
+      pending = JSON.parse(fs.readFileSync(RESET_PENDING_FILE, 'utf-8')) as typeof pending;
+    } catch {
+      console.error(
+        '  reset is blocked: no pending confirmation token found. Run --dry-run first.',
+      );
+      process.exit(1);
+    }
+    if (pending.token !== confirmation) {
+      console.error('  reset is blocked: confirmation token does not match the issued token.');
+      process.exit(1);
+    }
+    if (new Date(pending.expiresAt) <= new Date()) {
+      console.error('  reset is blocked: confirmation token has expired. Run --dry-run again.');
+      process.exit(1);
+    }
+    if (pending.target !== target) {
+      console.error(
+        '  reset is blocked: confirmation token was issued for a different database target.',
+      );
+      process.exit(1);
+    }
+    // Single-use: consume the token immediately so it cannot be replayed.
+    fs.unlinkSync(RESET_PENDING_FILE);
+  }
+
   // 2. Audit log — printed before any mutation so it is visible even if reset fails
-  const ts = new Date().toISOString();
+  const ts = isoNow();
   const safeDb = sanitizeDbIdentifier(ctx.dbIdentifier, ctx.dialect);
   console.log('  ┌─ RESET AUDIT ──────────────────────────────────────────────');
   console.log(`  │  timestamp  : ${ts}`);
+  console.log(`  │  mode       : ${dryRun ? 'dry-run (no mutation)' : 'apply'}`);
   console.log(`  │  env (flag) : ${env}`);
-  console.log(`  │  env (sys)  : ${sysEnv || '(unset)'}`);
+  console.log(`  │  env (sys)  : ${sysEnv || '(unset — --disposable-db acknowledged)'}`);
   console.log(`  │  dialect    : ${ctx.dialect}`);
   console.log(`  │  database   : ${safeDb}`);
   console.log(
     `  │  tables     : ${OWNED_TABLES_DROP_ORDER.length + 1} owned tables will be dropped`,
   );
-  console.log('  │  roles      : no role system active in Phase 1 CLI mode');
-  console.log('  │  backup     : WARNING — no backup has been verified');
+  console.log(`  │  actor      : ${actor}`);
+  console.log(
+    `  │  backup     : ${backupVerified ? 'verified by operator' : `EXEMPT — ${backupExempt}`}`,
+  );
   console.log('  └────────────────────────────────────────────────────────────');
 
   // 3. Dry-run summary so the operator can see what will be dropped
@@ -107,6 +275,22 @@ function auditAndGuardReset(args: string[], ctx: ResetContext): void {
   }
   console.log('    - _migrations');
   console.log();
+
+  if (dryRun) {
+    const token = crypto.randomUUID();
+    const expiresAt = ttlIso(CONFIRMATION_TOKEN_TTL_MS);
+    fs.mkdirSync(RESET_PENDING_DIR, { recursive: true });
+    fs.writeFileSync(RESET_PENDING_FILE, JSON.stringify({ token, expiresAt, target }), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+    console.log('  Dry run only — no mutation performed.');
+    console.log(`  Confirmation token: ${token} (expires ${expiresAt})`);
+    console.log(
+      '  To apply: rerun with the same flags plus --apply --confirmation ' + `${token}\n`,
+    );
+    process.exit(0);
+  }
 }
 
 function getDialect(): Dialect {
@@ -423,8 +607,8 @@ async function main(): Promise<void> {
     // Run the reset guard BEFORE opening the database file so a blocked reset
     // never creates the file on disk.
     if (command === 'reset') {
-      if (!args.includes('--yes')) {
-        console.error('  reset requires --yes and --env <environment> flags.');
+      if (args.includes('--apply') && !args.includes('--yes')) {
+        console.error('  reset --apply requires --yes.');
         process.exit(1);
       }
       auditAndGuardReset(args, { dialect, dbIdentifier: dbPath });
@@ -478,8 +662,8 @@ async function main(): Promise<void> {
           if (!(await pgValidate(pool))) process.exit(1);
           break;
         case 'reset':
-          if (!args.includes('--yes')) {
-            console.error('  reset requires --yes and --env <environment> flags.');
+          if (args.includes('--apply') && !args.includes('--yes')) {
+            console.error('  reset --apply requires --yes.');
             process.exit(1);
           }
           auditAndGuardReset(args, { dialect, dbIdentifier: dbUrl });

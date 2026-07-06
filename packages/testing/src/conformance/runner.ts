@@ -125,6 +125,8 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       prNumber: 42,
       reviewCycle: 1,
       correlationId: COMMON_CORRELATION,
+      featureTitle: 'Conformance feature',
+      acceptanceCriteria: ['A user can exercise the conformance scenario.'],
     }),
     validateOutput: (out: unknown): string | null => {
       const o = out as Record<string, unknown>;
@@ -561,8 +563,14 @@ async function runScenarios(
  * with the same idempotently-registered adapters. This is intentional — the table is a
  * historical audit log of every conformance run, not a single current-gate-state row. Callers
  * that want "the current gate result for an adapter" must query
- * `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)`; do not assume one row per
- * adapter exists.
+ * `ORDER BY run_at DESC, id DESC LIMIT 1` scoped to `(test_suite, adapter_id)` — the `id DESC`
+ * tiebreaker matters because `run_at` is an ISO-8601 string with only millisecond resolution
+ * (`new Date().toISOString()`), so two rows written in the same millisecond (a realistic outcome
+ * when a suite reruns quickly, e.g. in a tight test loop or a fast re-registration cycle) would
+ * otherwise leave "the latest row" to unspecified SQL result ordering — the same "most recent
+ * wins, with an explicit tiebreaker" posture `evaluateBudget()`/`AdapterRegistry.getConfiguration()`
+ * already use for their own ambiguous-latest-row queries (see CLAUDE.md). Do not assume one row
+ * per adapter exists, and do not query `ORDER BY run_at DESC` alone.
  */
 export async function runConformanceSuite(
   opts: ConformanceRunOptions,

@@ -27,35 +27,37 @@ export class HttpReviewProvider implements ReviewProvider {
   }
 
   async review(request: ReviewRequest): Promise<ReviewResult> {
+    const systemMessage = {
+      role: 'system',
+      content:
+        'You are a code reviewer. Respond with a JSON object ' +
+        '{"decision": "approved"|"changes_requested", "findings": [{"severity": ' +
+        '"blocking"|"non_blocking"|"nit"|"question"|"out_of_scope"|"requires_human_decision", ' +
+        '"category": string, "description": string, "filePath"?: string, "lineStart"?: number, ' +
+        '"lineEnd"?: number}]} reviewing the given diff against the feature\'s acceptance ' +
+        'criteria. No prose, JSON only.',
+    };
+    const requestBody = {
+      model: this.options.model,
+      messages: [
+        systemMessage,
+        {
+          role: 'user',
+          content: JSON.stringify({
+            featureTitle: request.featureTitle,
+            acceptanceCriteria: request.acceptanceCriteria,
+            diff: request.diff,
+          }),
+        },
+      ],
+    };
     const response = await this.fetchImpl(`${this.options.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.options.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.options.model,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a code reviewer. Respond with a JSON object ' +
-              '{"decision": "approved"|"changes_requested", "findings": [{"severity": ' +
-              '"blocking"|"non_blocking"|"nit"|"question"|"out_of_scope"|"requires_human_decision", ' +
-              '"category": string, "description": string, "filePath"?: string, "lineStart"?: number, ' +
-              '"lineEnd"?: number}]} reviewing the given diff against the feature\'s acceptance ' +
-              'criteria. No prose, JSON only.',
-          },
-          {
-            role: 'user',
-            content: JSON.stringify({
-              featureTitle: request.featureTitle,
-              acceptanceCriteria: request.acceptanceCriteria,
-              diff: request.diff,
-            }),
-          },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -87,6 +89,29 @@ export class HttpReviewProvider implements ReviewProvider {
       tokensUsed: body.usage
         ? { input: body.usage.prompt_tokens ?? 0, output: body.usage.completion_tokens ?? 0 }
         : undefined,
+      // Post-merge review fix (HIGH-1): the actual request sent above (`requestBody`) necessarily
+      // includes the real diff — the reviewer LLM can't review it otherwise. But `promptSnapshot`
+      // is a *distinct* copy built only for `run-review.ts`'s audit-provenance persistence
+      // (issue #49); returning `requestBody` itself here previously duplicated the full PR diff
+      // into `agent_context_packs`, directly contradicting that call site's own doc comment
+      // ("avoids duplicating the diff itself") and risking persisting secrets embedded in a diff
+      // that `defaultRedactor`'s pattern-based scrubbing cannot reliably catch once serialized
+      // into a JSON string. The snapshot now omits `diff` entirely — `run-review.ts` already
+      // stores the PR's `head_sha` alongside this snapshot as the "which diff" reference.
+      promptSnapshot: {
+        model: this.options.model,
+        messages: [
+          systemMessage,
+          {
+            role: 'user',
+            content: JSON.stringify({
+              featureTitle: request.featureTitle,
+              acceptanceCriteria: request.acceptanceCriteria,
+              diff: '[omitted from persisted snapshot — see the stored headSha for the reviewed commit]',
+            }),
+          },
+        ],
+      },
     };
   }
 }

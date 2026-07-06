@@ -120,6 +120,16 @@ paths:
           {
             description: 'Merge gate blocked, merge rejected, or a same-key request is already in progress',
           }
+  /commands/finalize-if-github-merged:
+    post:
+      operationId: finalizeIfGithubMerged
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '200': { description: 'Already recorded, or newly recorded after re-verifying with GitHub' }
+        '400': { description: 'Validation error, or GitHub does not confirm the PR as merged' }
+        '403': { description: Not authorized }
+        '404': { description: Feature run not found }
   /commands/request-coder-run:
     post:
       operationId: requestCoderRun

@@ -10,6 +10,7 @@
     "test": "cd ../.. && vitest run packages/api/src/"
   },
   "dependencies": {
+    "@minicoder/adapters-coder": "workspace:*",
     "@minicoder/core": "workspace:*",
     "@minicoder/github": "workspace:*",
     "@minicoder/triggerdev": "workspace:*",
@@ -19,7 +20,10 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@minicoder/persistence-postgres": "workspace:*",
     "@minicoder/testing": "workspace:*",
-    "@types/js-yaml": "^4.0.9"
+    "@types/js-yaml": "^4.0.9",
+    "@types/pg": "^8.11.6",
+    "pg": "^8.12.0"
   }
 }

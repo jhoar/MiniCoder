@@ -8,9 +8,10 @@
  * local file (`~/.minicoder/pending-repair-token.json`) that does not translate to a stateless
  * HTTP API (see CLAUDE.md's Orchestrator API Operational Constraints).
  */
-import type { DbClient } from '@minicoder/core';
+import type { DbClient, GitHubClient } from '@minicoder/core';
 import { FEATURE_EXECUTION_MATRIX } from '@minicoder/core';
 import type { FeatureExecutionState } from '@minicoder/core';
+import { branchNameFor } from '@minicoder/adapters-coder';
 
 const KNOWN_FEATURE_STATES = new Set<string>(
   FEATURE_EXECUTION_MATRIX.flatMap((row) => [row.fromState, row.toState]),
@@ -183,8 +184,96 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
     details: tdMismatch,
   });
 
+  // Issue #52 defense-in-depth: SkipFeatureHandler now cascades a dependent's transition to
+  // 'blocked' going forward, but this check still flags any pre-existing case (a feature run
+  // stuck at approved_pending_execution depending on an already-skipped feature) that predates the
+  // fix, or any future case that somehow slips past it.
+  const skippedDepsProjectFilter = projectId ? `AND freq.project_id = ?` : '';
+  const skippedDepsParams: unknown[] = projectId ? [projectId] : [];
+  const skippedDependencies = await db.query<{
+    id: string;
+    depends_on_feature_run_id: string;
+  }>(
+    `SELECT fr.id, dep_fr.id AS depends_on_feature_run_id
+     FROM feature_runs fr
+     JOIN feature_requests freq ON fr.feature_request_id = freq.id
+     JOIN feature_dependencies fd ON fd.source_fr_id = fr.feature_request_id
+     JOIN feature_runs dep_fr ON dep_fr.feature_request_id = fd.target_fr_id
+     WHERE fr.current_execution_state = 'approved_pending_execution'
+       AND dep_fr.current_execution_state = 'skipped'
+       ${skippedDepsProjectFilter}`,
+    skippedDepsParams,
+  );
+  checks.push({
+    name: 'skipped_dependency',
+    severity: skippedDependencies.length > 0 ? 'error' : 'ok',
+    autoClearable: false,
+    manuallyRepairable: true,
+    count: skippedDependencies.length,
+    details: skippedDependencies,
+  });
+
   const hasErrors = checks.some((c) => c.severity === 'error');
   return { healthy: !hasErrors, checks };
+}
+
+export interface PrDiscoveryDivergence {
+  featureRunId: string;
+  branchName: string;
+  prNumberOnGithub: number;
+}
+
+/**
+ * Issue #35: an opt-in doctor check, deliberately NOT part of `runDoctorChecks()` above — every
+ * other check there is a pure DB query with no external dependency, while this one needs a live
+ * `GitHubClient` credential to ask GitHub directly whether an untracked `code_pushed` feature
+ * run's branch already has an open PR. `github-reconciliation`'s scheduled task now auto-heals
+ * most of this class of divergence on its own (the same `discoverMissingPullRequests()` query
+ * shape this check mirrors), but an operator may want to check for it on demand — without waiting
+ * for or depending on that scheduled task having run — via `minicoder state doctor --check-github`.
+ */
+export async function checkPrDiscoveryDivergence(
+  db: DbClient,
+  client: GitHubClient,
+  projectId?: string,
+): Promise<PrDiscoveryDivergence[]> {
+  const projectFilter = projectId ? `AND freq.project_id = ?` : '';
+  const params = projectId ? [projectId] : [];
+
+  const candidates = await db.query<{
+    id: string;
+    project_id: string;
+    owner: string;
+    name: string;
+  }>(
+    `SELECT fr.id, freq.project_id, repo.owner, repo.name
+     FROM feature_runs fr
+     JOIN feature_requests freq ON fr.feature_request_id = freq.id
+     JOIN repositories repo ON repo.project_id = freq.project_id
+     LEFT JOIN pull_requests pr ON pr.feature_run_id = fr.id
+     WHERE fr.current_execution_state = 'code_pushed' AND pr.id IS NULL ${projectFilter}`,
+    params,
+  );
+
+  const divergences: PrDiscoveryDivergence[] = [];
+  for (const candidate of candidates) {
+    const branchName = branchNameFor(candidate.id);
+    const matches = await client.listPullRequestsForBranch(
+      candidate.owner,
+      candidate.name,
+      branchName,
+      'open',
+    );
+    const match = matches[0];
+    if (match) {
+      divergences.push({
+        featureRunId: candidate.id,
+        branchName,
+        prNumberOnGithub: match.prNumber,
+      });
+    }
+  }
+  return divergences;
 }
 
 export interface ReconcileResult {

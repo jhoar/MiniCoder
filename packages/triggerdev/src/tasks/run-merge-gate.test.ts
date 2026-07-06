@@ -99,6 +99,9 @@ function fakeGithubClient(): GitHubClient & {
     async getPullRequestDiff() {
       return 'diff --git a/x b/x\n';
     },
+    async listPullRequestsForBranch() {
+      return [];
+    },
   };
 }
 

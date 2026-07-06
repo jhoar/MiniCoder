@@ -36,14 +36,19 @@ interface FeatureRunRow {
 
 /**
  * `human_required -> skipped` (terminal). The human explicitly abandons automation for this
- * feature. Docs/06 Phase 11 known limitation: a skipped feature never reaches `merged`, so any
- * downstream feature depending on it (`feature_dependencies` requiring `merged`) will never clear
- * its dependency guard automatically — resolving that is out of this phase's scope (the same
- * "documented, not solved" posture this codebase uses elsewhere for cross-cutting consequences of
- * a deliberate human decision). If this feature run is the project's current active feature, the
+ * feature. If this feature run is the project's current active feature, the
  * `workflow_states.active_feature_run_id` pointer is cleared so `start-next-feature` can select a
  * different feature next (mirroring `RecordMergedCommand`'s `clear_active_feature_run` side
  * effect).
+ *
+ * A skipped feature never reaches `merged`, so any downstream feature depending on it
+ * (`feature_dependencies` requiring `merged`) would otherwise be silently stuck at
+ * `approved_pending_execution` forever (issue #52) — `SelectFeatureHandler`'s dependency guard
+ * would simply never clear, with no error or visible signal. Fixed by cascading: in the same
+ * transaction, every dependent feature run still at `approved_pending_execution` is transitioned
+ * to `blocked` (a new matrix row, `approved_pending_execution -> blocked` triggered by
+ * `SkipFeatureCommand`), so the problem is immediately visible via the existing `blocked`-state
+ * diagnostics rather than requiring a human to notice a feature never becomes eligible.
  */
 export class SkipFeatureHandler implements CommandHandler<
   SkipFeaturePayload,
@@ -133,6 +138,87 @@ export class SkipFeatureHandler implements CommandHandler<
         eventType: 'feature.skipped',
         payload: { featureRunId, projectId },
       });
+
+      // Cascade: block every still-pending dependent so it doesn't silently strand forever
+      // waiting on a dependency that can now never reach 'merged' (issue #52).
+      const dependents = await tx.query<{ id: string; version: number }>(
+        `SELECT fr.id, fr.version
+         FROM feature_dependencies fd
+         JOIN feature_runs fr ON fr.feature_request_id = fd.source_fr_id
+         WHERE fd.target_fr_id = ?
+           AND fr.current_execution_state = ?`,
+        [run.feature_request_id, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+      );
+      const MAX_CASCADE_RETRIES = 3;
+      for (const dependent of dependents) {
+        validator.assertValid(
+          FeatureExecutionState.APPROVED_PENDING_EXECUTION,
+          FeatureExecutionState.BLOCKED,
+        );
+
+        // Post-merge review fix (MEDIUM-1): use executeAffected (not a bare execute) so a
+        // concurrent version change on this dependent between the SELECT above and this UPDATE is
+        // detected — the predicate's own `AND version = ?` would otherwise silently affect 0 rows
+        // while the workflow/outbox events below were still written unconditionally, falsely
+        // claiming a transition that never happened. A CAS miss alone is ambiguous, so it is not
+        // treated as "nothing to do": re-read the dependent's fresh state before deciding.
+        // - If it moved to a different state, a concurrent writer already resolved it (or made it
+        //   ineligible some other way) — no event, no retry, nothing stranded.
+        // - If it is STILL `approved_pending_execution` (only its version/other columns changed),
+        //   retry the block with the fresh version, up to MAX_CASCADE_RETRIES — otherwise this
+        //   command would silently leave a dependent on a never-mergeable skipped dependency
+        //   sitting at `approved_pending_execution`, exactly the stranded state issue #52 exists
+        //   to prevent.
+        const currentId = dependent.id;
+        let currentVersion = dependent.version;
+        let blocked = false;
+        for (let attempt = 0; attempt < MAX_CASCADE_RETRIES; attempt++) {
+          const dependentNow = isoNow();
+          const dependentAffected = await tx.executeAffected(
+            `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
+            [
+              FeatureExecutionState.BLOCKED,
+              nextVersion(currentVersion),
+              dependentNow,
+              currentId,
+              currentVersion,
+            ],
+          );
+          if (dependentAffected > 0) {
+            blocked = true;
+            break;
+          }
+          const freshRows = await tx.query<{ current_execution_state: string; version: number }>(
+            `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+            [currentId],
+          );
+          const fresh = freshRows[0];
+          if (
+            !fresh ||
+            fresh.current_execution_state !== FeatureExecutionState.APPROVED_PENDING_EXECUTION
+          ) {
+            break;
+          }
+          currentVersion = fresh.version;
+        }
+        if (!blocked) {
+          continue;
+        }
+        await writeWorkflowEvent(tx, {
+          featureRunId: dependent.id,
+          projectId,
+          eventType: 'feature.blocked_by_skipped_dependency',
+          fromState: FeatureExecutionState.APPROVED_PENDING_EXECUTION,
+          toState: FeatureExecutionState.BLOCKED,
+          actorId: envelope.actor.id,
+          correlationId: envelope.correlationId,
+        });
+        await writeOutboxEvent(tx, {
+          eventType: 'feature.blocked_by_skipped_dependency',
+          payload: { featureRunId: dependent.id, projectId, skippedFeatureRunId: featureRunId },
+        });
+      }
+
       const result: CommandResult<FeatureExecutionState> = {
         commandId: envelope.commandId,
         accepted: true,

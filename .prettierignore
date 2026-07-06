@@ -1,0 +1,6 @@
+node_modules/
+dist/
+coverage/
+# Local OMX (Claude Code) runtime state — never repo content; untracked files here should not
+# make `pnpm format:check` fail for contributors who happen to have this local tool installed.
+.omx/

@@ -212,22 +212,32 @@ applicable, explicit confirmation flag, and an audit event. Production reset is 
 There is no unguarded bulk `purge`; irreversible maintenance is performed only through these guarded
 workflows.
 
-**Phase 1 implementation of `minicoder db reset`:**
+**`minicoder db reset`'s enforced contract** (closed the Phase 1 warn-only gaps — see issues #10/#11):
 
-| Requirement                   | Phase 1 status                                                                           |
-| ----------------------------- | ---------------------------------------------------------------------------------------- |
-| Explicit `--env` flag         | ✓ required; must be `development`, `test`, or `ci`                                       |
-| Explicit `--yes` confirmation | ✓ required                                                                               |
-| System env cross-check        | ✓ `APP_ENV`/`NODE_ENV` checked; non-safe system value blocks reset even with `--env dev` |
-| Credential safety             | ✓ PostgreSQL URL logged with credentials stripped                                        |
-| Dry-run / pre-run summary     | ✓ table list printed before any mutation                                                 |
-| Audit event                   | ✓ timestamped block (env flag, system env, dialect, sanitized db, table count)           |
-| Backup check                  | ⚠ operator warned; no automated backup                                                   |
-| Permission / role check       | ⚠ noted in audit log; enforced from Phase 2                                              |
-| Scope restriction             | ✓ only owned tables dropped, no `CASCADE`                                                |
+| Requirement                     | Status                                                                                                                                                                                                                            |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explicit `--env` flag           | ✓ required; must be `development`, `test`, or `ci`                                                                                                                                                                                |
+| Explicit `--yes` confirmation   | ✓ required with `--apply`                                                                                                                                                                                                         |
+| System env cross-check          | ✓ `APP_ENV`/`NODE_ENV` checked; non-safe system value blocks reset regardless of `--env`                                                                                                                                          |
+| `--env`/system-env agreement    | ✓ enforced — when a system env is set, `--env` must match it exactly, not just both be "safe"                                                                                                                                     |
+| Unset-system-env handling       | ✓ enforced — an unset `APP_ENV`/`NODE_ENV` is never treated as safe; requires `--disposable-db`                                                                                                                                   |
+| Credential safety               | ✓ PostgreSQL URL reduced to protocol+hostname+port+pathname; query string/fragment/creds dropped                                                                                                                                  |
+| Malformed URL handling          | ✓ blocked with a fixed, non-sensitive error — never echoes the raw input                                                                                                                                                          |
+| Database target identity        | ✓ PostgreSQL host checked against an allowlist (`MINICODER_ALLOWED_RESET_HOSTS`, default `localhost`/`127.0.0.1`/`::1`); non-listed hosts require explicit `--force-host`                                                         |
+| Dry-run / two-step confirmation | ✓ `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact target; `--apply --confirmation <token>` performs the reset (mirrors `minicoder state repair`)                                     |
+| Audit event                     | ✓ timestamped block (mode, env flag, system env, dialect, sanitized db, table count, actor, backup status)                                                                                                                        |
+| Backup check                    | ✓ enforced — `--backup-verified` or `--backup-exempt "<reason>"` required, recorded in the audit log                                                                                                                              |
+| Actor identity                  | ✓ enforced — `--actor <name>` required and recorded (Phase 1 has no session/role system, so this is a caller-declared identity, not an authenticated principal — the strongest this profile can offer; see docs/07 for real auth) |
+| Scope restriction               | ✓ only owned tables dropped, no `CASCADE`                                                                                                                                                                                         |
+| Guard-before-connect            | ✓ the guard runs and can `process.exit` before a SQLite file is created or a PostgreSQL connection is used                                                                                                                        |
 
 ```bash
-minicoder db reset --yes --env development
+# Step 1: preview and get a confirmation token (no mutation)
+minicoder db reset --dry-run --env development --actor alice --backup-exempt "local dev db"
+
+# Step 2: apply using the token from step 1
+minicoder db reset --apply --yes --confirmation <token> --env development \
+  --actor alice --backup-exempt "local dev db"
 ```
 
 ## 8. CI/CD Requirements
@@ -237,6 +247,23 @@ test smoke scenario, a **security scan** (dependency audit, secret scan, SAST �
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) §7), Docker build, Docker Compose test (where
 applicable), and Trigger.dev task deployment validation. Longer system tests may run nightly or on
 release branches.
+
+**Security scan job** (`.github/workflows/ci.yml`'s `security-scan`, issue #12) runs four checks,
+every third-party action/tool pinned to a commit SHA or image digest, with least-privilege
+`permissions: contents: read` (workflow-wide, plus the job's own explicit block) and no
+`pull_request_target` — forked-repo PRs never receive repository secrets:
+
+| Check            | Tool                                      | Local reproduction                                                                                                                                                                                                    |
+| ---------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dependency audit | `pnpm audit --prod --audit-level=high`    | `pnpm audit --prod --audit-level=high` (full non-`--prod` audit reports the one remaining accepted dev-only advisory — §12.13)                                                                                        |
+| Dependency audit | OSV Scanner (`google/osv-scanner-action`) | `osv-scanner --lockfile=pnpm-lock.yaml --recursive`                                                                                                                                                                   |
+| Secret scan      | gitleaks (`gitleaks/gitleaks-action`)     | `docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 detect --source /repo --redact -v`                                                                                                                      |
+| SAST             | semgrep (pinned image digest)             | `docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep@sha256:ae27024c16f7848cdbfd49c24ed0b78b13f13b85fcd7b87c679aaa8b0c0dce98 semgrep scan --config p/security-audit --config p/typescript --error --metrics=off .` |
+
+**Suppression policy:** gitleaks findings are suppressed only via an inline `.gitleaksignore`
+entry with a commit-linked rationale; semgrep findings are suppressed only via an inline
+`// nosemgrep: <rule-id> -- <reason>` comment at the flagged line. Neither tool uses a blanket
+rule/path exclusion — every suppression is visible in the PR diff that introduces it.
 
 **Cross-dialect matrix (required).** Migration validation and the integration suite run against
 **both** database targets — SQLite and PostgreSQL — as parallel CI jobs, so dialect differences in
@@ -374,37 +401,53 @@ Drops all MiniCoder-owned tables and re-applies all migrations from scratch. Onl
 are dropped (never foreign tables); drops proceed in reverse FK-dependency order without
 `CASCADE` so external FK constraints are never silently removed.
 
-**Safety contract** — the runner enforces all of the following before any mutation:
+**Safety contract** — the runner enforces all of the following before any mutation (issues #10/#11
+closed the previous warn-only gaps):
 
-| Check                  | Enforcement                                                                                                                |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `--yes` confirmation   | Required                                                                                                                   |
-| Explicit `--env` flag  | Required; value must be `development`, `test`, or `ci`                                                                     |
-| System env cross-check | `APP_ENV`/`NODE_ENV` checked independently; a non-safe system value blocks reset even when `--env development` is supplied |
-| Credential safety      | PostgreSQL connection URL logged with credentials stripped (host/database only)                                            |
-| Audit event            | Printed to stdout before mutation: timestamp, env flag, system env, dialect, sanitized database identifier, table count    |
-| Dry-run summary        | Tables to be dropped listed before execution                                                                               |
-| Backup warning         | Operator warned that no backup has been verified                                                                           |
-| Permission check       | Phase 1: noted in audit log; enforced by role system in Phase 2+                                                           |
+| Check                    | Enforcement                                                                                                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Two-step confirmation    | `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact db target; `--apply --confirmation <token> --yes` performs the reset                                   |
+| Explicit `--env` flag    | Required; value must be `development`, `test`, or `ci`                                                                                                                                              |
+| System env cross-check   | `APP_ENV`/`NODE_ENV` checked; a non-safe system value blocks reset regardless of `--env`; when set, `--env` must match it exactly                                                                   |
+| Unset system env         | Never treated as safe by default — requires the explicit `--disposable-db` acknowledgment                                                                                                           |
+| Actor identity           | `--actor <name>` required and recorded in the audit log (Phase 1 has no session/role system — this is a caller-declared identity, the strongest this profile can offer; real auth is docs/07 scope) |
+| Backup evidence          | `--backup-verified` or `--backup-exempt "<reason>"` required and recorded                                                                                                                           |
+| Database target identity | PostgreSQL host checked against `MINICODER_ALLOWED_RESET_HOSTS` (default `localhost`/`127.0.0.1`/`::1`); other hosts require explicit `--force-host`                                                |
+| Credential safety        | PostgreSQL connection URL reduced to protocol+hostname+port+pathname before logging — query string, fragment, and credentials are dropped entirely, not just the URL authority                      |
+| Malformed URL handling   | Blocked with a fixed, non-sensitive error; the raw input is never echoed                                                                                                                            |
+| Audit event              | Printed to stdout before mutation: timestamp, mode, env flag, system env, dialect, sanitized database identifier, table count, actor, backup status                                                 |
+| Dry-run summary          | Tables to be dropped listed before execution                                                                                                                                                        |
 
 **Never run against production.** PostgreSQL: use a dedicated development/CI database or a
 separate schema. SQLite: use a throw-away file (`/tmp/dev.db`).
 
 ```bash
-# SQLite
+# SQLite — step 1: preview and get a token
 DB_DIALECT=sqlite DB_PATH=./dev.db \
-  tsx packages/migrations/src/runner.ts reset --yes --env development
+  tsx packages/migrations/src/runner.ts reset --dry-run --env development \
+  --actor alice --backup-exempt "local dev db"
 
-# PostgreSQL
-DB_DIALECT=postgres DB_URL=postgresql://user:pass@host:5432/devdb \
-  tsx packages/migrations/src/runner.ts reset --yes --env development
+# SQLite — step 2: apply
+DB_DIALECT=sqlite DB_PATH=./dev.db \
+  tsx packages/migrations/src/runner.ts reset --apply --yes --confirmation <token> \
+  --env development --actor alice --backup-exempt "local dev db"
 
-# CI (APP_ENV is advisory; --env flag is required regardless)
+# PostgreSQL (host must be in MINICODER_ALLOWED_RESET_HOSTS, or pass --force-host)
+DB_DIALECT=postgres DB_URL=postgresql://user:pass@localhost:5432/devdb \
+  tsx packages/migrations/src/runner.ts reset --dry-run --env development \
+  --actor alice --backup-exempt "local dev db"
+DB_DIALECT=postgres DB_URL=postgresql://user:pass@localhost:5432/devdb \
+  tsx packages/migrations/src/runner.ts reset --apply --yes --confirmation <token> \
+  --env development --actor alice --backup-exempt "local dev db"
+
+# CI (APP_ENV is advisory; --env flag is required regardless; CI runners should set
+# APP_ENV=ci or NODE_ENV=ci rather than relying on --disposable-db)
 DB_DIALECT=sqlite DB_PATH=/tmp/ci.db \
-  tsx packages/migrations/src/runner.ts reset --yes --env ci
+  tsx packages/migrations/src/runner.ts reset --dry-run --env ci --actor ci-runner --backup-exempt "ephemeral CI db"
 ```
 
-Expected output: audit block, table list, "Dropped N owned tables", then migration output.
+Expected output: audit block (dry-run mode issues a confirmation token and exits without
+mutating), then on `--apply`: audit block, table list, "Dropped N owned tables", migration output.
 
 #### Procedure: Demo scenario
 
@@ -450,6 +493,34 @@ stack delivered in Phase 3. The stack definition is `infra/docker-compose.trigge
 | triggerdev-minio        | 0.5  | 512 MB | persistent volume     |
 | triggerdev-docker-proxy | 0.25 | 64 MB  | — (Docker socket ro)  |
 | triggerdev-supervisor   | 2.0  | 2 GB   | shared volume (token) |
+
+#### Image pinning (issue #16)
+
+`triggerdev-webapp`, `triggerdev-supervisor`, and `triggerdev-docker-proxy` are pinned to
+immutable SHA-256 digests, not mutable tags (`v4-beta`/`latest` could otherwise silently change
+between pulls, breaking reproducibility and creating a supply-chain risk). Each `image:` line
+carries a trailing comment with the human-readable tag it was captured from and the capture date.
+
+To re-pin deliberately (e.g. when upgrading Trigger.dev):
+
+```bash
+# Get an anonymous pull token and the manifest digest for a given image:tag
+TOKEN=$(curl -sS "https://ghcr.io/token?service=ghcr.io&scope=repository:triggerdotdev/trigger.dev:pull" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json" \
+  -I "https://ghcr.io/v2/triggerdotdev/trigger.dev/manifests/v4-beta" | grep docker-content-digest
+```
+
+(For Docker Hub images such as `tecnativa/docker-socket-proxy`, use
+`https://auth.docker.io/token?service=registry.docker.io&scope=repository:<repo>:pull` for the
+token and `https://registry-1.docker.io/v2/<repo>/manifests/<tag>` for the manifest request.)
+
+Update the `image:` line to `<repo>@sha256:<digest>`, keep the tag/date in the trailing comment,
+and validate with `docker compose -f infra/docker-compose.triggerdev.yml config` before committing.
+`triggerdev-webapp` and `triggerdev-supervisor` track the same Trigger.dev release channel and
+should be re-pinned together. `triggerdev-docker-proxy`'s `:latest` pin should be revisited once
+the project identifies a stable release tag to track instead.
 
 #### Required environment variables
 
@@ -531,6 +602,91 @@ branch and deploys to `staging` by default; `prod` requires a manual workflow di
 > the self-hosted Trigger.dev stack. For CI deployments either: (a) use a self-hosted runner
 > co-located with the stack, or (b) set `DEPLOY_REGISTRY_HOST` to an externally-reachable
 > registry URL in the environment's variable settings.
+
+#### CI Registry Setup (issue #18)
+
+`trigger-deploy.yml`'s `deploy-tasks` job needs a real, externally-reachable Docker registry when
+it runs on GitHub-hosted runners — `DEPLOY_REGISTRY_HOST` (the CLI's push target) and
+`DOCKER_REGISTRY_URL` (the supervisor's pull source, read from `infra/docker-compose.triggerdev.yml`'s
+env) must resolve to the **same** registry (CLAUDE.md's Trigger.dev Operational Constraints), and
+neither can default to `localhost:5000`/`triggerdev-registry:5000` once the CLI push and the
+supervisor pull happen from different network namespaces (a GitHub-hosted CI runner vs. wherever
+the compose stack's `triggerdev-registry`/`triggerdev-supervisor` containers actually run).
+
+**External registry vs. the bundled `triggerdev-registry` service — the actual decision:**
+`infra/docker-compose.triggerdev.yml`'s bundled `registry:2` container (service name
+`triggerdev-registry`) is the right default for local/single-node development, where the CLI push
+and the supervisor pull both happen on the same Docker host and can use the internal hostname
+`triggerdev-registry:5000` — no external registry is needed there. It stops being sufficient the
+moment CI (or any topology where the deploying CLI and the running supervisor are on different
+hosts/networks) enters the picture: a GitHub-hosted runner has no route to a bundled registry
+container running inside someone else's compose stack. In that case, both `DEPLOY_REGISTRY_HOST`
+and `DOCKER_REGISTRY_URL` must point at one externally-reachable registry instead — either a
+managed one (ghcr.io, Docker Hub) or a self-hosted one exposed on a public/VPN-reachable address.
+There is no in-between "half-bundled" option: pick one registry both the pusher and the puller can
+reach, and point both variables at it.
+
+**Required secrets/variables** (set as GitHub Actions repository or environment variables/secrets,
+consumed by `trigger-deploy.yml` and the `docker-compose.triggerdev.yml` stack the supervisor runs
+against):
+
+| Name                   | Kind     | Purpose                                                                                                             |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| `DEPLOY_REGISTRY_HOST` | Variable | Registry host:port the CLI pushes task images to                                                                    |
+| `DOCKER_REGISTRY_URL`  | Variable | Registry URL the supervisor pulls task images from — must match the above                                           |
+| `REGISTRY_USERNAME`    | Secret   | Registry auth (ghcr.io: a GitHub PAT or `GITHUB_TOKEN` with `write:packages`; Docker Hub: your Docker Hub username) |
+| `REGISTRY_PASSWORD`    | Secret   | Registry auth password/token paired with `REGISTRY_USERNAME`                                                        |
+| `TRIGGER_ACCESS_TOKEN` | Secret   | Trigger.dev API auth (already required, listed here for completeness)                                               |
+| `TRIGGER_API_URL`      | Variable | Trigger.dev API endpoint (already required)                                                                         |
+| `TRIGGER_PROJECT_REF`  | Variable | Trigger.dev project reference (already required)                                                                    |
+
+**Example: ghcr.io**
+
+```yaml
+env:
+  DEPLOY_REGISTRY_HOST: ghcr.io/<org>/<repo>-triggerdev
+  DOCKER_REGISTRY_URL: https://ghcr.io/<org>/<repo>-triggerdev
+```
+
+Authenticate the CLI's push step with `docker login ghcr.io -u <org> -p "$REGISTRY_PASSWORD"`
+before the deploy step (a GitHub Actions `GITHUB_TOKEN` with `packages: write` permission works for
+same-repo pushes; a cross-repo/PAT is required otherwise). The supervisor's pull-side
+authentication is a separate concern — configure `docker login` (or the registry's pull-credential
+mechanism) on whatever host runs `triggerdev-supervisor` before it needs to pull a newly deployed
+image.
+
+**Example: Docker Hub**
+
+```yaml
+env:
+  DEPLOY_REGISTRY_HOST: docker.io/<org>/minicoder-triggerdev
+  DOCKER_REGISTRY_URL: https://index.docker.io/v1/
+```
+
+Same pattern: `docker login -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"` before push; configure
+pull credentials on the supervisor's host separately.
+
+**Topology verification steps** (do this once when standing up a new CI registry configuration,
+and whenever `DEPLOY_REGISTRY_HOST`/`DOCKER_REGISTRY_URL` change):
+
+1. From the CI runner (or a shell with equivalent network access), confirm the registry resolves
+   and accepts the push credential: `docker login <registry-host>` followed by a test
+   `docker push` of any small image.
+2. From the host running `triggerdev-supervisor`, confirm it can reach and pull from the same
+   registry: `docker pull <registry-host>/<any-pushed-image>`.
+3. Confirm both variables name the **same host** — a mismatch (e.g. CI pushes to
+   `ghcr.io/org/repo` while the supervisor is still configured with the bundled
+   `triggerdev-registry:5000` default) is the most common failure mode, and looks like "deploy
+   succeeded" followed by the supervisor's runner containers failing to start with an
+   image-not-found error.
+4. Run `docker compose -f infra/docker-compose.triggerdev.yml config` to confirm the resolved
+   `DOCKER_REGISTRY_URL` value actually matches what was set, before relying on it in a live
+   deployment — this is the same syntax-validation substitute this repository already uses
+   elsewhere when no live Docker daemon is available to exercise the stack end-to-end.
+
+`trigger-deploy.yml`'s `validate-tasks` job now includes a registry-topology smoke-test step
+(below) that fails fast on a same-registry mismatch **before** the deploy job spends time pushing
+images against a configuration that would strand the supervisor.
 
 #### Procedure: Queue drain (CI / pre-deploy)
 
@@ -705,43 +861,42 @@ production/hosted deployments. Phase 13's Fastify orchestrator API mounts the sa
 
 #### Diagnostics and known failure modes
 
-| Symptom                                                         | Likely cause                                         | Resolution                                                                |
-| --------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| `minicoder github serve` exits immediately                      | `GITHUB_WEBHOOK_SECRET` unset                        | Set `GITHUB_WEBHOOK_SECRET` before starting                               |
-| Webhook returns `401`                                           | Signature mismatch (secret rotated or misconfigured) | Verify `GITHUB_WEBHOOK_SECRET` matches the GitHub App's configured secret |
-| Webhook returns `202 unlinked-repository`                       | No `repositories` row for the delivering repo        | Insert a `repositories` row linking `full_name` to the MiniCoder project  |
-| `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment         | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)      |
-| Feature run stuck, no `pull_requests` row                       | PR never opened/observed yet (still `code_pushed`)   | Not a bug — the scheduled fallback only reconciles PRs it already tracks  |
+| Symptom                                                         | Likely cause                                          | Resolution                                                                   |
+| --------------------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `minicoder github serve` exits immediately                      | `GITHUB_WEBHOOK_SECRET` unset                         | Set `GITHUB_WEBHOOK_SECRET` before starting                                  |
+| Webhook returns `401`                                           | Signature mismatch (secret rotated or misconfigured)  | Verify `GITHUB_WEBHOOK_SECRET` matches the GitHub App's configured secret    |
+| Webhook returns `202 unlinked-repository`                       | No `repositories` row for the delivering repo         | Insert a `repositories` row linking `full_name` to the MiniCoder project     |
+| `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment          | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)         |
+| Feature run stuck, no `pull_requests` row                       | PR never opened/observed yet, or a webhook was missed | Automated discovery (below) self-heals most cases on the next scheduled pass |
 
-#### Procedure: Recovering from a permanently-lost initial `pr.opened` webhook
+#### Procedure: Recovering from a permanently-lost initial `pr.opened` webhook (issue #35: automated, with manual fallback)
 
-The scheduled `github-reconciliation` fallback only re-checks feature runs that already have a
-`pull_requests` row (see the "Feature run stuck, no `pull_requests` row" diagnostic above, and the
-`GitHubClient.listPullRequestsForBranch`-scope note in `github-reconciliation.ts`'s JSDoc and
-docs/01 §5.7). If the _initial_ `pr.opened` webhook delivery for a feature run is permanently lost
-— not merely delayed — and the repository's GitHub App/webhook delivery history confirms it never
-arrived, there is currently no automated self-heal path. This is a narrower situation than a
-generic "reconciliation didn't run" symptom: the run is not diverging from a tracked PR, it simply
-has no tracked PR at all.
+**Closed by issue #35.** The scheduled `github-reconciliation` fallback previously only re-checked
+feature runs that already had a `pull_requests` row — a completely missed initial `pr.opened`
+webhook (the repo's GitHub App/webhook delivery history confirms it never arrived) had no automated
+self-heal path. `github-reconciliation.ts` now runs a `discoverMissingPullRequests()` pre-pass
+before its main reconcile loop: it scans `code_pushed` feature runs with no tracked
+`pull_requests` row, derives the branch MiniCoder's own coder adapter actually pushed to
+(`branchNameFor()` — the real runtime convention is `minicoder/<featureRunId>`, the opaque
+generated id, not the `minicoder/FR-<n>` form docs/00 §3.11 describes; this pre-existing doc/code
+mismatch predates issue #35 and remains unreconciled here), and calls the new
+`GitHubClient.listPullRequestsForBranch(owner, repo, branchName, 'open')`. A match dispatches
+`RecordPrOpenedCommand` to create the tracking row, which then flows into the same pass's normal
+reconcile loop. **Automated discovery is now primary** — it runs on every scheduled
+`github-reconciliation` invocation with no operator action required.
 
-**Detection**: a `minicoder/FR-*` branch has an open pull request on GitHub, but
-`SELECT * FROM pull_requests WHERE feature_run_id = '<id>'` returns no row, and the feature run's
-`feature_runs.current_execution_state` has remained at `code_pushed` (or `pr_opened`, if a
-different, still-tracked PR ever briefly matched) for longer than the branch/PR has visibly existed
-on GitHub. `minicoder state doctor`'s existing checks do not catch this specific case — none of its
-checks compare local `feature_runs` state against GitHub's actual PR list, only against already-
-tracked `pull_requests` rows — so this requires operator inspection (GitHub UI or `gh pr list`
-against the branch), not automated detection.
+**On-demand check**: `minicoder state doctor --check-github` (opt-in — the only `state doctor`
+check requiring a live `GITHUB_TOKEN`) runs `checkPrDiscoveryDivergence()` directly, without
+waiting for the next scheduled `github-reconciliation` run, and reports any `code_pushed` feature
+run whose branch already has an open PR on GitHub as a `pr_discovery_divergence` warning (not an
+error — the scheduled task will normally clear it on its own).
 
-**Recovery (interim, manual)**: no Orchestrator API command for this exists — it requires the
-still-unbuilt `GitHubClient.listPullRequestsForBranch`-style discovery method (deferred to a future
-phase; not added in Phase 13, see the "Alternatives considered and deferred" note below) — and
-`minicoder github simulate-pr-opened` is a dev/test/CI-only command —
-it calls `guardEnv()`, which hard-rejects when `APP_ENV`/`NODE_ENV` is `production` regardless of
-any `--env` flag (see CLAUDE.md's dev/test-only command safety guards), so it cannot be used to
-repair a production deployment. The only currently-available production-safe recovery is a direct,
-careful manual insert into `pull_requests` via `minicoder db` tooling (or an equivalent scoped SQL
-client under the same access controls), using the real values from the GitHub PR:
+**Manual fallback (only if automated discovery cannot reach the candidate)** — e.g.
+`listPullRequestsForBranch` fails repeatedly (rate limiting, a credential issue), or the candidate
+genuinely isn't at `code_pushed` yet: the interim manual procedure below remains available.
+`minicoder github simulate-pr-opened` is a dev/test/CI-only command (`guardEnv()` hard-rejects
+`production` regardless of `--env`), so it cannot repair a production deployment — the manual
+insert is the production-safe fallback:
 
 1. Confirm the real PR's `pr_number`, `head.ref` (→ `branch_name`), `base.ref` (→ `base_branch`),
    and `head.sha` (→ `head_sha`) from the GitHub UI or `gh pr view <number> --json number,headRefName,baseRefName,headRefOid`.
@@ -775,32 +930,8 @@ client under the same access controls), using the real values from the GitHub PR
    ordinary `reconcileGithubState()` path — this manual insert only creates the tracking row, it
    never substitutes for a real reconciliation pass.
 
-This is documented as an interim, manual operator procedure, not a polished feature. Building a
-`GitHubClient.listPullRequestsForBranch`-style discovery method (so the scheduled fallback could
-find a never-tracked PR on its own and eliminate the need for step 1–3 above) remains explicitly
-out of scope here — it is a larger, separate capability than this runbook gap warrants and is
-already called out as unbuilt in the code's own comments.
-
-**Alternatives considered and deferred (reaffirmed, round 8):** automated discovery for this gap
-has been raised across multiple review rounds; the decision to defer it stands, for these reasons:
-
-- **`GitHubClient.listPullRequestsForBranch`-style discovery** — the most direct fix, but a
-  genuinely new capability (a paginated GitHub API surface plus a scheduled-task call site), not a
-  bug fix to the existing reconciliation path; still deferred to a future phase (Phase 13 built the
-  Orchestrator API's read/command/webhook surface but did not add this GitHub discovery method).
-- **A `state doctor` check** — not currently feasible without giving the CLI a live GitHub
-  credential and making a per-run API call; none of `state doctor`'s existing checks call out to
-  GitHub today, they only compare already-persisted local tables against each other.
-- **An alerting mechanism** — would need a staleness heuristic (how long is "stuck too long" for a
-  branch that might legitimately sit at `code_pushed` for a while) and a notification channel,
-  neither of which exists in the current operational tooling.
-- **A guarded repair command** — closest in spirit to the manual SQL insert above, but formalizing
-  it as a `minicoder`/Orchestrator-API command depends on the same discovery method above and
-  remains deferred to a future phase alongside it.
-
-This is Medium-severity operational-completeness scope, not a correctness bug: reconciliation
-behaves correctly for every PR it knows about, and the manual runbook above (introduced in round 6,
-corrected in round 7) is the accepted interim mitigation until one of the above is built.
+This manual path is now the exception, not the norm: automated discovery (above) handles the
+common case of a missed `pr.opened` webhook without any operator involvement.
 
 ### Phase 8 — Execution Orchestrator Runbook
 
@@ -1154,7 +1285,7 @@ minicoder state doctor
 minicoder state doctor --project proj-1
 ```
 
-The doctor runs 5 checks:
+The doctor runs 6 checks:
 
 | Check                 | Severity | Auto-clearable      |
 | --------------------- | -------- | ------------------- |
@@ -1163,6 +1294,14 @@ The doctor runs 5 checks:
 | `stuck_inbox`         | error    | yes                 |
 | `orphaned_runs`       | error    | manually repairable |
 | `triggerdev_mismatch` | warning  | no (future phase)   |
+| `skipped_dependency`  | error    | manually repairable |
+
+`skipped_dependency` (issue #52) flags a feature run at `approved_pending_execution` whose
+`feature_dependencies` target has been transitioned to `skipped` — a state that can never satisfy
+the "merged" dependency guard. `SkipFeatureHandler` proactively transitions any such dependent to
+`blocked` at skip time (a new `approved_pending_execution -> blocked` matrix row), so this check
+exists mainly as defense-in-depth for cases that predate that fix, surfaced via `blocked`
+diagnostics going forward instead.
 
 Exits with code 1 if any error-severity issues are found.
 
@@ -1310,26 +1449,88 @@ successfully. If the transaction fails, the token is preserved and the command c
 
 #### §12.13 Known dev-only audit advisories — accepted risk
 
-Two known advisories affect the dev toolchain but are not exploitable in this project:
+`vitest`/`@vitest/coverage-v8` were upgraded from `^1.6.0` to `^3.2.6` (issue #22), which resolves
+the previously-accepted **critical** vitest advisory (GHSA-5xrq-8626-4rwp) outright — vitest 3.2.6
+no longer reports it. One advisory remains, transitively pulled in via vitest 3.2.6's bundled vite
+5.4.x, and is still accepted as non-exploitable in this project:
 
-| Advisory                       | Package  | Patched at | Why not exploitable here                                                         |
-| ------------------------------ | -------- | ---------- | -------------------------------------------------------------------------------- |
-| GHSA-5xrq-8626-4rwp (critical) | `vitest` | ≥3.2.6     | Exploits the Vitest UI server (`--ui`); this project never starts the UI server  |
-| GHSA-fx2h-pf6j-xcff (high)     | `vite`   | ≥6.4.3     | `server.fs.deny` bypass via Windows alternate paths; CI and production run Linux |
+| Advisory                   | Package | Patched at | Why not exploitable here                                                         |
+| -------------------------- | ------- | ---------- | -------------------------------------------------------------------------------- |
+| GHSA-fx2h-pf6j-xcff (high) | `vite`  | ≥6.4.3     | `server.fs.deny` bypass via Windows alternate paths; CI and production run Linux |
 
-CI enforces `pnpm audit --prod --audit-level=high`, which passes cleanly. Production runtime
-dependencies are covered by `pnpm.overrides` in `package.json`. The full `pnpm audit
---audit-level=high` will report these advisories locally — that is expected and documented here.
+Fully resolving this one would require vitest 4.x (which bundles a vite major satisfying the
+patched range) — a further major-version jump than issue #22 called for (`≥3.2.6`), deferred as a
+separate, deliberate future upgrade rather than bundled into this one, since vitest 4's peer
+requirements (`vite ^6 || ^7 || ^8`) and config-schema changes weren't validated in this pass.
 
-Fixing them requires upgrading to vitest ≥3.2.6 (major version jump from 1.6.x). The upgrade is
-deferred until the API surface can be validated against the full test suite.
+CI enforces `pnpm audit --prod --audit-level=high`, which passes cleanly (`1 low | 5 moderate`, all
+below the `high` gate). Production runtime dependencies are covered by `pnpm.overrides` in
+`package.json`. The full `pnpm audit --audit-level=high` will still report the one remaining vite
+advisory locally — that is expected and documented here.
 
 #### §12.14 `minicoder test unit` — scope
 
-`minicoder test unit` runs all Vitest test files except `*.integration.test.ts`. This includes
-pure unit tests and the `packages/testing/src/testing.test.ts` scenario/fixture suite.
-It is **not** limited to pure unit tests — the command name reflects the non-integration
-Vitest tier, distinct from `test integration` (real-DB files) and `test system` (CLI scenarios).
+`minicoder test unit` (`vitest.unit.config.ts`) runs all Vitest test files except
+`*.integration.test.ts` **and** everything under `packages/testing/src/**` (issue #23). The
+latter exclusion is deliberate: that directory holds scenario/fixture tests
+(`runAllScenarios()`-style system scenarios, Postgres-gated integration suites, multi-package
+test-DB fixtures) rather than pure domain-logic unit tests, and excluding the whole directory
+(rather than an allowlist of specific non-scenario files in it) is the least brittle option — no
+list to keep in sync as new scenario files are added. Scenario coverage remains fully reachable
+via `minicoder test system` (`runAllScenarios()`, independent of this Vitest config entirely) and
+via `pnpm test`/CI, which run the root `vitest.config.ts` and are unaffected by this exclusion.
+`test unit` is now scoped to what its name promises: pure unit tests, distinct from
+`test integration` (real-DB `*.integration.test.ts` files) and `test system` (CLI scenarios).
+
+#### §12.15 Concurrency scenario tier (issue #43) — PostgreSQL-only, by design
+
+`packages/testing/src/execution-orchestrator-concurrency.postgres.test.ts` adds a new test tier:
+genuinely concurrent (`Promise.all`-driven, not sequential) multi-actor scenarios exercising
+`start-next-feature`, `github-reconciliation`, and an operator `PauseAutomationCommand` against
+the same project simultaneously, asserting the single-active-feature and no-lost-transition
+invariants documented in CLAUDE.md's Execution Orchestrator Operational Constraints.
+
+This tier is **PostgreSQL-only**, gated by `MINICODER_TEST_PG_URL` (same gate as
+`runner.postgres.test.ts`/`registry.postgres.test.ts`), not a SQLite scenario under
+`packages/testing/src/*.test.ts`. This is a deliberate architectural finding, not a convenience
+choice: `better-sqlite3` is a fully synchronous native binding running on Node's single thread, so
+two `SqliteDbClient` connections to the same file cannot genuinely race — whichever connection's
+blocking write call runs first monopolizes the only thread until it returns, so an overlapping
+write from a second connection either never actually overlaps (no real race exercised) or
+deadlocks against `busy_timeout` (the first connection can never reach `COMMIT` while the second's
+synchronous busy-wait is blocking the only thread that could run it). A multi-connection
+same-file SQLite version of this exact scenario was built and empirically deadlocked on
+"database is locked" every iteration before this Postgres-gated version replaced it. PostgreSQL's
+client-server architecture has no such limitation — each `pg.Pool` connection is a genuinely
+independent backend process, so concurrent transactions here exercise real overlapping writes the
+way a production hosted/team deployment actually would. Locally, with no `MINICODER_TEST_PG_URL`
+set, this suite reports as skipped (same posture as the other Postgres-gated suites) — it runs for
+real in CI's postgres job.
+
+**Issue #41** adds a second suite in the same tier,
+`packages/testing/src/phase8-concurrency-guards.postgres.test.ts`, covering the specific Phase 8
+concurrency guards CLAUDE.md's Execution Orchestrator Operational Constraints document, each
+proven against real concurrent PostgreSQL connections rather than sequential re-dispatch: (1)
+`SelectFeatureHandler`'s `workflow_states.active_feature_run_id` compare-and-swap (exactly one of
+two concurrent `SelectFeatureCommand`s wins, the other gets `feature-already-active`); (2)
+`StartCodingHandler`'s atomic `automation_state = 'running'` re-check racing a concurrent
+`PauseAutomationCommand` (the two outcomes — coding started under `running`, or coding rejected
+with `automation-paused` — are proven mutually exclusive and exhaustive, never both "winning"); (3)
+the `idempotency_keys` claim-first `INSERT ... ON CONFLICT DO NOTHING` (two concurrent dispatches
+of the identical command + idempotency key produce exactly one `workflow_events` row, with the
+loser transparently returning the winner's cached `CommandResult`); (4) `WorkflowLockManager`'s
+fence-token compare-and-swap (exactly one of two concurrent `acquire()` calls for the same lock
+resource wins, and the fence strictly increases across a release/re-acquire cycle).
+
+**Issue #57** adds a third suite in this tier, `packages/api/src/route-idempotency.postgres.test.ts`,
+covering the route-level (`packages/api/src/route-idempotency.ts`) claim-first idempotency
+against a real PostgreSQL `idempotency_keys` table: a claim → fulfill → reclaim round-trip through
+a live `result JSONB` column (proving `parseJsonField()`'s auto-parsed-object handling actually
+works against Postgres, not just a mocked query shape — the existing
+`route-idempotency.test.ts` unit tests only mock this); a release-then-retry re-claim; and a real
+concurrent-claim race (two `Promise.all`-driven claims for the same key) resolving to exactly one
+`owned` outcome, the other `in-progress`. Reverting `claimRouteIdempotencyKey`'s `parseJsonField()`
+call back to a bare `JSON.parse()` reproduces a real `TypeError` in the round-trip test.
 
 #### SQLite test teardown — do not call `db.close()`
 

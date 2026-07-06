@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["**"]
 
+# Least-privilege default: no job needs to write to the repo, open PRs, or otherwise mutate
+# GitHub state. Individual jobs may narrow further but none should need to widen this.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
@@ -165,6 +170,11 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
+    # This job never pushes commits, comments, or otherwise mutates GitHub state, and forked-repo
+    # pull requests never receive repository secrets under the default GITHUB_TOKEN permissions
+    # model for `pull_request`-triggered workflows — no `pull_request_target` is used here.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -177,15 +187,36 @@ jobs:
           node-version: "20"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - name: Dependency audit
-        # --prod: vitest/vite carry known dev-only advisories (critical/high) that do not affect
-        # runtime. Production transitive deps (systeminformation, ws) are patched via
-        # pnpm.overrides in package.json.
+      - name: Dependency audit (pnpm audit)
+        # --prod: vite (bundled by vitest) carries one known dev-only high advisory (Windows-only
+        # path traversal; irrelevant on this Linux runner and in production) that does not affect
+        # runtime — see docs/04 §12.13. Production transitive deps (systeminformation, ws) are
+        # patched via pnpm.overrides in package.json. Reproduce locally:
+        # `pnpm audit --prod --audit-level=high`.
         run: pnpm audit --prod --audit-level=high
-      - name: TruffleHog secret scan
-        uses: trufflesecurity/trufflehog@f1ba218abb93e405a01d7f5ee6b4b529ba3a2a3b # v3.82.6
+      - name: Dependency audit (OSV Scanner)
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
-          path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
-          extra_args: --only-verified
+          scan-args: |-
+            --lockfile=pnpm-lock.yaml
+            --recursive
+      - name: Secret scan (gitleaks)
+        # Reproduce locally: `docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 detect
+        # --source /repo --redact -v`. Suppressions require an inline .gitleaksignore entry with a
+        # commit-linked rationale, never a blanket rule disable.
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+      - name: SAST (semgrep)
+        # Pinned tool version (image digest) with named, TS/Node.js-appropriate registry rule
+        # packs. Reproduce locally: `docker run --rm -v "$PWD:/src" -w /src
+        # semgrep/semgrep@sha256:ae27024c16f7848cdbfd49c24ed0b78b13f13b85fcd7b87c679aaa8b0c0dce98
+        # semgrep scan --config p/security-audit --config p/typescript --error --metrics=off .`
+        # False positives are suppressed with an inline `// nosemgrep: <rule-id> -- <reason>`
+        # comment, never a blanket rule/path exclusion, so every suppression is reviewed in the PR
+        # diff that introduces it.
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            semgrep/semgrep@sha256:ae27024c16f7848cdbfd49c24ed0b78b13f13b85fcd7b87c679aaa8b0c0dce98 \
+            semgrep scan --config p/security-audit --config p/typescript --error --metrics=off .

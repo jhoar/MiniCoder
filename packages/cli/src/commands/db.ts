@@ -58,27 +58,68 @@ export function createDbCommand(): Command {
     .action(() => runMigrationCommand('validate'));
 
   db.command('reset')
-    .description('Drop all owned tables and re-apply migrations (destructive, dev/CI only)')
-    .option('--yes', 'Confirm the destructive reset operation')
+    .description(
+      'Drop all owned tables and re-apply migrations (destructive, dev/CI only). ' +
+        'Two-step: run --dry-run first to get a confirmation token, then --apply --confirmation <token>.',
+    )
+    .option('--yes', 'Confirm the destructive reset operation (required with --apply)')
     .option('--env <environment>', 'Target environment — must be development, test, or ci')
-    .action((opts: { yes?: boolean; env?: string }) => {
-      if (!opts.yes) {
-        console.error(
-          'Error: --yes and --env <environment> flags are required.\n' +
-            'Example: minicoder db reset --yes --env development',
-        );
-        process.exit(1);
-      }
-      if (!opts.env) {
-        console.error(
-          'Error: --env <environment> is required.\n' +
-            'Example: minicoder db reset --yes --env development\n' +
-            'Permitted values: development, test, ci',
-        );
-        process.exit(1);
-      }
-      runMigrationCommand('reset', ['--yes', '--env', opts.env]);
-    });
+    .option('--dry-run', 'Preview the reset and issue a single-use confirmation token')
+    .option('--apply', 'Perform the reset (requires --confirmation from a prior --dry-run)')
+    .option('--confirmation <token>', 'Confirmation token issued by --dry-run')
+    .option('--actor <name>', 'Who is authorizing this destructive action (required)')
+    .option('--backup-verified', 'Confirm a backup was taken before reset')
+    .option('--backup-exempt <reason>', 'Document why no backup is needed instead of verifying one')
+    .option(
+      '--disposable-db',
+      'Acknowledge this is a known disposable target when APP_ENV/NODE_ENV is unset',
+    )
+    .option('--force-host', 'Explicitly override the PostgreSQL reset-target host allowlist')
+    .action(
+      (opts: {
+        yes?: boolean;
+        env?: string;
+        dryRun?: boolean;
+        apply?: boolean;
+        confirmation?: string;
+        actor?: string;
+        backupVerified?: boolean;
+        backupExempt?: string;
+        disposableDb?: boolean;
+        forceHost?: boolean;
+      }) => {
+        if (!opts.env) {
+          console.error(
+            'Error: --env <environment> is required.\n' +
+              'Example: minicoder db reset --dry-run --env development --actor <name> --backup-exempt "local dev"\n' +
+              'Permitted values: development, test, ci',
+          );
+          process.exit(1);
+        }
+        if (!opts.actor) {
+          console.error('Error: --actor <name> is required.');
+          process.exit(1);
+        }
+        if (!opts.dryRun && !opts.apply) {
+          console.error('Error: pass either --dry-run or --apply --confirmation <token>.');
+          process.exit(1);
+        }
+        if (opts.apply && !opts.yes) {
+          console.error('Error: --apply requires --yes.');
+          process.exit(1);
+        }
+        const extraArgs = ['--env', opts.env, '--actor', opts.actor];
+        if (opts.yes) extraArgs.push('--yes');
+        if (opts.dryRun) extraArgs.push('--dry-run');
+        if (opts.apply) extraArgs.push('--apply');
+        if (opts.confirmation) extraArgs.push('--confirmation', opts.confirmation);
+        if (opts.backupVerified) extraArgs.push('--backup-verified');
+        if (opts.backupExempt) extraArgs.push('--backup-exempt', opts.backupExempt);
+        if (opts.disposableDb) extraArgs.push('--disposable-db');
+        if (opts.forceHost) extraArgs.push('--force-host');
+        runMigrationCommand('reset', extraArgs);
+      },
+    );
 
   db.command('seed')
     .description('Insert fixture data into the database (dev/CI only, SQLite only)')

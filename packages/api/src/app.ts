@@ -13,6 +13,7 @@ import {
   registerMergeIfReadyRoute,
   type GithubClientFactory,
 } from './commands/merge-if-ready-route.js';
+import { registerFinalizeIfGithubMergedRoute } from './commands/finalize-if-github-merged-route.js';
 import {
   registerTaskTriggerRoutes,
   unconfiguredTaskTriggerClient,
@@ -46,6 +47,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   const registry = buildCommandRegistry();
   registerGenericDispatchRoute(app, { db: opts.db, registry });
   registerMergeIfReadyRoute(app, { db: opts.db, githubClientFactory: opts.githubClientFactory });
+  registerFinalizeIfGithubMergedRoute(app, {
+    db: opts.db,
+    githubClientFactory: opts.githubClientFactory,
+  });
   registerTaskTriggerRoutes(app, {
     taskTriggerClient: opts.taskTriggerClient ?? unconfiguredTaskTriggerClient(),
   });

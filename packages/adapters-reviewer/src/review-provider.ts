@@ -34,6 +34,12 @@ export interface ReviewResult {
   readonly decision: 'approved' | 'changes_requested';
   readonly findings: readonly ReviewFindingRaw[];
   readonly tokensUsed?: { readonly input: number; readonly output: number };
+  /** The exact assembled prompt/request sent to the LLM provider (issue #49 — audit provenance:
+   * if a review's findings are later disputed, this lets an operator reconstruct exactly what the
+   * reviewer was shown). Structured, not a raw string, so the caller's existing
+   * `SecretRedactor.redactObject()` pass can scrub it the same way every other persisted
+   * input/output is scrubbed. */
+  readonly promptSnapshot?: unknown;
 }
 
 export interface ReviewProvider {

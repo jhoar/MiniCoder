@@ -115,6 +115,31 @@ Planner work is performed through `PlannerAgentAdapter`. Implementations include
 `MockPlannerAdapter`, `GenericLLMPlannerAdapter`, and a human planner via `HumanAgentAdapter`. The
 planner adapter produces structured output, not final runtime state.
 
+**`GenericLLMPlannerAdapter` (issue #32, `packages/adapters-planner`)** is the delivered reference
+implementation, mirroring `packages/adapters-reviewer`'s shape exactly: a sandbox-free adapter
+calling a single injected `PlanProvider` seam (`HttpPlanProvider`, a plain-`fetch`
+OpenAI-compatible client — no vendor SDK). `PlannerAgentAdapter` has three methods:
+
+- `run(input)` — the original readiness-assessment contract (Phase 6).
+- `generatePlanSections(input)` — additive (issue #32): generates `{title, summary?, sections}`
+  from a specification, matching `GenerateImplementationPlanHandler`'s existing payload shape so a
+  caller can pass the output straight through.
+- `generateFeatureBacklog(input)` — additive (issue #32): generates a `GeneratedFeature[]` list
+  from plan sections, matching `GenerateFeatureBacklogPayload.features`'s `FeatureInputSchema`
+  shape exactly.
+
+Both new methods are additive to the interface; `GenerateImplementationPlanHandler`/
+`GenerateFeatureBacklogHandler` themselves are unchanged and still accept caller-supplied
+plan/feature content directly (docs/06 Phase 6) — a caller now has the _option_ of first calling
+the adapter to generate that content, rather than being required to invent it ad hoc, but nothing
+about the handlers' own contracts changed.
+
+`packages/triggerdev/src/triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` constructs a real
+`GenericLLMPlannerAdapter` from the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL`
+env vars the Coder/Reviewer default resolvers already read (async, dynamic `import()`, same
+pattern) — a live `planning-readiness-assessment` deployment no longer fails fast with "no planner
+adapter configured."
+
 ## 8. Output Records
 
 The planner writes `specification_inputs`, `planning_readiness_assessments`, `planning_gaps`,
@@ -150,6 +175,29 @@ feature request into the execution lifecycle at `approved_pending_execution` (gl
 `plan.md` and `backlog.md` are generated from the database. Imports must follow:
 parse → validate → preview → approve → transactional database import. No runtime logic reads
 `backlog.md` as a source of truth.
+
+**`backlog.md` parser (issue #33):** `parseBacklogMarkdown()` (`@minicoder/core`) implements the
+"parse" step for `backlog.md`, converting `ExportBacklogHandler`'s Markdown output back into
+`ImportBacklogPayload.features`. It is a pure function — no DB access — matching the principle
+above: the parser turns a Markdown _snapshot_ into the same structured shape a caller could have
+hand-built, it never becomes a runtime source of truth. `minicoder plan import-backlog <file>`
+(`packages/cli/src/commands/plan.ts`) wires it end to end: read file → `parseBacklogMarkdown()` →
+dispatch `ImportBacklogCommand` (supports `--dry-run` for the preview step).
+
+The current `backlog.md` format (`ExportBacklogHandler`) is constrained — it emits only `fr_id`,
+`title`, `Kind:`, and a free-text description per feature section; it does **not** emit
+`priority` or dependency edges. Consequently:
+
+- **`priority` is reconstructed from each feature's position in the document** (0-based, matching
+  the `ORDER BY priority ASC, fr_id ASC` the export query already uses), not from the original
+  numeric value. A round trip preserves relative ordering, not the original priority numbers.
+- **`dependsOnFrIds` is always empty** on import — the format has no section to carry dependency
+  information in a re-imported backlog.
+
+Malformed input (a missing `# Feature Backlog` heading, no feature sections, a duplicate `fr_id`,
+a missing/invalid `Kind:` line, or an empty description) throws `BacklogParseError` with a 1-based
+line number, so `minicoder plan import-backlog` fails fast with an actionable message rather than
+importing a partial or incorrect backlog.
 
 ## 12. Testability
 

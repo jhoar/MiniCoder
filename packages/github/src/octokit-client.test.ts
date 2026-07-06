@@ -324,16 +324,18 @@ describe('deriveCiStatus (HIGH-4 conclusion classification)', () => {
 });
 
 /**
- * HIGH-4 code-review fix: GitHub's REST API has no "conversations resolved" flag; getPullRequest
- * now reports a fail-closed `false` placeholder instead of hardcoding `true`.
+ * Issue #36: GitHub's REST API has no "conversations resolved" flag at all — only GraphQL's
+ * `reviewThreads.nodes[].isResolved` exposes it. `getPullRequest` now queries it for real via
+ * `octokit.graphql`, paginating all review threads and reporting `true` only when every thread
+ * is resolved (vacuously `true` for zero threads — nothing unresolved to block on).
  */
-describe('OctokitGitHubClient.getPullRequest (HIGH-4 conversationsResolved placeholder)', () => {
+describe('OctokitGitHubClient.getPullRequest (issue #36 conversationsResolved via GraphQL)', () => {
   afterEach(() => {
     vi.doUnmock('@octokit/rest');
     vi.resetModules();
   });
 
-  it('reports conversationsResolved: false (conservative placeholder, not a real observation)', async () => {
+  async function buildClient(graphqlImpl: (...args: unknown[]) => Promise<unknown>) {
     const pullsGet = vi.fn().mockResolvedValue({
       data: {
         number: 7,
@@ -348,12 +350,11 @@ describe('OctokitGitHubClient.getPullRequest (HIGH-4 conversationsResolved place
         closed_at: null,
       },
     });
-    const listReviews = vi.fn().mockResolvedValue({ data: [] });
-    const listForRef = vi.fn().mockResolvedValue({ data: { check_runs: [] } });
+    const listReviews = vi.fn();
+    const listForRef = vi.fn();
     const getCombinedStatusForRef = vi
       .fn()
       .mockResolvedValue({ data: { state: 'pending', total_count: 0 } });
-    // HIGH-2: getPullRequest now calls octokit.paginate for both listReviews/checks.listForRef.
     const paginate = vi.fn().mockImplementation(async (method: unknown) => {
       if (method === listReviews) return [];
       if (method === listForRef) return [];
@@ -366,6 +367,7 @@ describe('OctokitGitHubClient.getPullRequest (HIGH-4 conversationsResolved place
         checks: { listForRef },
         repos: { getCombinedStatusForRef },
         paginate,
+        graphql: graphqlImpl,
       })),
     }));
     // vi.doMock is not hoisted: the module registry must be reset so the dynamic import below
@@ -374,9 +376,74 @@ describe('OctokitGitHubClient.getPullRequest (HIGH-4 conversationsResolved place
     vi.resetModules();
 
     const { OctokitGitHubClient } = await import('./octokit-client.js');
-    const client = new OctokitGitHubClient({ auth: 'token' });
-    const observed = await client.getPullRequest('acme', 'widgets', 7);
+    return new OctokitGitHubClient({ auth: 'token' });
+  }
 
+  function threadsPage(
+    nodes: Array<{ isResolved: boolean }>,
+    pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
+      hasNextPage: false,
+      endCursor: null,
+    },
+  ) {
+    return { repository: { pullRequest: { reviewThreads: { nodes, pageInfo } } } };
+  }
+
+  it('reports true when all review threads are resolved', async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(threadsPage([{ isResolved: true }, { isResolved: true }]));
+    const client = await buildClient(graphql);
+    const observed = await client.getPullRequest('acme', 'widgets', 7);
+    expect(observed?.conversationsResolved).toBe(true);
+  });
+
+  it('reports false when at least one review thread is unresolved', async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(threadsPage([{ isResolved: true }, { isResolved: false }]));
+    const client = await buildClient(graphql);
+    const observed = await client.getPullRequest('acme', 'widgets', 7);
+    expect(observed?.conversationsResolved).toBe(false);
+  });
+
+  it('reports true (vacuously) when there are zero review threads', async () => {
+    const graphql = vi.fn().mockResolvedValue(threadsPage([]));
+    const client = await buildClient(graphql);
+    const observed = await client.getPullRequest('acme', 'widgets', 7);
+    expect(observed?.conversationsResolved).toBe(true);
+  });
+
+  it('paginates across multiple pages and reports true only if every page is fully resolved', async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        threadsPage([{ isResolved: true }], { hasNextPage: true, endCursor: 'cursor-1' }),
+      )
+      .mockResolvedValueOnce(threadsPage([{ isResolved: true }]));
+    const client = await buildClient(graphql);
+    const observed = await client.getPullRequest('acme', 'widgets', 7);
+    expect(observed?.conversationsResolved).toBe(true);
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(graphql.mock.calls[1]?.[1]).toMatchObject({ cursor: 'cursor-1' });
+  });
+
+  it('stops paginating early once an unresolved thread is found on page 1', async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        threadsPage([{ isResolved: false }], { hasNextPage: true, endCursor: 'cursor-1' }),
+      );
+    const client = await buildClient(graphql);
+    const observed = await client.getPullRequest('acme', 'widgets', 7);
+    expect(observed?.conversationsResolved).toBe(false);
+    expect(graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to false when the GraphQL call fails, without throwing', async () => {
+    const graphql = vi.fn().mockRejectedValue(new Error('GraphQL rate limited'));
+    const client = await buildClient(graphql);
+    const observed = await client.getPullRequest('acme', 'widgets', 7);
     expect(observed?.conversationsResolved).toBe(false);
   });
 });

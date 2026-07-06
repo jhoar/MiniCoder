@@ -138,7 +138,7 @@ describe('Migration runner (SQLite)', () => {
 
   it('rollback removes the last migration and its record', () => {
     const count = applyMigrations(db);
-    expect(getExistingTables(db).length).toBe(48);
+    expect(getExistingTables(db).length).toBe(50);
 
     const rolled = rollbackLast(db);
     expect(rolled).not.toBeNull();
@@ -402,8 +402,8 @@ describe('SqliteDbClient.transaction()', () => {
 });
 
 describe('EXPECTED_TABLES list', () => {
-  it('contains 48 tables', () => {
-    expect(EXPECTED_TABLES.length).toBe(48);
+  it('contains 49 tables', () => {
+    expect(EXPECTED_TABLES.length).toBe(50);
   });
 
   it('includes all core workflow tables', () => {
@@ -436,92 +436,331 @@ function runRunner(
 
 describe('Reset safety guards', () => {
   let tmpDb: string;
+  let tmpHome: string;
 
+  // The reset guard's confirmation-token file lives under os.homedir()/.minicoder — point HOME at
+  // a fresh per-test directory so tests don't collide with each other or a real operator's token.
   beforeEach(() => {
-    tmpDb = path.join(os.tmpdir(), `minicoder-reset-guard-${Date.now()}.db`);
+    tmpDb = path.join(os.tmpdir(), `minicoder-reset-guard-${Date.now()}-${Math.random()}.db`);
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'minicoder-reset-home-'));
   });
 
   afterEach(() => {
     if (fs.existsSync(tmpDb)) fs.unlinkSync(tmpDb);
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
+  const baseSqliteEnv = () => ({
+    DB_DIALECT: 'sqlite',
+    DB_PATH: tmpDb,
+    HOME: tmpHome,
+    APP_ENV: 'development',
+  });
+
+  function dryRun(extra: string[] = [], env: Record<string, string | undefined> = {}) {
+    return runRunner(
+      [
+        'reset',
+        '--dry-run',
+        '--env',
+        'development',
+        '--actor',
+        'test-operator',
+        '--backup-exempt',
+        'disposable test db',
+        ...extra,
+      ],
+      { ...baseSqliteEnv(), ...env },
+    );
+  }
+
+  function extractToken(stdout: string | Buffer | null): string {
+    const text = stdout == null ? '' : stdout.toString();
+    const m = text.match(/Confirmation token: (\S+)/);
+    const token = m?.[1];
+    if (!token) throw new Error(`no confirmation token found in stdout: ${text}`);
+    return token;
+  }
+
   it('blocks reset when APP_ENV=production regardless of --env flag', () => {
-    const result = runRunner(['reset', '--yes', '--env', 'development'], {
-      DB_DIALECT: 'sqlite',
-      DB_PATH: tmpDb,
-      APP_ENV: 'production',
-    });
+    const result = dryRun([], { APP_ENV: 'production' });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/production/);
   });
 
   it('does NOT create the SQLite file when the system-env guard blocks reset', () => {
     expect(fs.existsSync(tmpDb)).toBe(false);
-    runRunner(['reset', '--yes', '--env', 'development'], {
-      DB_DIALECT: 'sqlite',
-      DB_PATH: tmpDb,
-      APP_ENV: 'production',
-    });
+    dryRun([], { APP_ENV: 'production' });
     expect(fs.existsSync(tmpDb)).toBe(false);
   });
 
   it('blocks reset when --env flag is missing', () => {
-    const result = runRunner(['reset', '--yes'], {
-      DB_DIALECT: 'sqlite',
-      DB_PATH: tmpDb,
+    const result = runRunner(['reset', '--dry-run', '--actor', 'x', '--backup-exempt', 'y'], {
+      ...baseSqliteEnv(),
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--env/);
   });
 
   it('blocks reset when --env value is not an allowed environment', () => {
-    const result = runRunner(['reset', '--yes', '--env', 'staging'], {
-      DB_DIALECT: 'sqlite',
-      DB_PATH: tmpDb,
-    });
+    const result = runRunner(
+      ['reset', '--dry-run', '--env', 'staging', '--actor', 'x', '--backup-exempt', 'y'],
+      { ...baseSqliteEnv() },
+    );
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/staging/);
   });
 
-  it('blocks reset when --yes is missing', () => {
-    const result = runRunner(['reset', '--env', 'development'], {
-      DB_DIALECT: 'sqlite',
-      DB_PATH: tmpDb,
+  it('blocks reset when --env does not match a known system environment', () => {
+    const result = runRunner(
+      ['reset', '--dry-run', '--env', 'test', '--actor', 'x', '--backup-exempt', 'y'],
+      { ...baseSqliteEnv(), APP_ENV: 'development' },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/does not match/);
+  });
+
+  it('blocks reset when APP_ENV/NODE_ENV are unset and --disposable-db is not passed', () => {
+    const result = runRunner(
+      ['reset', '--dry-run', '--env', 'development', '--actor', 'x', '--backup-exempt', 'y'],
+      {
+        DB_DIALECT: 'sqlite',
+        DB_PATH: tmpDb,
+        HOME: tmpHome,
+        APP_ENV: undefined,
+        NODE_ENV: undefined,
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/disposable-db/);
+  });
+
+  it('allows reset when APP_ENV/NODE_ENV are unset and --disposable-db is passed', () => {
+    const result = runRunner(
+      [
+        'reset',
+        '--dry-run',
+        '--env',
+        'development',
+        '--actor',
+        'x',
+        '--backup-exempt',
+        'y',
+        '--disposable-db',
+      ],
+      {
+        DB_DIALECT: 'sqlite',
+        DB_PATH: tmpDb,
+        HOME: tmpHome,
+        APP_ENV: undefined,
+        NODE_ENV: undefined,
+      },
+    );
+    expect(result.status).toBe(0);
+  });
+
+  it('blocks reset when --actor is missing', () => {
+    const result = runRunner(
+      ['reset', '--dry-run', '--env', 'development', '--backup-exempt', 'y'],
+      { ...baseSqliteEnv() },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--actor/);
+  });
+
+  it('blocks reset when neither --backup-verified nor --backup-exempt is supplied', () => {
+    const result = runRunner(['reset', '--dry-run', '--env', 'development', '--actor', 'x'], {
+      ...baseSqliteEnv(),
     });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/backup/);
+  });
+
+  it('blocks apply when neither --dry-run nor --apply is passed', () => {
+    const result = runRunner(
+      ['reset', '--env', 'development', '--actor', 'x', '--backup-exempt', 'y'],
+      { ...baseSqliteEnv() },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--dry-run|--apply/);
+  });
+
+  it('blocks apply without --yes', () => {
+    const dr = dryRun();
+    const token = extractToken(dr.stdout);
+    const result = runRunner(
+      [
+        'reset',
+        '--apply',
+        '--confirmation',
+        token,
+        '--env',
+        'development',
+        '--actor',
+        'x',
+        '--backup-exempt',
+        'y',
+      ],
+      { ...baseSqliteEnv() },
+    );
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--yes/);
   });
 
-  it('redacts PostgreSQL credentials from audit output', () => {
-    // Reset will fail when it tries to connect to a non-existent PostgreSQL
-    // server, but the audit block is printed to stdout before any connection.
-    const result = runRunner(['reset', '--yes', '--env', 'development'], {
-      DB_DIALECT: 'postgres',
-      DB_URL: 'postgresql://alice:supersecret@localhost:15432/devdb',
-    });
-    // Credentials must not appear in stdout (the audit block)
-    expect(result.stdout).not.toMatch(/supersecret/);
-    expect(result.stdout).not.toMatch(/alice/);
-    // Sanitized host/db should appear
-    expect(result.stdout).toMatch(/localhost/);
+  it('blocks apply with a wrong confirmation token', () => {
+    dryRun();
+    const result = runRunner(
+      [
+        'reset',
+        '--apply',
+        '--yes',
+        '--confirmation',
+        'not-the-real-token',
+        '--env',
+        'development',
+        '--actor',
+        'x',
+        '--backup-exempt',
+        'y',
+      ],
+      { ...baseSqliteEnv() },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/does not match/);
   });
 
-  it('allows reset when APP_ENV=development and --env development', () => {
-    const result = runRunner(['reset', '--yes', '--env', 'development'], {
-      DB_DIALECT: 'sqlite',
-      DB_PATH: tmpDb,
-      APP_ENV: 'development',
-    });
+  it('performs a real reset given a valid dry-run token and --apply --yes', () => {
+    const dr = dryRun();
+    expect(dr.status).toBe(0);
+    const token = extractToken(dr.stdout);
+    const result = runRunner(
+      [
+        'reset',
+        '--apply',
+        '--yes',
+        '--confirmation',
+        token,
+        '--env',
+        'development',
+        '--actor',
+        'test-operator',
+        '--backup-exempt',
+        'disposable test db',
+      ],
+      { ...baseSqliteEnv() },
+    );
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(tmpDb)).toBe(true);
+  });
+
+  it('does not create the SQLite file during --dry-run', () => {
+    dryRun();
+    expect(fs.existsSync(tmpDb)).toBe(false);
+  });
+
+  it('redacts PostgreSQL credentials and query-string secrets from audit output', () => {
+    const result = runRunner(
+      [
+        'reset',
+        '--dry-run',
+        '--env',
+        'development',
+        '--actor',
+        'test-operator',
+        '--backup-exempt',
+        'disposable test db',
+      ],
+      {
+        DB_DIALECT: 'postgres',
+        HOME: tmpHome,
+        APP_ENV: 'development',
+        DB_URL:
+          'postgresql://alice:supersecret@localhost:15432/devdb?password=query-secret&token=abc#frag-secret',
+      },
+    );
+    expect(result.stdout).not.toMatch(/supersecret/);
+    expect(result.stdout).not.toMatch(/alice/);
+    expect(result.stdout).not.toMatch(/query-secret/);
+    expect(result.stdout).not.toMatch(/token=abc/);
+    expect(result.stdout).not.toMatch(/frag-secret/);
+    // Sanitized host/db should still appear
+    expect(result.stdout).toMatch(/localhost/);
+    expect(result.stdout).toMatch(/devdb/);
+  });
+
+  it('replaces a malformed connection string with a non-sensitive placeholder', () => {
+    const result = runRunner(
+      [
+        'reset',
+        '--dry-run',
+        '--env',
+        'development',
+        '--actor',
+        'test-operator',
+        '--backup-exempt',
+        'disposable test db',
+      ],
+      {
+        DB_DIALECT: 'postgres',
+        HOME: tmpHome,
+        APP_ENV: 'development',
+        DB_URL: 'not a valid url ::: secret-should-not-leak',
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toMatch(/secret-should-not-leak/);
+    expect(result.stderr).not.toMatch(/secret-should-not-leak/);
+    expect(result.stderr).toMatch(/could not be parsed/);
+  });
+
+  it('blocks a PostgreSQL reset against a non-allowlisted host without --force-host', () => {
+    const result = runRunner(
+      [
+        'reset',
+        '--dry-run',
+        '--env',
+        'development',
+        '--actor',
+        'test-operator',
+        '--backup-exempt',
+        'y',
+      ],
+      {
+        DB_DIALECT: 'postgres',
+        HOME: tmpHome,
+        APP_ENV: 'development',
+        DB_URL: 'postgresql://alice:secret@prod-db.example.com:5432/devdb',
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/not in the allowed reset-target list/);
+  });
+
+  it('allows a non-allowlisted PostgreSQL host when --force-host is passed', () => {
+    const result = runRunner(
+      [
+        'reset',
+        '--dry-run',
+        '--env',
+        'development',
+        '--actor',
+        'test-operator',
+        '--backup-exempt',
+        'y',
+        '--force-host',
+      ],
+      {
+        DB_DIALECT: 'postgres',
+        HOME: tmpHome,
+        APP_ENV: 'development',
+        DB_URL: 'postgresql://alice:secret@prod-db.example.com:5432/devdb',
+      },
+    );
     expect(result.status).toBe(0);
   });
 
-  it('allows reset when APP_ENV is unset and --env development', () => {
-    const result = runRunner(['reset', '--yes', '--env', 'development'], {
-      DB_DIALECT: 'sqlite',
-      DB_PATH: tmpDb,
-      APP_ENV: undefined,
-      NODE_ENV: undefined,
-    });
+  it('allows reset when APP_ENV=development and --env development', () => {
+    const result = dryRun();
     expect(result.status).toBe(0);
   });
 });

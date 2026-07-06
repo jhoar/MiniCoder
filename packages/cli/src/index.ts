@@ -8,6 +8,7 @@ import { createTestCommand } from './commands/test.js';
 import { createHumanCommand } from './commands/human.js';
 import { createMergeCommand } from './commands/merge.js';
 import { createApiCommand } from './commands/api.js';
+import { createPlanCommand } from './commands/plan.js';
 
 const program = new Command();
 
@@ -24,6 +25,7 @@ program.addCommand(createTestCommand());
 program.addCommand(createHumanCommand());
 program.addCommand(createMergeCommand());
 program.addCommand(createApiCommand());
+program.addCommand(createPlanCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error('Fatal error:', err);

@@ -29,6 +29,7 @@ interface PlanRow {
   id: string;
   state: string;
   version: number;
+  assessment_id: string | null;
   backlog_version: number;
   backlog_validated_state: string | null;
   backlog_validated_version: number | null;
@@ -66,7 +67,7 @@ export class SubmitPlanForApprovalHandler implements CommandHandler<
       if (!claim.owned) return claim.result;
 
       const rows = await tx.query<PlanRow>(
-        `SELECT id, state, version, backlog_version, backlog_validated_state, backlog_validated_version
+        `SELECT id, state, version, assessment_id, backlog_version, backlog_validated_state, backlog_validated_version
          FROM implementation_plans WHERE id = ? AND project_id = ?`,
         [planId, projectId],
       );
@@ -96,18 +97,24 @@ export class SubmitPlanForApprovalHandler implements CommandHandler<
         });
       }
 
-      const unresolvedBlockingGaps = await tx.query<{ id: string }>(
-        `SELECT pg.id FROM planning_gaps pg
-         JOIN planning_readiness_assessments a ON pg.assessment_id = a.id
-         WHERE a.project_id = ? AND pg.severity = ? AND pg.resolved_at IS NULL`,
-        [projectId, GapSeverity.BLOCKING],
-      );
+      // Scoped to the plan's own assessment_id, not the whole project — a project can have
+      // multiple readiness assessments (e.g. a superseded or re-run one), and an unresolved
+      // blocking gap tied to an assessment this plan wasn't generated from has nothing to do with
+      // the plan being submitted (see issue #31; same class of bug already fixed for
+      // GenerateImplementationPlanHandler's clarification guard). A plan with no assessment_id
+      // (e.g. an imported plan/backlog) has no assessment-scoped gaps to block on.
+      const unresolvedBlockingGaps = plan.assessment_id
+        ? await tx.query<{ id: string }>(
+            `SELECT id FROM planning_gaps WHERE assessment_id = ? AND severity = ? AND resolved_at IS NULL`,
+            [plan.assessment_id, GapSeverity.BLOCKING],
+          )
+        : [];
       if (unresolvedBlockingGaps.length > 0) {
         throw new CommandError({
           type: 'unresolved-blocking-gaps',
           title: 'Unresolved blocking gaps',
           status: 409,
-          detail: `${unresolvedBlockingGaps.length} unresolved blocking gap(s) for project ${projectId}`,
+          detail: `${unresolvedBlockingGaps.length} unresolved blocking gap(s) for assessment ${plan.assessment_id}`,
           instance: envelope.correlationId,
         });
       }

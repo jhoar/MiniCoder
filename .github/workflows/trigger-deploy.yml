@@ -28,6 +28,10 @@ jobs:
   validate-tasks:
     name: Validate Task Bundle
     runs-on: ubuntu-latest
+    # Scoped to the same environment as deploy-tasks (below) so the registry-topology smoke test
+    # reads the DEPLOY_REGISTRY_HOST/DOCKER_REGISTRY_URL values actually configured for this
+    # deploy target, not unscoped repository-level defaults.
+    environment: ${{ github.event.inputs.environment || 'staging' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,27 +54,96 @@ jobs:
         run: pnpm --filter @minicoder/triggerdev build
 
       - name: Verify task IDs
+        # Post-merge review fix (MEDIUM-2): this used to check only a curated 9-ID subset of
+        # ALL_TASK_IDS, so a deploy could pass validation while a real canonical task (e.g.
+        # run-coder/run-review/run-merge-gate/import-backlog) was missing from the bundle. Now
+        # asserts exact set equality against packages/triggerdev/src/task-ids.ts's ALL_TASK_IDS —
+        # the single source of truth — failing on both a missing and an unexpected task ID.
         run: |
           node -e "
           const { ALL_TASK_IDS } = require('./packages/triggerdev/dist/task-ids.js');
           const expected = [
+            'ingest-specification',
             'planning-readiness-assessment',
             'start-clarification',
+            'record-clarification-answer',
+            'complete-clarification',
             'generate-implementation-plan',
             'generate-feature-backlog',
+            'validate-backlog',
+            'request-plan-approval',
             'activate-approved-backlog',
             'start-next-feature',
+            'run-coder',
+            'run-review',
+            'run-merge-gate',
             'github-reconciliation',
             'export-plan',
             'export-backlog',
+            'import-backlog',
           ];
           const missing = expected.filter(id => !ALL_TASK_IDS.includes(id));
-          if (missing.length > 0) {
-            console.error('Missing task IDs:', missing);
+          const unexpected = ALL_TASK_IDS.filter(id => !expected.includes(id));
+          if (missing.length > 0 || unexpected.length > 0) {
+            if (missing.length > 0) console.error('Missing task IDs:', missing);
+            if (unexpected.length > 0) console.error('Unexpected task IDs not in the deploy checklist:', unexpected);
             process.exit(1);
           }
           console.log('All', ALL_TASK_IDS.length, 'task IDs verified:', ALL_TASK_IDS.join(', '));
           "
+
+      - name: Registry topology smoke test (issue #18)
+        # DEPLOY_REGISTRY_HOST (the CLI's push target) and DOCKER_REGISTRY_URL (the supervisor's
+        # pull source, from infra/docker-compose.triggerdev.yml) must name the same
+        # externally-reachable registry on a GitHub-hosted runner — see docs/04's "CI Registry
+        # Setup" section for the full rationale. Catches the two failure modes that otherwise
+        # only surface after a "successful" deploy, when the supervisor's runner containers fail
+        # to start with an image-not-found error: (1) either var still pointing at the
+        # local-dev-only bundled registry default (localhost:5000 / triggerdev-registry:5000),
+        # which is unreachable from a GitHub-hosted runner and from a supervisor on a different
+        # host; (2) the two vars naming different registry hosts.
+        env:
+          DEPLOY_REGISTRY_HOST: ${{ vars.DEPLOY_REGISTRY_HOST }}
+          DOCKER_REGISTRY_URL: ${{ vars.DOCKER_REGISTRY_URL }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          normalize_host() {
+            # Strip any scheme (http://, https://) and any path/port suffix, leaving just the
+            # registry hostname for comparison.
+            echo "$1" | sed -E 's#^[a-zA-Z]+://##' | cut -d/ -f1 | cut -d: -f1
+          }
+
+          if [ -z "${DEPLOY_REGISTRY_HOST:-}" ]; then
+            fail "DEPLOY_REGISTRY_HOST is not set. A GitHub-hosted runner cannot push to the bundled localhost:5000 registry default — set DEPLOY_REGISTRY_HOST to an externally-reachable registry (see docs/04 'CI Registry Setup')."
+          fi
+          if [ -z "${DOCKER_REGISTRY_URL:-}" ]; then
+            fail "DOCKER_REGISTRY_URL is not set. The supervisor cannot pull from the bundled triggerdev-registry:5000 default when it isn't co-located with a GitHub-hosted runner's push — set DOCKER_REGISTRY_URL to the same registry as DEPLOY_REGISTRY_HOST (see docs/04 'CI Registry Setup')."
+          fi
+
+          case "$DEPLOY_REGISTRY_HOST" in
+            localhost*|triggerdev-registry*)
+              fail "DEPLOY_REGISTRY_HOST=$DEPLOY_REGISTRY_HOST is the local-dev-only bundled registry default, unreachable from a GitHub-hosted runner. Set it to an external registry (ghcr.io, Docker Hub, or a self-hosted registry with a public/VPN-reachable address)."
+              ;;
+          esac
+          case "$DOCKER_REGISTRY_URL" in
+            *localhost*|*triggerdev-registry*)
+              fail "DOCKER_REGISTRY_URL=$DOCKER_REGISTRY_URL is the local-dev-only bundled registry default. The supervisor pulling from this address will fail unless it is co-located with the same Docker host — set it to the same external registry as DEPLOY_REGISTRY_HOST."
+              ;;
+          esac
+
+          push_host=$(normalize_host "$DEPLOY_REGISTRY_HOST")
+          pull_host=$(normalize_host "$DOCKER_REGISTRY_URL")
+          if [ "$push_host" != "$pull_host" ]; then
+            fail "Registry topology mismatch: DEPLOY_REGISTRY_HOST resolves to host '$push_host' but DOCKER_REGISTRY_URL resolves to host '$pull_host'. Both must name the same registry so the supervisor can pull what the CLI just pushed."
+          fi
+
+          echo "Registry topology OK: both DEPLOY_REGISTRY_HOST and DOCKER_REGISTRY_URL resolve to '$push_host'."
 
   deploy-tasks:
     name: Deploy to Trigger.dev

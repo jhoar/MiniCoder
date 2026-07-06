@@ -120,9 +120,10 @@ services:
       retries: 5
 
   triggerdev-webapp:
-    # v4-beta is the only published channel while Trigger.dev v4 is in beta.
-    # For production, pin to an immutable digest: ghcr.io/triggerdotdev/trigger.dev@sha256:...
-    image: ghcr.io/triggerdotdev/trigger.dev:v4-beta
+    # Pinned to v4-beta's digest as of 2026-07-06 (issue #16 — mutable tags are a supply-chain
+    # risk). Re-pin deliberately when upgrading: `docker buildx imagetools inspect
+    # ghcr.io/triggerdotdev/trigger.dev:<tag>` (or the registry API) to get the new digest.
+    image: ghcr.io/triggerdotdev/trigger.dev@sha256:099a2f7ec9810a3d5b123d81e12c6da3913500614613ed46e2b4a611b7b8f10b # v4-beta, captured 2026-07-06
     restart: unless-stopped
     depends_on:
       triggerdev-init:
@@ -239,8 +240,9 @@ services:
       retries: 5
 
   triggerdev-docker-proxy:
-    # Pin to an immutable digest for production; :latest is the only widely published tag.
-    image: tecnativa/docker-socket-proxy:latest
+    # Pinned to :latest's digest as of 2026-07-06 (issue #16). Revisit once the project identifies
+    # a stable release tag to track instead of :latest.
+    image: tecnativa/docker-socket-proxy@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476 # latest, captured 2026-07-06
     restart: unless-stopped
     environment:
       # Minimum permissions required by the Trigger.dev supervisor.
@@ -265,9 +267,10 @@ services:
       retries: 5
 
   triggerdev-supervisor:
-    # v4-beta is the only published channel while Trigger.dev v4 is in beta.
-    # For production, pin to an immutable digest: ghcr.io/triggerdotdev/supervisor@sha256:...
-    image: ghcr.io/triggerdotdev/supervisor:v4-beta
+    # Pinned to v4-beta's digest as of 2026-07-06 (issue #16). Re-pin deliberately when upgrading
+    # (see triggerdev-webapp's comment for the digest-lookup procedure) — keep this in lockstep
+    # with triggerdev-webapp's digest since both track the same Trigger.dev release channel.
+    image: ghcr.io/triggerdotdev/supervisor@sha256:3625c84e1d02bd78fb59ca5b7d8eeefa98640bd2d350815160e56a21e273da7c # v4-beta, captured 2026-07-06
     restart: unless-stopped
     depends_on:
       triggerdev-init:

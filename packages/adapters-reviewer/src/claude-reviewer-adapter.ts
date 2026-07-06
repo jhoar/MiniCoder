@@ -15,9 +15,12 @@ export interface ClaudeReviewerAdapterOptions {
 
 /** `ReviewerOutput` plus token usage — mirrors `CodexCoderOutput extends CoderOutput`
  * (`@minicoder/adapters-coder`) so `run-review.ts` can fold token usage into a `costExtractor`
- * the same way `run-coder.ts` does. */
+ * the same way `run-coder.ts` does. `promptSnapshot` (issue #49) carries the exact assembled
+ * request `ReviewProvider.review()` sent, for `run-review.ts` to persist as replayable audit
+ * provenance. */
 export interface ClaudeReviewerOutput extends ReviewerOutput {
   readonly tokensUsed?: { readonly input: number; readonly output: number };
+  readonly promptSnapshot?: unknown;
 }
 
 /**
@@ -46,14 +49,13 @@ export class ClaudeReviewerAdapter implements ReviewerAgentAdapter {
       input.prNumber,
     );
 
-    // ReviewerInput (Phase 5's adapter contract) carries no featureTitle/acceptanceCriteria
-    // fields — only identifiers (projectId/featureRunId/prNumber/reviewCycle/correlationId).
-    // Widening that shared contract just for this one adapter's prompt was considered and
-    // rejected (it would ripple into every other ReviewerAgentAdapter caller and
-    // MockReviewerAdapter); the diff itself carries the substantive review content.
+    // ReviewerInput.featureTitle/acceptanceCriteria are additive/optional (issue #47) — run-review.ts's
+    // real call site always populates them from the feature request, but a caller-supplied
+    // ReviewerInput (or an older/simplified test fixture) might not, so a placeholder fallback is
+    // kept rather than passing undefined/empty through to the provider unconditionally.
     const result = await this.options.reviewProvider.review({
-      featureTitle: `feature run ${input.featureRunId}`,
-      acceptanceCriteria: [],
+      featureTitle: input.featureTitle ?? `feature run ${input.featureRunId}`,
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
       diff,
       correlationId: input.correlationId,
     });
@@ -69,6 +71,7 @@ export class ClaudeReviewerAdapter implements ReviewerAgentAdapter {
         lineEnd: finding.lineEnd,
       })),
       tokensUsed: result.tokensUsed,
+      promptSnapshot: result.promptSnapshot,
     };
   }
 }

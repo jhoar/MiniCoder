@@ -1,10 +1,29 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { DbClient, ConfigBackend, SecretBackend, PlannerAgentAdapter } from '@minicoder/core';
-import { MissingSecretError, FeatureExecutionState } from '@minicoder/core';
+import type {
+  DbClient,
+  TxClient,
+  ConfigBackend,
+  SecretBackend,
+  PlannerAgentAdapter,
+  CommandEnvelope,
+} from '@minicoder/core';
+import {
+  MissingSecretError,
+  FeatureExecutionState,
+  GapSeverity,
+  TransactionalCommandExecutor,
+  SkipFeatureHandler,
+  HumanUnblockFeatureHandler,
+  ImportBacklogHandler,
+  type SkipFeaturePayload,
+  type HumanUnblockFeaturePayload,
+  type ImportBacklogPayload,
+} from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from './test-helpers.js';
+import { humanActor } from './tasks/actor.js';
 import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
 import { ALL_TASK_IDS } from './task-ids.js';
@@ -547,6 +566,510 @@ describe('start-next-feature real wiring', () => {
   });
 });
 
+// ── Issue #52: SkipFeatureCommand cascades a blocked transition to dependents ──────────────
+
+describe('SkipFeatureCommand cascading dependency guard (issue #52)', () => {
+  const projectId = 'proj-skip-cascade';
+
+  async function seedFixture(db: DbClient): Promise<{
+    skippedRunId: string;
+    dependentRunId: string;
+  }> {
+    const planId = `plan-${projectId}`;
+    const targetFrId = `fr-${projectId}-target`;
+    const sourceFrId = `fr-${projectId}-source`;
+    const skippedRunId = `run-${projectId}-target`;
+    const dependentRunId = `run-${projectId}-source`;
+
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-TARGET', 'Target feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [targetFrId, planId, projectId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-SOURCE', 'Dependent feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [sourceFrId, planId, projectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    await db.execute(
+      `INSERT INTO feature_dependencies (id, source_fr_id, target_fr_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
+      [`dep-${projectId}`, sourceFrId, targetFrId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [skippedRunId, targetFrId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [dependentRunId, sourceFrId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    return { skippedRunId, dependentRunId };
+  }
+
+  it('transitions a dependent feature run at approved_pending_execution to blocked when its dependency is skipped', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db);
+
+    const executor = new TransactionalCommandExecutor(db);
+    const handler = new SkipFeatureHandler();
+    const envelope: CommandEnvelope<SkipFeaturePayload> = {
+      commandId: 'cmd-skip-1',
+      idempotencyKey: 'idem-skip-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    };
+    await executor.execute(handler, envelope);
+
+    const skippedRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [skippedRunId],
+    );
+    expect(skippedRows[0]?.current_execution_state).toBe(FeatureExecutionState.SKIPPED);
+
+    const dependentRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
+    expect(dependentRows[0]?.version).toBe(2);
+
+    const events = await db.query<{ event_type: string }>(
+      `SELECT event_type FROM workflow_events WHERE feature_run_id = ? ORDER BY created_at`,
+      [dependentRunId],
+    );
+    expect(events.map((e) => e.event_type)).toContain('feature.blocked_by_skipped_dependency');
+  });
+
+  it('does not touch a dependent that is not at approved_pending_execution', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db);
+    await db.execute(
+      `UPDATE feature_runs SET current_execution_state = 'coding', version = version + 1 WHERE id = ?`,
+      [dependentRunId],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    const handler = new SkipFeatureHandler();
+    await executor.execute(handler, {
+      commandId: 'cmd-skip-2',
+      idempotencyKey: 'idem-skip-2',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-2' }),
+      correlationId: 'corr-2',
+    });
+
+    const dependentRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe('coding');
+  });
+});
+
+// ── Issue #53: HumanUnblockFeatureCommand ──────────────────────────────────
+
+describe('HumanUnblockFeatureCommand (issue #53)', () => {
+  const projectId = 'proj-human-unblock';
+
+  it('transitions a human-blocked feature run back to approved_pending_execution', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    const frId = `fr-${projectId}`;
+    const runId = `run-${projectId}`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Feature', 'Description', 'feature', 1, 'blocked', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [runId, frId, FeatureExecutionState.BLOCKED],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    const result = await executor.execute(new HumanUnblockFeatureHandler(), {
+      commandId: 'cmd-unblock-1',
+      idempotencyKey: 'idem-unblock-1',
+      payload: {
+        featureRunId: runId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'The external API key has been provisioned; automation may resume.',
+      },
+      actor: humanActor({ actorId: 'approver-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    });
+    expect(result.resultingState).toBe(FeatureExecutionState.APPROVED_PENDING_EXECUTION);
+
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [runId],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.APPROVED_PENDING_EXECUTION);
+
+    const approvals = await db.query<{ decision: string; context_type: string }>(
+      `SELECT decision, context_type FROM human_approvals WHERE feature_run_id = ?`,
+      [runId],
+    );
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]?.decision).toBe('approved');
+  });
+
+  it('rejects unblocking a feature run that is not currently blocked', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}-2`;
+    const frId = `fr-${projectId}-2`;
+    const runId = `run-${projectId}-2`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-002', 'Feature', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [runId, frId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    await expect(
+      executor.execute(new HumanUnblockFeatureHandler(), {
+        commandId: 'cmd-unblock-2',
+        idempotencyKey: 'idem-unblock-2',
+        payload: {
+          featureRunId: runId,
+          projectId,
+          expectedVersion: 1,
+          notes: 'Should not be allowed.',
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-2',
+        }),
+        correlationId: 'corr-2',
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('rejects unblocking a skip-cascade-blocked dependent whose dependency is still unmerged (post-merge review HIGH-1)', async () => {
+    const db = createTestDb();
+    const skipProjectId = 'proj-human-unblock-skip-cascade';
+    insertTestProject(db, skipProjectId);
+    const planId = `plan-${skipProjectId}`;
+    const targetFrId = `fr-${skipProjectId}-target`;
+    const sourceFrId = `fr-${skipProjectId}-source`;
+    const skippedRunId = `run-${skipProjectId}-target`;
+    const dependentRunId = `run-${skipProjectId}-source`;
+
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, skipProjectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-TARGET', 'Target feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [targetFrId, planId, skipProjectId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-SOURCE', 'Dependent feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [sourceFrId, planId, skipProjectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    await db.execute(
+      `INSERT INTO feature_dependencies (id, source_fr_id, target_fr_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
+      [`dep-${skipProjectId}`, sourceFrId, targetFrId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [skippedRunId, targetFrId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [dependentRunId, sourceFrId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+
+    // Skip the upstream target — cascades the dependent to `blocked` (issue #52).
+    const executor = new TransactionalCommandExecutor(db);
+    await executor.execute(new SkipFeatureHandler(), {
+      commandId: 'cmd-skip-cascade-1',
+      idempotencyKey: 'idem-skip-cascade-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId: skipProjectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({
+        actorId: 'operator-1',
+        actorRole: 'approver',
+        correlationId: 'corr-skip-cascade-1',
+      }),
+      correlationId: 'corr-skip-cascade-1',
+    } satisfies CommandEnvelope<SkipFeaturePayload>);
+
+    const blockedRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(blockedRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
+    const dependentVersion = blockedRows[0]!.version;
+
+    // A human unblock of the dependent must be rejected — its dependency (the skipped feature)
+    // will never reach `merged`, so unblocking would strand it again with a misleading successful
+    // result (a naive fix would have let this proceed to `approved_pending_execution`).
+    await expect(
+      executor.execute(new HumanUnblockFeatureHandler(), {
+        commandId: 'cmd-unblock-skip-cascade-1',
+        idempotencyKey: 'idem-unblock-skip-cascade-1',
+        payload: {
+          featureRunId: dependentRunId,
+          projectId: skipProjectId,
+          expectedVersion: dependentVersion,
+          notes: 'Attempting to unblock despite the unmerged upstream dependency.',
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-unblock-skip-cascade-1',
+        }),
+        correlationId: 'corr-unblock-skip-cascade-1',
+      } satisfies CommandEnvelope<HumanUnblockFeaturePayload>),
+    ).rejects.toThrow(/not yet merged/i);
+
+    const stillBlockedRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(stillBlockedRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
+  });
+});
+
+// ── Post-merge review regression: skip-cascade CAS-miss on a dependent (MEDIUM-1) ──────────
+
+describe('SkipFeatureCommand dependent-cascade CAS handling (post-merge review MEDIUM-1)', () => {
+  const dependentCascadeUpdatePattern =
+    /UPDATE feature_runs SET current_execution_state = \?, version = \?, updated_at = \? WHERE id = \? AND version = \?/;
+
+  async function seedFixture(
+    db: DbClient,
+    projectId: string,
+  ): Promise<{ skippedRunId: string; dependentRunId: string }> {
+    const planId = `plan-${projectId}`;
+    const targetFrId = `fr-${projectId}-target`;
+    const sourceFrId = `fr-${projectId}-source`;
+    const skippedRunId = `run-${projectId}-target`;
+    const dependentRunId = `run-${projectId}-source`;
+
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-TARGET', 'Target feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [targetFrId, planId, projectId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-SOURCE', 'Dependent feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [sourceFrId, planId, projectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    await db.execute(
+      `INSERT INTO feature_dependencies (id, source_fr_id, target_fr_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
+      [`dep-${projectId}`, sourceFrId, targetFrId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [skippedRunId, targetFrId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [dependentRunId, sourceFrId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    return { skippedRunId, dependentRunId };
+  }
+
+  // Genuinely simulating two interleaved transactions isn't possible against a single
+  // better-sqlite3 connection (CLAUDE.md's Cross-Dialect Testing section — same reason
+  // Postgres-only suites exist for other concurrency scenarios). Instead, wrap the DbClient so
+  // that the instant SkipFeatureHandler's cascade issues its first per-dependent UPDATE attempt, a
+  // real concurrent-writer-style mutation is applied first, *inside the same transaction*,
+  // immediately before the handler's own predicate-matched UPDATE runs — so the handler's
+  // `executeAffected` call genuinely CAS-misses for the right reason (a real mismatch at UPDATE
+  // time), not a contrived assertion. `injectOnce` fires only on the first matching call for the
+  // target dependent, mirroring a single concurrent writer, not an adversary that keeps racing
+  // every one of the handler's own bounded retries.
+  function racingDb(
+    db: DbClient,
+    dependentRunId: string,
+    injectOnce: (tx: TxClient) => Promise<void>,
+  ): DbClient {
+    let injected = false;
+    return {
+      query: (sql, params) => db.query(sql, params),
+      execute: (sql, params) => db.execute(sql, params),
+      executeAffected: (sql, params) => db.executeAffected(sql, params),
+      close: () => db.close(),
+      transaction: (fn) =>
+        db.transaction((tx) => {
+          const wrappedTx = {
+            query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
+              tx.query<T>(sql, params),
+            execute: (sql: string, params?: unknown[]) => tx.execute(sql, params),
+            executeAffected: async (sql: string, params?: unknown[]) => {
+              if (
+                !injected &&
+                dependentCascadeUpdatePattern.test(sql) &&
+                params?.[3] === dependentRunId
+              ) {
+                injected = true;
+                await injectOnce(tx);
+              }
+              return tx.executeAffected(sql, params);
+            },
+          };
+          return fn(wrappedTx);
+        }),
+    };
+  }
+
+  it('retries and blocks a dependent whose version changed concurrently but stayed at approved_pending_execution', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-skip-cascade-cas-retry';
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db, projectId);
+
+    const wrappedDb = racingDb(db, dependentRunId, async (tx) => {
+      // Simulate a concurrent writer that only bumps an unrelated column/version, leaving the
+      // dependent still eligible to be blocked.
+      await tx.execute(
+        `UPDATE feature_runs SET version = version + 1, updated_at = datetime('now') WHERE id = ?`,
+        [dependentRunId],
+      );
+    });
+
+    const executor = new TransactionalCommandExecutor(wrappedDb);
+    const result = await executor.execute(new SkipFeatureHandler(), {
+      commandId: 'cmd-skip-cas-retry-1',
+      idempotencyKey: 'idem-skip-cas-retry-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    } satisfies CommandEnvelope<SkipFeaturePayload>);
+
+    expect(result.resultingState).toBe(FeatureExecutionState.SKIPPED);
+
+    // The dependent is genuinely blocked despite the injected mid-cascade version race — the
+    // handler retried with the fresh version rather than silently leaving it stranded at
+    // approved_pending_execution behind a dependency that can never reach merged.
+    const dependentRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
+
+    const events = await db.query<{ event_type: string }>(
+      `SELECT event_type FROM workflow_events WHERE feature_run_id = ?`,
+      [dependentRunId],
+    );
+    expect(events.map((e) => e.event_type)).toContain('feature.blocked_by_skipped_dependency');
+  });
+
+  it('does not retry or emit an event for a dependent that concurrently moved to a different state', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-skip-cascade-cas-moved';
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db, projectId);
+
+    const wrappedDb = racingDb(db, dependentRunId, async (tx) => {
+      // Simulate a concurrent writer that genuinely moved the dependent off
+      // approved_pending_execution (e.g. it was selected) before this cascade's UPDATE landed.
+      await tx.execute(
+        `UPDATE feature_runs SET current_execution_state = 'selected', version = version + 1, updated_at = datetime('now') WHERE id = ?`,
+        [dependentRunId],
+      );
+    });
+
+    const executor = new TransactionalCommandExecutor(wrappedDb);
+    const result = await executor.execute(new SkipFeatureHandler(), {
+      commandId: 'cmd-skip-cas-moved-1',
+      idempotencyKey: 'idem-skip-cas-moved-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    } satisfies CommandEnvelope<SkipFeaturePayload>);
+
+    // The skip itself still succeeds — the dependent is simply left alone since it's no longer
+    // eligible for this cascade.
+    expect(result.resultingState).toBe(FeatureExecutionState.SKIPPED);
+
+    // The concurrent writer's state is respected, not overwritten.
+    const dependentRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe('selected');
+
+    // No false workflow/outbox event was emitted for a dependent this cascade never actually
+    // blocked.
+    const events = await db.query<{ event_type: string }>(
+      `SELECT event_type FROM workflow_events WHERE feature_run_id = ?`,
+      [dependentRunId],
+    );
+    expect(events).toHaveLength(0);
+  });
+});
+
 // ── Code-review regression tests (HIGH-1, HIGH-2, MEDIUM-2) ────────────────
 
 describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM-2)', () => {
@@ -671,6 +1194,121 @@ describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM
       db,
     );
     expect(result.planId).toBe(planId);
+  });
+
+  // Issue #31: SubmitPlanForApprovalCommand's blocking-gap check used to join through
+  // planning_readiness_assessments.project_id, blocking submission on *any* unresolved blocking
+  // gap anywhere in the project — even one tied to a completely different assessment than the one
+  // the plan being submitted was generated from. Fixed to scope by the plan's own assessment_id.
+  it('#31: a blocking gap on a different assessment does not block submitting a plan from this assessment', async () => {
+    async function setupPlanFromFreshAssessment(
+      idemPrefix: string,
+      title: string,
+    ): Promise<{ planId: string; planVersion: number; assessmentId: string }> {
+      await runPlanningReadiness(
+        {
+          ...BASE_PAYLOAD,
+          idempotencyKey: `${idemPrefix}-readiness`,
+          correlationId: `${idemPrefix}-corr`,
+          specificationContent: `Build ${title}.`,
+          plannerAdapterName: 'MockPlannerAdapter',
+        },
+        db,
+        fakePlanner('sufficient'),
+      );
+      const assessmentRows = await db.query<{ id: string }>(
+        `SELECT id FROM planning_readiness_assessments WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+        ['proj-test-001'],
+      );
+      const assessmentId = assessmentRows[0]!.id;
+      await runGeneratePlan(
+        {
+          ...BASE_PAYLOAD,
+          idempotencyKey: `${idemPrefix}-plan`,
+          assessmentId,
+          title,
+          sections: [{ title: 'Overview', content: 'Build CRUD endpoints.' }],
+        },
+        db,
+      );
+      const planRows = await db.query<{ id: string; version: number }>(
+        `SELECT id, version FROM implementation_plans WHERE assessment_id = ?`,
+        [assessmentId],
+      );
+      const plan = planRows[0]!;
+      await runGenerateBacklog(
+        {
+          ...BASE_PAYLOAD,
+          idempotencyKey: `${idemPrefix}-backlog`,
+          planId: plan.id,
+          features: [
+            {
+              frId: `FR-${idemPrefix}-001`,
+              title: 'Create item',
+              description: 'Allow creating an item.',
+              kind: 'feature' as const,
+              priority: 0,
+              dependsOnFrIds: [],
+              acceptanceCriteria: ['A user can create an item.'],
+              testExpectations: [
+                { description: 'Creating an item persists it.', testType: 'unit' as const },
+              ],
+            },
+          ],
+        },
+        db,
+      );
+      await runValidateBacklog(
+        { ...BASE_PAYLOAD, idempotencyKey: `${idemPrefix}-validate`, planId: plan.id },
+        db,
+      );
+      return { planId: plan.id, planVersion: plan.version, assessmentId };
+    }
+
+    const planA = await setupPlanFromFreshAssessment('a31a', 'Plan A');
+    const planB = await setupPlanFromFreshAssessment('a31b', 'Plan B');
+
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO planning_gaps (id, assessment_id, description, severity, resolved_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+      ['gap-a', planA.assessmentId, 'Gap on assessment A', GapSeverity.BLOCKING, now, now],
+    );
+    await db.execute(
+      `INSERT INTO planning_gaps (id, assessment_id, description, severity, resolved_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+      ['gap-b', planB.assessmentId, 'Gap on assessment B', GapSeverity.BLOCKING, now, now],
+    );
+
+    // Plan A is blocked by its own assessment's unresolved gap.
+    await expect(
+      runRequestPlanApproval(
+        {
+          ...BASE_PAYLOAD,
+          ...ACTOR,
+          idempotencyKey: 'a31-submit-a-blocked',
+          planId: planA.planId,
+          expectedVersion: planA.planVersion,
+        },
+        db,
+      ),
+    ).rejects.toThrow(/blocking gap/i);
+
+    // Resolving assessment A's gap allows plan A to submit, even though assessment B's gap is
+    // still unresolved — proving the check is assessment-scoped, not project-scoped.
+    await db.execute(`UPDATE planning_gaps SET resolved_at = ? WHERE id = ?`, [now, 'gap-a']);
+
+    const result = await runRequestPlanApproval(
+      {
+        ...BASE_PAYLOAD,
+        ...ACTOR,
+        idempotencyKey: 'a31-submit-a-allowed',
+        planId: planA.planId,
+        expectedVersion: planA.planVersion,
+      },
+      db,
+    );
+    expect(result.planId).toBe(planA.planId);
   });
 
   it('HIGH-2: validate-backlog task rethrows non-backlog-invalid errors instead of returning valid:false', async () => {
@@ -1076,6 +1714,12 @@ function makeSecrets(values: Record<string, string>): SecretBackend {
       if (!v) throw new MissingSecretError(k);
       return v;
     },
+    set: async (k, v) => {
+      values[k] = v;
+    },
+    delete: async (k) => {
+      delete values[k];
+    },
     list: async () => [],
   };
 }
@@ -1176,5 +1820,139 @@ describe('assertSchemaReady', () => {
     const db = new SqliteDbClient(raw);
     await expect(assertSchemaReady(db)).rejects.toThrow('triggerdev_runs table not found');
     // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
+  });
+});
+
+// ── ImportBacklogCommand dry-run validation gate (post-merge PR review MEDIUM-1) ──────────────
+
+describe('ImportBacklogCommand dry-run validation gate (post-merge PR review MEDIUM-1)', () => {
+  const projectId = 'proj-import-backlog-dryrun';
+
+  function baseFeatures(): ImportBacklogPayload['features'] {
+    return [
+      {
+        frId: 'FR-001',
+        title: 'Add widget',
+        description: 'A widget.',
+        kind: 'feature',
+        priority: 0,
+        dependsOnFrIds: [],
+      },
+    ];
+  }
+
+  it('rejects a dry-run against a nonexistent plan/project instead of reporting a false previewed success', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+
+    const executor = new TransactionalCommandExecutor(db);
+    await expect(
+      executor.execute(new ImportBacklogHandler(), {
+        commandId: 'cmd-import-dryrun-missing-1',
+        idempotencyKey: 'idem-import-dryrun-missing-1',
+        payload: {
+          projectId,
+          planId: 'plan-does-not-exist',
+          features: baseFeatures(),
+          dryRun: true,
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-1',
+        }),
+        correlationId: 'corr-1',
+      } satisfies CommandEnvelope<ImportBacklogPayload>),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it('rejects a dry-run payload with duplicate fr_ids', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    await expect(
+      executor.execute(new ImportBacklogHandler(), {
+        commandId: 'cmd-import-dryrun-dup-1',
+        idempotencyKey: 'idem-import-dryrun-dup-1',
+        payload: {
+          projectId,
+          planId,
+          features: [
+            {
+              frId: 'FR-001',
+              title: 'Add widget',
+              description: 'A widget.',
+              kind: 'feature',
+              priority: 0,
+              dependsOnFrIds: [],
+            },
+            {
+              frId: 'FR-001',
+              title: 'Duplicate',
+              description: 'Also a widget.',
+              kind: 'feature',
+              priority: 1,
+              dependsOnFrIds: [],
+            },
+          ],
+          dryRun: true,
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-2',
+        }),
+        correlationId: 'corr-2',
+      } satisfies CommandEnvelope<ImportBacklogPayload>),
+    ).rejects.toThrow(/duplicate/i);
+  });
+
+  it('still returns previewed without writing for a valid dry-run, and the apply path still succeeds', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    const dryRunResult = await executor.execute(new ImportBacklogHandler(), {
+      commandId: 'cmd-import-dryrun-ok-1',
+      idempotencyKey: 'idem-import-dryrun-ok-1',
+      payload: { projectId, planId, features: baseFeatures(), dryRun: true },
+      actor: humanActor({ actorId: 'approver-1', actorRole: 'approver', correlationId: 'corr-3' }),
+      correlationId: 'corr-3',
+    } satisfies CommandEnvelope<ImportBacklogPayload>);
+    expect(dryRunResult.resultingState).toBe('previewed');
+
+    const preApplyRows = await db.query<{ id: string }>(
+      `SELECT id FROM feature_requests WHERE plan_id = ?`,
+      [planId],
+    );
+    expect(preApplyRows).toHaveLength(0);
+
+    const applyResult = await executor.execute(new ImportBacklogHandler(), {
+      commandId: 'cmd-import-apply-ok-1',
+      idempotencyKey: 'idem-import-apply-ok-1',
+      payload: { projectId, planId, features: baseFeatures(), dryRun: false },
+      actor: humanActor({ actorId: 'approver-1', actorRole: 'approver', correlationId: 'corr-4' }),
+      correlationId: 'corr-4',
+    } satisfies CommandEnvelope<ImportBacklogPayload>);
+    expect(applyResult.resultingState).toBe('imported');
+
+    const postApplyRows = await db.query<{ fr_id: string }>(
+      `SELECT fr_id FROM feature_requests WHERE plan_id = ?`,
+      [planId],
+    );
+    expect(postApplyRows.map((r) => r.fr_id)).toEqual(['FR-001']);
   });
 });

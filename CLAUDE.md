@@ -317,10 +317,30 @@ ORDER BY updated_at DESC, id DESC)`, never `MAX(rowid)`.** `rowid` reflects inse
   `(test_suite, adapter_id)` and `runConformanceSuite()` never upserts — every call inserts a
   fresh row per adapter, even when re-run against the same DB with the same (idempotently
   re-registered) adapters. It is a historical audit log, not a current-gate-state row; query
-  `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)` for "the current result".
+  `ORDER BY run_at DESC, id DESC LIMIT 1` scoped to `(test_suite, adapter_id)` for "the current
+  result" — the `id DESC` tiebreaker is required (issue #27), not optional: `run_at` is an
+  ISO-8601 string with only millisecond resolution, so two rows written within the same
+  millisecond leave `ORDER BY run_at DESC` alone to unspecified result ordering.
   The conformance runner's `configuration_resolution` scenario upserts (SELECT-then-UPDATE-or-
   INSERT) its own default config row rather than using an unconditional `INSERT`, so
   `runConformanceSuite()` is safe to re-run against a persistent DB.
+- **`adapter_revisions` (migration 0013, issue #26) is immutable audit provenance, distinct from
+  `agent_adapters`/`agent_capabilities`'s mutable current operational registry state.**
+  `AdapterRegistry.register()` writes one `adapter_revisions` row per call (fresh insert or
+  version-bump update) snapshotting the adapter's full declared capability set at that exact
+  version — never updated afterward, the same append-only posture as
+  `adapter_conformance_results`. This closes a real provenance gap: re-registering an adapter
+  replaces its `agent_capabilities` rows in place, so a historical `agent_runs` row's
+  `adapter_id`/`adapter_version` alone could no longer answer "what capabilities were actually
+  declared when this run happened" once a later re-registration overwrote the current
+  capabilities. `AgentRunRecorder.record()` resolves `adapter_revisions_id` via
+  `AdapterRegistry.getRevisionId(adapterId, adapterRecord.version)` (looked up with the same
+  `ORDER BY created_at DESC, id DESC LIMIT 1` determinism convention as issue #27) and stamps it
+  on the new `agent_runs` row, alongside the existing denormalized `adapter_name`/
+  `adapter_implementation`/`adapter_version`/`capabilities_used` snapshot columns —
+  `adapter_revision_id` is additive audit provenance, not a replacement for those columns.
+  `getRevisionId()` returns `null` for an adapter registered before this migration existed;
+  `agent_runs.adapter_revision_id` is nullable to accommodate that.
 - **Phase 5 delivers smoke-level conformance only.** The 9-scenario suite verifies adapter
   wiring (capability declaration, successful run, failure handling, invalid-output handling,
   secret redaction, configuration resolution, state-transition sequence, output shape,
@@ -368,10 +388,68 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   real DB/infrastructure/programmer failures from Trigger.dev's retry/failed-status handling —
   every other error type must re-throw.
 - **`planning-readiness-assessment` and `generate-implementation-plan` never import a concrete
-  `PlannerAgentAdapter` implementation.** The caller injects one (test scenarios pass
-  `MockPlannerAdapter`); no reference/generic planner adapter has shipped yet (docs/02 §7 names
-  `GenericLLMPlannerAdapter` as future work), so a live Trigger.dev deployment fails fast with an
-  actionable error until one exists.
+  `PlannerAgentAdapter` implementation directly — the caller/resolver injects one.** Test scenarios
+  pass `MockPlannerAdapter`; a live Trigger.dev deployment resolves a real `GenericLLMPlannerAdapter`
+  via `triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` (issue #32 — see below). Neither
+  handler imports `@minicoder/adapters-planner` itself; only the Trigger.dev task-registration layer
+  does, preserving the "adapter instance is caller-supplied" contract this bullet originally
+  documented.
+- **`GenericLLMPlannerAdapter` (`packages/adapters-planner`, issue #32) is the delivered reference
+  `PlannerAgentAdapter` implementation** — docs/02 §7 previously named it future work; it now ships,
+  mirroring `packages/adapters-reviewer`'s exact shape (a sandbox-free adapter over a single injected
+  `PlanProvider` seam; `HttpPlanProvider` is the one shipped plain-`fetch` OpenAI-compatible
+  implementation, no vendor SDK). `PlannerAgentAdapter` (`packages/core/src/adapters/types.ts`)
+  gained two additive methods beyond the original `run()`: `generatePlanSections()` and
+  `generateFeatureBacklog()` — `MockPlannerAdapter` implements both with deterministic fixture
+  output, so every existing `PlannerAgentAdapter` caller/mock keeps compiling.
+  `generateFeatureBacklog()`'s output shape matches `GenerateFeatureBacklogPayload.features`'s
+  `FeatureInputSchema` exactly (same convention issue #33's backlog parser already established) so a
+  caller can pass it straight through with no reshaping. `GenerateImplementationPlanHandler`/
+  `GenerateFeatureBacklogHandler` themselves were **not** changed — they still accept
+  caller-supplied plan/feature content directly; this issue only adds the _option_ of generating
+  that content via the adapter first, it does not rewire either handler or its Trigger.dev task.
+  `resolveDefaultPlannerAdapter()` (`triggerdev-tasks.ts`) is now async and constructs a real
+  instance from the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the
+  Coder/Reviewer default resolvers already read, via dynamic `import('@minicoder/adapters-planner')`
+  — the same pattern, not a parallel `PLANNER_*` env-var family.
+  **Hardening (post-merge PR review fix, MEDIUM-2):** `HttpPlanProvider` (and, identically,
+  `HttpArbiterProvider` below) originally validated only shallow/top-level response fields — a
+  malformed nested field (e.g. a bad `severity`/`testType` enum buried in an array) either passed
+  through silently or surfaced later as an opaque `TypeError`/DB constraint failure far from the
+  real cause. Both now validate the full parsed LLM response with real Zod schemas at the provider
+  boundary, throwing a clear `... response had an invalid shape: ...` error immediately. Both also
+  gained a `timeoutMs` option (default 30s) applied via `AbortSignal.timeout()` — an LLM endpoint is
+  an untrusted external dependency, and without this a hung request relied entirely on the caller's
+  own, much coarser Trigger.dev task timeout instead of failing fast with an actionable error.
+- **`parseBacklogMarkdown()` (`packages/core/src/backlog/`, issue #33) is the "parse" step for
+  `backlog.md` imports (docs/02 §11) — a pure function, no DB access, matching the "Markdown
+  artifacts are never runtime state" rule.** It converts `ExportBacklogHandler`'s Markdown output
+  back into `ImportBacklogPayload.features`, throwing `BacklogParseError` (with a 1-based line
+  number) on any structural problem — a missing top-level heading, no feature sections, a
+  duplicate `fr_id`, a missing/invalid `Kind:` line, or an empty description. Because
+  `ExportBacklogHandler`'s format carries only `fr_id`/`title`/`Kind:`/description, **not**
+  `priority` or dependency edges, `priority` is reconstructed from each feature's document
+  position (matching the export query's own `ORDER BY priority ASC, fr_id ASC`) and
+  `dependsOnFrIds` is always empty — a round trip preserves relative order and content, not the
+  original numeric priorities or dependency graph. `minicoder plan import-backlog <file>`
+  (`packages/cli/src/commands/plan.ts`) is the first CLI surface wiring this parser end to end:
+  read file → parse → dispatch `ImportBacklogCommand` directly via
+  `TransactionalCommandExecutor` (the same "one-shot CLI dispatch, no Trigger.dev task needed"
+  pattern `minicoder merge merge-if-ready`/`minicoder human ...` already established), supporting
+  `--dry-run` for the preview step.
+  **`ImportBacklogHandler`'s dry-run is a genuine validation gate, not just a structural check
+  (post-merge PR review fix, MEDIUM-1).** `ImportBacklogCommand`'s `dryRun` path originally returned
+  `previewed` right after the duplicate-`fr_id`/unknown-dependency checks, with the target
+  plan/project existence check reachable only on the non-dry-run path further down — so a preview
+  against a nonexistent plan/project reported a false-positive "previewed" success, only to fail
+  with `not-found` on the real import after an operator had already approved that preview. This
+  contradicted docs/02 §11's own `parse -> validate -> preview -> approve -> transactional import`
+  contract, which requires preview to be a real validation gate. Fixed by moving the
+  `implementation_plans WHERE id = ? AND project_id = ?` existence check (and a new duplicate-
+  `fr_id` check — `parseBacklogMarkdown()` already prevents this for Markdown-sourced imports, but
+  API/task callers can bypass the parser and send structured `features` directly) before the
+  `dryRun` return; the transactional apply path keeps its own existence re-check inside the
+  transaction as defense-in-depth against a plan/project deleted between preview and apply.
 
 ## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/github/`, migration 0009)
 
@@ -414,10 +492,25 @@ failed}`, so the matrix must cover every state that check can reach; a mid-fligh
   **Superseded by Phase 10:** `feature_runs.fix_attempt_count` (migration 0011) now exists and both
   handlers increment it and write `review_findings` — see the Reference Reviewer Adapter and
   Review/Fix Loop Operational Constraints section below.
-- **`github-reconciliation`'s scheduled fallback only re-checks feature runs that already have a
-  `pull_requests` row.** Discovering a brand-new PR that no webhook has ever reported requires a
-  `GitHubClient.listPullRequestsForBranch`-style method that does not exist yet — do not assume
-  the scheduled task will self-heal a completely missed `pr.opened` webhook.
+- **`github-reconciliation`'s scheduled fallback now auto-discovers a brand-new PR that no webhook
+  ever reported (issue #35), via `GitHubClient.listPullRequestsForBranch(owner, repo,
+branchName, state?)`.** Before the main reconcile loop's candidate query, a
+  `discoverMissingPullRequests()` pre-pass scans `code_pushed` feature runs with no tracked
+  `pull_requests` row, derives the branch MiniCoder's own coder adapter would have pushed to
+  (`branchNameFor()` from `@minicoder/adapters-coder` — the real runtime convention is
+  `minicoder/<featureRunId>`, the opaque generated id, **not** the `minicoder/FR-<n>` form docs/00
+  §3.11 describes; this pre-existing doc/code discrepancy predates issue #35 and remains
+  unreconciled — it is out of scope for this fix, which uses the real convention so discovery
+  actually matches production branches), and asks GitHub whether an open PR already exists for
+  it. A match dispatches `RecordPrOpenedCommand` to create the tracking row before the normal
+  candidate query runs, so the newly-discovered row is reconciled further in the same pass.
+  Automated discovery is now primary; the `minicoder github simulate-pr-opened`-style manual
+  recovery this task previously required for this exact gap is now the fallback for a case
+  discovery itself cannot reach (e.g. `listPullRequestsForBranch` failing repeatedly, or a
+  candidate not yet at `code_pushed`). A separate, opt-in `state doctor --check-github` check
+  (`packages/api/src/read-models/diagnostics.ts`'s `checkPrDiscoveryDivergence()`) surfaces the
+  same class of divergence on demand — the only doctor check needing a live GitHub credential,
+  which is why it is not part of `runDoctorChecks()`'s always-on pure-DB check list.
 - **`github-reconciliation` treats a per-candidate transient concurrency loss as a skip, not a
   batch abort.** A lock-gated candidate (`code_pushed`/`pr_opened`) whose
   `execution-lane:{projectId}` lock is held by another actor (the `start-next-feature` task, a
@@ -431,8 +524,21 @@ failed}`, so the matrix must cover every state that check can reach; a mid-fligh
   reconciliation of the whole batch and fails the task on a routine concurrency condition (a real
   bug — HIGH-1 in a later Phase 8 code review round). The wrapping `try` covers only the
   `reconcileGithubState`/`reconcileWithLock` calls, **not** the `GitHubClient.getPullRequest`
-  fetch — a genuine GitHub API or DB failure still throws and correctly fails the task for
-  Trigger.dev retry.
+  fetch — a genuine GitHub API or DB failure there is handled by its own, separate try/catch (see
+  the next bullet), not this one.
+- **`github-reconciliation`'s `GitHubClient.getPullRequest()` call also isolates per-candidate
+  failures, with one deliberate exception (issue #42).** A transient GitHub API failure (rate
+  limit, timeout, a single malformed/inaccessible PR) fetching one candidate is logged
+  (`console.error`, so an operator can see it happened — also reflected in the task's
+  `GithubReconciliationResult.fetchFailures` count) and the loop `continue`s to the next candidate,
+  rather than aborting the whole batch — the same "one bad candidate shouldn't kill the batch"
+  shape the concurrency-race fix above already established, extended to the GitHub API path. The
+  deliberate exception: a 401/403 (credential-class failure) still throws and aborts the whole
+  task, since it would affect every remaining candidate identically and retrying
+  candidate-by-candidate wastes rate-limit budget with no chance of succeeding until the credential
+  itself is fixed. Any other thrown status (or a DB failure) also still throws, correctly failing
+  the task for Trigger.dev retry — only the two named cases (transient fetch failure → skip;
+  401/403 → abort) are special-cased.
 - **`minicoder github serve` is intentionally not gated by `guardEnv()`** (unlike
   `github simulate-*`), since it is the real webhook receiver and must run in production/hosted
   deployments. Do not add the dev/test/ci environment guard to it.
@@ -929,6 +1035,42 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   deterministic `review-finding:{featureRunId}:{reviewCycle}:{index}` ids with
   `ON CONFLICT (id) DO NOTHING` for idempotent retry, the same "insert-with-a-conflict-clause"
   posture `AdapterRegistry.register()` established for cross-dialect idempotency.
+- **The exact reviewer prompt is persisted as a replayable audit snapshot (issue #49).**
+  `ReviewProvider.review()`'s `ReviewResult` gained an optional `promptSnapshot: unknown` field
+  (`HttpReviewProvider` populates it with the literal `{model, messages}` request body it POSTs);
+  `ClaudeReviewerOutput extends ReviewerOutput` passes it through. `run-review.ts` writes it as a
+  **second** `agent_context_packs` row keyed to the same `agentRunId` (distinct
+  `content_schema_version = 'reviewer-prompt-snapshot-v1'`, alongside the PR's `head_sha` as the
+  "which diff" reference — storing a commit reference rather than the diff itself, since
+  `headSha` already identifies it without duplicating storage), redacted with the same
+  `defaultRedactor.redactObject()` `AgentRunRecorder`'s own context-pack write already uses. This
+  is a direct `db.execute()`, not routed through `AgentRunRecorder`, because `AgentRunRecorder`'s
+  `contextPack` option is written **before** the wrapped adapter call runs, while the prompt
+  snapshot is only knowable after it returns. A test double (`MockReviewerAdapter`) that doesn't
+  report a `promptSnapshot` simply skips this write — no schema change, no required field.
+  **Diff omission is enforced at the source, not just claimed (post-merge PR review fix, HIGH-1).**
+  The original `HttpReviewProvider` returned the literal outbound request body as `promptSnapshot`
+  — which necessarily embeds the full PR diff, since the LLM cannot review the change otherwise —
+  so this call site's "avoids duplicating the diff itself" claim was false in practice: the full
+  diff (and anything it might contain — credentials, tokens, other secrets `defaultRedactor`'s
+  pattern-based scrubbing cannot reliably catch once serialized into a JSON string) was persisted
+  into `agent_context_packs` verbatim. Fixed in `HttpReviewProvider.review()`: the real outbound
+  request (with the real diff) is unchanged, but `promptSnapshot` is now a distinct, diff-omitted
+  copy (the diff field replaced with a placeholder string) built only for this persistence path.
+  This is a contract every `ReviewerAgentAdapter`/`ReviewProvider` implementation must honor — this
+  call site still only handles whatever `unknown` value the adapter reports and cannot generically
+  strip a diff it has no structural knowledge of.
+  **Storage-boundary backstop added (post-merge PR review fix, LOW-1, round 3).** The adapter-level
+  fix above is a contract, not an enforced guarantee — a non-compliant custom `ReviewerAgentAdapter`
+  could still report a raw diff. `sanitizePromptSnapshot()` (`packages/core/src/review/`) is a
+  defense-in-depth backstop applied to every `promptSnapshot` at this persistence call site,
+  regardless of which adapter produced it: it walks the value (parsing/re-serializing any
+  JSON-shaped string, since the shipped provider's own message `content` fields are JSON-encoded
+  strings), replacing anything under a literal `diff` key or any string matching a unified-diff
+  shape with a placeholder. Never throws — falls back to a placeholder on any unexpected shape
+  rather than persisting it unexamined or blocking the write. This is genuine defense-in-depth, not
+  a replacement for the adapter-level fix: the two operate at different boundaries (what an adapter
+  is supposed to report vs. what actually gets written).
 - **`ci_failed`'s next-transition ownership stays inside `reconcileGithubState()`, not a separate
   caller.** Immediately after a successful `ci_running -> ci_failed` transition, the same bounded
   catch-up loop (`MAX_RECONCILE_STEPS`) reads the feature run's current `fix_attempt_count` and
@@ -1057,19 +1199,30 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   migrations against a live PostgreSQL schema and round-trips `insertReviewFindings()` →
   open-findings query → `RecordCodePushedHandler`'s resolve path — reverting the fix reproduces
   the exact `42804`/`column is of type boolean` errors this regression now catches.
-- **MEDIUM (deferred, not fixed): the clean-review (no-transition) path's `insertReviewFindings()`
-  call is still a standalone write, not wrapped in a caller-level idempotency guard.** Unlike the
-  blocking/escalation paths (round 2's HIGH-1 fix), there's no state transition here to make the
-  write atomic with — a crash/retry in this window can still mint a new `reviewCycle` and duplicate
-  audit-only (non-blocking) findings. This is a real but explicitly lower-severity gap than the
-  round-2 fix (no state-machine correctness impact, only redundant audit rows and a wasted reviewer
-  invocation on retry) — a proper fix needs a deterministic review-occurrence marker independent of
-  `MAX(review_cycle) + 1`, which is more machinery than this phase's scope justifies. Tracked as
-  follow-up, not built here.
-- **MEDIUM (deferred, not fixed): `ClaudeReviewerAdapter` synthesizes a placeholder feature title
-  and empty acceptance criteria.** Already a known, documented simplification (`ReviewerInput`, the
-  shared Phase-5 adapter contract, carries no such fields) — caps review fidelity but is not a
-  correctness bug. Widening `ReviewerInput` is future work, not this phase's scope.
+- **MEDIUM (deferred at the time, later closed by issue #46): the clean-review (no-transition)
+  path's `insertReviewFindings()` call was still a standalone write, not wrapped in a
+  caller-level idempotency guard.** Unlike the blocking/escalation paths (round 2's HIGH-1 fix),
+  there's no state transition here to make the write atomic with — a crash/retry in this window
+  could mint a new `reviewCycle` and duplicate audit-only (non-blocking) findings. **Closed by
+  issue #46:** migration `0012_review_occurrence_markers` adds a `review_occurrence_markers` table
+  (`packages/core/src/review/occurrence-marker.ts`'s `findReviewOccurrenceMarker()`/
+  `recordReviewOccurrenceMarker()`) keyed by `(feature_run_id, head_sha)` — the PR's head commit
+  already uniquely identifies "which diff was reviewed," so it needs no running `MAX()` count.
+  `run-review.ts` now checks it **before** invoking the reviewer adapter at all: if the current PR
+  head has already been recorded, the task returns the prior outcome without re-invoking the
+  adapter or minting a new cycle. Both clean-review write sites (the plain "no blocking findings"
+  path, and the "Arbiter dismissed every blocking finding this cycle" path) now insert the marker
+  in the same `db.transaction()` as `insertReviewFindings()`, so a crash between the two can't
+  leave one without the other.
+- **MEDIUM (deferred at the time, later closed by issue #47): `ClaudeReviewerAdapter` synthesized a
+  placeholder feature title and empty acceptance criteria.** `ReviewerInput` (the shared Phase-5
+  adapter contract) carried no such fields. **Closed by issue #47:** `ReviewerInput` gained
+  optional `featureTitle`/`acceptanceCriteria` fields, mirroring `CoderInput`'s shape (additive,
+  backward-compatible — existing callers/mocks that don't set them keep compiling).
+  `run-review.ts` now queries the real feature title/acceptance criteria (the same
+  `feature_requests`/`acceptance_criteria` query `run-coder.ts` already uses) and populates them;
+  `ClaudeReviewerAdapter` uses the real values when present, falling back to the old placeholder
+  only when a caller-supplied `ReviewerInput` omits them (e.g. an older test fixture).
 
 **Post-implementation review fixes (round 4):**
 
@@ -1115,6 +1268,24 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
 - **LOW (`@minicoder/adapters-reviewer` was missing from `vitest.config.ts`'s alias map).** Added,
   matching the pattern used for every other workspace package that tests resolve directly from
   source rather than `dist/`.
+
+**Post-implementation review fixes (round 5):**
+
+- **Issue #48 (`run-review.ts` and `github-reconciliation.ts` handled `automation-paused`
+  inconsistently on the same `StartFixingCommand` dispatch).** Round 4's `github-reconciliation.ts`
+  fix (above) added `automation-paused` to that file's `EXPECTED_COMMAND_ERROR_TYPES`, but
+  `run-review.ts`'s own `advanceToFixing()` helper — which dispatches the identical
+  `StartFixingCommand` for the identical `changes_requested -> fixing` hop — still used a narrower
+  set (`concurrent-command`/`not-found` only), so a pause landing at that exact moment would throw
+  out of the task instead of being swallowed. Not a correctness bug (the `changes_requested`
+  transition is already durably recorded by that point, so a thrown task failure just meant
+  Trigger.dev retry, or a later `github-reconciliation` pass would pick up the `-> fixing` hop via
+  its own `CHANGES_REQUESTED` branch) — but the two callers of the same command behaved differently
+  for the same condition, which is confusing to reason about and easy to regress. Fixed by adding
+  `automation-paused` to `run-review.ts`'s `EXPECTED_COMMAND_ERROR_TYPES` too, so both callers now
+  swallow it identically. Regression in `run-review.test.ts` pauses automation mid-flight and
+  asserts the task returns `decision: 'changes_requested'` without throwing, with the feature run
+  left at `changes_requested` (not `fixing`) since only the `-> fixing` hop was skipped.
 
 ## Disagreement, Arbiter, and Human Escalation Operational Constraints (`packages/core/src/disagreement/`, `packages/core/src/commands/handlers/feature/{resolve-disagreement,resume-feature-execution,retry-feature,skip-feature,block-feature}.ts`)
 
@@ -1162,11 +1333,17 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   task invocation that produced the reviewer output being arbitrated — arbitrating a disagreement
   is a sub-decision within processing this one review cycle's output, not an independently
   dispatchable unit of work the way a full Coder or Reviewer run is.
-- **`ArbiterAgentAdapter` has no reference implementation, so `run-review.ts` never constructs one
-  from env.** `RunReviewDeps.arbiterAdapterFactory` must be injected by the caller — the same
-  posture Phase 6 established for `PlannerAgentAdapter` in `planning-readiness-assessment`/
-  `generate-implementation-plan` before any reference planner adapter existed. A live deployment
-  that reaches a disagreement without one configured throws an actionable error rather than
+- **`ClaudeArbiterAdapter` (`packages/adapters-arbiter`, issue #51) is the delivered reference
+  `ArbiterAgentAdapter` implementation** — mirroring `packages/adapters-reviewer`'s exact shape (a
+  sandbox-free adapter over a single injected `ArbiterProvider` seam; `HttpArbiterProvider` is the
+  one shipped plain-`fetch` OpenAI-compatible implementation). `run-review.ts`'s
+  `resolveDefaultArbiterAdapterFactory()` constructs a real instance from the same
+  `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the Coder/Reviewer/Planner
+  default resolvers already read, used whenever `RunReviewDeps.arbiterAdapterFactory` is not
+  injected (test scenarios still inject `MockArbiterAdapter` explicitly). A caller must still
+  supply `arbiterAdapterName` on the payload (the `AdapterRegistry` lookup key identifying which
+  registered adapter row this run's provenance attaches to) — a live deployment that reaches a
+  disagreement with no `arbiterAdapterName` configured throws an actionable error rather than
   silently skipping arbitration or falling through to escalation.
 - **The Arbiter's `resolution` maps to three different outcomes, not a binary
   resolve/escalate.** `reviewer_correct`/`compromise` continue the ordinary fix loop unchanged
@@ -1195,14 +1372,34 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   different feature for the project again. `ResolveDisagreementCommand`/
   `ResumeFeatureExecutionCommand` correctly do **not** clear it — the feature run stays active,
   just at a different execution state.
-- **A human-initiated `blocked` (via `BlockFeatureCommand`) has no matching human-initiated
-  unblock — this is a known, documented limitation, not an oversight.**
-  `UnblockFeatureCommand`'s guard (Phase 8) checks `feature_dependencies`, not "a human said this
-  is unblocked now"; a feature blocked this way with no unmet dependency will never satisfy that
-  guard automatically. Recovering it currently requires `minicoder state repair`. `RetryFeatureCommand`
-  is not reachable from `blocked` either (its `fromState` is `human_required` only) — this is the
-  same "handler exists, full recovery path lands later" posture Phase 8 already left
-  `UnblockFeatureHandler` in for several phases.
+- **`HumanUnblockFeatureCommand` (issue #53) is the human-initiated `blocked ->
+approved_pending_execution` unblock** — distinct from `UnblockFeatureCommand`'s automatic,
+  dependency-driven counterpart (Phase 8), whose guard checks `feature_dependencies` and never
+  fires for a purely human-initiated `blocked` (via `BlockFeatureCommand`, with no unmet
+  dependency to ever clear). `RetryFeatureCommand` still isn't reachable from `blocked` (its
+  `fromState` is `human_required` only).
+  **Dependency guard (post-merge PR review fix, HIGH-1):** `HumanUnblockFeatureHandler` originally
+  transitioned unconditionally, with no dependency check at all — including the issue #52
+  skip-cascade case, where a dependent blocked because its upstream dependency was `skipped` (and
+  can therefore never reach `merged`) would appear successfully "unblocked" into
+  `approved_pending_execution`, while `SelectFeatureHandler`'s own dependency guard (the real
+  dependency authority) would still reject it forever. Fixed by re-running the identical
+  unmet-dependency query `SelectFeatureHandler` uses before allowing the transition, rejecting
+  with the same `unmet-dependencies` `CommandError` type. There is still no dependency-waiver
+  mechanism — a human wanting to force such a feature through must first resolve (or retry) the
+  upstream dependency to `merged`, not bypass this check.
+- **`SkipFeatureCommand`'s dependent cascade re-checks (and retries) a CAS-missed dependent rather
+  than treating a 0-affected-rows result as "nothing to do" (post-merge PR review fix, MEDIUM-1,
+  round 2).** A first-cut fix for the class of bug documented in the Merge Gate section below
+  (bare `execute()` with no affected-row check, risking a false `feature.blocked_by_skipped_dependency`
+  event when a concurrent writer changed the dependent's version) initially just `continue`d on any
+  CAS miss — but that conflated two different situations: the dependent genuinely moved to a
+  different state (fine, nothing to do) versus the dependent is still `approved_pending_execution`
+  and only some other column changed (not fine — silently leaving it there recreates exactly the
+  stranded-forever-behind-a-skipped-dependency state issue #52 exists to prevent). Fixed by
+  re-reading the dependent on a CAS miss: if it's no longer `approved_pending_execution`, skip
+  (no event); if it still is, retry the block against the fresh version, up to
+  `MAX_CASCADE_RETRIES` (3) attempts.
 - **`SKIPPED` is a new terminal `FeatureExecutionState`, added to the glossary before use** (per
   the glossary's own "no new state without adding it to docs/00 first" rule). A `skipped` feature
   never reaches `merged`, so any downstream feature depending on it via `feature_dependencies` will
@@ -1459,8 +1656,10 @@ displayName?}`; `ApiKeyProvider` hashes each key with SHA-256 at boot and never 
   (`GenerateImplementationPlanHandler`, `GenerateFeatureBacklogHandler`, `ValidateBacklogHandler`)
   reachable only via a `system`-kind API key, for manual replay of a stuck system-owned transition.
   `AssessPlanningReadinessHandler` is deliberately excluded from this allow-list — unlike its
-  siblings, its constructor requires a live `PlannerAgentAdapter` instance, and no reference planner
-  adapter has shipped yet (docs/02 §7). (2) `POST /commands/merge-if-ready` — a dedicated route,
+  siblings, its constructor requires a live `PlannerAgentAdapter` instance, and this registry only
+  registers handlers with a no-argument constructor; `GenericLLMPlannerAdapter` (issue #32, docs/02
+  §7) now exists but the generic dispatch route has no adapter-construction wiring to supply it, so
+  this exclusion is unchanged. (2) `POST /commands/merge-if-ready` — a dedicated route,
   since it chains `MergeIfReadyHandler` → a real `GitHubClient.mergePullRequest()` call →
   `RecordMergedHandler`/`RecordMergeFailedHandler`+follow-up, exactly mirroring
   `packages/cli/src/commands/merge.ts`'s existing sequence; this cannot be a single generic
@@ -1660,6 +1859,31 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   declares both, matching `merge-if-ready`'s existing parameter/response shape (whose `409`
   description was also broadened to mention the in-progress case introduced in round 2).
 
+**Post-implementation review fixes (round 4 — issue #56):**
+
+- **The "building a fully automatic recovery path is future work" note above is now closed.**
+  Round 3 deliberately left a feature run stuck at `merge_ready` (GitHub merged, recording failed)
+  requiring manual operator investigation with no tool-assisted recovery. Fixed with a new,
+  explicit recovery command rather than automatic/silent recording (the safer of the two options
+  the issue proposed): `minicoder merge finalize-if-github-merged --feature-run <id> --project
+<id>` (`packages/cli/src/commands/merge.ts`) and its API twin, `POST
+/commands/finalize-if-github-merged` (`packages/api/src/commands/finalize-if-github-merged-route.ts`,
+  operator-role-gated via `requireRole()`). Both: no-op with `{alreadyRecorded: true}` if the run is
+  already `merged`; reject if the run is at any state other than `merge_ready`/`merged`; **always
+  re-verify against GitHub** via `GitHubClient.getPullRequest()` before recording anything — refuse
+  with a clear error if GitHub does not report `state: 'merged'` with a `mergedAt` timestamp, so
+  this path can never be tricked into recording a merge that didn't happen; then dispatch
+  `RecordMergedCommand` (via `systemActor()`, matching every other internal follow-up write in this
+  file) using `observed.mergeSha ?? observed.headSha`. Deliberately does **not** attempt to locate
+  or clear the original stuck `merge-if-ready-route` idempotency-key row — that row has no column
+  linking it back to a `featureRunId` (only the caller's opaque `Idempotency-Key` header), so
+  guessing which row to clear would be unsafe; it self-clears via its existing 7-day TTL, and a
+  retry against it after this recovery command runs would simply fail `MergeIfReadyHandler`'s own
+  "still at `merge_ready`" guard harmlessly (the run has already moved to `merged` by then) rather
+  than causing any real problem. Regression tests cover: already-merged no-op, wrong-state
+  rejection, GitHub-not-confirmed rejection (feature run stays untouched), and the full recovery
+  path recording the merge.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
@@ -1671,18 +1895,43 @@ advisories are known and accepted: GHSA-5xrq-8626-4rwp (vitest critical — UI s
 GHSA-fx2h-pf6j-xcff (vite high — Windows-only path, CI runs Linux). Full rationale in
 docs/04 §12.13. Full `pnpm audit --audit-level=high` will report these locally — that is expected.
 
+**Concurrency scenario tier (issue #43, docs/04 §12.15):**
+`packages/testing/src/execution-orchestrator-concurrency.postgres.test.ts` is a genuinely
+concurrent (`Promise.all`-driven), PostgreSQL-only integration scenario racing
+`start-next-feature`, `github-reconciliation`, and an operator pause against the same project.
+It is PostgreSQL-only by design, not convenience: `better-sqlite3` is a synchronous single-thread
+binding, so two `SqliteDbClient` connections to the same file cannot genuinely race — an
+overlapping write from a second connection either never truly overlaps or deadlocks against
+`busy_timeout` (confirmed empirically: a same-file multi-connection SQLite version of this exact
+scenario reliably deadlocked every iteration). PostgreSQL's client-server architecture has no such
+limitation. Gated by `MINICODER_TEST_PG_URL`, same posture as the other Postgres-only suites.
+Issue #41 adds a sibling suite in this same tier,
+`packages/testing/src/phase8-concurrency-guards.postgres.test.ts`, proving the specific Phase 8
+guards above (`SelectFeatureHandler`'s CAS, `StartCodingHandler`'s automation-state re-check,
+`idempotency_keys`' claim-first `ON CONFLICT DO NOTHING`, `WorkflowLockManager`'s fence-token CAS)
+against real concurrent PostgreSQL connections rather than sequential re-dispatch. Issue #57 adds
+a third suite, `packages/api/src/route-idempotency.postgres.test.ts`, proving the route-level
+claim → fulfill → reclaim round-trip through a real `result JSONB` column and a genuine
+concurrent-claim race resolving to exactly one `owned` outcome.
+
 ## Vitest Test Command Tiers
 
-| CLI command                  | What it runs                                                                     | Config                                      |
-| ---------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------- |
-| `minicoder test unit`        | All `*.test.ts` except `*.integration.test.ts` (includes scenario/fixture tests) | `vitest.unit.config.ts`                     |
-| `minicoder test integration` | Only `*.integration.test.ts` (requires real DB)                                  | root `vitest.config.ts` + positional filter |
-| `minicoder test system`      | Programmatic scenario runner (`runAllScenarios()`)                               | —                                           |
-| `pnpm test`                  | All `*.test.ts` including integration                                            | root `vitest.config.ts`                     |
+| CLI command                  | What it runs                                                                 | Config                                      |
+| ---------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------- |
+| `minicoder test unit`        | All `*.test.ts` except `*.integration.test.ts` and `packages/testing/src/**` | `vitest.unit.config.ts`                     |
+| `minicoder test integration` | Only `*.integration.test.ts` (requires real DB)                              | root `vitest.config.ts` + positional filter |
+| `minicoder test system`      | Programmatic scenario runner (`runAllScenarios()`)                           | —                                           |
+| `pnpm test`                  | All `*.test.ts` including integration                                        | root `vitest.config.ts`                     |
 
-`vitest.unit.config.ts` excludes `**/*.integration.test.ts` and is the only way to run the
-non-integration Vitest tier via CLI. Do not add `--include`/`--exclude` CLI flags — Vitest 1.6.x
-does not support them; use a separate config file instead.
+`vitest.unit.config.ts` excludes `**/*.integration.test.ts` and, since issue #23,
+`packages/testing/src/**` — that directory holds scenario/fixture tests
+(`runAllScenarios()`-style system scenarios, Postgres-gated integration suites), not pure
+domain-logic unit tests; excluding the whole directory (rather than an allowlist of individual
+non-scenario files) is deliberately the least brittle option. Scenario coverage stays reachable
+via `minicoder test system` and `pnpm test`/CI (root `vitest.config.ts`, unaffected). This config
+is the only way to run the non-integration, non-scenario Vitest tier via CLI. Do not add
+`--include`/`--exclude` CLI flags — Vitest 1.6.x does not support them; use a separate config file
+instead.
 
 ## SQLite Test Teardown Rule
 
@@ -1702,7 +1951,7 @@ calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do no
 The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
 running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
 appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
-Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → triggerdev → testing → (rest --noEmit)`.
+Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → adapters-reviewer → adapters-planner → adapters-arbiter → triggerdev → testing → api → (rest --noEmit)`.
 `workflow` moved ahead of `github`/`triggerdev` in Phase 7: `packages/github`'s inbox handlers and
 `packages/triggerdev`'s `github-reconciliation` task both acquire a `WorkflowLockManager` lock
 before dispatching a lock-gated reconciliation command (`RecordPrOpenedCommand`/
@@ -1713,7 +1962,14 @@ also added ahead of `triggerdev` (`github-reconciliation.ts` imports `OctokitGit
 `CodexCoderAdapter`/`HttpCodeGenerationProvider`/`CoderSandbox` from `@minicoder/adapters-coder`
 (the same "constructs the real reference implementation from env, dynamic `import()`" pattern
 `github-reconciliation.ts` already uses for `OctokitGitHubClient`), so `packages/triggerdev`
-depends on `@minicoder/adapters-coder`'s type declarations.
+depends on `@minicoder/adapters-coder`'s type declarations. `adapters-reviewer` was added ahead of
+`triggerdev` in Phase 10 for the identical reason (`run-review.ts`'s default resolver dynamically
+imports `ClaudeReviewerAdapter`/`HttpReviewProvider`). `adapters-planner` was added ahead of
+`triggerdev` for issue #32: `triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` dynamically
+imports `GenericLLMPlannerAdapter`/`HttpPlanProvider` from `@minicoder/adapters-planner`, the same
+pattern. `adapters-arbiter` was added ahead of `triggerdev` for issue #51: `run-review.ts`'s
+`resolveDefaultArbiterAdapterFactory()` dynamically imports `ClaudeArbiterAdapter`/
+`HttpArbiterProvider` from `@minicoder/adapters-arbiter`, the same pattern.
 
 When adding a new workspace package that others import for types, add it to this chain.
 
@@ -1766,6 +2022,37 @@ row, not the system-triggered breach.
 
 `state purge` does not exist. Irreversible maintenance uses only the guarded `repair --apply` path.
 Global (unscoped) repair is not supported — `--project` is mandatory for both steps.
+
+## Database Reset CLI (`minicoder db reset` / `packages/migrations/src/runner.ts`)
+
+`db reset`'s safety contract was strengthened (issues #10/#11) from warn-only to fully enforced,
+mirroring `state repair`'s two-step dry-run/apply/confirmation-token shape:
+
+1. `minicoder db reset --dry-run --env <env> --actor <name> (--backup-verified | --backup-exempt "<reason>")`
+   — previews (no mutation) and prints a single-use confirmation token (expires in 5 minutes),
+   bound to the exact database target (host+port+path for PostgreSQL, resolved file path for
+   SQLite) — a token issued while previewing one target cannot be replayed against another.
+2. `minicoder db reset --apply --yes --confirmation <token> --env <env> --actor <name> (--backup-verified | --backup-exempt "<reason>")`
+   — executes.
+
+Additional enforced checks (all before any mutation, all before a SQLite file is created or a
+PostgreSQL connection is used):
+
+- **`--env`/system-env agreement**: when `APP_ENV`/`NODE_ENV` is set, `--env` must match it
+  exactly — not just both be in the safe set.
+- **Unset system env is never inferred as safe**: requires the explicit `--disposable-db` flag.
+- **`--actor <name>` is required** and recorded in the audit log — Phase 1's CLI has no
+  session/role system, so this is a caller-declared identity, not an authenticated principal (the
+  strongest this profile can offer; real auth is docs/07 scope).
+- **Backup evidence is required**: `--backup-verified` or `--backup-exempt "<reason>"`, recorded in
+  the audit log (never a bare warning).
+- **PostgreSQL host allowlist**: the target host must be in `MINICODER_ALLOWED_RESET_HOSTS`
+  (comma-separated; defaults to `localhost`/`127.0.0.1`/`::1`) or the caller must pass the explicit,
+  visible `--force-host` override.
+- **Credential/query-string redaction**: `sanitizeDbIdentifier()` reduces a PostgreSQL URL to
+  `protocol://hostname:port/pathname` before ever logging it — username, password, query string,
+  and fragment are all dropped, not just the URL authority. A malformed URL is replaced with a
+  fixed, non-sensitive placeholder rather than echoing the raw input.
 
 ## State Reconcile CLI
 

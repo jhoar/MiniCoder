@@ -12,9 +12,14 @@ import {
   generateId,
   normalizeReviewerFindings,
   insertReviewFindings,
+  findReviewOccurrenceMarker,
+  recordReviewOccurrenceMarker,
   findRepeatedFinding,
   insertDisagreementRecord,
   recordArbiterDisposition,
+  defaultRedactor,
+  sanitizePromptSnapshot,
+  isoNow,
 } from '@minicoder/core';
 import type {
   ArbiterAgentAdapter,
@@ -38,6 +43,13 @@ export type { RunReviewPayload };
 export interface RunReviewResult {
   projectId: string;
   featureRunId: string;
+  /** True only when THIS invocation actually invoked a `ReviewerAgentAdapter`/`ArbiterAgentAdapter`
+   * and produced a fresh outcome — false for every short-circuit path (no matching feature run,
+   * wrong current state, no tracked PR, or — per issue #46 — a prior-occurrence-marker hit for the
+   * same PR head commit). `reviewed: false, decision: 'approved'` specifically means "this exact
+   * commit was already reviewed and found clean by an earlier invocation; nothing new happened
+   * here," not "this commit has no review coverage." Do not read `reviewed` as "is this commit
+   * covered by review" — check `review_occurrence_markers`/`review_findings` for that. */
   reviewed: boolean;
   decision: 'approved' | 'changes_requested' | 'escalated' | null;
 }
@@ -50,21 +62,66 @@ const EXECUTION_LANE_TTL_MS = 30_000;
 // This task never attempts SelectFeature/StartCoding-style transitions; only an in-flight
 // idempotency-key race with a concurrent invocation of this same task, or the feature run
 // vanishing underneath us, are expected non-fatal races (mirrors run-coder.ts's narrower set).
-const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'not-found']);
+// 'automation-paused' is included too (issue #48): advanceToFixing()'s StartFixingCommand
+// dispatch can throw it if automation is paused at that exact moment, and
+// github-reconciliation.ts already treats the identical condition on the identical command as an
+// expected, swallowed race rather than a task failure — the two callers of StartFixingCommand
+// should behave the same way for the same underlying condition. The changes_requested transition
+// this function guards is already durably recorded by the time StartFixingCommand is attempted,
+// so swallowing this here loses nothing: a later github-reconciliation pass (or another
+// run-review invocation) picks up the `-> fixing` hop once automation resumes.
+const EXPECTED_COMMAND_ERROR_TYPES = new Set([
+  'concurrent-command',
+  'not-found',
+  'automation-paused',
+]);
 
 function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
-/** Builds a fresh `ArbiterAgentAdapter` instance for a single disagreement resolution. There is no
- * default/reference implementation of this yet (docs/03 §9 lists only `GenericLLMPlannerAdapter`,
- * `CodexCoderAdapter`, `ClaudeReviewerAdapter`, `GenericLLMDocumentationAdapter` as reference
- * adapters — no Arbiter equivalent has shipped), so `run-review.ts` never constructs one from env
- * the way it does for the Reviewer — callers must inject this via `RunReviewDeps`, mirroring
- * `planning-readiness-assessment`/`generate-implementation-plan`'s treatment of
- * `PlannerAgentAdapter` (docs/06 Phase 6). A live deployment that reaches a disagreement without
- * one configured fails fast with an actionable error instead of silently skipping arbitration. */
+/** Builds a fresh `ArbiterAgentAdapter` instance for a single disagreement resolution. A caller can
+ * still inject a custom factory via `RunReviewDeps` (e.g. a test double, or a distinct
+ * arbiter model/endpoint); when none is supplied, `resolveDefaultArbiterAdapterFactory()`
+ * constructs the real reference `ClaudeArbiterAdapter` (issue #51). */
 export type ArbiterAdapterFactory = () => Promise<ArbiterAgentAdapter>;
+
+/**
+ * Constructs the real reference `ClaudeArbiterAdapter` (issue #51) from env config. Deliberately
+ * reuses the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the
+ * Coder/Reviewer/Planner default resolvers already use — simpler than introducing a parallel
+ * `ARBITER_*` env-var family when the same OpenAI-compatible endpoint can serve all four roles. A
+ * deployment wanting a distinct arbiter model/endpoint can still inject a custom
+ * `ArbiterAdapterFactory` via `RunReviewDeps` instead of using this default.
+ */
+function resolveDefaultArbiterAdapterFactory(): ArbiterAdapterFactory {
+  return async () => {
+    const codeGenBaseUrl = requireNonBlankEnvVar(
+      'CODE_GEN_BASE_URL',
+      'run-review requires an OpenAI-compatible endpoint to arbitrate a disagreement — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenApiKey = requireNonBlankEnvVar(
+      'CODE_GEN_API_KEY',
+      'run-review requires an OpenAI-compatible endpoint to arbitrate a disagreement — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenModel = requireNonBlankEnvVar(
+      'CODE_GEN_MODEL',
+      'run-review requires an OpenAI-compatible endpoint to arbitrate a disagreement — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const { ClaudeArbiterAdapter, HttpArbiterProvider } =
+      await import('@minicoder/adapters-arbiter');
+    return new ClaudeArbiterAdapter({
+      arbiterProvider: new HttpArbiterProvider({
+        baseUrl: codeGenBaseUrl,
+        apiKey: codeGenApiKey,
+        model: codeGenModel,
+      }),
+    });
+  };
+}
 
 export type GithubClientFactory = () => Promise<GitHubClient>;
 /** Builds a fresh `ReviewerAgentAdapter` instance for this one run, given the project's repo
@@ -178,6 +235,7 @@ interface FeatureRunRow {
 
 interface PullRequestRow {
   pr_number: number;
+  head_sha: string | null;
 }
 
 export interface RunReviewDeps {
@@ -280,13 +338,27 @@ export async function runImpl(
     [projectId],
   );
   const prRows = await db.query<PullRequestRow>(
-    `SELECT pr_number FROM pull_requests WHERE feature_run_id = ?`,
+    `SELECT pr_number, head_sha FROM pull_requests WHERE feature_run_id = ?`,
     [featureRunId],
   );
   const repo = repoRows[0];
   const pr = prRows[0];
   if (!repo || !pr) {
     return { projectId, featureRunId, reviewed: false, decision: null };
+  }
+
+  // Issue #46: checked BEFORE invoking the reviewer adapter at all. If this exact PR head commit
+  // was already fully reviewed with a clean (approved) outcome, a retry (e.g. a duplicate task
+  // trigger, or a crash after the first attempt's clean-review write already committed) must not
+  // re-invoke the adapter and mint a new reviewCycle for a commit that's already been reviewed.
+  if (pr.head_sha) {
+    const priorOccurrence = await findReviewOccurrenceMarker(db, {
+      featureRunId,
+      headSha: pr.head_sha,
+    });
+    if (priorOccurrence) {
+      return { projectId, featureRunId, reviewed: false, decision: 'approved' };
+    }
   }
 
   const cycleRows = await db.query<{ maxCycle: number | null }>(
@@ -308,12 +380,26 @@ export async function runImpl(
     githubClient,
   });
 
+  // Issue #47: the same feature title / acceptance criteria query run-coder.ts already uses, so
+  // the reviewer can check the diff against the real acceptance criteria instead of a synthesized
+  // placeholder.
+  const featureRows = await db.query<{ title: string }>(
+    `SELECT title FROM feature_requests WHERE id = ?`,
+    [run.feature_request_id],
+  );
+  const acceptanceRows = await db.query<{ description: string }>(
+    `SELECT description FROM acceptance_criteria WHERE feature_request_id = ? ORDER BY order_index ASC`,
+    [run.feature_request_id],
+  );
+
   const input: ReviewerInput = {
     projectId,
     featureRunId,
     prNumber: pr.pr_number,
     reviewCycle,
     correlationId,
+    featureTitle: featureRows[0]?.title,
+    acceptanceCriteria: acceptanceRows.map((r) => r.description),
   };
 
   const { agentRunId, output } = await recorder.record(
@@ -342,6 +428,57 @@ export async function runImpl(
     },
     () => adapter.run(input),
   );
+
+  // Issue #49: persist a replayable snapshot of the prompt sent to the reviewer LLM (if the
+  // adapter reports one — MockReviewerAdapter and other test doubles don't), plus the PR head SHA
+  // as the "which diff" reference (avoids duplicating the diff itself; a commit reference is
+  // already sufficient to identify it). Written as a second agent_context_packs row (distinct
+  // content_schema_version) keyed to the same agentRunId, applying the same redaction convention
+  // AgentRunRecorder's own context-pack write already uses — this one is written directly since
+  // it's only knowable after the adapter call returns, while AgentRunRecorder's own contextPack
+  // option is written before the call.
+  //
+  // Post-merge review fix (HIGH-1): this claim ("avoids duplicating the diff itself") was
+  // previously false in practice — `ClaudeReviewerAdapter`/`HttpReviewProvider`'s `promptSnapshot`
+  // was the literal request body sent to the LLM, which necessarily embeds the full diff, so it
+  // was persisted into `agent_context_packs` verbatim (a real secret-retention risk: a diff can
+  // contain credentials `defaultRedactor`'s pattern-based scrubbing cannot reliably catch once
+  // serialized into a JSON string). Fixed at the source: `HttpReviewProvider.review()` now returns
+  // a distinct, diff-omitted `promptSnapshot` from the request it actually sends — this call site
+  // needed no change, since it already only handles whatever the adapter reports, but the contract
+  // this comment describes is now actually enforced by the one shipped adapter, not merely hoped
+  // for. A test double that still reports a raw diff in `promptSnapshot` would still persist it —
+  // this is a contract every `ReviewerAgentAdapter`/`ReviewProvider` implementation must honor.
+  //
+  // Post-merge review fix (LOW-1, defense-in-depth): the paragraph above is still only a
+  // contract, not something this `unknown`-typed value can be trusted to satisfy — a
+  // non-compliant custom adapter could still report a raw diff. `sanitizePromptSnapshot()`
+  // (`@minicoder/core`) is a storage-boundary backstop: it walks the snapshot (parsing/
+  // re-serializing JSON-shaped string values, since the shipped provider's own message `content`
+  // fields are JSON-encoded strings) and replaces anything under a literal `diff` key, or any
+  // string that looks like a unified diff, with a placeholder — applied here, before redaction,
+  // regardless of which adapter produced the snapshot.
+  const reviewerPromptSnapshot = (output as { promptSnapshot?: unknown }).promptSnapshot;
+  if (reviewerPromptSnapshot !== undefined) {
+    const now = isoNow();
+    await db.execute(
+      `INSERT INTO agent_context_packs (id, agent_run_id, content, content_schema_version, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 1, ?, ?)`,
+      [
+        generateId(),
+        agentRunId,
+        JSON.stringify(
+          defaultRedactor.redactObject({
+            promptSnapshot: sanitizePromptSnapshot(reviewerPromptSnapshot),
+            headSha: pr.head_sha,
+          }),
+        ),
+        'reviewer-prompt-snapshot-v1',
+        now,
+        now,
+      ],
+    );
+  }
 
   // Single normalization point (Phase 10 design decision): every adapter (ClaudeReviewerAdapter
   // or a test MockReviewerAdapter) returns a raw ReviewerOutput; this is the one place that
@@ -395,13 +532,16 @@ export async function runImpl(
     let effectiveFindings = findings;
     const repeated = await findRepeatedFinding(db, { featureRunId, reviewCycle, findings });
     if (repeated) {
-      if (!arbiterAdapterName || !deps.arbiterAdapterFactory) {
+      if (!arbiterAdapterName) {
         throw new Error(
           'run-review detected a repeated unresolved finding (a coder/reviewer disagreement) but no ' +
-            'arbiterAdapterName/arbiterAdapterFactory was configured — see docs/06 Phase 11: there is ' +
-            'no reference ArbiterAgentAdapter implementation yet, so one must be injected via RunReviewDeps.',
+            'arbiterAdapterName was configured on the payload — an ArbiterAgentAdapter must be ' +
+            'registered (e.g. ClaudeArbiterAdapter, issue #51) and named here before arbitration ' +
+            'can proceed.',
         );
       }
+      const arbiterAdapterFactory =
+        deps.arbiterAdapterFactory ?? resolveDefaultArbiterAdapterFactory();
       const disagreementId = await insertDisagreementRecord(db, {
         featureRunId,
         findingId: repeated.priorFindingId,
@@ -412,7 +552,7 @@ export async function runImpl(
         AgentRole.ARBITER,
         arbiterAdapterName,
       );
-      const arbiterAdapter = await deps.arbiterAdapterFactory();
+      const arbiterAdapter = await arbiterAdapterFactory();
       const arbiterInput: ArbiterInput = {
         projectId,
         featureRunId,
@@ -432,6 +572,18 @@ export async function runImpl(
           capabilitiesUsed: ['can_resolve_disagreement'],
           contextPack: { content: arbiterInput },
           promptTemplateVersion: ARBITER_PROMPT_TEMPLATE_VERSION,
+          costExtractor: (outcome) => {
+            if (!outcome.ok) return null;
+            const out = outcome.output as { tokensUsed?: { input: number; output: number } };
+            if (!out.tokensUsed) return null;
+            return {
+              inputTokens: out.tokensUsed.input,
+              outputTokens: out.tokensUsed.output,
+              costUsd: computeCostUsd(out.tokensUsed.input, out.tokensUsed.output),
+              provider: process.env['CODE_GEN_PROVIDER_NAME'] ?? 'openai-compatible',
+              model: process.env['CODE_GEN_MODEL'],
+            };
+          },
         },
         () => arbiterAdapter.run(arbiterInput),
       );
@@ -481,12 +633,24 @@ export async function runImpl(
     if (!stillBlocking) {
       // The Arbiter dismissed every blocking finding this cycle; nothing left to request changes
       // for. Record the (now downgraded) findings for audit and stay at under_review, same as the
-      // plain "no blocking findings" path below.
-      await insertReviewFindings(db, {
-        featureRunId,
-        reviewerRunId: agentRunId,
-        reviewCycle,
-        findings: effectiveFindings,
+      // plain "no blocking findings" path below. Issue #46: the findings write and the occurrence
+      // marker commit atomically together, so a crash between them can't leave one without the
+      // other, and a retry's pre-adapter marker check (above) will find this recorded.
+      await db.transaction(async (tx) => {
+        await insertReviewFindings(tx, {
+          featureRunId,
+          reviewerRunId: agentRunId,
+          reviewCycle,
+          findings: effectiveFindings,
+        });
+        if (pr.head_sha) {
+          await recordReviewOccurrenceMarker(tx, {
+            featureRunId,
+            headSha: pr.head_sha,
+            reviewCycle,
+            outcome: 'approved',
+          });
+        }
       });
       return { projectId, featureRunId, reviewed: true, decision: 'approved' };
     }
@@ -536,12 +700,25 @@ export async function runImpl(
 
   // Only non_blocking/nit/question/out_of_scope findings (or none at all) — no transition to
   // piggyback the write on, so this is the one path that still writes findings as a standalone
-  // call; the feature run stays at under_review (Phase 12's Merge Gate owns the next hop).
-  await insertReviewFindings(db, {
-    featureRunId,
-    reviewerRunId: agentRunId,
-    reviewCycle,
-    findings,
+  // call; the feature run stays at under_review (Phase 12's Merge Gate owns the next hop). Issue
+  // #46: the findings write and the occurrence marker commit atomically in one transaction, and a
+  // retry's pre-adapter marker check (above) finds this recorded instead of re-invoking the
+  // adapter and minting a new reviewCycle for an already-reviewed commit.
+  await db.transaction(async (tx) => {
+    await insertReviewFindings(tx, {
+      featureRunId,
+      reviewerRunId: agentRunId,
+      reviewCycle,
+      findings,
+    });
+    if (pr.head_sha) {
+      await recordReviewOccurrenceMarker(tx, {
+        featureRunId,
+        headSha: pr.head_sha,
+        reviewCycle,
+        outcome: 'approved',
+      });
+    }
   });
   return { projectId, featureRunId, reviewed: true, decision: 'approved' };
 }

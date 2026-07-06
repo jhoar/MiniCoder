@@ -335,9 +335,21 @@ id` on the read query) makes the returned capability array deterministic across 
   fresh row per adapter even when re-run against the same DB with the same adapters. This is
   intentional: the table is a historical audit log of every conformance run, not a single
   current-gate-state row. Consumers that want "the current result for an adapter" must query
-  `ORDER BY run_at DESC LIMIT 1` scoped to `(test_suite, adapter_id)`. `conformance.test.ts` has
-  tests asserting a rerun appends exactly 6 new rows (documenting the intended semantics as a
-  regression guard) and demonstrating the latest-row query pattern.
+  `ORDER BY run_at DESC, id DESC LIMIT 1` scoped to `(test_suite, adapter_id)` — the `id DESC`
+  tiebreaker (issue #27) is required for determinism, since `run_at`'s millisecond-resolution
+  ISO-8601 string can tie across rows written in the same millisecond.
+  `conformance.test.ts` has tests asserting a rerun appends exactly 6 new rows (documenting the
+  intended semantics as a regression guard), demonstrating the latest-row query pattern, and
+  proving the tiebreaker resolves a forced `run_at` tie deterministically.
+- **Migration 0013 (issue #26) adds `adapter_revisions`**, an append-only audit log distinct from
+  `agent_adapters`/`agent_capabilities` (mutable current registry state, overwritten in place on
+  each re-registration). `AdapterRegistry.register()` now writes one `adapter_revisions` row per
+  call, snapshotting the adapter's full declared capability set at that exact version.
+  `agent_runs` gains a nullable `adapter_revision_id` column; `AgentRunRecorder.record()` stamps
+  it via the new `AdapterRegistry.getRevisionId(adapterId, version)` lookup, so a historical run's
+  provenance can reconstruct exactly what capability set was declared at invocation time even
+  after a later re-registration has overwritten `agent_capabilities`. `null` for adapters
+  registered before this migration.
 - The SQLite preflight remediation comments in migrations `0003_unique_adapter_role_name.sqlite.sql`
   and `0006_unique_agent_configurations.sqlite.sql` previously suggested `MAX(rowid)` to select
   which duplicate row to keep, but `rowid` reflects insertion order, not `updated_at` — it did not
@@ -421,10 +433,11 @@ questions; blocking gaps prevent activation; an approved plan activates features
   task IDs. `packages/triggerdev/src/tasks/actor.ts` builds the system/human `ActorIdentity` task
   payloads carry (Phase 13's API layer will replace the human-actor payload fields with real
   session identity). `planning-readiness-assessment` and `generate-implementation-plan` never
-  import a concrete adapter — the `PlannerAgentAdapter` instance is injected by the caller, so a
-  live Trigger.dev deployment fails fast with an actionable error until a reference/generic
-  planner adapter exists (none has shipped yet; docs/02 §7 names `GenericLLMPlannerAdapter` as a
-  future implementation, out of Phase 6 scope).
+  import a concrete adapter — the `PlannerAgentAdapter` instance is injected by the caller; a test
+  scenario injects `MockPlannerAdapter`, while a live Trigger.dev deployment resolves a real
+  `GenericLLMPlannerAdapter` via `resolveDefaultPlannerAdapter()`.
+  **Superseded by issue #32:** `packages/adapters-planner`'s `GenericLLMPlannerAdapter` is now
+  delivered — see the "Post-implementation review fixes" note at the end of this phase's section.
 - `packages/triggerdev/src/triggerdev-tasks.ts` / `mock-runner.ts` — `makeTaskRunner` and
   `MockTriggerRunner.run()` now pass the resolved `DbClient` (and, for planner-invoking tasks, the
   injected adapter) through to `runImpl`; the fitness test
@@ -467,10 +480,45 @@ questions; blocking gaps prevent activation; an approved plan activates features
   `CommandError` (`type: 'backlog-invalid'`) and re-throws everything else, so infrastructure
   failures and "plan not found" errors surface as real task failures (with Trigger.dev retry)
   instead of being reported as a successful `{ valid: false }` run.
+- **Issue #31 (found after the round above shipped):** `SubmitPlanForApprovalHandler`'s
+  unresolved-blocking-`planning_gaps` check had the identical project-vs-assessment scoping bug the
+  round above fixed for `GenerateImplementationPlanHandler`'s clarification guard, just missed in
+  that pass — it joined `planning_gaps` through `planning_readiness_assessments.project_id` instead
+  of filtering directly on the plan's own `assessment_id` (already available on
+  `implementation_plans`), so an unresolved blocking gap tied to an unrelated assessment in the same
+  project could permanently block submission of a plan that has nothing to do with that assessment.
+  Fixed by scoping the query to `pg.assessment_id = {implementation_plans.assessment_id}` (a plan
+  with no `assessment_id`, e.g. an imported one, has no assessment-scoped gaps to block on).
+  Regression in `packages/triggerdev/src/triggerdev.test.ts`: two assessments in one project, each
+  with its own unresolved blocking gap — submitting a plan generated from assessment A succeeds
+  once assessment A's gap is resolved, even while assessment B's gap remains unresolved.
 - `GenerateFeatureBacklogPayload`'s Trigger.dev schema (`packages/triggerdev/src/tasks/types.ts`)
   changed `features` from `.default([])` to `.min(1)`, matching
   `GenerateFeatureBacklogHandler`'s own schema; the task no longer has an empty-payload no-op
   short-circuit that silently "succeeded" with zero features written.
+- **Issue #32 (reference `GenericLLMPlannerAdapter`, built well after Phase 6 shipped):**
+  `PlannerAgentAdapter` (`packages/core/src/adapters/types.ts`) gained two additive methods —
+  `generatePlanSections(input): Promise<PlanSectionGenerationOutput>` and
+  `generateFeatureBacklog(input): Promise<FeatureBacklogGenerationOutput>` — alongside the existing
+  `run()` readiness-assessment method; `generateFeatureBacklog`'s output shape matches
+  `GenerateFeatureBacklogPayload.features`'s `FeatureInputSchema` exactly so a caller can pass it
+  straight through with no reshaping. `MockPlannerAdapter` (`packages/testing`) implements both with
+  deterministic fixture output. `packages/adapters-planner` is a new workspace package — a
+  sandbox-free reference implementation (`GenericLLMPlannerAdapter`) against a single injected
+  `PlanProvider` seam (`HttpPlanProvider`, a plain-`fetch` OpenAI-compatible client), mirroring
+  `packages/adapters-reviewer`'s exact shape (interface + one shipped HTTP implementation + adapter
+  class with no sandbox). `triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` is now async and
+  constructs a real `GenericLLMPlannerAdapter` from the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/
+  `CODE_GEN_MODEL` env vars the Coder/Reviewer default resolvers already read, via dynamic
+  `import('@minicoder/adapters-planner')` — the "fails fast, no reference adapter shipped" posture
+  this phase originally documented for `planning-readiness-assessment` no longer applies.
+  `GenerateImplementationPlanHandler`/`GenerateFeatureBacklogHandler` themselves are unchanged and
+  still accept caller-supplied plan/feature content directly — this issue only adds the _option_ of
+  generating that content via the adapter first; it does not rewire those handlers or their tasks.
+  `packages/adapters-planner` was added to the root `typecheck` build-order chain (after
+  `adapters-reviewer`, before `triggerdev`, matching the "any package whose `types` field points to
+  `dist/` needs to be built before its dependents' `--noEmit` pass" rule) and to
+  `vitest.config.ts`'s alias map.
 
 ## Phase 7 — GitHub Webhooks, Integration, and Reconciliation ✓
 
@@ -543,10 +591,13 @@ GitHub operations are evented.
   and calls `reconcileGithubState()`. GitHub credentials are resolved from `GITHUB_TOKEN` at
   runtime (fails fast with an actionable error if unset) rather than injected the way
   `PlannerAgentAdapter` is, since a GitHub credential is a single deployment-wide secret, not a
-  per-call dependency. Discovering a brand-new PR with no prior webhook/`pull_requests` row is
-  deferred — `GitHubClient` has no "list PRs by branch" method yet (tracked in
-  [issue #35](https://github.com/jhoar/MiniCoder/issues/35); an interim manual-recovery runbook
-  exists in `docs/04-testing-validation-state-lifecycle.md`'s Phase 7 runbook section).
+  per-call dependency. **Closed by issue #35:** discovering a brand-new PR with no prior
+  webhook/`pull_requests` row is no longer deferred — `GitHubClient.listPullRequestsForBranch()`
+  plus a `discoverMissingPullRequests()` pre-pass in this task now auto-tracks a `code_pushed`
+  feature run's PR the moment it's found, before falling through to the main reconcile loop in
+  the same pass. Automated discovery is primary; the manual-recovery runbook in
+  `docs/04-testing-validation-state-lifecycle.md`'s Phase 7 runbook section is now the fallback
+  for cases discovery itself can't reach.
 - `packages/cli/src/commands/github.ts` — new `minicoder github serve` command (added to
   `00-glossary-and-terms.md` §5), a thin wrapper around `createWebhookApp()`; unlike
   `simulate-*`, it is **not** gated by the dev/test/ci `guardEnv()` check, since it is the real
@@ -582,16 +633,20 @@ GitHubClient`, wrapping `MockGitHubProvider` so scenario tests drive GitHub stat
   writes and the fix-attempt-threshold counter are Phase 10 (review/fix loop) scope;
   `feature_runs` has no fix-attempt-count column yet. These handlers perform the state transition
   and the `pull_requests` mirror update only.
-- `OctokitGitHubClient.getPullRequest()`'s `conversationsResolved` is hardcoded — GitHub's
-  REST API has no direct "conversations resolved" field (only GraphQL exposes
-  `reviewThreads.nodes.isResolved`); wiring the GraphQL client is deferred (tracked in
-  [issue #36](https://github.com/jhoar/MiniCoder/issues/36)). **Post-implementation review fix:**
-  the placeholder was originally hardcoded `true`; a later review round flipped it to a
-  conservative fail-closed `false`, since nothing in the codebase gates a decision on this field
-  yet and treating "unknown" as "resolved" is the more dangerous default for a future merge-gate
-  consumer to inherit accidentally. An architectural fitness test
+- `OctokitGitHubClient.getPullRequest()`'s `conversationsResolved` was hardcoded through Phase 7 —
+  GitHub's REST API has no direct "conversations resolved" field (only GraphQL exposes
+  `reviewThreads.nodes.isResolved`). **Post-implementation review fix:** the placeholder was
+  originally hardcoded `true`; a later review round flipped it to a conservative fail-closed
+  `false`, since nothing in the codebase gates a decision on this field yet and treating "unknown"
+  as "resolved" is the more dangerous default for a future merge-gate consumer to inherit
+  accidentally. An architectural fitness test
   (`packages/core/src/fitness/no-conversations-resolved-gate.test.ts`) guards against a future
   consumer wiring this field into a real gate without a deliberate, reviewed decision.
+  **Closed by issue #36:** `getPullRequest()` now queries GraphQL's paginated
+  `reviewThreads.nodes[].isResolved` for real, reporting `true` only when every thread is
+  resolved (vacuously `true` for zero threads) and falling back to the previous `false` placeholder
+  only on a GraphQL failure. This makes the _observation_ real; `evaluateMergeGate()` still does
+  not read it (see Phase 12's note below and docs/01 §12) — those remain two separate steps.
 
 ## Phase 8 — Execution Orchestrator ✓
 
@@ -1303,13 +1358,17 @@ Acceptance: repeated unresolved findings create disagreement records; automation
   arbitrating a disagreement is a sub-decision within processing the reviewer's output for this one
   review cycle, not an independently-schedulable unit of work the way `run-coder`/`run-review`
   themselves are. `RunReviewPayload` gained an optional `arbiterAdapterName`; `RunReviewDeps` gained
-  an `arbiterAdapterFactory` with **no default resolver** — mirroring
-  `planning-readiness-assessment`/`generate-implementation-plan`'s treatment of
-  `PlannerAgentAdapter` (docs/06 Phase 6), since no reference `ArbiterAgentAdapter` implementation
-  has shipped (docs/03 §9 lists only `GenericLLMPlannerAdapter`/`CodexCoderAdapter`/
-  `ClaudeReviewerAdapter`/`GenericLLMDocumentationAdapter`). A live deployment that reaches a
-  disagreement without one configured fails fast with an actionable error rather than silently
-  skipping arbitration.
+  an `arbiterAdapterFactory`. At the time this phase shipped there was **no default resolver** —
+  mirroring `planning-readiness-assessment`/`generate-implementation-plan`'s then-current treatment
+  of `PlannerAgentAdapter` (docs/06 Phase 6) — since no reference `ArbiterAgentAdapter`
+  implementation had shipped yet. A live deployment that reached a disagreement without one
+  configured failed fast with an actionable error rather than silently skipping arbitration.
+  **Superseded by issue #51:** `packages/adapters-arbiter`'s `ClaudeArbiterAdapter` is now
+  delivered, and `run-review.ts`'s `resolveDefaultArbiterAdapterFactory()` constructs a real
+  instance from the same `CODE_GEN_*` env vars the Coder/Reviewer/Planner default resolvers already
+  use, when `RunReviewDeps.arbiterAdapterFactory` is not supplied — the "no default resolver, fails
+  fast" posture only still applies to a missing `arbiterAdapterName` (the `AdapterRegistry` lookup
+  key), not to a missing runtime instance.
 - `packages/cli/src/commands/human.ts` — new `minicoder human {resolve-disagreement, resume,
 retry, skip, block}` CLI group, the first CLI surface to dispatch a real state-machine command
   directly (via `TransactionalCommandExecutor`) rather than only reading state or writing simulated
@@ -1333,6 +1392,21 @@ actor.ts`, already exported from `@minicoder/triggerdev`) to build the human `Ac
   human-blocked feature with no unmet dependency currently requires a direct `minicoder state
 repair` to recover. Both are the same "documented, not solved" posture this codebase already
   applies elsewhere to a deliberate human decision's cross-cutting consequences.
+  **The first of these two is now closed (issue #52):** `SkipFeatureHandler` now cascades, in the
+  same transaction as the skip itself, transitioning every dependent feature run still at
+  `approved_pending_execution` to `blocked` (a new `approved_pending_execution -> blocked` matrix
+  row triggered by `SkipFeatureCommand`) — surfacing the problem via the existing `blocked`-state
+  diagnostics instead of leaving the dependent silently stuck forever. `state doctor` gained a
+  `skipped_dependency` check as defense-in-depth for any case that predates this fix.
+  **The second is now closed too (issue #53):** a new `HumanUnblockFeatureCommand`
+  (`packages/core/src/commands/handlers/feature/human-unblock-feature.ts`) lets an approver
+  directly transition `blocked -> approved_pending_execution` with no dependency check at all —
+  distinct from `UnblockFeatureCommand`'s automatic, dependency-driven path, but sharing the same
+  matrix row (`StateTransitionValidator`'s lookup is keyed by `(fromState, toState)` alone; see the
+  row's comment for why a second, colliding row wasn't added instead). Wired into
+  `minicoder human unblock --feature-run <id> --project <id> --actor <id> --notes <text>`,
+  completing the "every `human_required` disposition gets an obvious undo" symmetry issue #53 was
+  opened to close.
 
 **Post-implementation review fixes (round 1):**
 
@@ -1523,7 +1597,9 @@ the API.
   below), plus a narrow `system`-actorKind allow-list for manual replay
   (`GenerateImplementationPlanHandler`/`GenerateFeatureBacklogHandler`/`ValidateBacklogHandler`;
   `AssessPlanningReadinessHandler` is excluded — its constructor requires a live
-  `PlannerAgentAdapter` instance, and no reference planner adapter has shipped yet, docs/02 §7).
+  `PlannerAgentAdapter` instance, and this registry only registers handlers with a no-argument
+  constructor; `GenericLLMPlannerAdapter` (issue #32, docs/02 §7) now exists but the generic
+  dispatch route has no adapter-construction wiring to supply it, so this exclusion is unchanged).
 - `packages/api/src/commands/generic-dispatch-route.ts` — `POST /commands/:commandSlug`, resolving
   a URL slug to a registered `commandName`, building a `CommandEnvelope` from the request body +
   `Idempotency-Key` header + auth-derived actor, and dispatching via

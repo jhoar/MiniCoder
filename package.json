@@ -12,7 +12,7 @@
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\"",
-    "typecheck": "tsc -p packages/core/tsconfig.json && tsc -p packages/persistence-sqlite/tsconfig.json && tsc -p packages/persistence-postgres/tsconfig.json && tsc -p packages/workflow/tsconfig.json && tsc -p packages/github/tsconfig.json && tsc -p packages/adapters-coder/tsconfig.json && tsc -p packages/adapters-reviewer/tsconfig.json && tsc -p packages/triggerdev/tsconfig.json && tsc -p packages/testing/tsconfig.json && tsc -p packages/api/tsconfig.json && pnpm -r --filter !@minicoder/core --filter !@minicoder/persistence-sqlite --filter !@minicoder/persistence-postgres --filter !@minicoder/workflow --filter !@minicoder/github --filter !@minicoder/adapters-coder --filter !@minicoder/adapters-reviewer --filter !@minicoder/triggerdev --filter !@minicoder/testing --filter !@minicoder/api typecheck",
+    "typecheck": "tsc -p packages/core/tsconfig.json && tsc -p packages/persistence-sqlite/tsconfig.json && tsc -p packages/persistence-postgres/tsconfig.json && tsc -p packages/workflow/tsconfig.json && tsc -p packages/github/tsconfig.json && tsc -p packages/adapters-coder/tsconfig.json && tsc -p packages/adapters-reviewer/tsconfig.json && tsc -p packages/adapters-planner/tsconfig.json && tsc -p packages/adapters-arbiter/tsconfig.json && tsc -p packages/triggerdev/tsconfig.json && tsc -p packages/testing/tsconfig.json && tsc -p packages/api/tsconfig.json && pnpm -r --filter !@minicoder/core --filter !@minicoder/persistence-sqlite --filter !@minicoder/persistence-postgres --filter !@minicoder/workflow --filter !@minicoder/github --filter !@minicoder/adapters-coder --filter !@minicoder/adapters-reviewer --filter !@minicoder/adapters-planner --filter !@minicoder/adapters-arbiter --filter !@minicoder/triggerdev --filter !@minicoder/testing --filter !@minicoder/api typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -33,12 +33,12 @@
     "@types/node": "^20.14.0",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
-    "@vitest/coverage-v8": "^1.6.0",
+    "@vitest/coverage-v8": "^3.2.6",
     "eslint": "^8.57.0",
     "eslint-plugin-import": "^2.29.1",
     "prettier": "^3.3.3",
     "tsx": "^4.16.5",
     "typescript": "^5.5.4",
-    "vitest": "^1.6.0"
+    "vitest": "^3.2.6"
   }
 }
