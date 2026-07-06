@@ -7,6 +7,7 @@ import {
   RetryFeatureHandler,
   SkipFeatureHandler,
   BlockFeatureHandler,
+  HumanUnblockFeatureHandler,
   generateId,
 } from '@minicoder/core';
 import type { CommandEnvelope } from '@minicoder/core';
@@ -46,10 +47,11 @@ interface CommonOpts {
 }
 
 /**
- * Dispatches one of the five `human_required` exit commands (docs/06 Phase 11) directly against
- * the DB — the same synchronous-command-dispatch shape `minicoder state repair --apply` already
- * uses for guarded destructive operations, rather than going through a Trigger.dev task (there is
- * no natural async/durable-retry need for a one-shot human disposition).
+ * Dispatches one of the five `human_required` exit commands (docs/06 Phase 11), plus
+ * `human unblock` (issue #53 — `blocked -> approved_pending_execution`, human-triggered), directly
+ * against the DB — the same synchronous-command-dispatch shape `minicoder state repair --apply`
+ * already uses for guarded destructive operations, rather than going through a Trigger.dev task
+ * (there is no natural async/durable-retry need for a one-shot human disposition).
  */
 export function createHumanCommand(): Command {
   const human = new Command('human').description(
@@ -219,6 +221,41 @@ export function createHumanCommand(): Command {
           correlationId,
         };
         const result = await executor.execute(new BlockFeatureHandler(), envelope);
+        console.log(JSON.stringify(result, null, 2));
+      } finally {
+        await db.close();
+      }
+    });
+
+  human
+    .command('unblock')
+    .description(
+      'blocked -> approved_pending_execution: human confirms the precondition is now satisfied (no dependency check)',
+    )
+    .requiredOption('--feature-run <id>', 'Feature run ID')
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--actor <id>', 'Acting human actor ID')
+    .option('--actor-role <role>', 'Actor role (approver|admin)', 'approver')
+    .requiredOption('--notes <text>', 'Notes')
+    .action(async (opts: CommonOpts & { notes: string }) => {
+      const db = await createDbClientFromEnv();
+      try {
+        const run = await fetchFeatureRun(db, opts.featureRun, opts.project);
+        const correlationId = generateId();
+        const executor = new TransactionalCommandExecutor(db);
+        const envelope: CommandEnvelope<Record<string, unknown>> = {
+          commandId: generateId(),
+          idempotencyKey: `human-unblock-feature:${opts.featureRun}:${run.version}`,
+          payload: {
+            featureRunId: opts.featureRun,
+            projectId: opts.project,
+            expectedVersion: run.version,
+            notes: opts.notes,
+          },
+          actor: humanActor({ actorId: opts.actor, actorRole: opts.actorRole, correlationId }),
+          correlationId,
+        };
+        const result = await executor.execute(new HumanUnblockFeatureHandler(), envelope);
         console.log(JSON.stringify(result, null, 2));
       } finally {
         await db.close();

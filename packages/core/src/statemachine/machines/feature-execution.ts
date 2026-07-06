@@ -412,15 +412,26 @@ export const FEATURE_EXECUTION_MATRIX: StateMatrix<FeatureExecutionState> = [
     idempotencyKeyTemplate: 'escalate-human-system-failed:{featureRunId}',
     recoveryPath: 'Human reviews system diagnostics and retries or skips',
   },
+  // This single row intentionally covers two distinct commands sharing the same (fromState,
+  // toState) pair — StateTransitionValidator's lookup is keyed by that pair alone, so a second row
+  // with an identical key would silently shadow this one for assertValid() (no caller currently
+  // reads a matched row's own fields, only its throw-on-mismatch behavior, so this is a
+  // documentation/audit clarity concern, not a runtime bug — but two rows claiming the same key
+  // would still misrepresent which command's metadata is "the" answer). UnblockFeatureCommand is
+  // the automatic, system-triggered path (dependency-driven); HumanUnblockFeatureCommand (issue
+  // #53) is the human-triggered path for a feature blocked via BlockFeatureCommand or the issue
+  // #52 skip-cascade, where there may be no unmet dependency to clear in the first place.
   {
     fromState: FeatureExecutionState.BLOCKED,
     toState: FeatureExecutionState.APPROVED_PENDING_EXECUTION,
-    triggeringCommand: 'UnblockFeatureCommand',
-    actor: 'system',
-    guardDescription: 'all blocking dependencies now merged; precondition satisfied',
+    triggeringCommand: 'UnblockFeatureCommand | HumanUnblockFeatureCommand',
+    actor: UserRole.APPROVER,
+    guardDescription:
+      'either all blocking dependencies now merged (system-triggered UnblockFeatureCommand), or a human confirms the precondition is now satisfied (approver-triggered HumanUnblockFeatureCommand — no dependency check)',
     sideEffects: ['write_workflow_event', 'write_outbox_event'],
     emittedEvents: ['feature.unblocked'],
-    idempotencyKeyTemplate: 'unblock-feature:{featureRunId}',
+    idempotencyKeyTemplate:
+      'unblock-feature:{featureRunId} | human-unblock-feature:{featureRunId}:{expectedVersion}',
     recoveryPath: 'Idempotent: returns cached result',
   },
   // ── Phase 11: human_required dispositions ────────────────────────────────

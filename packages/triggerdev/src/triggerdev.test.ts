@@ -14,6 +14,7 @@ import {
   GapSeverity,
   TransactionalCommandExecutor,
   SkipFeatureHandler,
+  HumanUnblockFeatureHandler,
   type SkipFeaturePayload,
 } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
@@ -678,6 +679,106 @@ describe('SkipFeatureCommand cascading dependency guard (issue #52)', () => {
       [dependentRunId],
     );
     expect(dependentRows[0]?.current_execution_state).toBe('coding');
+  });
+});
+
+// ── Issue #53: HumanUnblockFeatureCommand ──────────────────────────────────
+
+describe('HumanUnblockFeatureCommand (issue #53)', () => {
+  const projectId = 'proj-human-unblock';
+
+  it('transitions a human-blocked feature run back to approved_pending_execution', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    const frId = `fr-${projectId}`;
+    const runId = `run-${projectId}`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Feature', 'Description', 'feature', 1, 'blocked', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [runId, frId, FeatureExecutionState.BLOCKED],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    const result = await executor.execute(new HumanUnblockFeatureHandler(), {
+      commandId: 'cmd-unblock-1',
+      idempotencyKey: 'idem-unblock-1',
+      payload: {
+        featureRunId: runId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'The external API key has been provisioned; automation may resume.',
+      },
+      actor: humanActor({ actorId: 'approver-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    });
+    expect(result.resultingState).toBe(FeatureExecutionState.APPROVED_PENDING_EXECUTION);
+
+    const rows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [runId],
+    );
+    expect(rows[0]?.current_execution_state).toBe(FeatureExecutionState.APPROVED_PENDING_EXECUTION);
+
+    const approvals = await db.query<{ decision: string; context_type: string }>(
+      `SELECT decision, context_type FROM human_approvals WHERE feature_run_id = ?`,
+      [runId],
+    );
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]?.decision).toBe('approved');
+  });
+
+  it('rejects unblocking a feature run that is not currently blocked', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}-2`;
+    const frId = `fr-${projectId}-2`;
+    const runId = `run-${projectId}-2`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-002', 'Feature', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [runId, frId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    await expect(
+      executor.execute(new HumanUnblockFeatureHandler(), {
+        commandId: 'cmd-unblock-2',
+        idempotencyKey: 'idem-unblock-2',
+        payload: {
+          featureRunId: runId,
+          projectId,
+          expectedVersion: 1,
+          notes: 'Should not be allowed.',
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-2',
+        }),
+        correlationId: 'corr-2',
+      }),
+    ).rejects.toThrow();
   });
 });
 

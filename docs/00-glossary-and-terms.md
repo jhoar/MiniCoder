@@ -527,6 +527,7 @@ minicoder human resume --feature-run <id> --project <id> --actor <id> --notes <t
 minicoder human retry --feature-run <id> --project <id> --actor <id> --notes <text>
 minicoder human skip --feature-run <id> --project <id> --actor <id> --notes <text>
 minicoder human block --feature-run <id> --project <id> --actor <id> --notes <text>
+minicoder human unblock --feature-run <id> --project <id> --actor <id> --notes <text>
 
 # Merge Gate (Phase 12; approver/admin-initiated merge)
 minicoder merge merge-if-ready --feature-run <id> --project <id> --actor <id> [--actor-role approver] [--merge-method squash|merge|rebase]

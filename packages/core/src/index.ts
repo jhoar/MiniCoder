@@ -103,6 +103,7 @@ export * from './commands/handlers/feature/resume-feature-execution.js';
 export * from './commands/handlers/feature/retry-feature.js';
 export * from './commands/handlers/feature/skip-feature.js';
 export * from './commands/handlers/feature/block-feature.js';
+export * from './commands/handlers/feature/human-unblock-feature.js';
 
 // Phase 12: Merge Gate and Branch Protection
 export * from './merge-gate/index.js';

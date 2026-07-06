@@ -1350,8 +1350,16 @@ repair` to recover. Both are the same "documented, not solved" posture this code
   `approved_pending_execution` to `blocked` (a new `approved_pending_execution -> blocked` matrix
   row triggered by `SkipFeatureCommand`) — surfacing the problem via the existing `blocked`-state
   diagnostics instead of leaving the dependent silently stuck forever. `state doctor` gained a
-  `skipped_dependency` check as defense-in-depth for any case that predates this fix. The second
-  limitation (human-blocked has no human-driven unblock) remains open — see issue #53.
+  `skipped_dependency` check as defense-in-depth for any case that predates this fix.
+  **The second is now closed too (issue #53):** a new `HumanUnblockFeatureCommand`
+  (`packages/core/src/commands/handlers/feature/human-unblock-feature.ts`) lets an approver
+  directly transition `blocked -> approved_pending_execution` with no dependency check at all —
+  distinct from `UnblockFeatureCommand`'s automatic, dependency-driven path, but sharing the same
+  matrix row (`StateTransitionValidator`'s lookup is keyed by `(fromState, toState)` alone; see the
+  row's comment for why a second, colliding row wasn't added instead). Wired into
+  `minicoder human unblock --feature-run <id> --project <id> --actor <id> --notes <text>`,
+  completing the "every `human_required` disposition gets an obvious undo" symmetry issue #53 was
+  opened to close.
 
 **Post-implementation review fixes (round 1):**
 
