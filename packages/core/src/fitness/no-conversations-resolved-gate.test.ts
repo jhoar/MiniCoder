@@ -5,15 +5,17 @@ import * as path from 'path';
 /**
  * Architectural fitness test (MEDIUM-2 code-review fix, round 5): guards against
  * `conversationsResolved`/`conversations_resolved` being silently wired into a real merge/review
- * decision before Phase 12 (Merge Gate) exists.
+ * decision before Phase 12's Merge Gate deliberately consumes it.
  *
- * `OctokitGitHubClient.getPullRequest()` currently reports `conversationsResolved: false` as a
- * conservative, fail-closed *placeholder* — GitHub's REST API has no "conversations resolved"
- * flag at all (only GraphQL's `reviewThreads.nodes[].isResolved` exposes it), so this value is
- * never a real observation (see the code comment in `packages/github/src/octokit-client.ts` and
- * docs/01-system-specification.md §5.7/§5.10). Nothing in the codebase today gates a
- * merge/review decision on it — `syncPullRequestObservedState` only mirrors it onto
- * `pull_requests.conversations_resolved`, it never branches on it.
+ * `OctokitGitHubClient.getPullRequest()` reports a real, GraphQL-backed `conversationsResolved`
+ * observation as of issue #36 (paginated `reviewThreads.nodes[].isResolved`, falling back to a
+ * conservative `false` only on a GraphQL failure — see the code comment in
+ * `packages/github/src/octokit-client.ts` and docs/01-system-specification.md §5.7/§5.10).
+ * Nothing in the codebase gates a merge/review decision on it yet, even though it is now a real
+ * observation rather than a hardcoded placeholder — `syncPullRequestObservedState` only mirrors
+ * it onto `pull_requests.conversations_resolved`, it never branches on it. Making the observation
+ * real (issue #36) and wiring it into a merge decision are two separate, deliberate steps; only
+ * the first has happened.
  *
  * This test scans decision-relevant source directories (command handlers, and once it exists,
  * merge-gate-adjacent code) for any reference to `conversationsResolved`/`conversations_resolved`

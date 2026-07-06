@@ -266,11 +266,15 @@ operation when policy permits.
     contains. Deciding which of these labels actually blocks merge is Merge Gate (§5.10/§12)
     policy that has not been implemented yet (Phase 12); until then this column is an unfiltered
     label mirror.
-  - `conversations_resolved` is currently a **hardcoded `false` placeholder**, not a real GitHub
-    observation: the REST API has no "conversations resolved" flag at all (only GraphQL's
-    `reviewThreads.nodes[].isResolved` exposes it), and `OctokitGitHubClient` fails closed rather
-    than guessing. A future merge-gate consumer must not treat this value as authoritative until
-    GraphQL review-thread-resolution support is added.
+  - `conversations_resolved` is a **real GitHub observation** (issue #36): the REST API has no
+    "conversations resolved" flag at all, so `OctokitGitHubClient.getPullRequest()` queries
+    GraphQL's `reviewThreads.nodes[].isResolved` directly (paginated), reporting `true` only when
+    every review thread is resolved (vacuously `true` for zero threads). A GraphQL failure (rate
+    limit, permissions, transient error) falls back to the conservative `false` this field
+    previously hardcoded unconditionally. `evaluateMergeGate()` still does not read this column —
+    wiring conversation-resolution into a real merge decision remains separate, deliberate future
+    work (see §12 and CLAUDE.md's Merge Gate constraints), independent of this field now being a
+    real observation instead of a placeholder.
 - **Reconciliation algorithm:** `reconcileGithubState()` (`packages/core/src/github/reconcile.ts`)
   is the single implementation both the webhook-triggered inbox handlers
   (`packages/github/src/inbox-handlers.ts`) and the scheduled fallback
@@ -622,15 +626,15 @@ PR is mergeable, no blocking labels exist, budget gates pass, required human app
 GitHub branch protection permits merge — implemented as `evaluateMergeGate()`
 (`packages/core/src/merge-gate/evaluate-merge-gate.ts`, Phase 12).
 
-**"Required conversations are resolved" remains a deliberate non-gate, not an oversight.**
-`pull_requests.conversations_resolved` is still a hardcoded `false` placeholder (GitHub REST has no
-such flag; GraphQL support — `reviewThreads.nodes[].isResolved` — is tracked in issue #36).
-Wiring a permanently-`false` value into a hard precondition would make every real merge
-permanently blocked, so `evaluateMergeGate()` deliberately never reads this field — the
+**"Required conversations are resolved" remains a deliberate non-gate, not an oversight — even
+now that `conversations_resolved` is a real observation.** Issue #36 replaced the previous
+hardcoded-`false` placeholder with a real GraphQL-backed `reviewThreads.nodes[].isResolved`
+observation (§5.7), but `evaluateMergeGate()` still deliberately never reads this field — the
 architectural fitness test `no-conversations-resolved-gate.test.ts` (added in Phase 7) enforces
 this by excluding `evaluate-merge-gate.ts` from its allow-list, so a future change wiring this
-field into the gate must be a visible, deliberate edit to that test, not a silent one. Real
-conversation-resolution enforcement remains tracked future work behind issue #36.
+field into the gate must be a visible, deliberate edit to that test, not a silent one. Making the
+underlying observation real (issue #36) and wiring it into a merge decision (still unbuilt) are
+two separate steps; only the first has happened.
 
 **"No blocking labels exist" is implemented as a single, deployment-wide policy** (Phase 12):
 `resolveBlockingLabelsPolicy()` (env-overridable via `MERGE_GATE_BLOCKING_LABELS`, comma-separated;

@@ -606,16 +606,20 @@ GitHubClient`, wrapping `MockGitHubProvider` so scenario tests drive GitHub stat
   writes and the fix-attempt-threshold counter are Phase 10 (review/fix loop) scope;
   `feature_runs` has no fix-attempt-count column yet. These handlers perform the state transition
   and the `pull_requests` mirror update only.
-- `OctokitGitHubClient.getPullRequest()`'s `conversationsResolved` is hardcoded — GitHub's
-  REST API has no direct "conversations resolved" field (only GraphQL exposes
-  `reviewThreads.nodes.isResolved`); wiring the GraphQL client is deferred (tracked in
-  [issue #36](https://github.com/jhoar/MiniCoder/issues/36)). **Post-implementation review fix:**
-  the placeholder was originally hardcoded `true`; a later review round flipped it to a
-  conservative fail-closed `false`, since nothing in the codebase gates a decision on this field
-  yet and treating "unknown" as "resolved" is the more dangerous default for a future merge-gate
-  consumer to inherit accidentally. An architectural fitness test
+- `OctokitGitHubClient.getPullRequest()`'s `conversationsResolved` was hardcoded through Phase 7 —
+  GitHub's REST API has no direct "conversations resolved" field (only GraphQL exposes
+  `reviewThreads.nodes.isResolved`). **Post-implementation review fix:** the placeholder was
+  originally hardcoded `true`; a later review round flipped it to a conservative fail-closed
+  `false`, since nothing in the codebase gates a decision on this field yet and treating "unknown"
+  as "resolved" is the more dangerous default for a future merge-gate consumer to inherit
+  accidentally. An architectural fitness test
   (`packages/core/src/fitness/no-conversations-resolved-gate.test.ts`) guards against a future
   consumer wiring this field into a real gate without a deliberate, reviewed decision.
+  **Closed by issue #36:** `getPullRequest()` now queries GraphQL's paginated
+  `reviewThreads.nodes[].isResolved` for real, reporting `true` only when every thread is
+  resolved (vacuously `true` for zero threads) and falling back to the previous `false` placeholder
+  only on a GraphQL failure. This makes the _observation_ real; `evaluateMergeGate()` still does
+  not read it (see Phase 12's note below and docs/01 §12) — those remain two separate steps.
 
 ## Phase 8 — Execution Orchestrator ✓
 

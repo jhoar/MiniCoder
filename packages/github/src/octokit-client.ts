@@ -118,17 +118,83 @@ export class OctokitGitHubClient implements GitHubClient {
       // merge is explicit Phase 12 (Merge Gate) scope; a future implementer must add that
       // filtering there, not assume it already happened here.
       blockingLabels: (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : (l.name ?? ''))),
-      // HIGH-4 code-review fix: GitHub's REST API has no "conversations resolved" flag at all —
-      // only GraphQL's `reviewThreads.nodes[].isResolved` exposes it, and implementing GraphQL
-      // support is out of proportion for this fix. This is a conservative fail-closed placeholder
-      // (nothing in the codebase currently gates a merge/review decision on this field), not a
-      // real observation — a future merge-gate consumer (Phase 12) must not treat "unknown" as
-      // "resolved" by relying on this value until GraphQL support lands.
-      conversationsResolved: false,
+      conversationsResolved: await this.fetchConversationsResolved(owner, repo, prNumber),
       mergedAt: pr.merged_at ?? null,
       mergeSha: pr.merge_commit_sha ?? null,
       closedAt: pr.closed_at ?? null,
     };
+  }
+
+  /**
+   * Issue #36: GitHub's REST API has no "conversations resolved" flag at all — only GraphQL's
+   * `reviewThreads.nodes[].isResolved` exposes it. Paginates all review threads (100/page, the
+   * GraphQL connection max) and reports `true` only if every thread is resolved —
+   * `!nodes.some(t => !t.isResolved)`, which is also `true` when there are zero threads (nothing
+   * unresolved to block on). A GraphQL failure (rate limit, permissions, transient error) falls
+   * back to the previous conservative `false` placeholder rather than propagating — this
+   * observation augments `getPullRequest()`'s REST-derived fields, and nothing in the codebase
+   * gates a merge/review decision on it yet (CLAUDE.md's Merge Gate constraints document that as
+   * a deliberate, separate future step), so a transient GraphQL hiccup should not fail the whole
+   * PR observation.
+   */
+  private async fetchConversationsResolved(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<boolean> {
+    interface ReviewThreadsPage {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            nodes: Array<{ isResolved: boolean }>;
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        } | null;
+      } | null;
+    }
+
+    try {
+      let cursor: string | null = null;
+      let hasNextPage = true;
+      let allResolved = true;
+
+      while (hasNextPage) {
+        const result: ReviewThreadsPage = await this.octokit.graphql(
+          `query($owner: String!, $repo: String!, $prNumber: Int!, $cursor: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $prNumber) {
+                reviewThreads(first: 100, after: $cursor) {
+                  nodes { isResolved }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          }`,
+          { owner, repo, prNumber, cursor },
+        );
+
+        const reviewThreads = result.repository?.pullRequest?.reviewThreads;
+        if (!reviewThreads) {
+          hasNextPage = false;
+          break;
+        }
+        if (reviewThreads.nodes.some((t) => !t.isResolved)) {
+          allResolved = false;
+          break;
+        }
+        hasNextPage = reviewThreads.pageInfo.hasNextPage;
+        cursor = reviewThreads.pageInfo.endCursor;
+      }
+
+      return allResolved;
+    } catch (err) {
+      console.error(
+        `OctokitGitHubClient: failed to fetch review thread resolution for PR #${prNumber}; ` +
+          `falling back to conversationsResolved=false.`,
+        err,
+      );
+      return false;
+    }
   }
 
   async publishStatusCheck(options: PublishStatusCheckOptions): Promise<void> {
