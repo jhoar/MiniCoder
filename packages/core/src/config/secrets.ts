@@ -149,6 +149,8 @@ export class ManagedSecretBackend implements SecretBackend {
       throw new Error(`ManagedSecretBackend.list(${prefix}) failed: HTTP ${res.status}`);
     }
     const body = (await res.json()) as { keys?: unknown };
-    return Array.isArray(body.keys) ? body.keys.filter((k): k is string => typeof k === 'string') : [];
+    return Array.isArray(body.keys)
+      ? body.keys.filter((k): k is string => typeof k === 'string')
+      : [];
   }
 }

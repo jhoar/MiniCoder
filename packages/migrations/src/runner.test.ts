@@ -523,7 +523,13 @@ describe('Reset safety guards', () => {
   it('blocks reset when APP_ENV/NODE_ENV are unset and --disposable-db is not passed', () => {
     const result = runRunner(
       ['reset', '--dry-run', '--env', 'development', '--actor', 'x', '--backup-exempt', 'y'],
-      { DB_DIALECT: 'sqlite', DB_PATH: tmpDb, HOME: tmpHome, APP_ENV: undefined, NODE_ENV: undefined },
+      {
+        DB_DIALECT: 'sqlite',
+        DB_PATH: tmpDb,
+        HOME: tmpHome,
+        APP_ENV: undefined,
+        NODE_ENV: undefined,
+      },
     );
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/disposable-db/);
@@ -542,7 +548,13 @@ describe('Reset safety guards', () => {
         'y',
         '--disposable-db',
       ],
-      { DB_DIALECT: 'sqlite', DB_PATH: tmpDb, HOME: tmpHome, APP_ENV: undefined, NODE_ENV: undefined },
+      {
+        DB_DIALECT: 'sqlite',
+        DB_PATH: tmpDb,
+        HOME: tmpHome,
+        APP_ENV: undefined,
+        NODE_ENV: undefined,
+      },
     );
     expect(result.status).toBe(0);
   });
@@ -557,10 +569,9 @@ describe('Reset safety guards', () => {
   });
 
   it('blocks reset when neither --backup-verified nor --backup-exempt is supplied', () => {
-    const result = runRunner(
-      ['reset', '--dry-run', '--env', 'development', '--actor', 'x'],
-      { ...baseSqliteEnv() },
-    );
+    const result = runRunner(['reset', '--dry-run', '--env', 'development', '--actor', 'x'], {
+      ...baseSqliteEnv(),
+    });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/backup/);
   });

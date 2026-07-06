@@ -214,22 +214,22 @@ workflows.
 
 **`minicoder db reset`'s enforced contract** (closed the Phase 1 warn-only gaps — see issues #10/#11):
 
-| Requirement                   | Status                                                                                          |
-| ------------------------------ | ------------------------------------------------------------------------------------------------ |
-| Explicit `--env` flag          | ✓ required; must be `development`, `test`, or `ci`                                              |
-| Explicit `--yes` confirmation  | ✓ required with `--apply`                                                                       |
-| System env cross-check         | ✓ `APP_ENV`/`NODE_ENV` checked; non-safe system value blocks reset regardless of `--env`         |
-| `--env`/system-env agreement   | ✓ enforced — when a system env is set, `--env` must match it exactly, not just both be "safe"    |
-| Unset-system-env handling      | ✓ enforced — an unset `APP_ENV`/`NODE_ENV` is never treated as safe; requires `--disposable-db`  |
-| Credential safety              | ✓ PostgreSQL URL reduced to protocol+hostname+port+pathname; query string/fragment/creds dropped |
-| Malformed URL handling         | ✓ blocked with a fixed, non-sensitive error — never echoes the raw input                          |
-| Database target identity      | ✓ PostgreSQL host checked against an allowlist (`MINICODER_ALLOWED_RESET_HOSTS`, default `localhost`/`127.0.0.1`/`::1`); non-listed hosts require explicit `--force-host` |
-| Dry-run / two-step confirmation| ✓ `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact target; `--apply --confirmation <token>` performs the reset (mirrors `minicoder state repair`) |
-| Audit event                    | ✓ timestamped block (mode, env flag, system env, dialect, sanitized db, table count, actor, backup status) |
-| Backup check                   | ✓ enforced — `--backup-verified` or `--backup-exempt "<reason>"` required, recorded in the audit log |
-| Actor identity                 | ✓ enforced — `--actor <name>` required and recorded (Phase 1 has no session/role system, so this is a caller-declared identity, not an authenticated principal — the strongest this profile can offer; see docs/07 for real auth) |
-| Scope restriction               | ✓ only owned tables dropped, no `CASCADE`                                                        |
-| Guard-before-connect            | ✓ the guard runs and can `process.exit` before a SQLite file is created or a PostgreSQL connection is used |
+| Requirement                     | Status                                                                                                                                                                                                                            |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explicit `--env` flag           | ✓ required; must be `development`, `test`, or `ci`                                                                                                                                                                                |
+| Explicit `--yes` confirmation   | ✓ required with `--apply`                                                                                                                                                                                                         |
+| System env cross-check          | ✓ `APP_ENV`/`NODE_ENV` checked; non-safe system value blocks reset regardless of `--env`                                                                                                                                          |
+| `--env`/system-env agreement    | ✓ enforced — when a system env is set, `--env` must match it exactly, not just both be "safe"                                                                                                                                     |
+| Unset-system-env handling       | ✓ enforced — an unset `APP_ENV`/`NODE_ENV` is never treated as safe; requires `--disposable-db`                                                                                                                                   |
+| Credential safety               | ✓ PostgreSQL URL reduced to protocol+hostname+port+pathname; query string/fragment/creds dropped                                                                                                                                  |
+| Malformed URL handling          | ✓ blocked with a fixed, non-sensitive error — never echoes the raw input                                                                                                                                                          |
+| Database target identity        | ✓ PostgreSQL host checked against an allowlist (`MINICODER_ALLOWED_RESET_HOSTS`, default `localhost`/`127.0.0.1`/`::1`); non-listed hosts require explicit `--force-host`                                                         |
+| Dry-run / two-step confirmation | ✓ `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact target; `--apply --confirmation <token>` performs the reset (mirrors `minicoder state repair`)                                     |
+| Audit event                     | ✓ timestamped block (mode, env flag, system env, dialect, sanitized db, table count, actor, backup status)                                                                                                                        |
+| Backup check                    | ✓ enforced — `--backup-verified` or `--backup-exempt "<reason>"` required, recorded in the audit log                                                                                                                              |
+| Actor identity                  | ✓ enforced — `--actor <name>` required and recorded (Phase 1 has no session/role system, so this is a caller-declared identity, not an authenticated principal — the strongest this profile can offer; see docs/07 for real auth) |
+| Scope restriction               | ✓ only owned tables dropped, no `CASCADE`                                                                                                                                                                                         |
+| Guard-before-connect            | ✓ the guard runs and can `process.exit` before a SQLite file is created or a PostgreSQL connection is used                                                                                                                        |
 
 ```bash
 # Step 1: preview and get a confirmation token (no mutation)
@@ -253,12 +253,12 @@ every third-party action/tool pinned to a commit SHA or image digest, with least
 `permissions: contents: read` (workflow-wide, plus the job's own explicit block) and no
 `pull_request_target` — forked-repo PRs never receive repository secrets:
 
-| Check              | Tool                                     | Local reproduction                                                                                     |
-| ------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Dependency audit    | `pnpm audit --prod --audit-level=high`    | `pnpm audit --prod --audit-level=high` (full non-`--prod` audit reports the two accepted dev-only advisories — §12.13) |
-| Dependency audit    | OSV Scanner (`google/osv-scanner-action`) | `osv-scanner --lockfile=pnpm-lock.yaml --recursive`                                                       |
-| Secret scan         | gitleaks (`gitleaks/gitleaks-action`)     | `docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 detect --source /repo --redact -v`          |
-| SAST                | semgrep (pinned image digest)             | `docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep@sha256:ae27024c16f7848cdbfd49c24ed0b78b13f13b85fcd7b87c679aaa8b0c0dce98 semgrep scan --config p/security-audit --config p/typescript --error --metrics=off .` |
+| Check            | Tool                                      | Local reproduction                                                                                                                                                                                                    |
+| ---------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dependency audit | `pnpm audit --prod --audit-level=high`    | `pnpm audit --prod --audit-level=high` (full non-`--prod` audit reports the one remaining accepted dev-only advisory — §12.13)                                                                                        |
+| Dependency audit | OSV Scanner (`google/osv-scanner-action`) | `osv-scanner --lockfile=pnpm-lock.yaml --recursive`                                                                                                                                                                   |
+| Secret scan      | gitleaks (`gitleaks/gitleaks-action`)     | `docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 detect --source /repo --redact -v`                                                                                                                      |
+| SAST             | semgrep (pinned image digest)             | `docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep@sha256:ae27024c16f7848cdbfd49c24ed0b78b13f13b85fcd7b87c679aaa8b0c0dce98 semgrep scan --config p/security-audit --config p/typescript --error --metrics=off .` |
 
 **Suppression policy:** gitleaks findings are suppressed only via an inline `.gitleaksignore`
 entry with a commit-linked rationale; semgrep findings are suppressed only via an inline
@@ -404,19 +404,19 @@ are dropped (never foreign tables); drops proceed in reverse FK-dependency order
 **Safety contract** — the runner enforces all of the following before any mutation (issues #10/#11
 closed the previous warn-only gaps):
 
-| Check                       | Enforcement                                                                                                                          |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Two-step confirmation        | `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact db target; `--apply --confirmation <token> --yes` performs the reset |
-| Explicit `--env` flag        | Required; value must be `development`, `test`, or `ci`                                                                                 |
-| System env cross-check       | `APP_ENV`/`NODE_ENV` checked; a non-safe system value blocks reset regardless of `--env`; when set, `--env` must match it exactly       |
-| Unset system env             | Never treated as safe by default — requires the explicit `--disposable-db` acknowledgment                                              |
-| Actor identity                | `--actor <name>` required and recorded in the audit log (Phase 1 has no session/role system — this is a caller-declared identity, the strongest this profile can offer; real auth is docs/07 scope) |
-| Backup evidence               | `--backup-verified` or `--backup-exempt "<reason>"` required and recorded                                                               |
-| Database target identity      | PostgreSQL host checked against `MINICODER_ALLOWED_RESET_HOSTS` (default `localhost`/`127.0.0.1`/`::1`); other hosts require explicit `--force-host` |
-| Credential safety              | PostgreSQL connection URL reduced to protocol+hostname+port+pathname before logging — query string, fragment, and credentials are dropped entirely, not just the URL authority |
-| Malformed URL handling         | Blocked with a fixed, non-sensitive error; the raw input is never echoed                                                                 |
-| Audit event                    | Printed to stdout before mutation: timestamp, mode, env flag, system env, dialect, sanitized database identifier, table count, actor, backup status |
-| Dry-run summary                | Tables to be dropped listed before execution                                                                                            |
+| Check                    | Enforcement                                                                                                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Two-step confirmation    | `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact db target; `--apply --confirmation <token> --yes` performs the reset                                   |
+| Explicit `--env` flag    | Required; value must be `development`, `test`, or `ci`                                                                                                                                              |
+| System env cross-check   | `APP_ENV`/`NODE_ENV` checked; a non-safe system value blocks reset regardless of `--env`; when set, `--env` must match it exactly                                                                   |
+| Unset system env         | Never treated as safe by default — requires the explicit `--disposable-db` acknowledgment                                                                                                           |
+| Actor identity           | `--actor <name>` required and recorded in the audit log (Phase 1 has no session/role system — this is a caller-declared identity, the strongest this profile can offer; real auth is docs/07 scope) |
+| Backup evidence          | `--backup-verified` or `--backup-exempt "<reason>"` required and recorded                                                                                                                           |
+| Database target identity | PostgreSQL host checked against `MINICODER_ALLOWED_RESET_HOSTS` (default `localhost`/`127.0.0.1`/`::1`); other hosts require explicit `--force-host`                                                |
+| Credential safety        | PostgreSQL connection URL reduced to protocol+hostname+port+pathname before logging — query string, fragment, and credentials are dropped entirely, not just the URL authority                      |
+| Malformed URL handling   | Blocked with a fixed, non-sensitive error; the raw input is never echoed                                                                                                                            |
+| Audit event              | Printed to stdout before mutation: timestamp, mode, env flag, system env, dialect, sanitized database identifier, table count, actor, backup status                                                 |
+| Dry-run summary          | Tables to be dropped listed before execution                                                                                                                                                        |
 
 **Never run against production.** PostgreSQL: use a dedicated development/CI database or a
 separate schema. SQLite: use a throw-away file (`/tmp/dev.db`).
@@ -1381,19 +1381,24 @@ successfully. If the transaction fails, the token is preserved and the command c
 
 #### §12.13 Known dev-only audit advisories — accepted risk
 
-Two known advisories affect the dev toolchain but are not exploitable in this project:
+`vitest`/`@vitest/coverage-v8` were upgraded from `^1.6.0` to `^3.2.6` (issue #22), which resolves
+the previously-accepted **critical** vitest advisory (GHSA-5xrq-8626-4rwp) outright — vitest 3.2.6
+no longer reports it. One advisory remains, transitively pulled in via vitest 3.2.6's bundled vite
+5.4.x, and is still accepted as non-exploitable in this project:
 
-| Advisory                       | Package  | Patched at | Why not exploitable here                                                         |
-| ------------------------------ | -------- | ---------- | -------------------------------------------------------------------------------- |
-| GHSA-5xrq-8626-4rwp (critical) | `vitest` | ≥3.2.6     | Exploits the Vitest UI server (`--ui`); this project never starts the UI server  |
-| GHSA-fx2h-pf6j-xcff (high)     | `vite`   | ≥6.4.3     | `server.fs.deny` bypass via Windows alternate paths; CI and production run Linux |
+| Advisory                   | Package | Patched at | Why not exploitable here                                                         |
+| -------------------------- | ------- | ---------- | -------------------------------------------------------------------------------- |
+| GHSA-fx2h-pf6j-xcff (high) | `vite`  | ≥6.4.3     | `server.fs.deny` bypass via Windows alternate paths; CI and production run Linux |
 
-CI enforces `pnpm audit --prod --audit-level=high`, which passes cleanly. Production runtime
-dependencies are covered by `pnpm.overrides` in `package.json`. The full `pnpm audit
---audit-level=high` will report these advisories locally — that is expected and documented here.
+Fully resolving this one would require vitest 4.x (which bundles a vite major satisfying the
+patched range) — a further major-version jump than issue #22 called for (`≥3.2.6`), deferred as a
+separate, deliberate future upgrade rather than bundled into this one, since vitest 4's peer
+requirements (`vite ^6 || ^7 || ^8`) and config-schema changes weren't validated in this pass.
 
-Fixing them requires upgrading to vitest ≥3.2.6 (major version jump from 1.6.x). The upgrade is
-deferred until the API surface can be validated against the full test suite.
+CI enforces `pnpm audit --prod --audit-level=high`, which passes cleanly (`1 low | 5 moderate`, all
+below the `high` gate). Production runtime dependencies are covered by `pnpm.overrides` in
+`package.json`. The full `pnpm audit --audit-level=high` will still report the one remaining vite
+advisory locally — that is expected and documented here.
 
 #### §12.14 `minicoder test unit` — scope
 

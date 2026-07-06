@@ -84,7 +84,11 @@ function fingerprintTarget(dialect: Dialect, identifier: string): string {
 // CLAUDE.md's "SQLite is never used over a network filesystem" locked decision, so hosted/shared
 // PostgreSQL targets are the actual risk this guards against). Returns an error string, or null if
 // the target is acceptable.
-function checkDatabaseIdentity(dialect: Dialect, identifier: string, args: string[]): string | null {
+function checkDatabaseIdentity(
+  dialect: Dialect,
+  identifier: string,
+  args: string[],
+): string | null {
   if (dialect !== 'postgres') return null;
   let hostname: string;
   try {
@@ -222,7 +226,9 @@ function auditAndGuardReset(args: string[], ctx: ResetContext): void {
     try {
       pending = JSON.parse(fs.readFileSync(RESET_PENDING_FILE, 'utf-8')) as typeof pending;
     } catch {
-      console.error('  reset is blocked: no pending confirmation token found. Run --dry-run first.');
+      console.error(
+        '  reset is blocked: no pending confirmation token found. Run --dry-run first.',
+      );
       process.exit(1);
     }
     if (pending.token !== confirmation) {

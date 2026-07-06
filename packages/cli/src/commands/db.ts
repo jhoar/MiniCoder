@@ -70,7 +70,10 @@ export function createDbCommand(): Command {
     .option('--actor <name>', 'Who is authorizing this destructive action (required)')
     .option('--backup-verified', 'Confirm a backup was taken before reset')
     .option('--backup-exempt <reason>', 'Document why no backup is needed instead of verifying one')
-    .option('--disposable-db', 'Acknowledge this is a known disposable target when APP_ENV/NODE_ENV is unset')
+    .option(
+      '--disposable-db',
+      'Acknowledge this is a known disposable target when APP_ENV/NODE_ENV is unset',
+    )
     .option('--force-host', 'Explicitly override the PostgreSQL reset-target host allowlist')
     .action(
       (opts: {
