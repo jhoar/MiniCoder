@@ -151,6 +151,29 @@ feature request into the execution lifecycle at `approved_pending_execution` (gl
 parse → validate → preview → approve → transactional database import. No runtime logic reads
 `backlog.md` as a source of truth.
 
+**`backlog.md` parser (issue #33):** `parseBacklogMarkdown()` (`@minicoder/core`) implements the
+"parse" step for `backlog.md`, converting `ExportBacklogHandler`'s Markdown output back into
+`ImportBacklogPayload.features`. It is a pure function — no DB access — matching the principle
+above: the parser turns a Markdown _snapshot_ into the same structured shape a caller could have
+hand-built, it never becomes a runtime source of truth. `minicoder plan import-backlog <file>`
+(`packages/cli/src/commands/plan.ts`) wires it end to end: read file → `parseBacklogMarkdown()` →
+dispatch `ImportBacklogCommand` (supports `--dry-run` for the preview step).
+
+The current `backlog.md` format (`ExportBacklogHandler`) is constrained — it emits only `fr_id`,
+`title`, `Kind:`, and a free-text description per feature section; it does **not** emit
+`priority` or dependency edges. Consequently:
+
+- **`priority` is reconstructed from each feature's position in the document** (0-based, matching
+  the `ORDER BY priority ASC, fr_id ASC` the export query already uses), not from the original
+  numeric value. A round trip preserves relative ordering, not the original priority numbers.
+- **`dependsOnFrIds` is always empty** on import — the format has no section to carry dependency
+  information in a re-imported backlog.
+
+Malformed input (a missing `# Feature Backlog` heading, no feature sections, a duplicate `fr_id`,
+a missing/invalid `Kind:` line, or an empty description) throws `BacklogParseError` with a 1-based
+line number, so `minicoder plan import-backlog` fails fast with an actionable message rather than
+importing a partial or incorrect backlog.
+
 ## 12. Testability
 
 Planner workflows must be testable without human intervention. Mock planner scenarios:

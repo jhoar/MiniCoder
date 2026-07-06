@@ -112,3 +112,6 @@ export * from './commands/handlers/feature/merge-if-ready.js';
 export * from './commands/handlers/feature/record-merged.js';
 export * from './commands/handlers/feature/record-merge-failed.js';
 export * from './commands/handlers/feature/reconcile-merge-failed.js';
+
+// Issue #33: backlog.md Markdown parser
+export * from './backlog/parse-backlog-markdown.js';

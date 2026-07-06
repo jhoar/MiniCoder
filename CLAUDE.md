@@ -392,6 +392,22 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   `MockPlannerAdapter`); no reference/generic planner adapter has shipped yet (docs/02 §7 names
   `GenericLLMPlannerAdapter` as future work), so a live Trigger.dev deployment fails fast with an
   actionable error until one exists.
+- **`parseBacklogMarkdown()` (`packages/core/src/backlog/`, issue #33) is the "parse" step for
+  `backlog.md` imports (docs/02 §11) — a pure function, no DB access, matching the "Markdown
+  artifacts are never runtime state" rule.** It converts `ExportBacklogHandler`'s Markdown output
+  back into `ImportBacklogPayload.features`, throwing `BacklogParseError` (with a 1-based line
+  number) on any structural problem — a missing top-level heading, no feature sections, a
+  duplicate `fr_id`, a missing/invalid `Kind:` line, or an empty description. Because
+  `ExportBacklogHandler`'s format carries only `fr_id`/`title`/`Kind:`/description, **not**
+  `priority` or dependency edges, `priority` is reconstructed from each feature's document
+  position (matching the export query's own `ORDER BY priority ASC, fr_id ASC`) and
+  `dependsOnFrIds` is always empty — a round trip preserves relative order and content, not the
+  original numeric priorities or dependency graph. `minicoder plan import-backlog <file>`
+  (`packages/cli/src/commands/plan.ts`) is the first CLI surface wiring this parser end to end:
+  read file → parse → dispatch `ImportBacklogCommand` directly via
+  `TransactionalCommandExecutor` (the same "one-shot CLI dispatch, no Trigger.dev task needed"
+  pattern `minicoder merge merge-if-ready`/`minicoder human ...` already established), supporting
+  `--dry-run` for the preview step.
 
 ## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/github/`, migration 0009)
 
