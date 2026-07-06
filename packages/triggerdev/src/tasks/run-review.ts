@@ -50,7 +50,19 @@ const EXECUTION_LANE_TTL_MS = 30_000;
 // This task never attempts SelectFeature/StartCoding-style transitions; only an in-flight
 // idempotency-key race with a concurrent invocation of this same task, or the feature run
 // vanishing underneath us, are expected non-fatal races (mirrors run-coder.ts's narrower set).
-const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'not-found']);
+// 'automation-paused' is included too (issue #48): advanceToFixing()'s StartFixingCommand
+// dispatch can throw it if automation is paused at that exact moment, and
+// github-reconciliation.ts already treats the identical condition on the identical command as an
+// expected, swallowed race rather than a task failure — the two callers of StartFixingCommand
+// should behave the same way for the same underlying condition. The changes_requested transition
+// this function guards is already durably recorded by the time StartFixingCommand is attempted,
+// so swallowing this here loses nothing: a later github-reconciliation pass (or another
+// run-review invocation) picks up the `-> fixing` hop once automation resumes.
+const EXPECTED_COMMAND_ERROR_TYPES = new Set([
+  'concurrent-command',
+  'not-found',
+  'automation-paused',
+]);
 
 function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);

@@ -1116,6 +1116,24 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   matching the pattern used for every other workspace package that tests resolve directly from
   source rather than `dist/`.
 
+**Post-implementation review fixes (round 5):**
+
+- **Issue #48 (`run-review.ts` and `github-reconciliation.ts` handled `automation-paused`
+  inconsistently on the same `StartFixingCommand` dispatch).** Round 4's `github-reconciliation.ts`
+  fix (above) added `automation-paused` to that file's `EXPECTED_COMMAND_ERROR_TYPES`, but
+  `run-review.ts`'s own `advanceToFixing()` helper — which dispatches the identical
+  `StartFixingCommand` for the identical `changes_requested -> fixing` hop — still used a narrower
+  set (`concurrent-command`/`not-found` only), so a pause landing at that exact moment would throw
+  out of the task instead of being swallowed. Not a correctness bug (the `changes_requested`
+  transition is already durably recorded by that point, so a thrown task failure just meant
+  Trigger.dev retry, or a later `github-reconciliation` pass would pick up the `-> fixing` hop via
+  its own `CHANGES_REQUESTED` branch) — but the two callers of the same command behaved differently
+  for the same condition, which is confusing to reason about and easy to regress. Fixed by adding
+  `automation-paused` to `run-review.ts`'s `EXPECTED_COMMAND_ERROR_TYPES` too, so both callers now
+  swallow it identically. Regression in `run-review.test.ts` pauses automation mid-flight and
+  asserts the task returns `decision: 'changes_requested'` without throwing, with the feature run
+  left at `changes_requested` (not `fixing`) since only the `-> fixing` hop was skipped.
+
 ## Disagreement, Arbiter, and Human Escalation Operational Constraints (`packages/core/src/disagreement/`, `packages/core/src/commands/handlers/feature/{resolve-disagreement,resume-feature-execution,retry-feature,skip-feature,block-feature}.ts`)
 
 - **`human_required` had zero outgoing transitions before this phase.** Five new matrix rows give

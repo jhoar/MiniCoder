@@ -227,6 +227,53 @@ describe('run-review', () => {
     expect(runRows[0]?.fix_attempt_count).toBe(1);
   });
 
+  // Issue #48: advanceToFixing()'s StartFixingCommand dispatch can throw an 'automation-paused'
+  // CommandError if automation is paused at that exact moment. This must be swallowed the same
+  // way github-reconciliation.ts already swallows the identical condition on the identical
+  // command, rather than throwing out of the task — the changes_requested transition is already
+  // durably recorded by this point, so this is a benign, retryable race, not a task failure.
+  it('does not throw when automation is paused mid-flight during the changes_requested -> fixing hop', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedUnderReviewFeatureRun(db);
+    await registerReviewerAdapter(db);
+    await db.execute(
+      `UPDATE workflow_states SET automation_state = 'paused_by_operator', version = version + 1 WHERE project_id = ?`,
+      [PROJECT_ID],
+    );
+
+    const adapter = fakeReviewerAdapter({
+      decision: 'changes_requested',
+      findings: [{ severity: 'blocking', category: 'correctness', description: 'bug' }],
+    });
+    const deps: RunReviewDeps = {
+      reviewerAdapterFactory: async () => adapter,
+      githubClientFactory: async () => fakeGithubClient(),
+    };
+
+    const result = await runImpl(
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-3b',
+        idempotencyKey: 'idem-3b',
+        reviewerAdapterName: 'FakeReviewerAdapter',
+      },
+      db,
+      deps,
+    );
+
+    expect(result.decision).toBe('changes_requested');
+
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    // The changes_requested transition succeeded (RecordChangesRequestedCommand has no
+    // automation-state guard); only the -> fixing hop was skipped because automation is paused.
+    expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.CHANGES_REQUESTED);
+  });
+
   it('escalates to human_required when the fix-attempt threshold is already reached', async () => {
     const db = createTestDb();
     insertTestProject(db, PROJECT_ID);
