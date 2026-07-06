@@ -1047,6 +1047,17 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   This is a contract every `ReviewerAgentAdapter`/`ReviewProvider` implementation must honor — this
   call site still only handles whatever `unknown` value the adapter reports and cannot generically
   strip a diff it has no structural knowledge of.
+  **Storage-boundary backstop added (post-merge PR review fix, LOW-1, round 3).** The adapter-level
+  fix above is a contract, not an enforced guarantee — a non-compliant custom `ReviewerAgentAdapter`
+  could still report a raw diff. `sanitizePromptSnapshot()` (`packages/core/src/review/`) is a
+  defense-in-depth backstop applied to every `promptSnapshot` at this persistence call site,
+  regardless of which adapter produced it: it walks the value (parsing/re-serializing any
+  JSON-shaped string, since the shipped provider's own message `content` fields are JSON-encoded
+  strings), replacing anything under a literal `diff` key or any string matching a unified-diff
+  shape with a placeholder. Never throws — falls back to a placeholder on any unexpected shape
+  rather than persisting it unexamined or blocking the write. This is genuine defense-in-depth, not
+  a replacement for the adapter-level fix: the two operate at different boundaries (what an adapter
+  is supposed to report vs. what actually gets written).
 - **`ci_failed`'s next-transition ownership stays inside `reconcileGithubState()`, not a separate
   caller.** Immediately after a successful `ci_running -> ci_failed` transition, the same bounded
   catch-up loop (`MAX_RECONCILE_STEPS`) reads the feature run's current `fix_attempt_count` and

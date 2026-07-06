@@ -18,6 +18,7 @@ import {
   insertDisagreementRecord,
   recordArbiterDisposition,
   defaultRedactor,
+  sanitizePromptSnapshot,
   isoNow,
 } from '@minicoder/core';
 import type {
@@ -447,8 +448,16 @@ export async function runImpl(
   // needed no change, since it already only handles whatever the adapter reports, but the contract
   // this comment describes is now actually enforced by the one shipped adapter, not merely hoped
   // for. A test double that still reports a raw diff in `promptSnapshot` would still persist it —
-  // this is a contract every `ReviewerAgentAdapter`/`ReviewProvider` implementation must honor,
-  // not a guarantee this call site itself can enforce generically over an `unknown` value.
+  // this is a contract every `ReviewerAgentAdapter`/`ReviewProvider` implementation must honor.
+  //
+  // Post-merge review fix (LOW-1, defense-in-depth): the paragraph above is still only a
+  // contract, not something this `unknown`-typed value can be trusted to satisfy — a
+  // non-compliant custom adapter could still report a raw diff. `sanitizePromptSnapshot()`
+  // (`@minicoder/core`) is a storage-boundary backstop: it walks the snapshot (parsing/
+  // re-serializing JSON-shaped string values, since the shipped provider's own message `content`
+  // fields are JSON-encoded strings) and replaces anything under a literal `diff` key, or any
+  // string that looks like a unified diff, with a placeholder — applied here, before redaction,
+  // regardless of which adapter produced the snapshot.
   const reviewerPromptSnapshot = (output as { promptSnapshot?: unknown }).promptSnapshot;
   if (reviewerPromptSnapshot !== undefined) {
     const now = isoNow();
@@ -460,7 +469,7 @@ export async function runImpl(
         agentRunId,
         JSON.stringify(
           defaultRedactor.redactObject({
-            promptSnapshot: reviewerPromptSnapshot,
+            promptSnapshot: sanitizePromptSnapshot(reviewerPromptSnapshot),
             headSha: pr.head_sha,
           }),
         ),

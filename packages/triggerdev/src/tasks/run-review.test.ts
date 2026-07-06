@@ -253,6 +253,57 @@ describe('run-review', () => {
     expect(rows[0]!.content).not.toContain('sk-abcdEFGH12345678901234567890123456');
   });
 
+  // Post-merge review fix (LOW-1): a non-compliant custom ReviewerAgentAdapter — unlike the
+  // shipped ClaudeReviewerAdapter/HttpReviewProvider, which now omits the diff at the source —
+  // could still report a raw diff in promptSnapshot. sanitizePromptSnapshot() is a
+  // storage-boundary backstop; this proves it catches that case even when the adapter itself
+  // doesn't cooperate.
+  it('sanitizes a raw diff reported by a non-compliant custom adapter before persisting', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedUnderReviewFeatureRun(db);
+    await registerReviewerAdapter(db);
+
+    const rawDiff = 'diff --git a/x b/x\n+const apiKey = "sk-fake-secret-9999999999999999";\n';
+    const adapter: ReviewerAgentAdapter = {
+      role: 'ReviewerAgentAdapter',
+      async run() {
+        return {
+          decision: 'approved',
+          findings: [],
+          promptSnapshot: {
+            model: 'test-model',
+            diff: rawDiff,
+          },
+        } as ReviewerOutput;
+      },
+    };
+    const deps: RunReviewDeps = {
+      reviewerAdapterFactory: async () => adapter,
+      githubClientFactory: async () => fakeGithubClient(),
+    };
+
+    await runImpl(
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-2d',
+        idempotencyKey: 'idem-2d',
+        reviewerAdapterName: 'FakeReviewerAdapter',
+      },
+      db,
+      deps,
+    );
+
+    const rows = await db.query<{ content: string; content_schema_version: string }>(
+      `SELECT content, content_schema_version FROM agent_context_packs WHERE content_schema_version = ?`,
+      ['reviewer-prompt-snapshot-v1'],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.content).not.toContain('sk-fake-secret-9999999999999999');
+    expect(rows[0]!.content).not.toContain('diff --git');
+  });
+
   it('a retry for the same PR head commit does not re-invoke the adapter or duplicate findings', async () => {
     const db = createTestDb();
     insertTestProject(db, PROJECT_ID);

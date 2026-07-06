@@ -13,3 +13,4 @@ export {
   recordReviewOccurrenceMarker,
   type ReviewOccurrenceMarker,
 } from './occurrence-marker.js';
+export { sanitizePromptSnapshot } from './sanitize-prompt-snapshot.js';
