@@ -433,10 +433,11 @@ questions; blocking gaps prevent activation; an approved plan activates features
   task IDs. `packages/triggerdev/src/tasks/actor.ts` builds the system/human `ActorIdentity` task
   payloads carry (Phase 13's API layer will replace the human-actor payload fields with real
   session identity). `planning-readiness-assessment` and `generate-implementation-plan` never
-  import a concrete adapter — the `PlannerAgentAdapter` instance is injected by the caller, so a
-  live Trigger.dev deployment fails fast with an actionable error until a reference/generic
-  planner adapter exists (none has shipped yet; docs/02 §7 names `GenericLLMPlannerAdapter` as a
-  future implementation, out of Phase 6 scope).
+  import a concrete adapter — the `PlannerAgentAdapter` instance is injected by the caller; a test
+  scenario injects `MockPlannerAdapter`, while a live Trigger.dev deployment resolves a real
+  `GenericLLMPlannerAdapter` via `resolveDefaultPlannerAdapter()`.
+  **Superseded by issue #32:** `packages/adapters-planner`'s `GenericLLMPlannerAdapter` is now
+  delivered — see the "Post-implementation review fixes" note at the end of this phase's section.
 - `packages/triggerdev/src/triggerdev-tasks.ts` / `mock-runner.ts` — `makeTaskRunner` and
   `MockTriggerRunner.run()` now pass the resolved `DbClient` (and, for planner-invoking tasks, the
   injected adapter) through to `runImpl`; the fitness test
@@ -495,6 +496,29 @@ questions; blocking gaps prevent activation; an approved plan activates features
   changed `features` from `.default([])` to `.min(1)`, matching
   `GenerateFeatureBacklogHandler`'s own schema; the task no longer has an empty-payload no-op
   short-circuit that silently "succeeded" with zero features written.
+- **Issue #32 (reference `GenericLLMPlannerAdapter`, built well after Phase 6 shipped):**
+  `PlannerAgentAdapter` (`packages/core/src/adapters/types.ts`) gained two additive methods —
+  `generatePlanSections(input): Promise<PlanSectionGenerationOutput>` and
+  `generateFeatureBacklog(input): Promise<FeatureBacklogGenerationOutput>` — alongside the existing
+  `run()` readiness-assessment method; `generateFeatureBacklog`'s output shape matches
+  `GenerateFeatureBacklogPayload.features`'s `FeatureInputSchema` exactly so a caller can pass it
+  straight through with no reshaping. `MockPlannerAdapter` (`packages/testing`) implements both with
+  deterministic fixture output. `packages/adapters-planner` is a new workspace package — a
+  sandbox-free reference implementation (`GenericLLMPlannerAdapter`) against a single injected
+  `PlanProvider` seam (`HttpPlanProvider`, a plain-`fetch` OpenAI-compatible client), mirroring
+  `packages/adapters-reviewer`'s exact shape (interface + one shipped HTTP implementation + adapter
+  class with no sandbox). `triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` is now async and
+  constructs a real `GenericLLMPlannerAdapter` from the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/
+  `CODE_GEN_MODEL` env vars the Coder/Reviewer default resolvers already read, via dynamic
+  `import('@minicoder/adapters-planner')` — the "fails fast, no reference adapter shipped" posture
+  this phase originally documented for `planning-readiness-assessment` no longer applies.
+  `GenerateImplementationPlanHandler`/`GenerateFeatureBacklogHandler` themselves are unchanged and
+  still accept caller-supplied plan/feature content directly — this issue only adds the _option_ of
+  generating that content via the adapter first; it does not rewire those handlers or their tasks.
+  `packages/adapters-planner` was added to the root `typecheck` build-order chain (after
+  `adapters-reviewer`, before `triggerdev`, matching the "any package whose `types` field points to
+  `dist/` needs to be built before its dependents' `--noEmit` pass" rule) and to
+  `vitest.config.ts`'s alias map.
 
 ## Phase 7 — GitHub Webhooks, Integration, and Reconciliation ✓
 
@@ -1569,7 +1593,9 @@ the API.
   below), plus a narrow `system`-actorKind allow-list for manual replay
   (`GenerateImplementationPlanHandler`/`GenerateFeatureBacklogHandler`/`ValidateBacklogHandler`;
   `AssessPlanningReadinessHandler` is excluded — its constructor requires a live
-  `PlannerAgentAdapter` instance, and no reference planner adapter has shipped yet, docs/02 §7).
+  `PlannerAgentAdapter` instance, and this registry only registers handlers with a no-argument
+  constructor; `GenericLLMPlannerAdapter` (issue #32, docs/02 §7) now exists but the generic
+  dispatch route has no adapter-construction wiring to supply it, so this exclusion is unchanged).
 - `packages/api/src/commands/generic-dispatch-route.ts` — `POST /commands/:commandSlug`, resolving
   a URL slug to a registered `commandName`, building a `CommandEnvelope` from the request body +
   `Idempotency-Key` header + auth-derived actor, and dispatching via

@@ -21,6 +21,10 @@ export default defineConfig({
         'packages/adapters-reviewer/src/index.ts',
       ),
       '@minicoder/adapters-coder': path.resolve(__dirname, 'packages/adapters-coder/src/index.ts'),
+      '@minicoder/adapters-planner': path.resolve(
+        __dirname,
+        'packages/adapters-planner/src/index.ts',
+      ),
       '@minicoder/triggerdev': path.resolve(__dirname, 'packages/triggerdev/src/index.ts'),
       '@minicoder/testing': path.resolve(__dirname, 'packages/testing/src/index.ts'),
       '@minicoder/api': path.resolve(__dirname, 'packages/api/src/index.ts'),

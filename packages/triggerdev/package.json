@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@minicoder/adapters-coder": "workspace:*",
+    "@minicoder/adapters-planner": "workspace:*",
     "@minicoder/adapters-reviewer": "workspace:*",
     "@minicoder/core": "workspace:*",
     "@minicoder/github": "workspace:*",

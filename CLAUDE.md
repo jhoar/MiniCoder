@@ -388,10 +388,30 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   real DB/infrastructure/programmer failures from Trigger.dev's retry/failed-status handling —
   every other error type must re-throw.
 - **`planning-readiness-assessment` and `generate-implementation-plan` never import a concrete
-  `PlannerAgentAdapter` implementation.** The caller injects one (test scenarios pass
-  `MockPlannerAdapter`); no reference/generic planner adapter has shipped yet (docs/02 §7 names
-  `GenericLLMPlannerAdapter` as future work), so a live Trigger.dev deployment fails fast with an
-  actionable error until one exists.
+  `PlannerAgentAdapter` implementation directly — the caller/resolver injects one.** Test scenarios
+  pass `MockPlannerAdapter`; a live Trigger.dev deployment resolves a real `GenericLLMPlannerAdapter`
+  via `triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` (issue #32 — see below). Neither
+  handler imports `@minicoder/adapters-planner` itself; only the Trigger.dev task-registration layer
+  does, preserving the "adapter instance is caller-supplied" contract this bullet originally
+  documented.
+- **`GenericLLMPlannerAdapter` (`packages/adapters-planner`, issue #32) is the delivered reference
+  `PlannerAgentAdapter` implementation** — docs/02 §7 previously named it future work; it now ships,
+  mirroring `packages/adapters-reviewer`'s exact shape (a sandbox-free adapter over a single injected
+  `PlanProvider` seam; `HttpPlanProvider` is the one shipped plain-`fetch` OpenAI-compatible
+  implementation, no vendor SDK). `PlannerAgentAdapter` (`packages/core/src/adapters/types.ts`)
+  gained two additive methods beyond the original `run()`: `generatePlanSections()` and
+  `generateFeatureBacklog()` — `MockPlannerAdapter` implements both with deterministic fixture
+  output, so every existing `PlannerAgentAdapter` caller/mock keeps compiling.
+  `generateFeatureBacklog()`'s output shape matches `GenerateFeatureBacklogPayload.features`'s
+  `FeatureInputSchema` exactly (same convention issue #33's backlog parser already established) so a
+  caller can pass it straight through with no reshaping. `GenerateImplementationPlanHandler`/
+  `GenerateFeatureBacklogHandler` themselves were **not** changed — they still accept
+  caller-supplied plan/feature content directly; this issue only adds the _option_ of generating
+  that content via the adapter first, it does not rewire either handler or its Trigger.dev task.
+  `resolveDefaultPlannerAdapter()` (`triggerdev-tasks.ts`) is now async and constructs a real
+  instance from the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the
+  Coder/Reviewer default resolvers already read, via dynamic `import('@minicoder/adapters-planner')`
+  — the same pattern, not a parallel `PLANNER_*` env-var family.
 - **`parseBacklogMarkdown()` (`packages/core/src/backlog/`, issue #33) is the "parse" step for
   `backlog.md` imports (docs/02 §11) — a pure function, no DB access, matching the "Markdown
   artifacts are never runtime state" rule.** It converts `ExportBacklogHandler`'s Markdown output
@@ -1858,7 +1878,7 @@ calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do no
 The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
 running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
 appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
-Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → triggerdev → testing → (rest --noEmit)`.
+Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → adapters-reviewer → adapters-planner → triggerdev → testing → api → (rest --noEmit)`.
 `workflow` moved ahead of `github`/`triggerdev` in Phase 7: `packages/github`'s inbox handlers and
 `packages/triggerdev`'s `github-reconciliation` task both acquire a `WorkflowLockManager` lock
 before dispatching a lock-gated reconciliation command (`RecordPrOpenedCommand`/
@@ -1869,7 +1889,12 @@ also added ahead of `triggerdev` (`github-reconciliation.ts` imports `OctokitGit
 `CodexCoderAdapter`/`HttpCodeGenerationProvider`/`CoderSandbox` from `@minicoder/adapters-coder`
 (the same "constructs the real reference implementation from env, dynamic `import()`" pattern
 `github-reconciliation.ts` already uses for `OctokitGitHubClient`), so `packages/triggerdev`
-depends on `@minicoder/adapters-coder`'s type declarations.
+depends on `@minicoder/adapters-coder`'s type declarations. `adapters-reviewer` was added ahead of
+`triggerdev` in Phase 10 for the identical reason (`run-review.ts`'s default resolver dynamically
+imports `ClaudeReviewerAdapter`/`HttpReviewProvider`). `adapters-planner` was added ahead of
+`triggerdev` for issue #32: `triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` dynamically
+imports `GenericLLMPlannerAdapter`/`HttpPlanProvider` from `@minicoder/adapters-planner`, the same
+pattern.
 
 When adding a new workspace package that others import for types, add it to this chain.
 

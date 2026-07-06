@@ -115,6 +115,31 @@ Planner work is performed through `PlannerAgentAdapter`. Implementations include
 `MockPlannerAdapter`, `GenericLLMPlannerAdapter`, and a human planner via `HumanAgentAdapter`. The
 planner adapter produces structured output, not final runtime state.
 
+**`GenericLLMPlannerAdapter` (issue #32, `packages/adapters-planner`)** is the delivered reference
+implementation, mirroring `packages/adapters-reviewer`'s shape exactly: a sandbox-free adapter
+calling a single injected `PlanProvider` seam (`HttpPlanProvider`, a plain-`fetch`
+OpenAI-compatible client — no vendor SDK). `PlannerAgentAdapter` has three methods:
+
+- `run(input)` — the original readiness-assessment contract (Phase 6).
+- `generatePlanSections(input)` — additive (issue #32): generates `{title, summary?, sections}`
+  from a specification, matching `GenerateImplementationPlanHandler`'s existing payload shape so a
+  caller can pass the output straight through.
+- `generateFeatureBacklog(input)` — additive (issue #32): generates a `GeneratedFeature[]` list
+  from plan sections, matching `GenerateFeatureBacklogPayload.features`'s `FeatureInputSchema`
+  shape exactly.
+
+Both new methods are additive to the interface; `GenerateImplementationPlanHandler`/
+`GenerateFeatureBacklogHandler` themselves are unchanged and still accept caller-supplied
+plan/feature content directly (docs/06 Phase 6) — a caller now has the _option_ of first calling
+the adapter to generate that content, rather than being required to invent it ad hoc, but nothing
+about the handlers' own contracts changed.
+
+`packages/triggerdev/src/triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` constructs a real
+`GenericLLMPlannerAdapter` from the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL`
+env vars the Coder/Reviewer default resolvers already read (async, dynamic `import()`, same
+pattern) — a live `planning-readiness-assessment` deployment no longer fails fast with "no planner
+adapter configured."
+
 ## 8. Output Records
 
 The planner writes `specification_inputs`, `planning_readiness_assessments`, `planning_gaps`,

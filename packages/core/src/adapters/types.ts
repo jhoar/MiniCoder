@@ -13,6 +13,56 @@ export interface PlannerOutput {
   gaps: Array<{ description: string; severity: 'blocking' | 'non_blocking' }>;
 }
 
+/**
+ * Issue #32: plan-section-generation call shape. `GenerateImplementationPlanHandler`'s own doc
+ * comment previously noted this shape didn't exist ("plan section content is caller-supplied
+ * here rather than invented ad hoc") — this closes that gap, matching docs/03 §5's
+ * PlannerAgentAdapter responsibility list ("plan generation") that predates this contract.
+ */
+export interface PlanSectionGenerationInput {
+  projectId: string;
+  assessmentId: string;
+  specificationContent: string;
+  correlationId: string;
+}
+
+export interface PlanSectionGenerationOutput {
+  title: string;
+  summary?: string;
+  sections: Array<{ title: string; content: string }>;
+}
+
+/**
+ * Issue #32: feature-backlog-generation call shape, matching
+ * `GenerateFeatureBacklogPayload.features`'s structure exactly (`FeatureInputSchema` in
+ * `packages/core/src/commands/handlers/planning/generate-feature-backlog.ts`) so a caller can
+ * pass this output straight through without reshaping it.
+ */
+export interface FeatureBacklogGenerationInput {
+  projectId: string;
+  planId: string;
+  planSections: Array<{ title: string; content: string }>;
+  correlationId: string;
+}
+
+export interface GeneratedFeature {
+  frId: string;
+  title: string;
+  description: string;
+  kind: 'feature' | 'discovery';
+  priority: number;
+  dependsOnFrIds: string[];
+  acceptanceCriteria: string[];
+  testExpectations: Array<{
+    description: string;
+    testType: 'unit' | 'integration' | 'system' | null;
+  }>;
+}
+
+export interface FeatureBacklogGenerationOutput {
+  features: GeneratedFeature[];
+}
+
 export type CoderBehavior = 'success' | 'fail' | 'invalid_output';
 
 export interface CoderInput {

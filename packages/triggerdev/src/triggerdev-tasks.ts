@@ -16,6 +16,7 @@ import { z } from 'zod';
 import type { DbClient, PlannerAgentAdapter } from '@minicoder/core';
 import { createDbClientFromEnv } from './db.js';
 import { linkRunToDb, updateRunStatus } from './metadata.js';
+import { requireNonBlankEnvVar } from './tasks/env.js';
 
 import { runImpl as runIngestSpecification } from './tasks/ingest-specification.js';
 import { runImpl as runPlanningReadiness } from './tasks/planning-readiness-assessment.js';
@@ -65,18 +66,38 @@ const RETRY_CONFIG = {
 } as const;
 
 /**
- * No reference/generic PlannerAgentAdapter implementation exists yet (docs/02 §7 names
- * GenericLLMPlannerAdapter as a future implementation) — a live Trigger.dev deployment has
- * nothing concrete to inject here until that adapter lands. Fails fast with an actionable message
- * rather than silently no-op'ing, matching the "not implemented" pattern already used by several
- * `minicoder trigger` operational subcommands pending later phases.
+ * Constructs the real reference `GenericLLMPlannerAdapter` (issue #32) from env config.
+ * Deliberately reuses the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars
+ * `run-coder.ts`/`run-review.ts` already use — simpler than introducing a parallel `PLANNER_*` env
+ * var family when the same OpenAI-compatible endpoint can serve all three roles. A deployment
+ * wanting a distinct planner model/endpoint can still inject a custom `PlannerAgentAdapter`
+ * directly (this resolver is only reached when no adapter is otherwise supplied).
  */
-function resolveDefaultPlannerAdapter(): PlannerAgentAdapter {
-  throw new Error(
-    'No PlannerAgentAdapter configured for the planning-readiness-assessment task. ' +
-      'A reference planner adapter has not shipped yet — this task must be invoked with an ' +
-      'injected adapter (see packages/testing scenarios) until one exists.',
+async function resolveDefaultPlannerAdapter(): Promise<PlannerAgentAdapter> {
+  const codeGenBaseUrl = requireNonBlankEnvVar(
+    'CODE_GEN_BASE_URL',
+    'planning-readiness-assessment requires an OpenAI-compatible endpoint — see ' +
+      'docs/07-security-and-secrets.md §3.',
   );
+  const codeGenApiKey = requireNonBlankEnvVar(
+    'CODE_GEN_API_KEY',
+    'planning-readiness-assessment requires an OpenAI-compatible endpoint — see ' +
+      'docs/07-security-and-secrets.md §3.',
+  );
+  const codeGenModel = requireNonBlankEnvVar(
+    'CODE_GEN_MODEL',
+    'planning-readiness-assessment requires an OpenAI-compatible endpoint — see ' +
+      'docs/07-security-and-secrets.md §3.',
+  );
+  const { GenericLLMPlannerAdapter, HttpPlanProvider } =
+    await import('@minicoder/adapters-planner');
+  return new GenericLLMPlannerAdapter({
+    planProvider: new HttpPlanProvider({
+      baseUrl: codeGenBaseUrl,
+      apiKey: codeGenApiKey,
+      model: codeGenModel,
+    }),
+  });
 }
 
 function makeTaskRunner<P extends { projectId?: string }, R>(
@@ -122,8 +143,10 @@ export const planningReadinessAssessmentTask = task({
   id: 'planning-readiness-assessment',
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
-  run: makeTaskRunner('planning-readiness-assessment', PlanningReadinessSchema, (payload, db) =>
-    runPlanningReadiness(payload, db, resolveDefaultPlannerAdapter()),
+  run: makeTaskRunner(
+    'planning-readiness-assessment',
+    PlanningReadinessSchema,
+    async (payload, db) => runPlanningReadiness(payload, db, await resolveDefaultPlannerAdapter()),
   ),
 });
 
