@@ -11,6 +11,7 @@ import { Octokit } from '@octokit/rest';
 import type {
   CreateBranchOptions,
   CreatePullRequestOptions,
+  GithubPrState,
   GitHubClient,
   MergePullRequestOptions,
   ObservedPullRequestState,
@@ -274,6 +275,34 @@ export class OctokitGitHubClient implements GitHubClient {
       mediaType: { format: 'diff' },
     });
     return response.data as unknown as string;
+  }
+
+  /**
+   * Issue #35: `pulls.list`'s `head` filter is `owner:branch` for same-repo heads (the only case
+   * MiniCoder's own feature branches can be — it never opens PRs from a fork). Paginated the same
+   * way `getPullRequest()`'s reviews/checks calls already are, since a branch could in principle
+   * have more than 30 historical PRs (default per-page size) if `state` is `'all'`/`'closed'`.
+   */
+  async listPullRequestsForBranch(
+    owner: string,
+    repo: string,
+    branchName: string,
+    state: 'open' | 'closed' | 'all' = 'open',
+  ): Promise<Array<{ prNumber: number; state: GithubPrState }>> {
+    const paginate = this.octokit.paginate as (
+      method: unknown,
+      params: Record<string, unknown>,
+    ) => Promise<unknown[]>;
+    const prs = (await paginate(this.octokit.pulls.list, {
+      owner,
+      repo,
+      head: `${owner}:${branchName}`,
+      state,
+    })) as Array<{ number: number; state: string; merged_at: string | null }>;
+    return prs.map((pr) => ({
+      prNumber: pr.number,
+      state: pr.merged_at ? 'merged' : (pr.state as 'open' | 'closed'),
+    }));
   }
 }
 

@@ -861,43 +861,42 @@ production/hosted deployments. Phase 13's Fastify orchestrator API mounts the sa
 
 #### Diagnostics and known failure modes
 
-| Symptom                                                         | Likely cause                                         | Resolution                                                                |
-| --------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| `minicoder github serve` exits immediately                      | `GITHUB_WEBHOOK_SECRET` unset                        | Set `GITHUB_WEBHOOK_SECRET` before starting                               |
-| Webhook returns `401`                                           | Signature mismatch (secret rotated or misconfigured) | Verify `GITHUB_WEBHOOK_SECRET` matches the GitHub App's configured secret |
-| Webhook returns `202 unlinked-repository`                       | No `repositories` row for the delivering repo        | Insert a `repositories` row linking `full_name` to the MiniCoder project  |
-| `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment         | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)      |
-| Feature run stuck, no `pull_requests` row                       | PR never opened/observed yet (still `code_pushed`)   | Not a bug — the scheduled fallback only reconciles PRs it already tracks  |
+| Symptom                                                         | Likely cause                                          | Resolution                                                                   |
+| --------------------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `minicoder github serve` exits immediately                      | `GITHUB_WEBHOOK_SECRET` unset                         | Set `GITHUB_WEBHOOK_SECRET` before starting                                  |
+| Webhook returns `401`                                           | Signature mismatch (secret rotated or misconfigured)  | Verify `GITHUB_WEBHOOK_SECRET` matches the GitHub App's configured secret    |
+| Webhook returns `202 unlinked-repository`                       | No `repositories` row for the delivering repo         | Insert a `repositories` row linking `full_name` to the MiniCoder project     |
+| `github-reconciliation` throws "GITHUB_TOKEN is not configured" | No GitHub credential in the task environment          | Set `GITHUB_TOKEN` (or wire GitHub App installation-token retrieval)         |
+| Feature run stuck, no `pull_requests` row                       | PR never opened/observed yet, or a webhook was missed | Automated discovery (below) self-heals most cases on the next scheduled pass |
 
-#### Procedure: Recovering from a permanently-lost initial `pr.opened` webhook
+#### Procedure: Recovering from a permanently-lost initial `pr.opened` webhook (issue #35: automated, with manual fallback)
 
-The scheduled `github-reconciliation` fallback only re-checks feature runs that already have a
-`pull_requests` row (see the "Feature run stuck, no `pull_requests` row" diagnostic above, and the
-`GitHubClient.listPullRequestsForBranch`-scope note in `github-reconciliation.ts`'s JSDoc and
-docs/01 §5.7). If the _initial_ `pr.opened` webhook delivery for a feature run is permanently lost
-— not merely delayed — and the repository's GitHub App/webhook delivery history confirms it never
-arrived, there is currently no automated self-heal path. This is a narrower situation than a
-generic "reconciliation didn't run" symptom: the run is not diverging from a tracked PR, it simply
-has no tracked PR at all.
+**Closed by issue #35.** The scheduled `github-reconciliation` fallback previously only re-checked
+feature runs that already had a `pull_requests` row — a completely missed initial `pr.opened`
+webhook (the repo's GitHub App/webhook delivery history confirms it never arrived) had no automated
+self-heal path. `github-reconciliation.ts` now runs a `discoverMissingPullRequests()` pre-pass
+before its main reconcile loop: it scans `code_pushed` feature runs with no tracked
+`pull_requests` row, derives the branch MiniCoder's own coder adapter actually pushed to
+(`branchNameFor()` — the real runtime convention is `minicoder/<featureRunId>`, the opaque
+generated id, not the `minicoder/FR-<n>` form docs/00 §3.11 describes; this pre-existing doc/code
+mismatch predates issue #35 and remains unreconciled here), and calls the new
+`GitHubClient.listPullRequestsForBranch(owner, repo, branchName, 'open')`. A match dispatches
+`RecordPrOpenedCommand` to create the tracking row, which then flows into the same pass's normal
+reconcile loop. **Automated discovery is now primary** — it runs on every scheduled
+`github-reconciliation` invocation with no operator action required.
 
-**Detection**: a `minicoder/FR-*` branch has an open pull request on GitHub, but
-`SELECT * FROM pull_requests WHERE feature_run_id = '<id>'` returns no row, and the feature run's
-`feature_runs.current_execution_state` has remained at `code_pushed` (or `pr_opened`, if a
-different, still-tracked PR ever briefly matched) for longer than the branch/PR has visibly existed
-on GitHub. `minicoder state doctor`'s existing checks do not catch this specific case — none of its
-checks compare local `feature_runs` state against GitHub's actual PR list, only against already-
-tracked `pull_requests` rows — so this requires operator inspection (GitHub UI or `gh pr list`
-against the branch), not automated detection.
+**On-demand check**: `minicoder state doctor --check-github` (opt-in — the only `state doctor`
+check requiring a live `GITHUB_TOKEN`) runs `checkPrDiscoveryDivergence()` directly, without
+waiting for the next scheduled `github-reconciliation` run, and reports any `code_pushed` feature
+run whose branch already has an open PR on GitHub as a `pr_discovery_divergence` warning (not an
+error — the scheduled task will normally clear it on its own).
 
-**Recovery (interim, manual)**: no Orchestrator API command for this exists — it requires the
-still-unbuilt `GitHubClient.listPullRequestsForBranch`-style discovery method (deferred to a future
-phase; not added in Phase 13, see the "Alternatives considered and deferred" note below) — and
-`minicoder github simulate-pr-opened` is a dev/test/CI-only command —
-it calls `guardEnv()`, which hard-rejects when `APP_ENV`/`NODE_ENV` is `production` regardless of
-any `--env` flag (see CLAUDE.md's dev/test-only command safety guards), so it cannot be used to
-repair a production deployment. The only currently-available production-safe recovery is a direct,
-careful manual insert into `pull_requests` via `minicoder db` tooling (or an equivalent scoped SQL
-client under the same access controls), using the real values from the GitHub PR:
+**Manual fallback (only if automated discovery cannot reach the candidate)** — e.g.
+`listPullRequestsForBranch` fails repeatedly (rate limiting, a credential issue), or the candidate
+genuinely isn't at `code_pushed` yet: the interim manual procedure below remains available.
+`minicoder github simulate-pr-opened` is a dev/test/CI-only command (`guardEnv()` hard-rejects
+`production` regardless of `--env`), so it cannot repair a production deployment — the manual
+insert is the production-safe fallback:
 
 1. Confirm the real PR's `pr_number`, `head.ref` (→ `branch_name`), `base.ref` (→ `base_branch`),
    and `head.sha` (→ `head_sha`) from the GitHub UI or `gh pr view <number> --json number,headRefName,baseRefName,headRefOid`.
@@ -931,32 +930,8 @@ client under the same access controls), using the real values from the GitHub PR
    ordinary `reconcileGithubState()` path — this manual insert only creates the tracking row, it
    never substitutes for a real reconciliation pass.
 
-This is documented as an interim, manual operator procedure, not a polished feature. Building a
-`GitHubClient.listPullRequestsForBranch`-style discovery method (so the scheduled fallback could
-find a never-tracked PR on its own and eliminate the need for step 1–3 above) remains explicitly
-out of scope here — it is a larger, separate capability than this runbook gap warrants and is
-already called out as unbuilt in the code's own comments.
-
-**Alternatives considered and deferred (reaffirmed, round 8):** automated discovery for this gap
-has been raised across multiple review rounds; the decision to defer it stands, for these reasons:
-
-- **`GitHubClient.listPullRequestsForBranch`-style discovery** — the most direct fix, but a
-  genuinely new capability (a paginated GitHub API surface plus a scheduled-task call site), not a
-  bug fix to the existing reconciliation path; still deferred to a future phase (Phase 13 built the
-  Orchestrator API's read/command/webhook surface but did not add this GitHub discovery method).
-- **A `state doctor` check** — not currently feasible without giving the CLI a live GitHub
-  credential and making a per-run API call; none of `state doctor`'s existing checks call out to
-  GitHub today, they only compare already-persisted local tables against each other.
-- **An alerting mechanism** — would need a staleness heuristic (how long is "stuck too long" for a
-  branch that might legitimately sit at `code_pushed` for a while) and a notification channel,
-  neither of which exists in the current operational tooling.
-- **A guarded repair command** — closest in spirit to the manual SQL insert above, but formalizing
-  it as a `minicoder`/Orchestrator-API command depends on the same discovery method above and
-  remains deferred to a future phase alongside it.
-
-This is Medium-severity operational-completeness scope, not a correctness bug: reconciliation
-behaves correctly for every PR it knows about, and the manual runbook above (introduced in round 6,
-corrected in round 7) is the accepted interim mitigation until one of the above is built.
+This manual path is now the exception, not the norm: automated discovery (above) handles the
+common case of a missed `pr.opened` webhook without any operator involvement.
 
 ### Phase 8 — Execution Orchestrator Runbook
 

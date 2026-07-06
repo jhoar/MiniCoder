@@ -131,4 +131,19 @@ export interface GitHubClient {
    * this phase adds — no sandbox, no local git checkout required.
    */
   getPullRequestDiff(owner: string, repo: string, prNumber: number): Promise<string>;
+
+  /**
+   * Lists PRs whose head matches `branchName` (issue #35), filtered to `state` (default `open`).
+   * Existed as a documented gap since Phase 7 — `github-reconciliation`'s scheduled fallback could
+   * only re-check feature runs that already had a tracked `pull_requests` row; discovering a
+   * brand-new PR that no webhook ever reported required exactly this method. Returns a minimal
+   * summary (not the full `ObservedPullRequestState`) — a caller that finds a match still calls
+   * `getPullRequest()` for the authoritative full state, the same as every other observation path.
+   */
+  listPullRequestsForBranch(
+    owner: string,
+    repo: string,
+    branchName: string,
+    state?: 'open' | 'closed' | 'all',
+  ): Promise<Array<{ prNumber: number; state: GithubPrState }>>;
 }

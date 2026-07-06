@@ -70,6 +70,9 @@ importers:
 
   packages/api:
     dependencies:
+      '@minicoder/adapters-coder':
+        specifier: workspace:*
+        version: link:../adapters-coder
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core

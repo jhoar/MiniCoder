@@ -567,10 +567,13 @@ GitHub operations are evented.
   and calls `reconcileGithubState()`. GitHub credentials are resolved from `GITHUB_TOKEN` at
   runtime (fails fast with an actionable error if unset) rather than injected the way
   `PlannerAgentAdapter` is, since a GitHub credential is a single deployment-wide secret, not a
-  per-call dependency. Discovering a brand-new PR with no prior webhook/`pull_requests` row is
-  deferred — `GitHubClient` has no "list PRs by branch" method yet (tracked in
-  [issue #35](https://github.com/jhoar/MiniCoder/issues/35); an interim manual-recovery runbook
-  exists in `docs/04-testing-validation-state-lifecycle.md`'s Phase 7 runbook section).
+  per-call dependency. **Closed by issue #35:** discovering a brand-new PR with no prior
+  webhook/`pull_requests` row is no longer deferred — `GitHubClient.listPullRequestsForBranch()`
+  plus a `discoverMissingPullRequests()` pre-pass in this task now auto-tracks a `code_pushed`
+  feature run's PR the moment it's found, before falling through to the main reconcile loop in
+  the same pass. Automated discovery is primary; the manual-recovery runbook in
+  `docs/04-testing-validation-state-lifecycle.md`'s Phase 7 runbook section is now the fallback
+  for cases discovery itself can't reach.
 - `packages/cli/src/commands/github.ts` — new `minicoder github serve` command (added to
   `00-glossary-and-terms.md` §5), a thin wrapper around `createWebhookApp()`; unlike
   `simulate-*`, it is **not** gated by the dev/test/ci `guardEnv()` check, since it is the real

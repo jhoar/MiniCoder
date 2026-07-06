@@ -111,6 +111,9 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
       async getPullRequestDiff() {
         return 'diff --git a/x b/x\n';
       },
+      async listPullRequestsForBranch() {
+        return [];
+      },
     };
 
     const result = await runImpl(
@@ -188,6 +191,9 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
       async getPullRequestDiff() {
         return 'diff --git a/x b/x\n';
       },
+      async listPullRequestsForBranch() {
+        return [];
+      },
     };
 
     const result = await runImpl(
@@ -232,6 +238,9 @@ describe('github-reconciliation runImpl (concurrency: a held execution lane skip
       },
       async getPullRequestDiff() {
         return 'diff --git a/x b/x\n';
+      },
+      async listPullRequestsForBranch() {
+        return [];
       },
     };
   }
@@ -379,6 +388,9 @@ describe('github-reconciliation runImpl (issue #42: per-candidate GitHub API fai
       async getPullRequestDiff() {
         return '';
       },
+      async listPullRequestsForBranch() {
+        return [];
+      },
     };
 
     const result = await runImpl(
@@ -422,6 +434,9 @@ describe('github-reconciliation runImpl (issue #42: per-candidate GitHub API fai
       async getPullRequestDiff() {
         return '';
       },
+      async listPullRequestsForBranch() {
+        return [];
+      },
     };
 
     await expect(
@@ -463,4 +478,222 @@ describe('github-reconciliation runImpl (required env var validation, round 5)',
       ).rejects.toThrow(/GITHUB_TOKEN is not configured/);
     },
   );
+});
+
+const DISCOVERY_PROJECT_ID = 'proj-hr35-001';
+const DISCOVERY_PR_NUMBER = 88;
+
+/** Seeds a feature run at `code_pushed` with NO tracked `pull_requests` row — the exact gap
+ * issue #35 closes: a coder push happened, but no webhook (or this task) has ever recorded the
+ * resulting PR. The real branch-naming convention actually used at runtime is
+ * `minicoder/<featureRunId>` (`branchNameFor()` in `@minicoder/adapters-coder`), not the
+ * `minicoder/FR-<n>` form docs/00 §3.11 describes — see the doc comment on
+ * `discoverMissingPullRequests()` for why this test seeds/expects the former. */
+async function seedCodePushedFeatureRunWithNoTrackedPr(db: DbClient): Promise<string> {
+  const planId = `plan-${DISCOVERY_PROJECT_ID}`;
+  const frId = `fr-${DISCOVERY_PROJECT_ID}-1`;
+  const featureRunId = `run-${DISCOVERY_PROJECT_ID}-1`;
+
+  await db.execute(
+    `INSERT OR IGNORE INTO repositories (id, project_id, owner, name, full_name, default_branch, version, created_at, updated_at)
+     VALUES (?, ?, 'minicoder-test', 'hr35-repo', 'minicoder-test/hr35-repo', 'main', 1, datetime('now'), datetime('now'))`,
+    [`repo-${DISCOVERY_PROJECT_ID}`, DISCOVERY_PROJECT_ID],
+  );
+  await db.execute(
+    `INSERT OR IGNORE INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+     VALUES (?, ?, NULL, 'activated_for_execution', 'Issue 35 Discovery Plan', 'Plan for PR discovery regression testing', 1, datetime('now'), datetime('now'))`,
+    [planId, DISCOVERY_PROJECT_ID],
+  );
+  await db.execute(
+    `INSERT OR IGNORE INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'FR-001', 'Discovery Feature', 'A brand-new PR whose webhook was missed', 'feature', 1, 'code_pushed', 0, 1, datetime('now'), datetime('now'))`,
+    [frId, planId, DISCOVERY_PROJECT_ID],
+  );
+  await db.execute(
+    `INSERT OR IGNORE INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, started_at, version, created_at, updated_at)
+     VALUES (?, ?, 1, 'code_pushed', datetime('now'), 1, datetime('now'), datetime('now'))`,
+    [featureRunId, frId],
+  );
+
+  return featureRunId;
+}
+
+function discoveredObservedState(prNumber: number, headSha: string): ObservedPullRequestState {
+  return {
+    prNumber,
+    branchName: `minicoder/run-${DISCOVERY_PROJECT_ID}-1`,
+    baseBranch: 'main',
+    headSha,
+    state: 'open',
+    reviewState: PrReviewState.NONE,
+    ciStatus: 'pending',
+    mergeable: null,
+    blockingLabels: [],
+    conversationsResolved: false,
+    mergedAt: null,
+    mergeSha: null,
+    closedAt: null,
+  };
+}
+
+describe('github-reconciliation runImpl (issue #35: automated PR discovery)', () => {
+  it('auto-creates the pull_requests row for a code_pushed run whose PR was never reported by a webhook', async () => {
+    const db = createTestDb();
+    insertTestProject(db, DISCOVERY_PROJECT_ID);
+    const featureRunId = await seedCodePushedFeatureRunWithNoTrackedPr(db);
+
+    const listCalls: Array<{ owner: string; repo: string; branchName: string; state?: string }> =
+      [];
+    const client: GitHubClient = {
+      async createBranch() {
+        throw new Error('not used in this test');
+      },
+      async createPullRequest() {
+        throw new Error('not used in this test');
+      },
+      async mergePullRequest() {
+        throw new Error('not used in this test');
+      },
+      async getPullRequest() {
+        return discoveredObservedState(DISCOVERY_PR_NUMBER, 'discoveredsha0000');
+      },
+      async publishStatusCheck() {
+        // no-op
+      },
+      async getRemainingRateLimit() {
+        return 5000;
+      },
+      async getPullRequestDiff() {
+        return '';
+      },
+      async listPullRequestsForBranch(owner, repo, branchName, state) {
+        listCalls.push({ owner, repo, branchName, state });
+        return [{ prNumber: DISCOVERY_PR_NUMBER, state: 'open' }];
+      },
+    };
+
+    const result = await runImpl(
+      { projectId: DISCOVERY_PROJECT_ID, correlationId: 'corr-hr35', idempotencyKey: 'idem-hr35' },
+      db,
+      async () => client,
+    );
+
+    expect(result.discovered).toBe(1);
+    expect(listCalls).toEqual([
+      {
+        owner: 'minicoder-test',
+        repo: 'hr35-repo',
+        branchName: `minicoder/${featureRunId}`,
+        state: 'open',
+      },
+    ]);
+
+    const prRows = await db.query<{ pr_number: number; feature_run_id: string }>(
+      `SELECT pr_number, feature_run_id FROM pull_requests WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(prRows).toHaveLength(1);
+    expect(prRows[0]?.pr_number).toBe(DISCOVERY_PR_NUMBER);
+
+    const runRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [featureRunId],
+    );
+    expect(runRows[0]?.current_execution_state).toBe('pr_opened');
+  });
+
+  it('does not create a pull_requests row when no PR exists yet for the branch', async () => {
+    const db = createTestDb();
+    insertTestProject(db, DISCOVERY_PROJECT_ID);
+    const featureRunId = await seedCodePushedFeatureRunWithNoTrackedPr(db);
+
+    const client: GitHubClient = {
+      async createBranch() {
+        throw new Error('not used in this test');
+      },
+      async createPullRequest() {
+        throw new Error('not used in this test');
+      },
+      async mergePullRequest() {
+        throw new Error('not used in this test');
+      },
+      async getPullRequest() {
+        throw new Error('not used in this test');
+      },
+      async publishStatusCheck() {
+        // no-op
+      },
+      async getRemainingRateLimit() {
+        return 5000;
+      },
+      async getPullRequestDiff() {
+        return '';
+      },
+      async listPullRequestsForBranch() {
+        return [];
+      },
+    };
+
+    const result = await runImpl(
+      {
+        projectId: DISCOVERY_PROJECT_ID,
+        correlationId: 'corr-hr35b',
+        idempotencyKey: 'idem-hr35b',
+      },
+      db,
+      async () => client,
+    );
+
+    expect(result.discovered).toBe(0);
+    const prRows = await db.query<{ id: string }>(
+      `SELECT id FROM pull_requests WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(prRows).toHaveLength(0);
+  });
+
+  it('skips (does not abort the pass) when listPullRequestsForBranch fails for one discovery candidate', async () => {
+    const db = createTestDb();
+    insertTestProject(db, DISCOVERY_PROJECT_ID);
+    await seedCodePushedFeatureRunWithNoTrackedPr(db);
+
+    const client: GitHubClient = {
+      async createBranch() {
+        throw new Error('not used in this test');
+      },
+      async createPullRequest() {
+        throw new Error('not used in this test');
+      },
+      async mergePullRequest() {
+        throw new Error('not used in this test');
+      },
+      async getPullRequest() {
+        throw new Error('not used in this test');
+      },
+      async publishStatusCheck() {
+        // no-op
+      },
+      async getRemainingRateLimit() {
+        return 5000;
+      },
+      async getPullRequestDiff() {
+        return '';
+      },
+      async listPullRequestsForBranch() {
+        throw new Error('simulated transient GitHub API failure');
+      },
+    };
+
+    const result = await runImpl(
+      {
+        projectId: DISCOVERY_PROJECT_ID,
+        correlationId: 'corr-hr35c',
+        idempotencyKey: 'idem-hr35c',
+      },
+      db,
+      async () => client,
+    );
+
+    expect(result.discovered).toBe(0);
+  });
 });

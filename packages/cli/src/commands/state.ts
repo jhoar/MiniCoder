@@ -6,10 +6,28 @@ import * as path from 'path';
 import {
   validateFeatureRunStates,
   runDoctorChecks,
+  checkPrDiscoveryDivergence,
   reconcileState,
   exportDiagnostics,
 } from '@minicoder/api';
+import { requireNonBlankEnvVar } from '@minicoder/triggerdev';
 import { createDbClientFromEnv } from '../db-client.js';
+
+/**
+ * Issue #35: `--check-github` is opt-in specifically because — unlike every other `state doctor`
+ * check — it needs a live GitHub credential, mirroring `github-reconciliation.ts`'s/`merge.ts`'s
+ * `resolveDefaultGithubClientFactory`/`resolveGithubClient` pattern (a GitHub credential is a
+ * single deployment-wide secret, not a per-call injected dependency).
+ */
+async function resolveGithubClientForDoctor() {
+  const token = requireNonBlankEnvVar(
+    'GITHUB_TOKEN',
+    'state doctor --check-github requires a GitHub credential (GitHub App installation token ' +
+      'or PAT) to check for undiscovered PRs — see docs/07-security-and-secrets.md §3.',
+  );
+  const { OctokitGitHubClient } = await import('@minicoder/github');
+  return new OctokitGitHubClient({ auth: token });
+}
 
 function isoNow(): string {
   return new Date().toISOString();
@@ -180,20 +198,42 @@ export function createStateCommand(): Command {
     .command('doctor')
     .description('Detect stale locks, stuck outbox/inbox events, and orphaned runs')
     .option('--project <id>', 'Project ID')
-    .action(async (opts: { project?: string }) => {
+    .option(
+      '--check-github',
+      'Also check GitHub directly for undiscovered PRs (issue #35) — opt-in, requires GITHUB_TOKEN',
+    )
+    .action(async (opts: { project?: string; checkGithub?: boolean }) => {
       const db = await createDbClientFromEnv();
       try {
         const result = await runDoctorChecks(db, opts.project);
+        const checks = [...result.checks];
+        const healthy = result.healthy;
+
+        if (opts.checkGithub) {
+          const client = await resolveGithubClientForDoctor();
+          const divergences = await checkPrDiscoveryDivergence(db, client, opts.project);
+          checks.push({
+            name: 'pr_discovery_divergence',
+            severity: divergences.length > 0 ? 'warning' : 'ok',
+            autoClearable: true,
+            count: divergences.length,
+            details: divergences,
+          });
+          // A live-GitHub divergence is a warning, not an error — github-reconciliation's own
+          // scheduled discovery pass will normally clear it on its own; report it here without
+          // failing the exit code the way a real error-severity check does.
+        }
+
         const output = {
           command: 'state doctor',
           projectId: opts.project ?? null,
-          healthy: result.healthy,
-          checks: result.checks,
+          healthy,
+          checks,
           timestamp: isoNow(),
         };
 
         console.log(JSON.stringify(output, null, 2));
-        if (!result.healthy) {
+        if (!healthy) {
           process.exit(1);
         }
       } finally {

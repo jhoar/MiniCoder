@@ -1,6 +1,7 @@
 import type {
   CreateBranchOptions,
   CreatePullRequestOptions,
+  GithubPrState,
   GitHubClient,
   MergePullRequestOptions,
   ObservedPullRequestState,
@@ -108,6 +109,28 @@ export class MockGitHubClient implements GitHubClient {
       `@@ -1,1 +1,2 @@\n` +
       ` // ${owner}/${repo} mock diff for PR #${prNumber}\n` +
       `+// mock change\n`
+    );
+  }
+
+  /** Issue #35 test seam — matches the same `minicoder/<featureRunId>` branch-naming convention
+   * `createPullRequest`/`toObservedState` already use, deriving the branch name from each mock
+   * PR's `featureRunId` rather than tracking a separate branch field. */
+  async listPullRequestsForBranch(
+    _owner: string,
+    _repo: string,
+    branchName: string,
+    state: 'open' | 'closed' | 'all' = 'open',
+  ): Promise<Array<{ prNumber: number; state: GithubPrState }>> {
+    return (
+      this.provider
+        .allPrs()
+        .filter((pr) => `minicoder/${pr.featureRunId ?? 'unknown'}` === branchName)
+        // Mirrors GitHub's own `state` semantics: 'closed' includes merged PRs.
+        .filter(
+          (pr) =>
+            state === 'all' || pr.state === state || (state === 'closed' && pr.state === 'merged'),
+        )
+        .map((pr) => ({ prNumber: pr.prNumber, state: pr.state }))
     );
   }
 }

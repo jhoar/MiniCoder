@@ -434,10 +434,25 @@ failed}`, so the matrix must cover every state that check can reach; a mid-fligh
   **Superseded by Phase 10:** `feature_runs.fix_attempt_count` (migration 0011) now exists and both
   handlers increment it and write `review_findings` — see the Reference Reviewer Adapter and
   Review/Fix Loop Operational Constraints section below.
-- **`github-reconciliation`'s scheduled fallback only re-checks feature runs that already have a
-  `pull_requests` row.** Discovering a brand-new PR that no webhook has ever reported requires a
-  `GitHubClient.listPullRequestsForBranch`-style method that does not exist yet — do not assume
-  the scheduled task will self-heal a completely missed `pr.opened` webhook.
+- **`github-reconciliation`'s scheduled fallback now auto-discovers a brand-new PR that no webhook
+  ever reported (issue #35), via `GitHubClient.listPullRequestsForBranch(owner, repo,
+branchName, state?)`.** Before the main reconcile loop's candidate query, a
+  `discoverMissingPullRequests()` pre-pass scans `code_pushed` feature runs with no tracked
+  `pull_requests` row, derives the branch MiniCoder's own coder adapter would have pushed to
+  (`branchNameFor()` from `@minicoder/adapters-coder` — the real runtime convention is
+  `minicoder/<featureRunId>`, the opaque generated id, **not** the `minicoder/FR-<n>` form docs/00
+  §3.11 describes; this pre-existing doc/code discrepancy predates issue #35 and remains
+  unreconciled — it is out of scope for this fix, which uses the real convention so discovery
+  actually matches production branches), and asks GitHub whether an open PR already exists for
+  it. A match dispatches `RecordPrOpenedCommand` to create the tracking row before the normal
+  candidate query runs, so the newly-discovered row is reconciled further in the same pass.
+  Automated discovery is now primary; the `minicoder github simulate-pr-opened`-style manual
+  recovery this task previously required for this exact gap is now the fallback for a case
+  discovery itself cannot reach (e.g. `listPullRequestsForBranch` failing repeatedly, or a
+  candidate not yet at `code_pushed`). A separate, opt-in `state doctor --check-github` check
+  (`packages/api/src/read-models/diagnostics.ts`'s `checkPrDiscoveryDivergence()`) surfaces the
+  same class of divergence on demand — the only doctor check needing a live GitHub credential,
+  which is why it is not part of `runDoctorChecks()`'s always-on pure-DB check list.
 - **`github-reconciliation` treats a per-candidate transient concurrency loss as a skip, not a
   batch abort.** A lock-gated candidate (`code_pushed`/`pr_opened`) whose
   `execution-lane:{projectId}` lock is held by another actor (the `start-next-feature` task, a

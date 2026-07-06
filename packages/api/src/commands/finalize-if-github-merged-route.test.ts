@@ -87,6 +87,9 @@ function githubClientConfirmingMerged(): GitHubClient {
     async getPullRequestDiff() {
       return '';
     },
+    async listPullRequestsForBranch() {
+      return [];
+    },
   };
 }
 
@@ -124,6 +127,9 @@ function githubClientNotMerged(): GitHubClient {
     },
     async getPullRequestDiff() {
       return '';
+    },
+    async listPullRequestsForBranch() {
+      return [];
     },
   };
 }

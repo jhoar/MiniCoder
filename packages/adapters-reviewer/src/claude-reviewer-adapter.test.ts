@@ -24,6 +24,9 @@ function fakeGithubClient(diff: string): GitHubClient {
     async getPullRequestDiff() {
       return diff;
     },
+    async listPullRequestsForBranch() {
+      return [];
+    },
   };
 }
 

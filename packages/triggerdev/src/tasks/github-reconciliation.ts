@@ -1,9 +1,17 @@
 import type { DbClient, GitHubClient, FeatureExecutionState } from '@minicoder/core';
-import { reconcileGithubState, requiresExecutionLock } from '@minicoder/core';
+import {
+  reconcileGithubState,
+  requiresExecutionLock,
+  RecordPrOpenedHandler,
+  TransactionalCommandExecutor,
+  generateId,
+} from '@minicoder/core';
 import { WorkflowLockManager } from '@minicoder/workflow';
+import { branchNameFor } from '@minicoder/adapters-coder';
 import type { GithubReconciliationPayload } from './types.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 import { requireNonBlankEnvVar } from './env.js';
+import { systemActor } from './actor.js';
 
 export type { GithubReconciliationPayload };
 
@@ -15,6 +23,11 @@ export interface GithubReconciliationResult {
    * (issue #42) — surfaced so an operator can notice a skip rather than it being silently
    * dropped. A later scheduled pass retries these. */
   fetchFailures: number;
+  /** New pull_requests rows auto-created this pass by the issue #35 discovery pre-pass — a
+   * feature run at `code_pushed` with no tracked PR whose branch turned out to already have an
+   * open PR on GitHub (a missed `pr.opened` webhook). These candidates then flow into the normal
+   * reconcile loop below in the same pass. */
+  discovered: number;
 }
 
 // CommandError `problem.type`s that represent an expected per-candidate concurrency race (a
@@ -96,15 +109,128 @@ const EXCLUDED_STATES = [
   'system_failed',
 ];
 
+interface UndiscoveredCandidateRow {
+  id: string;
+  version: number;
+}
+
+/**
+ * Issue #35: auto-discovers a brand-new PR that no webhook has ever reported, for a feature run
+ * at `code_pushed` with no tracked `pull_requests` row yet. For each such candidate, derives the
+ * branch MiniCoder's own coder adapter would have pushed to (`branchNameFor()` — the real runtime
+ * convention is `minicoder/<featureRunId>`, the opaque generated id, not the `minicoder/FR-<n>`
+ * form docs/00 §3.11 describes; this pre-existing doc/code discrepancy predates this issue and is
+ * out of scope to reconcile here) and asks GitHub whether an open PR already exists for it. A
+ * match dispatches `RecordPrOpenedCommand` to create the tracking row — after which the normal
+ * candidate query below picks it up like any other tracked PR for the rest of this pass.
+ *
+ * Runs before the main reconcile loop's candidate query so newly-discovered rows are visible to
+ * it in the same invocation, not just on the next scheduled run.
+ */
+async function discoverMissingPullRequests(
+  db: DbClient,
+  client: GitHubClient,
+  repo: RepositoryRow,
+  projectId: string,
+  featureRunId: string | undefined,
+  correlationId: string,
+): Promise<{ discovered: number }> {
+  const candidates = featureRunId
+    ? await db.query<UndiscoveredCandidateRow>(
+        `SELECT fr.id, fr.version
+         FROM feature_runs fr
+         JOIN feature_requests freq ON fr.feature_request_id = freq.id
+         LEFT JOIN pull_requests pr ON pr.feature_run_id = fr.id
+         WHERE fr.id = ? AND freq.project_id = ?
+           AND fr.current_execution_state = 'code_pushed' AND pr.id IS NULL`,
+        [featureRunId, projectId],
+      )
+    : await db.query<UndiscoveredCandidateRow>(
+        `SELECT fr.id, fr.version
+         FROM feature_runs fr
+         JOIN feature_requests freq ON fr.feature_request_id = freq.id
+         LEFT JOIN pull_requests pr ON pr.feature_run_id = fr.id
+         WHERE freq.project_id = ?
+           AND fr.current_execution_state = 'code_pushed' AND pr.id IS NULL`,
+        [projectId],
+      );
+
+  if (candidates.length === 0) return { discovered: 0 };
+
+  const lockManager = new WorkflowLockManager(db);
+  const executor = new TransactionalCommandExecutor(db);
+  const recordPrOpenedHandler = new RecordPrOpenedHandler();
+  let discovered = 0;
+
+  for (const candidate of candidates) {
+    const branchName = branchNameFor(candidate.id);
+    let matches: Awaited<ReturnType<GitHubClient['listPullRequestsForBranch']>>;
+    try {
+      matches = await client.listPullRequestsForBranch(repo.owner, repo.name, branchName, 'open');
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 401 || status === 403) throw err;
+      console.error(
+        `github-reconciliation: listPullRequestsForBranch failed for feature run ` +
+          `${candidate.id} (branch ${branchName}); skipping discovery for this candidate.`,
+        err,
+      );
+      continue;
+    }
+    const match = matches[0];
+    if (!match) continue;
+
+    const observed = await client.getPullRequest(repo.owner, repo.name, match.prNumber);
+    if (!observed) continue;
+
+    const acquired = await lockManager.acquire(projectId, `execution-lane:${projectId}`, {
+      holderId: 'github-reconciliation-discovery',
+      ttlMs: 30_000,
+    });
+    try {
+      await executor.execute(recordPrOpenedHandler, {
+        commandId: generateId(),
+        idempotencyKey: `record-pr-opened-discovery:${candidate.id}:${match.prNumber}`,
+        payload: {
+          featureRunId: candidate.id,
+          projectId,
+          expectedVersion: candidate.version,
+          prNumber: match.prNumber,
+          branchName,
+          baseBranch: observed.baseBranch,
+          headSha: observed.headSha,
+        },
+        actor: systemActor(correlationId),
+        correlationId,
+        lockContext: {
+          lockId: acquired.lockId,
+          fence: acquired.fence,
+          holderId: acquired.holderId,
+          projectId,
+          resourceKey: `execution-lane:${projectId}`,
+        },
+      });
+      discovered++;
+    } catch (err) {
+      if (!isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES)) throw err;
+    } finally {
+      await lockManager.release(acquired);
+    }
+  }
+
+  return { discovered };
+}
+
 /**
  * Scheduled reconciliation fallback (docs/01 §5.7: "on each relevant webhook (or on the
  * scheduled fallback)"). Reconciles either a single feature run (payload.featureRunId) or every
- * active feature run in the project that already has a tracked pull_requests row — discovering a
- * brand-new PR that has never been observed via a webhook or RecordPrOpenedCommand is out of
- * scope here (GitHubClient has no "list PRs by branch" method yet); this task's job is to catch
- * *missed* webhook deliveries for PRs MiniCoder already knows about, not to discover new ones.
- * (HIGH-2: this now includes `code_pushed` candidates that already have a tracked `pull_requests`
- * row — a fix-cycle re-push whose `pr.opened` webhook never arrived.)
+ * active feature run in the project that already has a tracked pull_requests row, first running
+ * an auto-discovery pre-pass (issue #35, `discoverMissingPullRequests()` above) for `code_pushed`
+ * candidates with no tracked PR yet, so a missed `pr.opened` webhook self-heals here instead of
+ * requiring the manual `minicoder github simulate-pr-opened`-style recovery this task previously
+ * needed for that case. (HIGH-2: this still separately includes `code_pushed` candidates that
+ * *already* have a tracked `pull_requests` row — a fix-cycle re-push whose `pr.opened` webhook
+ * never arrived — in the main reconcile loop below.)
  */
 export async function runImpl(
   payload: GithubReconciliationPayload,
@@ -117,8 +243,24 @@ export async function runImpl(
   );
   const repo = repoRows[0];
   if (!repo) {
-    return { projectId: payload.projectId, reconciled: 0, humanRequired: 0, fetchFailures: 0 };
+    return {
+      projectId: payload.projectId,
+      reconciled: 0,
+      humanRequired: 0,
+      fetchFailures: 0,
+      discovered: 0,
+    };
   }
+
+  const client = await clientFactory();
+  const { discovered } = await discoverMissingPullRequests(
+    db,
+    client,
+    repo,
+    payload.projectId,
+    payload.featureRunId,
+    payload.correlationId,
+  );
 
   const candidates = payload.featureRunId
     ? await db.query<FeatureRunCandidateRow>(
@@ -139,7 +281,6 @@ export async function runImpl(
         [payload.projectId, ...EXCLUDED_STATES],
       );
 
-  const client = await clientFactory();
   const lockManager = new WorkflowLockManager(db);
   let reconciled = 0;
   let humanRequired = 0;
@@ -251,5 +392,5 @@ export async function runImpl(
     }
   }
 
-  return { projectId: payload.projectId, reconciled, humanRequired, fetchFailures };
+  return { projectId: payload.projectId, reconciled, humanRequired, fetchFailures, discovered };
 }
