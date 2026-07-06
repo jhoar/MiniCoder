@@ -11,6 +11,10 @@ export interface GithubReconciliationResult {
   projectId: string;
   reconciled: number;
   humanRequired: number;
+  /** Candidates skipped this pass because GitHubClient.getPullRequest() failed for them
+   * (issue #42) — surfaced so an operator can notice a skip rather than it being silently
+   * dropped. A later scheduled pass retries these. */
+  fetchFailures: number;
 }
 
 // CommandError `problem.type`s that represent an expected per-candidate concurrency race (a
@@ -113,7 +117,7 @@ export async function runImpl(
   );
   const repo = repoRows[0];
   if (!repo) {
-    return { projectId: payload.projectId, reconciled: 0, humanRequired: 0 };
+    return { projectId: payload.projectId, reconciled: 0, humanRequired: 0, fetchFailures: 0 };
   }
 
   const candidates = payload.featureRunId
@@ -139,10 +143,32 @@ export async function runImpl(
   const lockManager = new WorkflowLockManager(db);
   let reconciled = 0;
   let humanRequired = 0;
+  let fetchFailures = 0;
 
   for (const candidate of candidates) {
     if (candidate.pr_number === null || candidate.pr_number === undefined) continue;
-    const observedResult = await client.getPullRequest(repo.owner, repo.name, candidate.pr_number);
+
+    // Issue #42: a transient GitHub API failure (rate limit, timeout, a single malformed/
+    // inaccessible PR) fetching one candidate must not abort reconciliation of every other
+    // candidate in the batch. A credential-class failure (401/403) is the deliberate exception —
+    // it would affect every remaining candidate identically, and retrying candidate-by-candidate
+    // wastes the batch's rate-limit budget without any chance of succeeding until the credential
+    // itself is fixed, so it still aborts the whole task (for Trigger.dev retry / operator
+    // visibility) rather than being silently skipped per candidate.
+    let observedResult: Awaited<ReturnType<typeof client.getPullRequest>>;
+    try {
+      observedResult = await client.getPullRequest(repo.owner, repo.name, candidate.pr_number);
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 401 || status === 403) throw err;
+      console.error(
+        `github-reconciliation: getPullRequest failed for feature run ${candidate.id} ` +
+          `(PR #${candidate.pr_number}); skipping this candidate for this pass.`,
+        err,
+      );
+      fetchFailures++;
+      continue;
+    }
     if (!observedResult) continue;
     // Re-bound to a new const so TS's null-narrowing survives capture by the `reconcileWithLock`
     // closure below (narrowing on the original `const` is lost once referenced from a nested
@@ -225,5 +251,5 @@ export async function runImpl(
     }
   }
 
-  return { projectId: payload.projectId, reconciled, humanRequired };
+  return { projectId: payload.projectId, reconciled, humanRequired, fetchFailures };
 }

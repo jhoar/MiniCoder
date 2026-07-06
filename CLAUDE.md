@@ -431,8 +431,21 @@ failed}`, so the matrix must cover every state that check can reach; a mid-fligh
   reconciliation of the whole batch and fails the task on a routine concurrency condition (a real
   bug — HIGH-1 in a later Phase 8 code review round). The wrapping `try` covers only the
   `reconcileGithubState`/`reconcileWithLock` calls, **not** the `GitHubClient.getPullRequest`
-  fetch — a genuine GitHub API or DB failure still throws and correctly fails the task for
-  Trigger.dev retry.
+  fetch — a genuine GitHub API or DB failure there is handled by its own, separate try/catch (see
+  the next bullet), not this one.
+- **`github-reconciliation`'s `GitHubClient.getPullRequest()` call also isolates per-candidate
+  failures, with one deliberate exception (issue #42).** A transient GitHub API failure (rate
+  limit, timeout, a single malformed/inaccessible PR) fetching one candidate is logged
+  (`console.error`, so an operator can see it happened — also reflected in the task's
+  `GithubReconciliationResult.fetchFailures` count) and the loop `continue`s to the next candidate,
+  rather than aborting the whole batch — the same "one bad candidate shouldn't kill the batch"
+  shape the concurrency-race fix above already established, extended to the GitHub API path. The
+  deliberate exception: a 401/403 (credential-class failure) still throws and aborts the whole
+  task, since it would affect every remaining candidate identically and retrying
+  candidate-by-candidate wastes rate-limit budget with no chance of succeeding until the credential
+  itself is fixed. Any other thrown status (or a DB failure) also still throws, correctly failing
+  the task for Trigger.dev retry — only the two named cases (transient fetch failure → skip;
+  401/403 → abort) are special-cased.
 - **`minicoder github serve` is intentionally not gated by `guardEnv()`** (unlike
   `github simulate-*`), since it is the real webhook receiver and must run in production/hosted
   deployments. Do not add the dev/test/ci environment guard to it.
