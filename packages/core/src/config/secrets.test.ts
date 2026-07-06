@@ -159,4 +159,54 @@ describe('ManagedSecretBackend', () => {
     });
     await expect(backend.list('TEST_')).resolves.toEqual([]);
   });
+
+  // Post-merge PR review fix (LOW-1): every facade call must be bounded by a request timeout —
+  // an unresponsive secrets facade should not hang the caller indefinitely.
+  it('passes an AbortSignal to every operation (get/set/delete/list)', async () => {
+    const seenSignals: (AbortSignal | null | undefined)[] = [];
+    const backend = new ManagedSecretBackend({
+      baseUrl: 'https://secrets.example.com',
+      apiKey: 'k',
+      fetchImpl: (async (...args: FetchArgs) => {
+        const [, init] = args;
+        seenSignals.push(init?.signal);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ value: 'x', keys: [] }),
+        } as Awaited<ReturnType<typeof fetch>>;
+      }) as typeof fetch,
+    });
+
+    await backend.get('K');
+    await backend.set('K', 'v');
+    await backend.delete('K');
+    await backend.list('K');
+
+    expect(seenSignals).toHaveLength(4);
+    for (const signal of seenSignals) {
+      expect(signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it('honors a custom timeoutMs, aborting the request', async () => {
+    let sawSignal: AbortSignal | null | undefined;
+    const backend = new ManagedSecretBackend({
+      baseUrl: 'https://secrets.example.com',
+      apiKey: 'k',
+      timeoutMs: 5,
+      fetchImpl: (async (...args: FetchArgs) => {
+        const [, init] = args;
+        sawSignal = init?.signal;
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new Error('The operation was aborted.')),
+          );
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(backend.get('K')).rejects.toThrow();
+    expect(sawSignal).toBeInstanceOf(AbortSignal);
+  });
 });

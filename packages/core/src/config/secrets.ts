@@ -53,7 +53,13 @@ export interface ManagedSecretBackendConfig {
   apiKey?: string;
   /** Injectable fetch implementation, primarily for tests. Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
+  /** Request timeout in milliseconds — defaults to 30s. The secrets facade is an external
+   * dependency; without this a hung request would block the caller indefinitely instead of
+   * failing fast with an actionable error (post-merge PR review fix, LOW-1). */
+  timeoutMs?: number;
 }
+
+const DEFAULT_MANAGED_SECRET_TIMEOUT_MS = 30_000;
 
 /**
  * Cloud KMS/secret-manager backend for hosted/team deployments.
@@ -82,6 +88,7 @@ export class ManagedSecretBackend implements SecretBackend {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
   constructor(config: ManagedSecretBackendConfig = {}) {
     const baseUrl = config.baseUrl ?? process.env['MANAGED_SECRETS_URL'];
@@ -96,6 +103,7 @@ export class ManagedSecretBackend implements SecretBackend {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.apiKey = apiKey;
     this.fetchImpl = config.fetchImpl ?? fetch;
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_MANAGED_SECRET_TIMEOUT_MS;
   }
 
   private headers(): Record<string, string> {
@@ -109,6 +117,7 @@ export class ManagedSecretBackend implements SecretBackend {
     const res = await this.fetchImpl(`${this.baseUrl}/secrets/${encodeURIComponent(key)}`, {
       method: 'GET',
       headers: this.headers(),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (res.status === 404) throw new MissingSecretError(key);
     if (!res.ok) {
@@ -124,6 +133,7 @@ export class ManagedSecretBackend implements SecretBackend {
       method: 'PUT',
       headers: this.headers(),
       body: JSON.stringify({ value }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!res.ok) {
       throw new Error(`ManagedSecretBackend.set(${key}) failed: HTTP ${res.status}`);
@@ -134,6 +144,7 @@ export class ManagedSecretBackend implements SecretBackend {
     const res = await this.fetchImpl(`${this.baseUrl}/secrets/${encodeURIComponent(key)}`, {
       method: 'DELETE',
       headers: this.headers(),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!res.ok && res.status !== 404) {
       throw new Error(`ManagedSecretBackend.delete(${key}) failed: HTTP ${res.status}`);
@@ -143,7 +154,7 @@ export class ManagedSecretBackend implements SecretBackend {
   async list(prefix: string): Promise<string[]> {
     const res = await this.fetchImpl(
       `${this.baseUrl}/secrets?prefix=${encodeURIComponent(prefix)}`,
-      { method: 'GET', headers: this.headers() },
+      { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(this.timeoutMs) },
     );
     if (!res.ok) {
       throw new Error(`ManagedSecretBackend.list(${prefix}) failed: HTTP ${res.status}`);

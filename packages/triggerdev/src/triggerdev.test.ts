@@ -16,8 +16,10 @@ import {
   TransactionalCommandExecutor,
   SkipFeatureHandler,
   HumanUnblockFeatureHandler,
+  ImportBacklogHandler,
   type SkipFeaturePayload,
   type HumanUnblockFeaturePayload,
+  type ImportBacklogPayload,
 } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from './test-helpers.js';
@@ -1818,5 +1820,139 @@ describe('assertSchemaReady', () => {
     const db = new SqliteDbClient(raw);
     await expect(assertSchemaReady(db)).rejects.toThrow('triggerdev_runs table not found');
     // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
+  });
+});
+
+// ── ImportBacklogCommand dry-run validation gate (post-merge PR review MEDIUM-1) ──────────────
+
+describe('ImportBacklogCommand dry-run validation gate (post-merge PR review MEDIUM-1)', () => {
+  const projectId = 'proj-import-backlog-dryrun';
+
+  function baseFeatures(): ImportBacklogPayload['features'] {
+    return [
+      {
+        frId: 'FR-001',
+        title: 'Add widget',
+        description: 'A widget.',
+        kind: 'feature',
+        priority: 0,
+        dependsOnFrIds: [],
+      },
+    ];
+  }
+
+  it('rejects a dry-run against a nonexistent plan/project instead of reporting a false previewed success', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+
+    const executor = new TransactionalCommandExecutor(db);
+    await expect(
+      executor.execute(new ImportBacklogHandler(), {
+        commandId: 'cmd-import-dryrun-missing-1',
+        idempotencyKey: 'idem-import-dryrun-missing-1',
+        payload: {
+          projectId,
+          planId: 'plan-does-not-exist',
+          features: baseFeatures(),
+          dryRun: true,
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-1',
+        }),
+        correlationId: 'corr-1',
+      } satisfies CommandEnvelope<ImportBacklogPayload>),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it('rejects a dry-run payload with duplicate fr_ids', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    await expect(
+      executor.execute(new ImportBacklogHandler(), {
+        commandId: 'cmd-import-dryrun-dup-1',
+        idempotencyKey: 'idem-import-dryrun-dup-1',
+        payload: {
+          projectId,
+          planId,
+          features: [
+            {
+              frId: 'FR-001',
+              title: 'Add widget',
+              description: 'A widget.',
+              kind: 'feature',
+              priority: 0,
+              dependsOnFrIds: [],
+            },
+            {
+              frId: 'FR-001',
+              title: 'Duplicate',
+              description: 'Also a widget.',
+              kind: 'feature',
+              priority: 1,
+              dependsOnFrIds: [],
+            },
+          ],
+          dryRun: true,
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-2',
+        }),
+        correlationId: 'corr-2',
+      } satisfies CommandEnvelope<ImportBacklogPayload>),
+    ).rejects.toThrow(/duplicate/i);
+  });
+
+  it('still returns previewed without writing for a valid dry-run, and the apply path still succeeds', async () => {
+    const db = createTestDb();
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+
+    const executor = new TransactionalCommandExecutor(db);
+    const dryRunResult = await executor.execute(new ImportBacklogHandler(), {
+      commandId: 'cmd-import-dryrun-ok-1',
+      idempotencyKey: 'idem-import-dryrun-ok-1',
+      payload: { projectId, planId, features: baseFeatures(), dryRun: true },
+      actor: humanActor({ actorId: 'approver-1', actorRole: 'approver', correlationId: 'corr-3' }),
+      correlationId: 'corr-3',
+    } satisfies CommandEnvelope<ImportBacklogPayload>);
+    expect(dryRunResult.resultingState).toBe('previewed');
+
+    const preApplyRows = await db.query<{ id: string }>(
+      `SELECT id FROM feature_requests WHERE plan_id = ?`,
+      [planId],
+    );
+    expect(preApplyRows).toHaveLength(0);
+
+    const applyResult = await executor.execute(new ImportBacklogHandler(), {
+      commandId: 'cmd-import-apply-ok-1',
+      idempotencyKey: 'idem-import-apply-ok-1',
+      payload: { projectId, planId, features: baseFeatures(), dryRun: false },
+      actor: humanActor({ actorId: 'approver-1', actorRole: 'approver', correlationId: 'corr-4' }),
+      correlationId: 'corr-4',
+    } satisfies CommandEnvelope<ImportBacklogPayload>);
+    expect(applyResult.resultingState).toBe('imported');
+
+    const postApplyRows = await db.query<{ fr_id: string }>(
+      `SELECT fr_id FROM feature_requests WHERE plan_id = ?`,
+      [planId],
+    );
+    expect(postApplyRows.map((r) => r.fr_id)).toEqual(['FR-001']);
   });
 });

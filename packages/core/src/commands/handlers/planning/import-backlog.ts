@@ -56,6 +56,27 @@ export class ImportBacklogHandler implements CommandHandler<
   ): Promise<CommandResult<ImportBacklogResultState>> {
     const { projectId, planId, features, dryRun } = envelope.payload;
 
+    // Post-merge review fix (MEDIUM-1): all validation — including target existence — must happen
+    // before the dry-run preview returns, not just before the real import. `dryRun` previously
+    // returned `previewed` right after the structural (duplicate/dependency) checks below, with
+    // the plan/project existence check reachable only on the non-dry-run path further down — so a
+    // preview against a nonexistent plan/project reported a false-positive "previewed" success,
+    // only to fail with `not-found` on the real import after an operator had already approved the
+    // (never-actually-valid) preview. `parse -> validate -> preview -> approve -> transactional
+    // import` (docs/02 §11) requires the preview step to be a genuine validation gate.
+    const duplicateFrIds = features
+      .map((f) => f.frId)
+      .filter((frId, index, all) => all.indexOf(frId) !== index);
+    if (duplicateFrIds.length > 0) {
+      throw new CommandError({
+        type: 'duplicate-fr-id',
+        title: 'Duplicate feature id in import payload',
+        status: 400,
+        detail: `Duplicate fr_id(s) in import payload: ${[...new Set(duplicateFrIds)].join(', ')}`,
+        instance: envelope.correlationId,
+      });
+    }
+
     const frIds = new Set(features.map((f) => f.frId));
     for (const feature of features) {
       for (const dep of feature.dependsOnFrIds) {
@@ -69,6 +90,20 @@ export class ImportBacklogHandler implements CommandHandler<
           });
         }
       }
+    }
+
+    const planRows = await db.query<{ id: string }>(
+      `SELECT id FROM implementation_plans WHERE id = ? AND project_id = ?`,
+      [planId, projectId],
+    );
+    if (!planRows[0]) {
+      throw new CommandError({
+        type: 'not-found',
+        title: 'Implementation plan not found',
+        status: 404,
+        detail: `Plan ${planId} not found in project ${projectId}`,
+        instance: envelope.correlationId,
+      });
     }
 
     if (dryRun) {

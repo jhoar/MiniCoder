@@ -437,6 +437,19 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   `TransactionalCommandExecutor` (the same "one-shot CLI dispatch, no Trigger.dev task needed"
   pattern `minicoder merge merge-if-ready`/`minicoder human ...` already established), supporting
   `--dry-run` for the preview step.
+  **`ImportBacklogHandler`'s dry-run is a genuine validation gate, not just a structural check
+  (post-merge PR review fix, MEDIUM-1).** `ImportBacklogCommand`'s `dryRun` path originally returned
+  `previewed` right after the duplicate-`fr_id`/unknown-dependency checks, with the target
+  plan/project existence check reachable only on the non-dry-run path further down — so a preview
+  against a nonexistent plan/project reported a false-positive "previewed" success, only to fail
+  with `not-found` on the real import after an operator had already approved that preview. This
+  contradicted docs/02 §11's own `parse -> validate -> preview -> approve -> transactional import`
+  contract, which requires preview to be a real validation gate. Fixed by moving the
+  `implementation_plans WHERE id = ? AND project_id = ?` existence check (and a new duplicate-
+  `fr_id` check — `parseBacklogMarkdown()` already prevents this for Markdown-sourced imports, but
+  API/task callers can bypass the parser and send structured `features` directly) before the
+  `dryRun` return; the transactional apply path keeps its own existence re-check inside the
+  transaction as defense-in-depth against a plan/project deleted between preview and apply.
 
 ## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/github/`, migration 0009)
 
