@@ -1702,6 +1702,31 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   declares both, matching `merge-if-ready`'s existing parameter/response shape (whose `409`
   description was also broadened to mention the in-progress case introduced in round 2).
 
+**Post-implementation review fixes (round 4 — issue #56):**
+
+- **The "building a fully automatic recovery path is future work" note above is now closed.**
+  Round 3 deliberately left a feature run stuck at `merge_ready` (GitHub merged, recording failed)
+  requiring manual operator investigation with no tool-assisted recovery. Fixed with a new,
+  explicit recovery command rather than automatic/silent recording (the safer of the two options
+  the issue proposed): `minicoder merge finalize-if-github-merged --feature-run <id> --project
+<id>` (`packages/cli/src/commands/merge.ts`) and its API twin, `POST
+/commands/finalize-if-github-merged` (`packages/api/src/commands/finalize-if-github-merged-route.ts`,
+  operator-role-gated via `requireRole()`). Both: no-op with `{alreadyRecorded: true}` if the run is
+  already `merged`; reject if the run is at any state other than `merge_ready`/`merged`; **always
+  re-verify against GitHub** via `GitHubClient.getPullRequest()` before recording anything — refuse
+  with a clear error if GitHub does not report `state: 'merged'` with a `mergedAt` timestamp, so
+  this path can never be tricked into recording a merge that didn't happen; then dispatch
+  `RecordMergedCommand` (via `systemActor()`, matching every other internal follow-up write in this
+  file) using `observed.mergeSha ?? observed.headSha`. Deliberately does **not** attempt to locate
+  or clear the original stuck `merge-if-ready-route` idempotency-key row — that row has no column
+  linking it back to a `featureRunId` (only the caller's opaque `Idempotency-Key` header), so
+  guessing which row to clear would be unsafe; it self-clears via its existing 7-day TTL, and a
+  retry against it after this recovery command runs would simply fail `MergeIfReadyHandler`'s own
+  "still at `merge_ready`" guard harmlessly (the run has already moved to `merged` by then) rather
+  than causing any real problem. Regression tests cover: already-merged no-op, wrong-state
+  rejection, GitHub-not-confirmed rejection (feature run stays untouched), and the full recovery
+  path recording the merge.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

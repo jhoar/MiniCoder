@@ -531,6 +531,7 @@ minicoder human unblock --feature-run <id> --project <id> --actor <id> --notes <
 
 # Merge Gate (Phase 12; approver/admin-initiated merge)
 minicoder merge merge-if-ready --feature-run <id> --project <id> --actor <id> [--actor-role approver] [--merge-method squash|merge|rebase]
+minicoder merge finalize-if-github-merged --feature-run <id> --project <id>   # issue #56 recovery path
 
 # Orchestrator API (Phase 13; read/command/webhook endpoints — see 01-system-specification.md §9)
 minicoder api serve [--port <number>] [--host <host>]   # long-running Fastify process
