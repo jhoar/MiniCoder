@@ -126,8 +126,9 @@ detailed scope.
   `MockArbiterAdapter`, `MockDocumentationAdapter`, and `HumanTestAdapter` (the test mock of
   `HumanAgentAdapter`).
 - **Reference (provider) adapters:** `GenericLLMPlannerAdapter`, `CodexCoderAdapter`,
-  `ClaudeReviewerAdapter`, `GenericLLMDocumentationAdapter` — reference implementations only, never
-  architectural dependencies. **`CodexCoderAdapter` is delivered as of Phase 9**
+  `ClaudeReviewerAdapter`, `ClaudeArbiterAdapter`, `GenericLLMDocumentationAdapter` — reference
+  implementations only, never architectural dependencies. **`CodexCoderAdapter` is delivered as of
+  Phase 9**
   (`packages/adapters-coder`), implementing `CoderAgentAdapter` against an ephemeral, sandboxed
   workspace and an injected `CodeGenerationProvider` seam (see §11 and
   [`06-implementation-plan.md`](06-implementation-plan.md) Phase 9). **`ClaudeReviewerAdapter` is
@@ -141,11 +142,15 @@ detailed scope.
   `resolveDefaultPlannerAdapter()` now constructs a real instance from the same
   `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the Coder/Reviewer default
   resolvers already use, rather than throwing — the "no reference planner adapter has shipped yet"
-  fail-fast posture no longer applies. `GenericLLMDocumentationAdapter` remains future work.
-  **No reference `ArbiterAgentAdapter` implementation exists either** — as of Phase 11,
-  `run-review.ts` is the first production caller of `ArbiterAgentAdapter`, but it only accepts an
-  injected instance via `RunReviewDeps.arbiterAdapterFactory` (no default resolver constructing a
-  real implementation from env). This remains open (tracked as issue #51).
+  fail-fast posture no longer applies. **`ClaudeArbiterAdapter` is delivered (issue #51)**
+  (`packages/adapters-arbiter`), a sandbox-free `ArbiterAgentAdapter` implementation against an
+  injected `ArbiterProvider` seam (`HttpArbiterProvider`, mirroring `HttpReviewProvider`/
+  `HttpPlanProvider` exactly). `run-review.ts` (the sole production caller of
+  `ArbiterAgentAdapter`, as of Phase 11) still accepts a caller-injected instance via
+  `RunReviewDeps.arbiterAdapterFactory` for tests/custom deployments, but now falls back to
+  `resolveDefaultArbiterAdapterFactory()` — constructing a real `ClaudeArbiterAdapter` from the
+  same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars — when none is supplied.
+  `GenericLLMDocumentationAdapter` remains future work.
 
 ## 10. Acceptance
 

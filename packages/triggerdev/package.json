@@ -10,6 +10,7 @@
     "test": "cd ../.. && vitest run packages/triggerdev/src/"
   },
   "dependencies": {
+    "@minicoder/adapters-arbiter": "workspace:*",
     "@minicoder/adapters-coder": "workspace:*",
     "@minicoder/adapters-planner": "workspace:*",
     "@minicoder/adapters-reviewer": "workspace:*",

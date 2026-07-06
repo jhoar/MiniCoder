@@ -446,8 +446,11 @@ run-merge-gate
 
 ### 4.3 Reference (provider) adapters
 
-`GenericLLMPlannerAdapter`, `CodexCoderAdapter`, `ClaudeReviewerAdapter`,
+`GenericLLMPlannerAdapter`, `CodexCoderAdapter`, `ClaudeReviewerAdapter`, `ClaudeArbiterAdapter`,
 `GenericLLMDocumentationAdapter`. Reference implementations only — never architectural dependencies.
+`ClaudeArbiterAdapter` (issue #51, `packages/adapters-arbiter`) is a sandbox-free
+`ArbiterAgentAdapter` implementation against the existing `ArbiterInput`/`ArbiterOutput` contract,
+mirroring `ClaudeReviewerAdapter`'s shape.
 
 ### 4.4 User / Auth roles (canonical)
 

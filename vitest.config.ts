@@ -25,6 +25,10 @@ export default defineConfig({
         __dirname,
         'packages/adapters-planner/src/index.ts',
       ),
+      '@minicoder/adapters-arbiter': path.resolve(
+        __dirname,
+        'packages/adapters-arbiter/src/index.ts',
+      ),
       '@minicoder/triggerdev': path.resolve(__dirname, 'packages/triggerdev/src/index.ts'),
       '@minicoder/testing': path.resolve(__dirname, 'packages/testing/src/index.ts'),
       '@minicoder/api': path.resolve(__dirname, 'packages/api/src/index.ts'),

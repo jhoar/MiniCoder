@@ -72,15 +72,48 @@ function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
-/** Builds a fresh `ArbiterAgentAdapter` instance for a single disagreement resolution. There is no
- * default/reference implementation of this yet (docs/03 §9 lists only `GenericLLMPlannerAdapter`,
- * `CodexCoderAdapter`, `ClaudeReviewerAdapter`, `GenericLLMDocumentationAdapter` as reference
- * adapters — no Arbiter equivalent has shipped), so `run-review.ts` never constructs one from env
- * the way it does for the Reviewer — callers must inject this via `RunReviewDeps`, mirroring
- * `planning-readiness-assessment`/`generate-implementation-plan`'s treatment of
- * `PlannerAgentAdapter` (docs/06 Phase 6). A live deployment that reaches a disagreement without
- * one configured fails fast with an actionable error instead of silently skipping arbitration. */
+/** Builds a fresh `ArbiterAgentAdapter` instance for a single disagreement resolution. A caller can
+ * still inject a custom factory via `RunReviewDeps` (e.g. a test double, or a distinct
+ * arbiter model/endpoint); when none is supplied, `resolveDefaultArbiterAdapterFactory()`
+ * constructs the real reference `ClaudeArbiterAdapter` (issue #51). */
 export type ArbiterAdapterFactory = () => Promise<ArbiterAgentAdapter>;
+
+/**
+ * Constructs the real reference `ClaudeArbiterAdapter` (issue #51) from env config. Deliberately
+ * reuses the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the
+ * Coder/Reviewer/Planner default resolvers already use — simpler than introducing a parallel
+ * `ARBITER_*` env-var family when the same OpenAI-compatible endpoint can serve all four roles. A
+ * deployment wanting a distinct arbiter model/endpoint can still inject a custom
+ * `ArbiterAdapterFactory` via `RunReviewDeps` instead of using this default.
+ */
+function resolveDefaultArbiterAdapterFactory(): ArbiterAdapterFactory {
+  return async () => {
+    const codeGenBaseUrl = requireNonBlankEnvVar(
+      'CODE_GEN_BASE_URL',
+      'run-review requires an OpenAI-compatible endpoint to arbitrate a disagreement — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenApiKey = requireNonBlankEnvVar(
+      'CODE_GEN_API_KEY',
+      'run-review requires an OpenAI-compatible endpoint to arbitrate a disagreement — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenModel = requireNonBlankEnvVar(
+      'CODE_GEN_MODEL',
+      'run-review requires an OpenAI-compatible endpoint to arbitrate a disagreement — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const { ClaudeArbiterAdapter, HttpArbiterProvider } =
+      await import('@minicoder/adapters-arbiter');
+    return new ClaudeArbiterAdapter({
+      arbiterProvider: new HttpArbiterProvider({
+        baseUrl: codeGenBaseUrl,
+        apiKey: codeGenApiKey,
+        model: codeGenModel,
+      }),
+    });
+  };
+}
 
 export type GithubClientFactory = () => Promise<GitHubClient>;
 /** Builds a fresh `ReviewerAgentAdapter` instance for this one run, given the project's repo
@@ -470,13 +503,16 @@ export async function runImpl(
     let effectiveFindings = findings;
     const repeated = await findRepeatedFinding(db, { featureRunId, reviewCycle, findings });
     if (repeated) {
-      if (!arbiterAdapterName || !deps.arbiterAdapterFactory) {
+      if (!arbiterAdapterName) {
         throw new Error(
           'run-review detected a repeated unresolved finding (a coder/reviewer disagreement) but no ' +
-            'arbiterAdapterName/arbiterAdapterFactory was configured — see docs/06 Phase 11: there is ' +
-            'no reference ArbiterAgentAdapter implementation yet, so one must be injected via RunReviewDeps.',
+            'arbiterAdapterName was configured on the payload — an ArbiterAgentAdapter must be ' +
+            'registered (e.g. ClaudeArbiterAdapter, issue #51) and named here before arbitration ' +
+            'can proceed.',
         );
       }
+      const arbiterAdapterFactory =
+        deps.arbiterAdapterFactory ?? resolveDefaultArbiterAdapterFactory();
       const disagreementId = await insertDisagreementRecord(db, {
         featureRunId,
         findingId: repeated.priorFindingId,
@@ -487,7 +523,7 @@ export async function runImpl(
         AgentRole.ARBITER,
         arbiterAdapterName,
       );
-      const arbiterAdapter = await deps.arbiterAdapterFactory();
+      const arbiterAdapter = await arbiterAdapterFactory();
       const arbiterInput: ArbiterInput = {
         projectId,
         featureRunId,
@@ -507,6 +543,18 @@ export async function runImpl(
           capabilitiesUsed: ['can_resolve_disagreement'],
           contextPack: { content: arbiterInput },
           promptTemplateVersion: ARBITER_PROMPT_TEMPLATE_VERSION,
+          costExtractor: (outcome) => {
+            if (!outcome.ok) return null;
+            const out = outcome.output as { tokensUsed?: { input: number; output: number } };
+            if (!out.tokensUsed) return null;
+            return {
+              inputTokens: out.tokensUsed.input,
+              outputTokens: out.tokensUsed.output,
+              costUsd: computeCostUsd(out.tokensUsed.input, out.tokensUsed.output),
+              provider: process.env['CODE_GEN_PROVIDER_NAME'] ?? 'openai-compatible',
+              model: process.env['CODE_GEN_MODEL'],
+            };
+          },
         },
         () => arbiterAdapter.run(arbiterInput),
       );

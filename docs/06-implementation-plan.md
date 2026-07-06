@@ -1358,13 +1358,17 @@ Acceptance: repeated unresolved findings create disagreement records; automation
   arbitrating a disagreement is a sub-decision within processing the reviewer's output for this one
   review cycle, not an independently-schedulable unit of work the way `run-coder`/`run-review`
   themselves are. `RunReviewPayload` gained an optional `arbiterAdapterName`; `RunReviewDeps` gained
-  an `arbiterAdapterFactory` with **no default resolver** — mirroring
-  `planning-readiness-assessment`/`generate-implementation-plan`'s treatment of
-  `PlannerAgentAdapter` (docs/06 Phase 6), since no reference `ArbiterAgentAdapter` implementation
-  has shipped (docs/03 §9 lists only `GenericLLMPlannerAdapter`/`CodexCoderAdapter`/
-  `ClaudeReviewerAdapter`/`GenericLLMDocumentationAdapter`). A live deployment that reaches a
-  disagreement without one configured fails fast with an actionable error rather than silently
-  skipping arbitration.
+  an `arbiterAdapterFactory`. At the time this phase shipped there was **no default resolver** —
+  mirroring `planning-readiness-assessment`/`generate-implementation-plan`'s then-current treatment
+  of `PlannerAgentAdapter` (docs/06 Phase 6) — since no reference `ArbiterAgentAdapter`
+  implementation had shipped yet. A live deployment that reached a disagreement without one
+  configured failed fast with an actionable error rather than silently skipping arbitration.
+  **Superseded by issue #51:** `packages/adapters-arbiter`'s `ClaudeArbiterAdapter` is now
+  delivered, and `run-review.ts`'s `resolveDefaultArbiterAdapterFactory()` constructs a real
+  instance from the same `CODE_GEN_*` env vars the Coder/Reviewer/Planner default resolvers already
+  use, when `RunReviewDeps.arbiterAdapterFactory` is not supplied — the "no default resolver, fails
+  fast" posture only still applies to a missing `arbiterAdapterName` (the `AdapterRegistry` lookup
+  key), not to a missing runtime instance.
 - `packages/cli/src/commands/human.ts` — new `minicoder human {resolve-disagreement, resume,
 retry, skip, block}` CLI group, the first CLI surface to dispatch a real state-machine command
   directly (via `TransactionalCommandExecutor`) rather than only reading state or writing simulated

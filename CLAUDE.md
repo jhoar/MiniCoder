@@ -1288,11 +1288,17 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   task invocation that produced the reviewer output being arbitrated — arbitrating a disagreement
   is a sub-decision within processing this one review cycle's output, not an independently
   dispatchable unit of work the way a full Coder or Reviewer run is.
-- **`ArbiterAgentAdapter` has no reference implementation, so `run-review.ts` never constructs one
-  from env.** `RunReviewDeps.arbiterAdapterFactory` must be injected by the caller — the same
-  posture Phase 6 established for `PlannerAgentAdapter` in `planning-readiness-assessment`/
-  `generate-implementation-plan` before any reference planner adapter existed. A live deployment
-  that reaches a disagreement without one configured throws an actionable error rather than
+- **`ClaudeArbiterAdapter` (`packages/adapters-arbiter`, issue #51) is the delivered reference
+  `ArbiterAgentAdapter` implementation** — mirroring `packages/adapters-reviewer`'s exact shape (a
+  sandbox-free adapter over a single injected `ArbiterProvider` seam; `HttpArbiterProvider` is the
+  one shipped plain-`fetch` OpenAI-compatible implementation). `run-review.ts`'s
+  `resolveDefaultArbiterAdapterFactory()` constructs a real instance from the same
+  `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the Coder/Reviewer/Planner
+  default resolvers already read, used whenever `RunReviewDeps.arbiterAdapterFactory` is not
+  injected (test scenarios still inject `MockArbiterAdapter` explicitly). A caller must still
+  supply `arbiterAdapterName` on the payload (the `AdapterRegistry` lookup key identifying which
+  registered adapter row this run's provenance attaches to) — a live deployment that reaches a
+  disagreement with no `arbiterAdapterName` configured throws an actionable error rather than
   silently skipping arbitration or falling through to escalation.
 - **The Arbiter's `resolution` maps to three different outcomes, not a binary
   resolve/escalate.** `reviewer_correct`/`compromise` continue the ordinary fix loop unchanged
@@ -1878,7 +1884,7 @@ calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do no
 The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
 running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
 appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
-Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → adapters-reviewer → adapters-planner → triggerdev → testing → api → (rest --noEmit)`.
+Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → adapters-reviewer → adapters-planner → adapters-arbiter → triggerdev → testing → api → (rest --noEmit)`.
 `workflow` moved ahead of `github`/`triggerdev` in Phase 7: `packages/github`'s inbox handlers and
 `packages/triggerdev`'s `github-reconciliation` task both acquire a `WorkflowLockManager` lock
 before dispatching a lock-gated reconciliation command (`RecordPrOpenedCommand`/
@@ -1894,7 +1900,9 @@ depends on `@minicoder/adapters-coder`'s type declarations. `adapters-reviewer` 
 imports `ClaudeReviewerAdapter`/`HttpReviewProvider`). `adapters-planner` was added ahead of
 `triggerdev` for issue #32: `triggerdev-tasks.ts`'s `resolveDefaultPlannerAdapter()` dynamically
 imports `GenericLLMPlannerAdapter`/`HttpPlanProvider` from `@minicoder/adapters-planner`, the same
-pattern.
+pattern. `adapters-arbiter` was added ahead of `triggerdev` for issue #51: `run-review.ts`'s
+`resolveDefaultArbiterAdapterFactory()` dynamically imports `ClaudeArbiterAdapter`/
+`HttpArbiterProvider` from `@minicoder/adapters-arbiter`, the same pattern.
 
 When adding a new workspace package that others import for types, add it to this chain.
 

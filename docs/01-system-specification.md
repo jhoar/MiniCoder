@@ -359,10 +359,11 @@ drives the outcome — `reviewer_correct`/`compromise` continues the ordinary fi
 (`under_review -> changes_requested -> fixing`); `coder_correct` downgrades the finding to
 `non_blocking` and, if nothing else is still blocking, returns to `under_review`;
 `escalate_to_human` transitions to `human_required` exactly like the pre-Phase-11 escalation path,
-with the disagreement marked `escalated`. There is no reference `ArbiterAgentAdapter`
-implementation yet (docs/03 §9) — a live deployment must inject one via `RunReviewDeps`, the same
-posture `planning-readiness-assessment`/`generate-implementation-plan` have for
-`PlannerAgentAdapter` (docs/06 Phase 6). The fix-attempt-threshold circuit breaker (§5.8) is
+with the disagreement marked `escalated`. `ClaudeArbiterAdapter` (issue #51, docs/03 §9) is the
+delivered reference `ArbiterAgentAdapter` implementation; `run-review.ts` resolves a real instance
+by default (reusing the same `CODE_GEN_*` env vars the Coder/Reviewer/Planner default resolvers
+use) when a caller does not inject one via `RunReviewDeps`. The fix-attempt-threshold circuit
+breaker (§5.8) is
 checked _before_ disagreement detection and is unconditional — it is a distinct, independent
 circuit breaker (as this section already states) that the Arbiter cannot override. Five
 `human_required` exit commands (`ResolveDisagreementCommand`, `ResumeFeatureExecutionCommand`,

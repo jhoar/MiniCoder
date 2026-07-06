@@ -43,6 +43,15 @@ importers:
         specifier: ^3.2.6
         version: 3.2.6(@types/node@20.19.43)
 
+  packages/adapters-arbiter:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
   packages/adapters-coder:
     dependencies:
       '@minicoder/core':
@@ -264,6 +273,9 @@ importers:
 
   packages/triggerdev:
     dependencies:
+      '@minicoder/adapters-arbiter':
+        specifier: workspace:*
+        version: link:../adapters-arbiter
       '@minicoder/adapters-coder':
         specifier: workspace:*
         version: link:../adapters-coder
