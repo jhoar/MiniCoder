@@ -1,0 +1,405 @@
+openapi: 3.1.0
+info:
+  title: MiniCoder Orchestrator API
+  version: '13.0.0'
+  description: >
+    Read endpoints, command endpoints, and GitHub webhook endpoints for the MiniCoder
+    Orchestrator (docs/01-system-specification.md §9). Command payload validation is enforced by
+    each dispatched core command handler's own Zod schema (packages/core/src/commands/handlers/**)
+    — this document's per-command request bodies are intentionally left as a generic object
+    schema rather than duplicating those 20+ schemas by hand; this layer's runtime validation
+    focuses on route/method/parameter-shape conformance (see CLAUDE.md's Orchestrator API
+    Operational Constraints).
+servers:
+  - url: /
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    cursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string }
+    limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100 }
+    projectIdQuery:
+      name: projectId
+      in: query
+      required: false
+      schema: { type: string }
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string }
+  schemas:
+    CommandEnvelopeResponse:
+      type: object
+      required: [command_id, accepted, resulting_state, emitted_event_ids]
+      properties:
+        command_id: { type: string }
+        accepted: { type: boolean }
+        resulting_state: { type: string }
+        emitted_event_ids: { type: array, items: { type: string } }
+    CommandPayload:
+      type: object
+      description: Validated by the dispatched command handler's own Zod schema.
+    ProblemDetail:
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+    CursorPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: {} }
+        nextCursor: { type: [string, 'null'] }
+security:
+  - ApiKeyAuth: []
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      security: []
+      responses: { '200': { description: OK } }
+  /readyz:
+    get:
+      operationId: readyz
+      security: []
+      responses: { '200': { description: OK } }
+  /webhooks/github:
+    post:
+      operationId: githubWebhook
+      security: []
+      responses: { '200': { description: Accepted } }
+  /commands:
+    get:
+      operationId: listCommands
+      responses: { '200': { description: OK } }
+  /commands/{commandSlug}:
+    post:
+      operationId: dispatchCommand
+      parameters:
+        - name: commandSlug
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '200':
+          description: Command dispatched
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/CommandEnvelopeResponse' } }
+        '400': { description: Validation error }
+        '401': { description: Unauthenticated }
+        '403': { description: Not authorized }
+        '404': { description: Unknown command }
+        '409': { description: Invalid state transition or idempotency conflict }
+  /commands/merge-if-ready:
+    post:
+      operationId: mergeIfReady
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '200': { description: Merged }
+        '409':
+          {
+            description: 'Merge gate blocked, merge rejected, or a same-key request is already in progress',
+          }
+  /commands/request-coder-run:
+    post:
+      operationId: requestCoderRun
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
+  /commands/request-review:
+    post:
+      operationId: requestReview
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
+  /commands/request-fixes:
+    post:
+      operationId: requestFixes
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
+  /commands/recompute-merge-gate:
+    post:
+      operationId: recomputeMergeGate
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
+  /commands/validate:
+    post:
+      operationId: diagnosticsValidate
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '200': { description: OK } }
+  /commands/doctor:
+    post:
+      operationId: diagnosticsDoctor
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '200': { description: OK } }
+  /commands/reconcile:
+    post:
+      operationId: diagnosticsReconcile
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '200': { description: OK }
+        '400': { description: Validation error or missing Idempotency-Key }
+        '409': { description: A same-key reconcile request is already in progress }
+  /commands/export-diagnostics:
+    post:
+      operationId: diagnosticsExport
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '200': { description: OK } }
+  /projects:
+    get:
+      operationId: listProjects
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          {
+            description: OK,
+            content: { application/json: { schema: { $ref: '#/components/schemas/CursorPage' } } },
+          }
+  /projects/{id}:
+    get:
+      operationId: getProject
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /repositories:
+    get:
+      operationId: listRepositories
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /github-links:
+    get:
+      operationId: listGithubLinks
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /specification-inputs:
+    get:
+      operationId: listSpecificationInputs
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /planning-readiness-assessments:
+    get:
+      operationId: listPlanningReadinessAssessments
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /planning-readiness-assessments/{id}:
+    get:
+      operationId: getPlanningReadinessAssessment
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /clarification-sessions:
+    get:
+      operationId: listClarificationSessions
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /clarification-sessions/{id}:
+    get:
+      operationId: getClarificationSession
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /plans:
+    get:
+      operationId: listPlans
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /plans/{id}:
+    get:
+      operationId: getPlan
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /features:
+    get:
+      operationId: listFeatures
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /features/{id}:
+    get:
+      operationId: getFeature
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /feature-runs/{id}:
+    get:
+      operationId: getFeatureRun
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /feature-runs/{featureRunId}/pull-request:
+    get:
+      operationId: getPullRequestByFeatureRun
+      parameters: [{ name: featureRunId, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /active-feature:
+    get:
+      operationId: getActiveFeature
+      parameters: [{ $ref: '#/components/parameters/projectIdQuery' }]
+      responses: { '200': { description: OK } }
+  /pull-requests:
+    get:
+      operationId: listPullRequests
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /agent-runs:
+    get:
+      operationId: listAgentRuns
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /agent-runs/{id}:
+    get:
+      operationId: getAgentRun
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /agent-adapters:
+    get:
+      operationId: listAgentAdapters
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /agent-configurations:
+    get:
+      operationId: listAgentConfigurations
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /review-findings:
+    get:
+      operationId: listReviewFindings
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /disagreements:
+    get:
+      operationId: listDisagreements
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /policy-decisions:
+    get:
+      operationId: listPolicyDecisions
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /costs:
+    get:
+      operationId: listCosts
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /budgets:
+    get:
+      operationId: listBudgets
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /artifacts:
+    get:
+      operationId: listArtifacts
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /artifacts/{id}:
+    get:
+      operationId: getArtifact
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /design-documents:
+    get:
+      operationId: listDesignDocuments
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /design-documents/{id}:
+    get:
+      operationId: getDesignDocument
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /workflow-events:
+    get:
+      operationId: listWorkflowEvents
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /merge-gate-evaluations:
+    get:
+      operationId: listMergeGateEvaluations
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /status:
+    get:
+      operationId: getStatus
+      parameters: [{ $ref: '#/components/parameters/projectIdQuery' }]
+      responses: { '200': { description: OK } }

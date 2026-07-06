@@ -49,6 +49,9 @@ export * from './commands/handlers/planning/activate-plan.js';
 export * from './commands/handlers/planning/export-plan.js';
 export * from './commands/handlers/planning/export-backlog.js';
 export * from './commands/handlers/planning/import-backlog.js';
+// ApprovePlanHandler was built in Phase 6 but never exported/called anywhere until Phase 13 gave
+// it a command endpoint (`POST /commands/approve-plan`).
+export * from './commands/handlers/plan/approve-plan.js';
 export * from './commands/handlers/clarification/start-clarification.js';
 export * from './commands/handlers/clarification/record-clarification-answer.js';
 export * from './commands/handlers/clarification/complete-clarification.js';

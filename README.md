@@ -7,7 +7,7 @@ implementation backlog, then orchestrates feature-branch development, pull reque
 reviews, fixes, merge gates, and final design documentation. It is designed to be auditable,
 deterministic, cost-aware, safe, and fully testable without human intervention.
 
-This repository contains the **Phase 1–9 implementation** of MiniCoder — the monorepo skeleton,
+This repository contains the **Phase 1–13 implementation** of MiniCoder — the monorepo skeleton,
 persistence abstraction (SQLite + PostgreSQL), initial schema, migration tooling,
 config/secrets backends, database lifecycle CLI, and CI (Phase 1); full state-machine / command
 layer, transactional idempotent commands, outbox/inbox dispatching, workflow locks, and local auth
@@ -21,13 +21,27 @@ feature-backlog generation and validation, approval and activation, and artifact
 wired to real Trigger.dev tasks (Phase 6); the GitHub Webhooks, Integration, and Reconciliation
 implementation — the webhook receiver, provider-SDK-free `GitHubClient` seam, and the shared
 reconciliation algorithm driving both webhook-triggered inbox handlers and the scheduled
-fallback (Phase 7); and the Execution Orchestrator implementation — dependency-ordered sequential
+fallback (Phase 7); the Execution Orchestrator implementation — dependency-ordered sequential
 feature selection, the `start-next-feature` Trigger.dev task, pause/resume automation control, and
-a minimal budget-gate primitive with soft/hard limit enforcement (Phase 8); and the Reference Coder
+a minimal budget-gate primitive with soft/hard limit enforcement (Phase 8); the Reference Coder
 Adapter implementation — `CodexCoderAdapter` (an injected code-generation seam, runner-agnostic git
 orchestration, bounded-diff enforcement), ephemeral sandbox container isolation, the `run-coder`
 Trigger.dev task bridging coding through pull-request creation, and cost/context-pack/tool-operation
-provenance recording (Phase 9). Specification documents live under `docs/`.
+provenance recording (Phase 9); the Reference Reviewer Adapter and Review/Fix Loop implementation —
+`ClaudeReviewerAdapter` (a sandbox-free, read-only review seam), the `run-review` Trigger.dev task
+driving the review/fix cycle, and the aggregate fix-attempt circuit breaker (Phase 10); the
+Disagreement, Arbiter, and Human Escalation implementation — repeated-unresolved-finding detection,
+inline Arbiter adjudication, the five `human_required` exit commands and their `minicoder human ...`
+CLI surface, and the terminal `skipped` feature state (Phase 11); the Merge Gate and Branch
+Protection implementation — the merge-policy engine, real approve/merge/record-failure command
+handlers, the `minicoder/review-gate` GitHub status check, the `run-merge-gate` Trigger.dev task, and
+`minicoder merge merge-if-ready` (Phase 12); and the Orchestrator API implementation — a
+Fastify-based HTTP API exposing read models, dispatching existing core commands (generic dispatch,
+a dedicated `merge-if-ready` route, and Trigger.dev task-enqueue routes), mounting the GitHub webhook
+receiver, and publishing a hand-authored OpenAPI 3.1 contract with route-registration-time
+conformance enforcement — a static API-key auth model, claim-first HTTP route idempotency for
+routes spanning an external side effect, and `minicoder api serve` (Phase 13). Specification
+documents live under `docs/`.
 
 ## Documentation (canonical)
 
@@ -78,6 +92,8 @@ history.
 - **Cost-aware** — per-scope budgets with soft/hard gates and a review-loop circuit breaker.
 - **Fully automated testing** (including a cross-dialect SQLite/PostgreSQL matrix) and
   state-lifecycle tooling are foundational.
+- **A single Fastify Orchestrator API** is the one network-facing surface: it dispatches the same
+  command layer the CLI and Workflow Layer tasks use — no arbitrary state-mutation endpoints.
 
 Technology stack and the full term set are in
 [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md).

@@ -3,8 +3,12 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { FEATURE_EXECUTION_MATRIX } from '@minicoder/core';
-import type { FeatureExecutionState } from '@minicoder/core';
+import {
+  validateFeatureRunStates,
+  runDoctorChecks,
+  reconcileState,
+  exportDiagnostics,
+} from '@minicoder/api';
 import { createDbClientFromEnv } from '../db-client.js';
 
 function isoNow(): string {
@@ -25,14 +29,10 @@ const CONFIRMATION_TOKEN_TTL_MS = 5 * 60 * 1000;
 const REPAIR_PENDING_DIR = path.join(os.homedir(), '.minicoder');
 const REPAIR_PENDING_FILE = path.join(REPAIR_PENDING_DIR, 'pending-repair-token.json');
 
-// Orphaned run threshold: 2 hours
+// Orphaned run threshold: 2 hours (kept in sync with read-models/diagnostics.ts's own constant —
+// used only by the `repair` command below, which is intentionally not extracted; see its
+// module-level doc comment in packages/api/src/read-models/diagnostics.ts).
 const ORPHANED_RUN_THRESHOLD_MS = 2 * 60 * 60 * 1000;
-// Triggerdev mismatch threshold: 30 minutes
-const TRIGGERDEV_MISMATCH_THRESHOLD_MS = 30 * 60 * 1000;
-
-const KNOWN_FEATURE_STATES = new Set<string>(
-  FEATURE_EXECUTION_MATRIX.flatMap((row) => [row.fromState, row.toState]),
-);
 
 export function createStateCommand(): Command {
   const state = new Command('state').description('Workflow state lifecycle commands');
@@ -156,46 +156,19 @@ export function createStateCommand(): Command {
     .action(async (opts: { project?: string }) => {
       const db = await createDbClientFromEnv();
       try {
-        const whereClause = opts.project
-          ? `AND freq.project_id = '${opts.project.replace(/'/g, "''")}'`
-          : '';
-
-        const runs = await db.query<{
-          id: string;
-          current_execution_state: string;
-          feature_request_id: string;
-        }>(
-          `SELECT fr.id, fr.current_execution_state, fr.feature_request_id
-           FROM feature_runs fr
-           JOIN feature_requests freq ON fr.feature_request_id = freq.id
-           WHERE fr.ended_at IS NULL ${whereClause}`,
-          [],
-        );
-
-        const violations: Array<{ featureRunId: string; state: string; error: string }> = [];
-        for (const run of runs) {
-          const st = run.current_execution_state as FeatureExecutionState;
-          if (!KNOWN_FEATURE_STATES.has(st)) {
-            violations.push({
-              featureRunId: run.id,
-              state: run.current_execution_state,
-              error: `Unknown feature execution state: '${st}'`,
-            });
-          }
-        }
-
+        const result = await validateFeatureRunStates(db, opts.project);
         const output = {
           command: 'state validate',
           projectId: opts.project ?? null,
-          checkedRuns: runs.length,
-          violations,
-          valid: violations.length === 0,
-          message: violations.length === 0 ? 'No unknown states found' : 'Unknown states detected',
+          checkedRuns: result.checkedRuns,
+          violations: result.violations,
+          valid: result.valid,
+          message: result.valid ? 'No unknown states found' : 'Unknown states detected',
           timestamp: isoNow(),
         };
 
         console.log(JSON.stringify(output, null, 2));
-        if (violations.length > 0) {
+        if (!result.valid) {
           process.exit(1);
         }
       } finally {
@@ -210,116 +183,17 @@ export function createStateCommand(): Command {
     .action(async (opts: { project?: string }) => {
       const db = await createDbClientFromEnv();
       try {
-        const checks = [];
-        const orphanedThreshold = agoIso(ORPHANED_RUN_THRESHOLD_MS);
-        const triggerdevThreshold = agoIso(TRIGGERDEV_MISMATCH_THRESHOLD_MS);
-        const projectFilter = opts.project ? `AND project_id = ?` : '';
-        const projectParams = opts.project ? [opts.project] : [];
-
-        // Check: stale_locks
-        const staleLocks = await db.query<{ id: string; expires_at: string }>(
-          `SELECT id, expires_at FROM workflow_locks WHERE expires_at < CURRENT_TIMESTAMP ${projectFilter}`,
-          projectParams,
-        );
-        checks.push({
-          name: 'stale_locks',
-          severity: staleLocks.length > 0 ? 'error' : 'ok',
-          autoClearable: true,
-          count: staleLocks.length,
-          details: staleLocks.map((l) => ({ id: l.id, expiresAt: l.expires_at })),
-        });
-
-        // Check: stuck_outbox (no project_id on outbox_events table — always global)
-        const stuckOutbox = await db.query<{ id: string; event_type: string; attempts: number }>(
-          `SELECT id, event_type, attempts FROM outbox_events
-           WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-          [],
-        );
-        checks.push({
-          name: 'stuck_outbox',
-          scope: 'global',
-          severity: stuckOutbox.length > 0 ? 'error' : 'ok',
-          autoClearable: true,
-          count: stuckOutbox.length,
-          details: stuckOutbox,
-        });
-
-        // Check: stuck_inbox (no project_id on inbox_events table — always global)
-        const stuckInbox = await db.query<{ id: string; event_type: string; attempts: number }>(
-          `SELECT id, event_type, attempts FROM inbox_events
-           WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-          [],
-        );
-        checks.push({
-          name: 'stuck_inbox',
-          scope: 'global',
-          severity: stuckInbox.length > 0 ? 'error' : 'ok',
-          autoClearable: true,
-          count: stuckInbox.length,
-          details: stuckInbox,
-        });
-
-        // Check: orphaned_runs (not terminal, not active, started > 2h ago)
-        const orphanedProjectFilter = opts.project ? `AND freq.project_id = ?` : '';
-        const orphanedParams: unknown[] = [orphanedThreshold];
-        if (opts.project) orphanedParams.push(opts.project);
-
-        const orphanedRuns = await db.query<{
-          id: string;
-          current_execution_state: string;
-          started_at: string;
-        }>(
-          `SELECT fr.id, fr.current_execution_state, fr.started_at
-           FROM feature_runs fr
-           JOIN feature_requests freq ON fr.feature_request_id = freq.id
-           WHERE fr.ended_at IS NULL
-             AND fr.current_execution_state NOT IN ('merged', 'human_required', 'blocked', 'failed', 'system_failed', 'ci_failed', 'merge_failed')
-             AND fr.id NOT IN (SELECT active_feature_run_id FROM workflow_states WHERE active_feature_run_id IS NOT NULL)
-             AND fr.started_at < ?
-             ${orphanedProjectFilter}`,
-          orphanedParams,
-        );
-        checks.push({
-          name: 'orphaned_runs',
-          severity: orphanedRuns.length > 0 ? 'error' : 'ok',
-          autoClearable: false,
-          manuallyRepairable: true,
-          count: orphanedRuns.length,
-          details: orphanedRuns,
-        });
-
-        // Check: triggerdev_mismatch (triggerdev_runs has no project_id — always global)
-        const tdMismatch = await db.query<{
-          id: string;
-          triggerdev_task_id: string;
-          last_seen_at: string;
-        }>(
-          `SELECT id, triggerdev_task_id, last_seen_at
-           FROM triggerdev_runs
-           WHERE triggerdev_status = 'running'
-             AND last_seen_at < ?`,
-          [triggerdevThreshold],
-        );
-        checks.push({
-          name: 'triggerdev_mismatch',
-          scope: 'global',
-          severity: tdMismatch.length > 0 ? 'warning' : 'ok',
-          autoClearable: false,
-          count: tdMismatch.length,
-          details: tdMismatch,
-        });
-
-        const hasErrors = checks.some((c) => c.severity === 'error');
+        const result = await runDoctorChecks(db, opts.project);
         const output = {
           command: 'state doctor',
           projectId: opts.project ?? null,
-          healthy: !hasErrors,
-          checks,
+          healthy: result.healthy,
+          checks: result.checks,
           timestamp: isoNow(),
         };
 
         console.log(JSON.stringify(output, null, 2));
-        if (hasErrors) {
+        if (!result.healthy) {
           process.exit(1);
         }
       } finally {
@@ -341,59 +215,13 @@ export function createStateCommand(): Command {
       }
       const db = await createDbClientFromEnv();
       try {
-        const cleared = [];
-        const projectFilter = opts.project ? `AND project_id = ?` : '';
-        const projectParams = opts.project ? [opts.project] : [];
-
-        // Clear stale locks (scoped by project when --project provided)
-        const staleLockIds = await db.query<{ id: string }>(
-          `SELECT id FROM workflow_locks WHERE expires_at < CURRENT_TIMESTAMP ${projectFilter}`,
-          projectParams,
-        );
-        if (staleLockIds.length > 0) {
-          await db.execute(
-            `UPDATE workflow_locks SET expires_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-             WHERE expires_at < CURRENT_TIMESTAMP ${projectFilter}`,
-            projectParams,
-          );
-          cleared.push({ type: 'stale_locks', count: staleLockIds.length });
-        }
-
-        // Global queue clearing requires explicit --all (outbox/inbox have no project_id)
-        if (opts.all) {
-          const stuckOutboxIds = await db.query<{ id: string }>(
-            `SELECT id FROM outbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-            [],
-          );
-          if (stuckOutboxIds.length > 0) {
-            await db.execute(
-              `UPDATE outbox_events SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-               WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-              [],
-            );
-            cleared.push({ type: 'stuck_outbox', scope: 'global', count: stuckOutboxIds.length });
-          }
-
-          const stuckInboxIds = await db.query<{ id: string }>(
-            `SELECT id FROM inbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-            [],
-          );
-          if (stuckInboxIds.length > 0) {
-            await db.execute(
-              `UPDATE inbox_events SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-               WHERE status IN ('pending', 'processing') AND attempts >= 5`,
-              [],
-            );
-            cleared.push({ type: 'stuck_inbox', scope: 'global', count: stuckInboxIds.length });
-          }
-        }
-
+        const result = await reconcileState(db, { projectId: opts.project, all: opts.all });
         console.log(
           JSON.stringify(
             {
               command: 'state reconcile',
               projectId: opts.project ?? null,
-              cleared,
+              cleared: result.cleared,
               timestamp: isoNow(),
             },
             null,
@@ -413,65 +241,12 @@ export function createStateCommand(): Command {
     .action(async (opts: { project?: string; output?: string }) => {
       const db = await createDbClientFromEnv();
       try {
-        const projectFilter = opts.project
-          ? `WHERE project_id = '${opts.project.replace(/'/g, "''")}'`
-          : '';
-
-        const [
-          project,
-          workflowEvents,
-          pendingOutbox,
-          pendingInbox,
-          triggerdevRuns,
-          workflowLocks,
-        ] = await Promise.all([
-          opts.project
-            ? db.query<{ id: string; name: string; state: string }>(
-                'SELECT id, name, state FROM projects WHERE id = ?',
-                [opts.project],
-              )
-            : Promise.resolve([]),
-          db.query<{ event_type: string; created_at: string; project_id: string }>(
-            `SELECT event_type, created_at, project_id FROM workflow_events ${projectFilter} ORDER BY created_at DESC LIMIT 50`,
-            [],
-          ),
-          db.query<{ id: string; event_type: string; status: string; attempts: number }>(
-            `SELECT id, event_type, status, attempts FROM outbox_events WHERE status IN ('pending', 'processing') LIMIT 100`,
-            [],
-          ),
-          db.query<{ id: string; event_type: string; status: string; attempts: number }>(
-            `SELECT id, event_type, status, attempts FROM inbox_events WHERE status IN ('pending', 'processing') LIMIT 100`,
-            [],
-          ),
-          db.query<{
-            id: string;
-            triggerdev_task_id: string;
-            triggerdev_status: string;
-            last_seen_at: string;
-          }>(
-            `SELECT id, triggerdev_task_id, triggerdev_status, last_seen_at FROM triggerdev_runs WHERE triggerdev_status IN ('running', 'failed') ORDER BY created_at DESC LIMIT 50`,
-            [],
-          ),
-          db.query<{ id: string; expires_at: string }>(
-            `SELECT id, expires_at FROM workflow_locks ORDER BY expires_at DESC LIMIT 50`,
-            [],
-          ),
-        ]);
-
+        const result = await exportDiagnostics(db, opts.project);
         const diagnostics = JSON.stringify(
           {
             command: 'state export-diagnostics',
             projectId: opts.project ?? null,
-            exportedAt: isoNow(),
-            project: project[0] ?? null,
-            workflowEvents,
-            globalOperationalState: {
-              scope: 'global',
-              pendingOutbox,
-              pendingInbox,
-              triggerdevRuns,
-              workflowLocks,
-            },
+            ...result,
           },
           null,
           2,

@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.26
-> Last-updated: 2026-07-04
+> Version: 1.0.27
+> Last-updated: 2026-07-05
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -1489,7 +1489,9 @@ two non-blocking watchlist notes (a redundant pre-merge re-fetch, and the single
 assumption already shared by every other repository lookup in the codebase) were evaluated and
 left as-is with documented rationale rather than fixed.
 
-## Phase 13 — Orchestrator API
+## Phase 13 — Orchestrator API ✓
+
+> **Status: Complete** (2026-07-05)
 
 Deliver the Fastify API: read endpoints, command endpoints, **webhook endpoints**, state/diagnostics
 read models, **wiring of the Phase-2 local auth + actor identity into the API surface**, a role
@@ -1503,6 +1505,105 @@ Acceptance: the API exposes database-backed view models; API commands call core 
 arbitrary state-mutation endpoints are required; requests follow the API conventions and validate
 against the OpenAPI description; webhook deliveries are accepted and verified; the UI can be built on
 the API.
+
+**Delivered modules:**
+
+- `packages/api/` (new package) — the Fastify Orchestrator API. `src/app.ts`'s `buildApp()` wires
+  together auth, OpenAPI conformance hooks, a global RFC 9457 error handler, health/webhook/read
+  routes, and the command surface; `src/server.ts`'s `serve()` is the standalone entrypoint reading
+  `MINICODER_API_KEYS`/`GITHUB_WEBHOOK_SECRET` from env, matching `packages/github`'s
+  `createWebhookApp()` bootstrap pattern.
+- `packages/api/src/auth/` — `ApiKeyProvider` (static `MINICODER_API_KEYS`-driven, SHA-256-hashed
+  key lookup — no session/JWT infra exists anywhere in this repo, and docs/07 defers real hosted
+  OAuth/SSO) and `registerAuthHook()` (a global `onRequest` hook resolving `Authorization: Bearer
+<api-key>` into `request.actor: ActorIdentity`, exempting `/webhooks/*`/`/healthz`/`/readyz`).
+- `packages/api/src/commands/registry.ts` — `buildCommandRegistry()`, the first production
+  consumer of `@minicoder/core`'s `CommandRegistry` (built in Phase 2, never populated until now).
+  Registers every `human`-actorKind `CommandHandler` except `MergeIfReadyHandler` (dedicated route
+  below), plus a narrow `system`-actorKind allow-list for manual replay
+  (`GenerateImplementationPlanHandler`/`GenerateFeatureBacklogHandler`/`ValidateBacklogHandler`;
+  `AssessPlanningReadinessHandler` is excluded — its constructor requires a live
+  `PlannerAgentAdapter` instance, and no reference planner adapter has shipped yet, docs/02 §7).
+- `packages/api/src/commands/generic-dispatch-route.ts` — `POST /commands/:commandSlug`, resolving
+  a URL slug to a registered `commandName`, building a `CommandEnvelope` from the request body +
+  `Idempotency-Key` header + auth-derived actor, and dispatching via
+  `TransactionalCommandExecutor` — structurally guaranteeing "no arbitrary state-mutation
+  endpoints" (only registered handlers are ever reachable).
+- `packages/api/src/commands/merge-if-ready-route.ts` — `POST /commands/merge-if-ready`, a
+  dedicated (non-generic) route mirroring `packages/cli/src/commands/merge.ts`'s chained
+  `MergeIfReadyHandler` → real `GitHubClient.mergePullRequest()` → `RecordMergedHandler`/
+  `RecordMergeFailedHandler`+follow-up sequence.
+- `packages/api/src/commands/task-trigger-routes.ts` — `POST /commands/{request-coder-run,
+request-review,request-fixes,recompute-merge-gate}`, "enqueue" routes returning
+  `{triggerdevRunId, accepted}` via an injectable `TaskTriggerClient` (no default Trigger.dev SDK
+  client constructed automatically — mirrors the "no default adapter, inject only" posture already
+  established for `PlannerAgentAdapter`/`ArbiterAgentAdapter`). `request-fixes` re-triggers
+  `request-review`, since `StartFixingCommand` has no standalone task of its own.
+- `packages/api/src/commands/diagnostics-routes.ts` — `POST /commands/{validate,doctor,reconcile,
+export-diagnostics}`, thin wrappers over `read-models/diagnostics.ts`.
+- `packages/api/src/read-models/` — query functions for every docs/01 §9 read-endpoint group
+  (projects, repositories, GitHub links, specification inputs, planning readiness, clarification
+  sessions, plans, features, active feature, pull requests, agent runs/adapters/configuration,
+  review findings, disagreements, policy decisions, costs, budgets, artifacts, design documents,
+  workflow events, status), plus `merge_gate_evaluations` (added as an explicit group beyond
+  docs/01's original list — it has existed with a production writer since Phase 12 with no read
+  path). `diagnostics.ts` is extracted from `packages/cli/src/commands/state.ts`'s inline SQL so
+  the CLI and API share one implementation; `packages/cli/src/commands/state.ts`'s
+  `validate`/`doctor`/`reconcile`/`export-diagnostics` commands now call these same functions.
+  `pagination.ts` provides the shared cursor-pagination helper (`listByCreatedAt()`) every list
+  read-model uses.
+- `packages/api/src/routes/webhooks.ts` — mounts `registerGithubWebhookRoute()` from
+  `@minicoder/github` (unchanged) directly onto the shared app instance, per that module's own
+  Phase-7 doc comment anticipating this. `packages/github/src/webhook-app.ts`'s
+  `addRawBodyCapture()` was changed from a private helper to an exported function so the API can
+  install the same raw-body-capturing content-type parser its HMAC verification depends on.
+- `packages/api/src/errors.ts` — `toProblemDetails()`, the single RFC 9457 problem-details
+  dispatcher registered as Fastify's global error handler, mapping `CommandError` (pass-through,
+  already RFC 9457-shaped — this also covers `MergeGateBlockedError`, which extends it),
+  `AuthorizationError`, `TransitionError`, `GithubMergeRejectedError`, and this package's own
+  `NotFoundError`/`MissingIdempotencyKeyError`/`RequestValidationError`/`UnauthenticatedError`.
+- `packages/api/openapi/openapi.yaml` — hand-authored OpenAPI 3.1 contract (not code-generated, to
+  avoid ESM-only/heavy codegen tooling fighting this repo's CommonJS build target), covering every
+  route. `packages/api/src/openapi/register-openapi-hooks.ts`'s `onRoute` hook throws **at
+  route-registration time** if a route has no matching spec operation, so spec drift fails the
+  build immediately rather than only in a separate test; a `preHandler` hook additionally validates
+  the `limit` query parameter against its declared `[1, 100]` integer schema. Per-command request
+  bodies are intentionally a generic `CommandPayload: type: object` rather than hand-transcribing
+  20+ Zod schemas into JSON Schema — real payload validation is enforced by each dispatched
+  handler's own already-tested Zod schema.
+- `packages/core/src/index.ts` — now exports `ApprovePlanHandler`/`ApprovePlanCommand`
+  (`packages/core/src/commands/handlers/plan/approve-plan.ts`), built in Phase 6 but never
+  exported or called anywhere until this phase gave it a command endpoint (`approve-plan`).
+- `packages/cli/src/commands/api.ts` — new `minicoder api serve [--port] [--host]`, mirroring
+  `minicoder github serve`'s shape; wired into `packages/cli/src/index.ts`.
+- `vitest.config.ts` / root `package.json` — `@minicoder/api` added to the vitest alias map and to
+  the ordered `typecheck` script chain (after `testing`, since `packages/cli`'s `state.ts` and
+  `packages/api`'s own test helpers both resolve `@minicoder/api`/`@minicoder/testing` types).
+- Test coverage (`packages/api/src/**/*.test.ts`, 45 tests): auth middleware (valid/invalid/missing
+  key, webhook exemption, correlation-id handling), generic command dispatch (happy path,
+  idempotency replay without re-running side effects, role/actor-kind rejection, unknown-command
+  404), the merge-if-ready route (missing-params 400, missing-PR/repo 404, merge-gate-blocked 409
+  with structured reasons), task-trigger routes (each enqueue route calling its injected client,
+  the unconfigured-client fail-fast error), diagnostics routes, read-endpoint smoke tests, webhook
+  mounting delegation, OpenAPI conformance (route/spec parity enforced by construction, `limit`
+  parameter validation), and problem-details shape for every mapped error type.
+
+**Deviations from the original plan / deferred items** (confirmed scope decisions):
+
+- `generate final design document` / `approve final design document` (docs/01 §9) are **not
+  built** — no core command handler exists yet (Phase 17 — Final Design Document Generator — will
+  add both the handler and its endpoint). Scaffolding a `501` route was considered and rejected: it
+  would violate "API commands call core commands."
+- The Trigger.dev **management**-API client (`minicoder trigger deploy/list-runs/inspect-run/
+cancel-run/replay-run/drain-queue/reset-dev/reconcile`) remains **out of scope** — those CLI stub
+  comments refer to a different, external system (Trigger.dev's own control plane), not the
+  Orchestrator API this phase builds. Only this phase's own diagnostics endpoints are in scope.
+- `state repair --apply` stays **CLI-only** — its confirmation-token flow is a local file
+  (`~/.minicoder/pending-repair-token.json`) that does not translate to a stateless HTTP API.
+- `Idempotency-Key` is **client-supplied and used verbatim**, not server-synthesized from
+  `{commandName}:{resourceId}:{expectedVersion}` the way existing CLI/task callers build their own
+  keys — a deliberate API-contract decision (Stripe-style), not an inconsistency with that
+  convention.
 
 ## Phase 14 — Ink Text UI
 

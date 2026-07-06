@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.9
-> Last-updated: 2026-07-04
+> Version: 1.0.10
+> Last-updated: 2026-07-05
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -524,6 +524,9 @@ minicoder human block --feature-run <id> --project <id> --actor <id> --notes <te
 
 # Merge Gate (Phase 12; approver/admin-initiated merge)
 minicoder merge merge-if-ready --feature-run <id> --project <id> --actor <id> [--actor-role approver] [--merge-method squash|merge|rebase]
+
+# Orchestrator API (Phase 13; read/command/webhook endpoints — see 01-system-specification.md §9)
+minicoder api serve [--port <number>] [--host <host>]   # long-running Fastify process
 
 # Test scenario runner (non-zero exit on failure)
 minicoder test unit

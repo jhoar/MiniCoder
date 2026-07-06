@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.8
-> Last-updated: 2026-07-04
+> Version: 1.3.9
+> Last-updated: 2026-07-05
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -500,9 +500,14 @@ the worker appears in the Workers section.
 > **CLI command status (Phase 3):**
 >
 > - `minicoder trigger validate` — functional; reads `ALL_TASK_IDS` from the package.
-> - All other `minicoder trigger` commands — exit 1 ("not implemented") until Phase 13 wires the
->   API layer. `list-runs` and `inspect-run` return static placeholder JSON only, not live data.
-> - `minicoder state` commands (`doctor`, `reconcile`, etc.) — stub implementations pending Phase 4.
+> - All other `minicoder trigger` commands — exit 1 ("not implemented"). These require a real
+>   Trigger.dev **management**-API client (`TRIGGERDEV_API_URL`/`TRIGGERDEV_API_KEY`), which
+>   Phase 13 deliberately left out of scope (a different, external system from the Orchestrator
+>   API Phase 13 built — see CLAUDE.md's Orchestrator API Operational Constraints). `list-runs`
+>   and `inspect-run` return static placeholder JSON only, not live data.
+> - `minicoder state` commands (`doctor`, `reconcile`, etc.) are implemented (Phase 4), and their
+>   query logic is now also exposed via the Orchestrator API's diagnostics command endpoints
+>   (Phase 13).
 
 #### Procedure: Deploy tasks
 
@@ -510,7 +515,7 @@ the worker appears in the Workers section.
 pnpm --filter @minicoder/triggerdev build
 minicoder trigger validate        # confirm all 9 task IDs present
 
-# Direct CLI (until Phase 13 wires minicoder trigger deploy):
+# Direct CLI (minicoder trigger deploy remains unimplemented — see the CLI command status note above):
 # TRIGGER_API_URL must always be set explicitly — omitting it causes the CLI to
 # default to https://api.trigger.dev (Trigger.dev Cloud) regardless of backend config.
 cd packages/triggerdev && \
@@ -529,7 +534,8 @@ branch and deploys to `staging` by default; `prod` requires a manual workflow di
 
 #### Procedure: Queue drain (CI / pre-deploy)
 
-All `minicoder trigger` queue commands exit 1 until Phase 13. Monitor queue state via the
+All `minicoder trigger` queue commands exit 1 (a real Trigger.dev management-API client remains
+unbuilt — see the CLI command status note above). Monitor queue state via the
 Trigger.dev webapp at `http://localhost:3040`. Wait for all runs to reach a terminal state before
 running destructive operations or schema migrations.
 
@@ -537,25 +543,27 @@ running destructive operations or schema migrations.
 
 Use the Trigger.dev webapp at `http://localhost:3040` to view run history, inspect payloads, and
 trigger replays. There is no supported CLI sub-command for replay in the current Trigger.dev v4
-CLI; the webapp is the authoritative interface until Phase 13 provides `minicoder trigger
-replay-run`.
+CLI; the webapp remains the authoritative interface — `minicoder trigger replay-run` requires a
+Trigger.dev management-API client that remains unbuilt (see the CLI command status note above).
 
 #### Procedure: Cancel a stuck run
 
 Use the Trigger.dev webapp at `http://localhost:3040` to cancel individual runs. There is no
 supported `cancel` CLI sub-command in the current Trigger.dev v4 CLI. `minicoder trigger
-cancel-run` is pending Phase 13.
+cancel-run` remains unimplemented for the same reason.
 
 #### Procedure: Reconcile DB vs live runs
 
-`minicoder trigger reconcile` is pending Phase 13. Until then, manually compare `triggerdev_runs`
+`minicoder trigger reconcile` remains unimplemented. Manually compare `triggerdev_runs`
 rows with status `running` against the Trigger.dev webapp run list and update stale rows directly
-in the database. `minicoder state reconcile` (pending Phase 4) will automate the workflow-state
-side of this reconciliation.
+in the database. `minicoder state reconcile` already automates the workflow-state side of this
+reconciliation, and the Orchestrator API's `POST /commands/reconcile` (Phase 13) exposes the same
+logic over HTTP.
 
 #### Procedure: Dev reset (dev/CI only)
 
-> `minicoder trigger reset-dev` is not yet implemented (Phase 13). In the interim, use Docker
+> `minicoder trigger reset-dev` is not yet implemented (requires a Trigger.dev management-API
+> client, out of Phase 13's scope). In the interim, use Docker
 > Compose to restart the stack with a fresh database:
 
 ```bash
@@ -725,8 +733,10 @@ checks compare local `feature_runs` state against GitHub's actual PR list, only 
 tracked `pull_requests` rows — so this requires operator inspection (GitHub UI or `gh pr list`
 against the branch), not automated detection.
 
-**Recovery (interim, manual)**: as of Phase 7, no Orchestrator API command for this exists yet
-(deferred to Phase 13), and `minicoder github simulate-pr-opened` is a dev/test/CI-only command —
+**Recovery (interim, manual)**: no Orchestrator API command for this exists — it requires the
+still-unbuilt `GitHubClient.listPullRequestsForBranch`-style discovery method (deferred to a future
+phase; not added in Phase 13, see the "Alternatives considered and deferred" note below) — and
+`minicoder github simulate-pr-opened` is a dev/test/CI-only command —
 it calls `guardEnv()`, which hard-rejects when `APP_ENV`/`NODE_ENV` is `production` regardless of
 any `--env` flag (see CLAUDE.md's dev/test-only command safety guards), so it cannot be used to
 repair a production deployment. The only currently-available production-safe recovery is a direct,
@@ -776,8 +786,8 @@ has been raised across multiple review rounds; the decision to defer it stands, 
 
 - **`GitHubClient.listPullRequestsForBranch`-style discovery** — the most direct fix, but a
   genuinely new capability (a paginated GitHub API surface plus a scheduled-task call site), not a
-  bug fix to the existing reconciliation path; deferred to a future phase alongside the rest of
-  Phase 13's manual-recovery-API scope noted above.
+  bug fix to the existing reconciliation path; still deferred to a future phase (Phase 13 built the
+  Orchestrator API's read/command/webhook surface but did not add this GitHub discovery method).
 - **A `state doctor` check** — not currently feasible without giving the CLI a live GitHub
   credential and making a per-run API call; none of `state doctor`'s existing checks call out to
   GitHub today, they only compare already-persisted local tables against each other.
@@ -785,7 +795,8 @@ has been raised across multiple review rounds; the decision to defer it stands, 
   branch that might legitimately sit at `code_pushed` for a while) and a notification channel,
   neither of which exists in the current operational tooling.
 - **A guarded repair command** — closest in spirit to the manual SQL insert above, but formalizing
-  it as a `minicoder` subcommand is exactly the Phase 13 API-command scope already deferred.
+  it as a `minicoder`/Orchestrator-API command depends on the same discovery method above and
+  remains deferred to a future phase alongside it.
 
 This is Medium-severity operational-completeness scope, not a correctness bug: reconciliation
 behaves correctly for every PR it knows about, and the manual runbook above (introduced in round 6,
@@ -795,9 +806,13 @@ corrected in round 7) is the accepted interim mitigation until one of the above 
 
 This runbook covers the manual recovery procedures for the sequential feature-selection and
 budget-gate primitives delivered in Phase 8 (`packages/core/src/commands/handlers/{automation,
-feature}/`, `packages/core/src/cost/`). There is no Phase 13 API surface for any of these yet —
-every procedure below is a direct command dispatch or SQL inspection, following the same
-interim-manual pattern as the Phase 7 recovery procedure above.
+feature}/`, `packages/core/src/cost/`). **Phase 13 update:** `PauseAutomationCommand`,
+`ResumeAutomationCommand`, and `ApproveBudgetOverrideCommand` are now reachable via the
+Orchestrator API's generic command dispatch route (`POST /commands/pause-automation`,
+`POST /commands/resume-automation`, `POST /commands/approve-budget-override`, each requiring an
+`Idempotency-Key` header and an operator/approver-role API key) — the direct-dispatch procedures
+below remain valid (and are still the only path for a CLI/script-based operator without API
+access), but a live deployment should prefer the API endpoints going forward.
 
 #### Procedure: Resume automation stuck in a paused state
 
@@ -817,7 +832,7 @@ SELECT automation_state, version, active_feature_run_id FROM workflow_states WHE
   `budget-override:{projectId}:{expectedVersion}` from `paused_budget_exceeded`,
   `budget-override-waiting:{projectId}:{expectedVersion}` from `waiting_for_budget_approval`.
 
-Until Phase 13 exposes these as API/CLI commands, dispatch them directly against
+Without API access, dispatch them directly against
 `ApproveBudgetOverrideHandler`/`ResumeAutomationHandler` via `TransactionalCommandExecutor` from an
 operator script, supplying the current `workflow_states.version` as both `expectedVersion` in the
 payload **and** the `{expectedVersion}` idempotency-key discriminator above. A project can
@@ -878,8 +893,11 @@ active feature, defeating the single-active-feature invariant this column exists
 
 Covers manual recovery/inspection for the coder-adapter pipeline delivered in Phase 9
 (`packages/adapters-coder`, `packages/triggerdev/src/tasks/run-coder.ts`,
-`infra/docker-compose.coder-sandbox.yml`). As with Phases 7–8, there is no Phase 13 API surface
-yet — every procedure is a direct task invocation or SQL inspection.
+`infra/docker-compose.coder-sandbox.yml`). **Phase 13 update:** `POST /commands/request-coder-run`
+now exists as an "enqueue" API endpoint (returns `{triggerdevRunId, accepted}` and requires an
+injected `TaskTriggerClient` at server startup — see CLAUDE.md's Orchestrator API Operational
+Constraints); the direct task-invocation/SQL-inspection procedures below remain the only path when
+running outside a live Orchestrator API deployment.
 
 #### Procedure: Start the coder sandbox infrastructure
 
@@ -947,7 +965,11 @@ the GitHub Integration Operational Constraints section of CLAUDE.md) or call
 
 Covers manual recovery/inspection for the disagreement-detection and human-escalation machinery
 delivered in Phase 11 (`packages/core/src/disagreement/`, the five `human_required` exit command
-handlers, `minicoder human ...`). As with Phases 7–9, there is no Phase 13 API surface yet.
+handlers, `minicoder human ...`). **Phase 13 update:** all five handlers
+(`ResolveDisagreementCommand`, `ResumeFeatureExecutionCommand`, `RetryFeatureCommand`,
+`SkipFeatureCommand`, `BlockFeatureCommand`) are now also reachable via the Orchestrator API's
+generic command dispatch route (`POST /commands/{resolve-disagreement,resume-feature-execution,
+retry-feature,skip-feature,block-feature}`), in addition to `minicoder human ...`.
 
 #### Procedure: Find feature runs stuck at `human_required`
 
@@ -1140,7 +1162,7 @@ The doctor runs 5 checks:
 | `stuck_outbox`        | error    | yes                 |
 | `stuck_inbox`         | error    | yes                 |
 | `orphaned_runs`       | error    | manually repairable |
-| `triggerdev_mismatch` | warning  | no (Phase 13)       |
+| `triggerdev_mismatch` | warning  | no (future phase)   |
 
 Exits with code 1 if any error-severity issues are found.
 

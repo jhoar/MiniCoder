@@ -11,7 +11,7 @@ function notImplemented(command: string, fields: Record<string, unknown> = {}): 
       {
         command,
         error: 'not_implemented',
-        note: 'Full implementation requires TRIGGERDEV_API_URL and TRIGGERDEV_API_KEY. Wired in Phase 13 (API layer).',
+        note: "Full implementation requires TRIGGERDEV_API_URL and TRIGGERDEV_API_KEY (Trigger.dev's own management API — a real integration deliberately deferred out of Phase 13's scope; see CLAUDE.md's Orchestrator API Operational Constraints).",
         timestamp: isoNow(),
         ...fields,
       },
@@ -26,7 +26,7 @@ function infoStub(command: string, fields: Record<string, unknown> = {}): string
   return JSON.stringify(
     {
       command,
-      note: 'Read-only view — full data requires TRIGGERDEV_API_URL. Wired in Phase 13 (API layer).',
+      note: "Read-only view — full data requires TRIGGERDEV_API_URL (Trigger.dev's own management API, out of Phase 13's scope — see CLAUDE.md's Orchestrator API Operational Constraints).",
       timestamp: isoNow(),
       ...fields,
     },
