@@ -1410,10 +1410,17 @@ advisory locally — that is expected and documented here.
 
 #### §12.14 `minicoder test unit` — scope
 
-`minicoder test unit` runs all Vitest test files except `*.integration.test.ts`. This includes
-pure unit tests and the `packages/testing/src/testing.test.ts` scenario/fixture suite.
-It is **not** limited to pure unit tests — the command name reflects the non-integration
-Vitest tier, distinct from `test integration` (real-DB files) and `test system` (CLI scenarios).
+`minicoder test unit` (`vitest.unit.config.ts`) runs all Vitest test files except
+`*.integration.test.ts` **and** everything under `packages/testing/src/**` (issue #23). The
+latter exclusion is deliberate: that directory holds scenario/fixture tests
+(`runAllScenarios()`-style system scenarios, Postgres-gated integration suites, multi-package
+test-DB fixtures) rather than pure domain-logic unit tests, and excluding the whole directory
+(rather than an allowlist of specific non-scenario files in it) is the least brittle option — no
+list to keep in sync as new scenario files are added. Scenario coverage remains fully reachable
+via `minicoder test system` (`runAllScenarios()`, independent of this Vitest config entirely) and
+via `pnpm test`/CI, which run the root `vitest.config.ts` and are unaffected by this exclusion.
+`test unit` is now scoped to what its name promises: pure unit tests, distinct from
+`test integration` (real-DB `*.integration.test.ts` files) and `test system` (CLI scenarios).
 
 #### §12.15 Concurrency scenario tier (issue #43) — PostgreSQL-only, by design
 

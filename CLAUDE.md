@@ -1792,16 +1792,22 @@ concurrent-claim race resolving to exactly one `owned` outcome.
 
 ## Vitest Test Command Tiers
 
-| CLI command                  | What it runs                                                                     | Config                                      |
-| ---------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------- |
-| `minicoder test unit`        | All `*.test.ts` except `*.integration.test.ts` (includes scenario/fixture tests) | `vitest.unit.config.ts`                     |
-| `minicoder test integration` | Only `*.integration.test.ts` (requires real DB)                                  | root `vitest.config.ts` + positional filter |
-| `minicoder test system`      | Programmatic scenario runner (`runAllScenarios()`)                               | —                                           |
-| `pnpm test`                  | All `*.test.ts` including integration                                            | root `vitest.config.ts`                     |
+| CLI command                  | What it runs                                                                 | Config                                      |
+| ---------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------- |
+| `minicoder test unit`        | All `*.test.ts` except `*.integration.test.ts` and `packages/testing/src/**` | `vitest.unit.config.ts`                     |
+| `minicoder test integration` | Only `*.integration.test.ts` (requires real DB)                              | root `vitest.config.ts` + positional filter |
+| `minicoder test system`      | Programmatic scenario runner (`runAllScenarios()`)                           | —                                           |
+| `pnpm test`                  | All `*.test.ts` including integration                                        | root `vitest.config.ts`                     |
 
-`vitest.unit.config.ts` excludes `**/*.integration.test.ts` and is the only way to run the
-non-integration Vitest tier via CLI. Do not add `--include`/`--exclude` CLI flags — Vitest 1.6.x
-does not support them; use a separate config file instead.
+`vitest.unit.config.ts` excludes `**/*.integration.test.ts` and, since issue #23,
+`packages/testing/src/**` — that directory holds scenario/fixture tests
+(`runAllScenarios()`-style system scenarios, Postgres-gated integration suites), not pure
+domain-logic unit tests; excluding the whole directory (rather than an allowlist of individual
+non-scenario files) is deliberately the least brittle option. Scenario coverage stays reachable
+via `minicoder test system` and `pnpm test`/CI (root `vitest.config.ts`, unaffected). This config
+is the only way to run the non-integration, non-scenario Vitest tier via CLI. Do not add
+`--include`/`--exclude` CLI flags — Vitest 1.6.x does not support them; use a separate config file
+instead.
 
 ## SQLite Test Teardown Rule
 
