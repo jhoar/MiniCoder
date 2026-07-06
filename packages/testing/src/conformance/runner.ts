@@ -125,6 +125,8 @@ const DESCRIPTORS: AdapterDescriptor[] = [
       prNumber: 42,
       reviewCycle: 1,
       correlationId: COMMON_CORRELATION,
+      featureTitle: 'Conformance feature',
+      acceptanceCriteria: ['A user can exercise the conformance scenario.'],
     }),
     validateOutput: (out: unknown): string | null => {
       const o = out as Record<string, unknown>;

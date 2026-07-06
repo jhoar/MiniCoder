@@ -46,14 +46,13 @@ export class ClaudeReviewerAdapter implements ReviewerAgentAdapter {
       input.prNumber,
     );
 
-    // ReviewerInput (Phase 5's adapter contract) carries no featureTitle/acceptanceCriteria
-    // fields — only identifiers (projectId/featureRunId/prNumber/reviewCycle/correlationId).
-    // Widening that shared contract just for this one adapter's prompt was considered and
-    // rejected (it would ripple into every other ReviewerAgentAdapter caller and
-    // MockReviewerAdapter); the diff itself carries the substantive review content.
+    // ReviewerInput.featureTitle/acceptanceCriteria are additive/optional (issue #47) — run-review.ts's
+    // real call site always populates them from the feature request, but a caller-supplied
+    // ReviewerInput (or an older/simplified test fixture) might not, so a placeholder fallback is
+    // kept rather than passing undefined/empty through to the provider unconditionally.
     const result = await this.options.reviewProvider.review({
-      featureTitle: `feature run ${input.featureRunId}`,
-      acceptanceCriteria: [],
+      featureTitle: input.featureTitle ?? `feature run ${input.featureRunId}`,
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
       diff,
       correlationId: input.correlationId,
     });

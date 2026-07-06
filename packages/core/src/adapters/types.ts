@@ -41,6 +41,12 @@ export interface ReviewerInput {
   prNumber: number;
   reviewCycle: number;
   correlationId: string;
+  /** Additive (issue #47), mirroring CoderInput's shape — the real feature title/acceptance
+   * criteria the PR is supposed to satisfy, so the reviewer can check the diff against them
+   * instead of a synthesized placeholder. Optional so existing MockReviewerAdapter-based tests
+   * that don't set them keep compiling; run-review.ts's real call site always populates both. */
+  featureTitle?: string;
+  acceptanceCriteria?: string[];
 }
 
 export interface ReviewFindingOutput {

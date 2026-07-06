@@ -1085,10 +1085,15 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   path, and the "Arbiter dismissed every blocking finding this cycle" path) now insert the marker
   in the same `db.transaction()` as `insertReviewFindings()`, so a crash between the two can't
   leave one without the other.
-- **MEDIUM (deferred, not fixed): `ClaudeReviewerAdapter` synthesizes a placeholder feature title
-  and empty acceptance criteria.** Already a known, documented simplification (`ReviewerInput`, the
-  shared Phase-5 adapter contract, carries no such fields) — caps review fidelity but is not a
-  correctness bug. Widening `ReviewerInput` is future work, not this phase's scope.
+- **MEDIUM (deferred at the time, later closed by issue #47): `ClaudeReviewerAdapter` synthesized a
+  placeholder feature title and empty acceptance criteria.** `ReviewerInput` (the shared Phase-5
+  adapter contract) carried no such fields. **Closed by issue #47:** `ReviewerInput` gained
+  optional `featureTitle`/`acceptanceCriteria` fields, mirroring `CoderInput`'s shape (additive,
+  backward-compatible — existing callers/mocks that don't set them keep compiling).
+  `run-review.ts` now queries the real feature title/acceptance criteria (the same
+  `feature_requests`/`acceptance_criteria` query `run-coder.ts` already uses) and populates them;
+  `ClaudeReviewerAdapter` uses the real values when present, falling back to the old placeholder
+  only when a caller-supplied `ReviewerInput` omits them (e.g. an older test fixture).
 
 **Post-implementation review fixes (round 4):**
 

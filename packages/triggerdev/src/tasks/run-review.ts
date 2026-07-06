@@ -337,12 +337,26 @@ export async function runImpl(
     githubClient,
   });
 
+  // Issue #47: the same feature title / acceptance criteria query run-coder.ts already uses, so
+  // the reviewer can check the diff against the real acceptance criteria instead of a synthesized
+  // placeholder.
+  const featureRows = await db.query<{ title: string }>(
+    `SELECT title FROM feature_requests WHERE id = ?`,
+    [run.feature_request_id],
+  );
+  const acceptanceRows = await db.query<{ description: string }>(
+    `SELECT description FROM acceptance_criteria WHERE feature_request_id = ? ORDER BY order_index ASC`,
+    [run.feature_request_id],
+  );
+
   const input: ReviewerInput = {
     projectId,
     featureRunId,
     prNumber: pr.pr_number,
     reviewCycle,
     correlationId,
+    featureTitle: featureRows[0]?.title,
+    acceptanceCriteria: acceptanceRows.map((r) => r.description),
   };
 
   const { agentRunId, output } = await recorder.record(
