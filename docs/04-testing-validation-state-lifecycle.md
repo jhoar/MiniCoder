@@ -603,6 +603,91 @@ branch and deploys to `staging` by default; `prod` requires a manual workflow di
 > co-located with the stack, or (b) set `DEPLOY_REGISTRY_HOST` to an externally-reachable
 > registry URL in the environment's variable settings.
 
+#### CI Registry Setup (issue #18)
+
+`trigger-deploy.yml`'s `deploy-tasks` job needs a real, externally-reachable Docker registry when
+it runs on GitHub-hosted runners — `DEPLOY_REGISTRY_HOST` (the CLI's push target) and
+`DOCKER_REGISTRY_URL` (the supervisor's pull source, read from `infra/docker-compose.triggerdev.yml`'s
+env) must resolve to the **same** registry (CLAUDE.md's Trigger.dev Operational Constraints), and
+neither can default to `localhost:5000`/`triggerdev-registry:5000` once the CLI push and the
+supervisor pull happen from different network namespaces (a GitHub-hosted CI runner vs. wherever
+the compose stack's `triggerdev-registry`/`triggerdev-supervisor` containers actually run).
+
+**External registry vs. the bundled `triggerdev-registry` service — the actual decision:**
+`infra/docker-compose.triggerdev.yml`'s bundled `registry:2` container (service name
+`triggerdev-registry`) is the right default for local/single-node development, where the CLI push
+and the supervisor pull both happen on the same Docker host and can use the internal hostname
+`triggerdev-registry:5000` — no external registry is needed there. It stops being sufficient the
+moment CI (or any topology where the deploying CLI and the running supervisor are on different
+hosts/networks) enters the picture: a GitHub-hosted runner has no route to a bundled registry
+container running inside someone else's compose stack. In that case, both `DEPLOY_REGISTRY_HOST`
+and `DOCKER_REGISTRY_URL` must point at one externally-reachable registry instead — either a
+managed one (ghcr.io, Docker Hub) or a self-hosted one exposed on a public/VPN-reachable address.
+There is no in-between "half-bundled" option: pick one registry both the pusher and the puller can
+reach, and point both variables at it.
+
+**Required secrets/variables** (set as GitHub Actions repository or environment variables/secrets,
+consumed by `trigger-deploy.yml` and the `docker-compose.triggerdev.yml` stack the supervisor runs
+against):
+
+| Name                   | Kind     | Purpose                                                                                                             |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| `DEPLOY_REGISTRY_HOST` | Variable | Registry host:port the CLI pushes task images to                                                                    |
+| `DOCKER_REGISTRY_URL`  | Variable | Registry URL the supervisor pulls task images from — must match the above                                           |
+| `REGISTRY_USERNAME`    | Secret   | Registry auth (ghcr.io: a GitHub PAT or `GITHUB_TOKEN` with `write:packages`; Docker Hub: your Docker Hub username) |
+| `REGISTRY_PASSWORD`    | Secret   | Registry auth password/token paired with `REGISTRY_USERNAME`                                                        |
+| `TRIGGER_ACCESS_TOKEN` | Secret   | Trigger.dev API auth (already required, listed here for completeness)                                               |
+| `TRIGGER_API_URL`      | Variable | Trigger.dev API endpoint (already required)                                                                         |
+| `TRIGGER_PROJECT_REF`  | Variable | Trigger.dev project reference (already required)                                                                    |
+
+**Example: ghcr.io**
+
+```yaml
+env:
+  DEPLOY_REGISTRY_HOST: ghcr.io/<org>/<repo>-triggerdev
+  DOCKER_REGISTRY_URL: https://ghcr.io/<org>/<repo>-triggerdev
+```
+
+Authenticate the CLI's push step with `docker login ghcr.io -u <org> -p "$REGISTRY_PASSWORD"`
+before the deploy step (a GitHub Actions `GITHUB_TOKEN` with `packages: write` permission works for
+same-repo pushes; a cross-repo/PAT is required otherwise). The supervisor's pull-side
+authentication is a separate concern — configure `docker login` (or the registry's pull-credential
+mechanism) on whatever host runs `triggerdev-supervisor` before it needs to pull a newly deployed
+image.
+
+**Example: Docker Hub**
+
+```yaml
+env:
+  DEPLOY_REGISTRY_HOST: docker.io/<org>/minicoder-triggerdev
+  DOCKER_REGISTRY_URL: https://index.docker.io/v1/
+```
+
+Same pattern: `docker login -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"` before push; configure
+pull credentials on the supervisor's host separately.
+
+**Topology verification steps** (do this once when standing up a new CI registry configuration,
+and whenever `DEPLOY_REGISTRY_HOST`/`DOCKER_REGISTRY_URL` change):
+
+1. From the CI runner (or a shell with equivalent network access), confirm the registry resolves
+   and accepts the push credential: `docker login <registry-host>` followed by a test
+   `docker push` of any small image.
+2. From the host running `triggerdev-supervisor`, confirm it can reach and pull from the same
+   registry: `docker pull <registry-host>/<any-pushed-image>`.
+3. Confirm both variables name the **same host** — a mismatch (e.g. CI pushes to
+   `ghcr.io/org/repo` while the supervisor is still configured with the bundled
+   `triggerdev-registry:5000` default) is the most common failure mode, and looks like "deploy
+   succeeded" followed by the supervisor's runner containers failing to start with an
+   image-not-found error.
+4. Run `docker compose -f infra/docker-compose.triggerdev.yml config` to confirm the resolved
+   `DOCKER_REGISTRY_URL` value actually matches what was set, before relying on it in a live
+   deployment — this is the same syntax-validation substitute this repository already uses
+   elsewhere when no live Docker daemon is available to exercise the stack end-to-end.
+
+`trigger-deploy.yml`'s `validate-tasks` job now includes a registry-topology smoke-test step
+(below) that fails fast on a same-registry mismatch **before** the deploy job spends time pushing
+images against a configuration that would strand the supervisor.
+
 #### Procedure: Queue drain (CI / pre-deploy)
 
 All `minicoder trigger` queue commands exit 1 (a real Trigger.dev management-API client remains
