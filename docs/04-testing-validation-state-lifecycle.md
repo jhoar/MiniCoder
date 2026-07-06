@@ -1415,6 +1415,31 @@ pure unit tests and the `packages/testing/src/testing.test.ts` scenario/fixture 
 It is **not** limited to pure unit tests — the command name reflects the non-integration
 Vitest tier, distinct from `test integration` (real-DB files) and `test system` (CLI scenarios).
 
+#### §12.15 Concurrency scenario tier (issue #43) — PostgreSQL-only, by design
+
+`packages/testing/src/execution-orchestrator-concurrency.postgres.test.ts` adds a new test tier:
+genuinely concurrent (`Promise.all`-driven, not sequential) multi-actor scenarios exercising
+`start-next-feature`, `github-reconciliation`, and an operator `PauseAutomationCommand` against
+the same project simultaneously, asserting the single-active-feature and no-lost-transition
+invariants documented in CLAUDE.md's Execution Orchestrator Operational Constraints.
+
+This tier is **PostgreSQL-only**, gated by `MINICODER_TEST_PG_URL` (same gate as
+`runner.postgres.test.ts`/`registry.postgres.test.ts`), not a SQLite scenario under
+`packages/testing/src/*.test.ts`. This is a deliberate architectural finding, not a convenience
+choice: `better-sqlite3` is a fully synchronous native binding running on Node's single thread, so
+two `SqliteDbClient` connections to the same file cannot genuinely race — whichever connection's
+blocking write call runs first monopolizes the only thread until it returns, so an overlapping
+write from a second connection either never actually overlaps (no real race exercised) or
+deadlocks against `busy_timeout` (the first connection can never reach `COMMIT` while the second's
+synchronous busy-wait is blocking the only thread that could run it). A multi-connection
+same-file SQLite version of this exact scenario was built and empirically deadlocked on
+"database is locked" every iteration before this Postgres-gated version replaced it. PostgreSQL's
+client-server architecture has no such limitation — each `pg.Pool` connection is a genuinely
+independent backend process, so concurrent transactions here exercise real overlapping writes the
+way a production hosted/team deployment actually would. Locally, with no `MINICODER_TEST_PG_URL`
+set, this suite reports as skipped (same posture as the other Postgres-gated suites) — it runs for
+real in CI's postgres job.
+
 #### SQLite test teardown — do not call `db.close()`
 
 Never call `db.close()` in Vitest tests or scenario runner code. `better-sqlite3` registers native

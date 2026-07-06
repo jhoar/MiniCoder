@@ -1751,6 +1751,17 @@ advisories are known and accepted: GHSA-5xrq-8626-4rwp (vitest critical — UI s
 GHSA-fx2h-pf6j-xcff (vite high — Windows-only path, CI runs Linux). Full rationale in
 docs/04 §12.13. Full `pnpm audit --audit-level=high` will report these locally — that is expected.
 
+**Concurrency scenario tier (issue #43, docs/04 §12.15):**
+`packages/testing/src/execution-orchestrator-concurrency.postgres.test.ts` is a genuinely
+concurrent (`Promise.all`-driven), PostgreSQL-only integration scenario racing
+`start-next-feature`, `github-reconciliation`, and an operator pause against the same project.
+It is PostgreSQL-only by design, not convenience: `better-sqlite3` is a synchronous single-thread
+binding, so two `SqliteDbClient` connections to the same file cannot genuinely race — an
+overlapping write from a second connection either never truly overlaps or deadlocks against
+`busy_timeout` (confirmed empirically: a same-file multi-connection SQLite version of this exact
+scenario reliably deadlocked every iteration). PostgreSQL's client-server architecture has no such
+limitation. Gated by `MINICODER_TEST_PG_URL`, same posture as the other Postgres-only suites.
+
 ## Vitest Test Command Tiers
 
 | CLI command                  | What it runs                                                                     | Config                                      |
