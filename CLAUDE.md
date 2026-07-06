@@ -1656,8 +1656,10 @@ displayName?}`; `ApiKeyProvider` hashes each key with SHA-256 at boot and never 
   (`GenerateImplementationPlanHandler`, `GenerateFeatureBacklogHandler`, `ValidateBacklogHandler`)
   reachable only via a `system`-kind API key, for manual replay of a stuck system-owned transition.
   `AssessPlanningReadinessHandler` is deliberately excluded from this allow-list — unlike its
-  siblings, its constructor requires a live `PlannerAgentAdapter` instance, and no reference planner
-  adapter has shipped yet (docs/02 §7). (2) `POST /commands/merge-if-ready` — a dedicated route,
+  siblings, its constructor requires a live `PlannerAgentAdapter` instance, and this registry only
+  registers handlers with a no-argument constructor; `GenericLLMPlannerAdapter` (issue #32, docs/02
+  §7) now exists but the generic dispatch route has no adapter-construction wiring to supply it, so
+  this exclusion is unchanged. (2) `POST /commands/merge-if-ready` — a dedicated route,
   since it chains `MergeIfReadyHandler` → a real `GitHubClient.mergePullRequest()` call →
   `RecordMergedHandler`/`RecordMergeFailedHandler`+follow-up, exactly mirroring
   `packages/cli/src/commands/merge.ts`'s existing sequence; this cannot be a single generic
