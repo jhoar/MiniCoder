@@ -212,22 +212,32 @@ applicable, explicit confirmation flag, and an audit event. Production reset is 
 There is no unguarded bulk `purge`; irreversible maintenance is performed only through these guarded
 workflows.
 
-**Phase 1 implementation of `minicoder db reset`:**
+**`minicoder db reset`'s enforced contract** (closed the Phase 1 warn-only gaps — see issues #10/#11):
 
-| Requirement                   | Phase 1 status                                                                           |
-| ----------------------------- | ---------------------------------------------------------------------------------------- |
-| Explicit `--env` flag         | ✓ required; must be `development`, `test`, or `ci`                                       |
-| Explicit `--yes` confirmation | ✓ required                                                                               |
-| System env cross-check        | ✓ `APP_ENV`/`NODE_ENV` checked; non-safe system value blocks reset even with `--env dev` |
-| Credential safety             | ✓ PostgreSQL URL logged with credentials stripped                                        |
-| Dry-run / pre-run summary     | ✓ table list printed before any mutation                                                 |
-| Audit event                   | ✓ timestamped block (env flag, system env, dialect, sanitized db, table count)           |
-| Backup check                  | ⚠ operator warned; no automated backup                                                   |
-| Permission / role check       | ⚠ noted in audit log; enforced from Phase 2                                              |
-| Scope restriction             | ✓ only owned tables dropped, no `CASCADE`                                                |
+| Requirement                   | Status                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------ |
+| Explicit `--env` flag          | ✓ required; must be `development`, `test`, or `ci`                                              |
+| Explicit `--yes` confirmation  | ✓ required with `--apply`                                                                       |
+| System env cross-check         | ✓ `APP_ENV`/`NODE_ENV` checked; non-safe system value blocks reset regardless of `--env`         |
+| `--env`/system-env agreement   | ✓ enforced — when a system env is set, `--env` must match it exactly, not just both be "safe"    |
+| Unset-system-env handling      | ✓ enforced — an unset `APP_ENV`/`NODE_ENV` is never treated as safe; requires `--disposable-db`  |
+| Credential safety              | ✓ PostgreSQL URL reduced to protocol+hostname+port+pathname; query string/fragment/creds dropped |
+| Malformed URL handling         | ✓ blocked with a fixed, non-sensitive error — never echoes the raw input                          |
+| Database target identity      | ✓ PostgreSQL host checked against an allowlist (`MINICODER_ALLOWED_RESET_HOSTS`, default `localhost`/`127.0.0.1`/`::1`); non-listed hosts require explicit `--force-host` |
+| Dry-run / two-step confirmation| ✓ `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact target; `--apply --confirmation <token>` performs the reset (mirrors `minicoder state repair`) |
+| Audit event                    | ✓ timestamped block (mode, env flag, system env, dialect, sanitized db, table count, actor, backup status) |
+| Backup check                   | ✓ enforced — `--backup-verified` or `--backup-exempt "<reason>"` required, recorded in the audit log |
+| Actor identity                 | ✓ enforced — `--actor <name>` required and recorded (Phase 1 has no session/role system, so this is a caller-declared identity, not an authenticated principal — the strongest this profile can offer; see docs/07 for real auth) |
+| Scope restriction               | ✓ only owned tables dropped, no `CASCADE`                                                        |
+| Guard-before-connect            | ✓ the guard runs and can `process.exit` before a SQLite file is created or a PostgreSQL connection is used |
 
 ```bash
-minicoder db reset --yes --env development
+# Step 1: preview and get a confirmation token (no mutation)
+minicoder db reset --dry-run --env development --actor alice --backup-exempt "local dev db"
+
+# Step 2: apply using the token from step 1
+minicoder db reset --apply --yes --confirmation <token> --env development \
+  --actor alice --backup-exempt "local dev db"
 ```
 
 ## 8. CI/CD Requirements
@@ -374,37 +384,53 @@ Drops all MiniCoder-owned tables and re-applies all migrations from scratch. Onl
 are dropped (never foreign tables); drops proceed in reverse FK-dependency order without
 `CASCADE` so external FK constraints are never silently removed.
 
-**Safety contract** — the runner enforces all of the following before any mutation:
+**Safety contract** — the runner enforces all of the following before any mutation (issues #10/#11
+closed the previous warn-only gaps):
 
-| Check                  | Enforcement                                                                                                                |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `--yes` confirmation   | Required                                                                                                                   |
-| Explicit `--env` flag  | Required; value must be `development`, `test`, or `ci`                                                                     |
-| System env cross-check | `APP_ENV`/`NODE_ENV` checked independently; a non-safe system value blocks reset even when `--env development` is supplied |
-| Credential safety      | PostgreSQL connection URL logged with credentials stripped (host/database only)                                            |
-| Audit event            | Printed to stdout before mutation: timestamp, env flag, system env, dialect, sanitized database identifier, table count    |
-| Dry-run summary        | Tables to be dropped listed before execution                                                                               |
-| Backup warning         | Operator warned that no backup has been verified                                                                           |
-| Permission check       | Phase 1: noted in audit log; enforced by role system in Phase 2+                                                           |
+| Check                       | Enforcement                                                                                                                          |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Two-step confirmation        | `--dry-run` previews and issues a single-use, 5-minute confirmation token bound to the exact db target; `--apply --confirmation <token> --yes` performs the reset |
+| Explicit `--env` flag        | Required; value must be `development`, `test`, or `ci`                                                                                 |
+| System env cross-check       | `APP_ENV`/`NODE_ENV` checked; a non-safe system value blocks reset regardless of `--env`; when set, `--env` must match it exactly       |
+| Unset system env             | Never treated as safe by default — requires the explicit `--disposable-db` acknowledgment                                              |
+| Actor identity                | `--actor <name>` required and recorded in the audit log (Phase 1 has no session/role system — this is a caller-declared identity, the strongest this profile can offer; real auth is docs/07 scope) |
+| Backup evidence               | `--backup-verified` or `--backup-exempt "<reason>"` required and recorded                                                               |
+| Database target identity      | PostgreSQL host checked against `MINICODER_ALLOWED_RESET_HOSTS` (default `localhost`/`127.0.0.1`/`::1`); other hosts require explicit `--force-host` |
+| Credential safety              | PostgreSQL connection URL reduced to protocol+hostname+port+pathname before logging — query string, fragment, and credentials are dropped entirely, not just the URL authority |
+| Malformed URL handling         | Blocked with a fixed, non-sensitive error; the raw input is never echoed                                                                 |
+| Audit event                    | Printed to stdout before mutation: timestamp, mode, env flag, system env, dialect, sanitized database identifier, table count, actor, backup status |
+| Dry-run summary                | Tables to be dropped listed before execution                                                                                            |
 
 **Never run against production.** PostgreSQL: use a dedicated development/CI database or a
 separate schema. SQLite: use a throw-away file (`/tmp/dev.db`).
 
 ```bash
-# SQLite
+# SQLite — step 1: preview and get a token
 DB_DIALECT=sqlite DB_PATH=./dev.db \
-  tsx packages/migrations/src/runner.ts reset --yes --env development
+  tsx packages/migrations/src/runner.ts reset --dry-run --env development \
+  --actor alice --backup-exempt "local dev db"
 
-# PostgreSQL
-DB_DIALECT=postgres DB_URL=postgresql://user:pass@host:5432/devdb \
-  tsx packages/migrations/src/runner.ts reset --yes --env development
+# SQLite — step 2: apply
+DB_DIALECT=sqlite DB_PATH=./dev.db \
+  tsx packages/migrations/src/runner.ts reset --apply --yes --confirmation <token> \
+  --env development --actor alice --backup-exempt "local dev db"
 
-# CI (APP_ENV is advisory; --env flag is required regardless)
+# PostgreSQL (host must be in MINICODER_ALLOWED_RESET_HOSTS, or pass --force-host)
+DB_DIALECT=postgres DB_URL=postgresql://user:pass@localhost:5432/devdb \
+  tsx packages/migrations/src/runner.ts reset --dry-run --env development \
+  --actor alice --backup-exempt "local dev db"
+DB_DIALECT=postgres DB_URL=postgresql://user:pass@localhost:5432/devdb \
+  tsx packages/migrations/src/runner.ts reset --apply --yes --confirmation <token> \
+  --env development --actor alice --backup-exempt "local dev db"
+
+# CI (APP_ENV is advisory; --env flag is required regardless; CI runners should set
+# APP_ENV=ci or NODE_ENV=ci rather than relying on --disposable-db)
 DB_DIALECT=sqlite DB_PATH=/tmp/ci.db \
-  tsx packages/migrations/src/runner.ts reset --yes --env ci
+  tsx packages/migrations/src/runner.ts reset --dry-run --env ci --actor ci-runner --backup-exempt "ephemeral CI db"
 ```
 
-Expected output: audit block, table list, "Dropped N owned tables", then migration output.
+Expected output: audit block (dry-run mode issues a confirmation token and exits without
+mutating), then on `--apply`: audit block, table list, "Dropped N owned tables", migration output.
 
 #### Procedure: Demo scenario
 

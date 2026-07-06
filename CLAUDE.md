@@ -1767,6 +1767,37 @@ row, not the system-triggered breach.
 `state purge` does not exist. Irreversible maintenance uses only the guarded `repair --apply` path.
 Global (unscoped) repair is not supported — `--project` is mandatory for both steps.
 
+## Database Reset CLI (`minicoder db reset` / `packages/migrations/src/runner.ts`)
+
+`db reset`'s safety contract was strengthened (issues #10/#11) from warn-only to fully enforced,
+mirroring `state repair`'s two-step dry-run/apply/confirmation-token shape:
+
+1. `minicoder db reset --dry-run --env <env> --actor <name> (--backup-verified | --backup-exempt "<reason>")`
+   — previews (no mutation) and prints a single-use confirmation token (expires in 5 minutes),
+   bound to the exact database target (host+port+path for PostgreSQL, resolved file path for
+   SQLite) — a token issued while previewing one target cannot be replayed against another.
+2. `minicoder db reset --apply --yes --confirmation <token> --env <env> --actor <name> (--backup-verified | --backup-exempt "<reason>")`
+   — executes.
+
+Additional enforced checks (all before any mutation, all before a SQLite file is created or a
+PostgreSQL connection is used):
+
+- **`--env`/system-env agreement**: when `APP_ENV`/`NODE_ENV` is set, `--env` must match it
+  exactly — not just both be in the safe set.
+- **Unset system env is never inferred as safe**: requires the explicit `--disposable-db` flag.
+- **`--actor <name>` is required** and recorded in the audit log — Phase 1's CLI has no
+  session/role system, so this is a caller-declared identity, not an authenticated principal (the
+  strongest this profile can offer; real auth is docs/07 scope).
+- **Backup evidence is required**: `--backup-verified` or `--backup-exempt "<reason>"`, recorded in
+  the audit log (never a bare warning).
+- **PostgreSQL host allowlist**: the target host must be in `MINICODER_ALLOWED_RESET_HOSTS`
+  (comma-separated; defaults to `localhost`/`127.0.0.1`/`::1`) or the caller must pass the explicit,
+  visible `--force-host` override.
+- **Credential/query-string redaction**: `sanitizeDbIdentifier()` reduces a PostgreSQL URL to
+  `protocol://hostname:port/pathname` before ever logging it — username, password, query string,
+  and fragment are all dropped, not just the URL authority. A malformed URL is replaced with a
+  fixed, non-sensitive placeholder rather than echoing the raw input.
+
 ## State Reconcile CLI
 
 `state reconcile` requires either `--project <id>` or `--all`:
