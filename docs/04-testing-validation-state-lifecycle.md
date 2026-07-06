@@ -477,6 +477,34 @@ stack delivered in Phase 3. The stack definition is `infra/docker-compose.trigge
 | triggerdev-docker-proxy | 0.25 | 64 MB  | — (Docker socket ro)  |
 | triggerdev-supervisor   | 2.0  | 2 GB   | shared volume (token) |
 
+#### Image pinning (issue #16)
+
+`triggerdev-webapp`, `triggerdev-supervisor`, and `triggerdev-docker-proxy` are pinned to
+immutable SHA-256 digests, not mutable tags (`v4-beta`/`latest` could otherwise silently change
+between pulls, breaking reproducibility and creating a supply-chain risk). Each `image:` line
+carries a trailing comment with the human-readable tag it was captured from and the capture date.
+
+To re-pin deliberately (e.g. when upgrading Trigger.dev):
+
+```bash
+# Get an anonymous pull token and the manifest digest for a given image:tag
+TOKEN=$(curl -sS "https://ghcr.io/token?service=ghcr.io&scope=repository:triggerdotdev/trigger.dev:pull" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json" \
+  -I "https://ghcr.io/v2/triggerdotdev/trigger.dev/manifests/v4-beta" | grep docker-content-digest
+```
+
+(For Docker Hub images such as `tecnativa/docker-socket-proxy`, use
+`https://auth.docker.io/token?service=registry.docker.io&scope=repository:<repo>:pull` for the
+token and `https://registry-1.docker.io/v2/<repo>/manifests/<tag>` for the manifest request.)
+
+Update the `image:` line to `<repo>@sha256:<digest>`, keep the tag/date in the trailing comment,
+and validate with `docker compose -f infra/docker-compose.triggerdev.yml config` before committing.
+`triggerdev-webapp` and `triggerdev-supervisor` track the same Trigger.dev release channel and
+should be re-pinned together. `triggerdev-docker-proxy`'s `:latest` pin should be revisited once
+the project identifies a stable release tag to track instead.
+
 #### Required environment variables
 
 Generate all secrets with `openssl rand -hex 32` unless noted otherwise.
