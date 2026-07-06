@@ -428,7 +428,7 @@ export async function runImpl(
     () => adapter.run(input),
   );
 
-  // Issue #49: persist a replayable snapshot of the exact prompt sent to the reviewer LLM (if the
+  // Issue #49: persist a replayable snapshot of the prompt sent to the reviewer LLM (if the
   // adapter reports one — MockReviewerAdapter and other test doubles don't), plus the PR head SHA
   // as the "which diff" reference (avoids duplicating the diff itself; a commit reference is
   // already sufficient to identify it). Written as a second agent_context_packs row (distinct
@@ -436,6 +436,19 @@ export async function runImpl(
   // AgentRunRecorder's own context-pack write already uses — this one is written directly since
   // it's only knowable after the adapter call returns, while AgentRunRecorder's own contextPack
   // option is written before the call.
+  //
+  // Post-merge review fix (HIGH-1): this claim ("avoids duplicating the diff itself") was
+  // previously false in practice — `ClaudeReviewerAdapter`/`HttpReviewProvider`'s `promptSnapshot`
+  // was the literal request body sent to the LLM, which necessarily embeds the full diff, so it
+  // was persisted into `agent_context_packs` verbatim (a real secret-retention risk: a diff can
+  // contain credentials `defaultRedactor`'s pattern-based scrubbing cannot reliably catch once
+  // serialized into a JSON string). Fixed at the source: `HttpReviewProvider.review()` now returns
+  // a distinct, diff-omitted `promptSnapshot` from the request it actually sends — this call site
+  // needed no change, since it already only handles whatever the adapter reports, but the contract
+  // this comment describes is now actually enforced by the one shipped adapter, not merely hoped
+  // for. A test double that still reports a raw diff in `promptSnapshot` would still persist it —
+  // this is a contract every `ReviewerAgentAdapter`/`ReviewProvider` implementation must honor,
+  // not a guarantee this call site itself can enforce generically over an `unknown` value.
   const reviewerPromptSnapshot = (output as { promptSnapshot?: unknown }).promptSnapshot;
   if (reviewerPromptSnapshot !== undefined) {
     const now = isoNow();

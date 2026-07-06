@@ -54,7 +54,35 @@ describe('HttpArbiterProvider', () => {
         reviewerPosition: 'x',
         correlationId: 'corr-1',
       }),
-    ).rejects.toThrow(/invalid resolution/);
+    ).rejects.toThrow(/invalid shape/);
+  });
+
+  it('applies a request timeout via AbortSignal (post-merge review MEDIUM-2)', async () => {
+    let sawSignal: AbortSignal | undefined;
+    const provider = new HttpArbiterProvider({
+      baseUrl: 'https://example.test',
+      apiKey: 'key',
+      model: 'test-model',
+      timeoutMs: 5,
+      fetchImpl: (async (_url: string, init: RequestInit) => {
+        sawSignal = init.signal ?? undefined;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new Error('The operation was aborted.')),
+          );
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(
+      provider.arbitrate({
+        findingDescription: 'x',
+        coderPosition: 'x',
+        reviewerPosition: 'x',
+        correlationId: 'corr-1',
+      }),
+    ).rejects.toThrow();
+    expect(sawSignal).toBeInstanceOf(AbortSignal);
   });
 
   it('throws on a non-ok HTTP response', async () => {

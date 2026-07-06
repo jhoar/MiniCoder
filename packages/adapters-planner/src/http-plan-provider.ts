@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type {
   PlanProvider,
   ReadinessAssessmentRequest,
@@ -6,7 +7,6 @@ import type {
   PlanSectionResult,
   FeatureBacklogRequest,
   FeatureBacklogResult,
-  GeneratedFeatureRaw,
 } from './plan-provider.js';
 
 export interface HttpPlanProviderOptions {
@@ -15,12 +15,64 @@ export interface HttpPlanProviderOptions {
   readonly apiKey: string;
   readonly model: string;
   readonly fetchImpl?: typeof fetch;
+  /** Request timeout in milliseconds — defaults to 30s. An LLM endpoint is an untrusted external
+   * dependency; without this, a hung request would rely entirely on the caller's own (much
+   * coarser) Trigger.dev task timeout instead of failing fast with a clear provider-level error. */
+  readonly timeoutMs?: number;
 }
 
-interface ChatCompletionBody {
-  choices?: Array<{ message?: { content?: string } }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
-}
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+const ChatCompletionBodySchema = z.object({
+  choices: z
+    .array(z.object({ message: z.object({ content: z.string().optional() }).optional() }))
+    .optional(),
+  usage: z
+    .object({ prompt_tokens: z.number().optional(), completion_tokens: z.number().optional() })
+    .optional(),
+});
+
+// Post-merge review fix (MEDIUM-2): nested LLM output was previously trusted with only shallow,
+// hand-rolled duck-typing checks (e.g. `Array.isArray(parsed.sections)` with no per-element
+// validation) — a malformed nested field would either pass through silently or fail later with an
+// opaque TypeError/DB constraint error far from the actual cause. Full Zod schemas classify a bad
+// response as a clear, provider-level error at the boundary instead.
+const ReadinessAssessmentContentSchema = z.object({
+  readinessResult: z.enum(['sufficient', 'sufficient_with_assumptions', 'insufficient']),
+  questions: z.array(z.object({ question: z.string(), round: z.number() })).default([]),
+  assumptions: z
+    .array(z.object({ description: z.string(), confidence: z.enum(['high', 'medium', 'low']) }))
+    .default([]),
+  gaps: z
+    .array(z.object({ description: z.string(), severity: z.enum(['blocking', 'non_blocking']) }))
+    .default([]),
+});
+
+const PlanSectionContentSchema = z.object({
+  title: z.string(),
+  summary: z.string().optional(),
+  sections: z.array(z.object({ title: z.string(), content: z.string() })),
+});
+
+const GeneratedFeatureSchema = z.object({
+  frId: z.string(),
+  title: z.string(),
+  description: z.string(),
+  kind: z.enum(['feature', 'discovery']),
+  priority: z.number(),
+  dependsOnFrIds: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()),
+  testExpectations: z.array(
+    z.object({
+      description: z.string(),
+      testType: z.enum(['unit', 'integration', 'system']).nullable(),
+    }),
+  ),
+});
+
+const FeatureBacklogContentSchema = z.object({
+  features: z.array(GeneratedFeatureSchema),
+});
 
 /**
  * Plain fetch-based client against an OpenAI-compatible chat/completions endpoint — mirrors
@@ -31,9 +83,11 @@ interface ChatCompletionBody {
  */
 export class HttpPlanProvider implements PlanProvider {
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
   constructor(private readonly options: HttpPlanProviderOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   private async complete(
@@ -58,13 +112,19 @@ export class HttpPlanProvider implements PlanProvider {
         Authorization: `Bearer ${this.options.apiKey}`,
       },
       body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!response.ok) {
       throw new Error(`plan request failed: HTTP ${response.status}`);
     }
 
-    const body = (await response.json()) as ChatCompletionBody;
+    const rawBody: unknown = await response.json();
+    const bodyResult = ChatCompletionBodySchema.safeParse(rawBody);
+    if (!bodyResult.success) {
+      throw new Error(`plan response had an unexpected shape: ${bodyResult.error.message}`);
+    }
+    const body = bodyResult.data;
     const rawContent = body.choices?.[0]?.message?.content;
     if (!rawContent) {
       throw new Error('plan response contained no message content');
@@ -98,20 +158,13 @@ export class HttpPlanProvider implements PlanProvider {
       { specificationContent: request.specificationContent },
     );
 
-    const parsed = content as Partial<ReadinessAssessmentResult>;
-    if (
-      parsed.readinessResult !== 'sufficient' &&
-      parsed.readinessResult !== 'sufficient_with_assumptions' &&
-      parsed.readinessResult !== 'insufficient'
-    ) {
-      throw new Error('readiness response contained an invalid readinessResult');
+    const result = ReadinessAssessmentContentSchema.safeParse(content);
+    if (!result.success) {
+      throw new Error(`readiness response had an invalid shape: ${result.error.message}`);
     }
 
     return {
-      readinessResult: parsed.readinessResult,
-      questions: parsed.questions ?? [],
-      assumptions: parsed.assumptions ?? [],
-      gaps: parsed.gaps ?? [],
+      ...result.data,
       tokensUsed,
       promptSnapshot: requestBody,
     };
@@ -126,15 +179,13 @@ export class HttpPlanProvider implements PlanProvider {
       { specificationContent: request.specificationContent },
     );
 
-    const parsed = content as Partial<PlanSectionResult>;
-    if (typeof parsed.title !== 'string' || !Array.isArray(parsed.sections)) {
-      throw new Error('plan-section response was missing title/sections');
+    const result = PlanSectionContentSchema.safeParse(content);
+    if (!result.success) {
+      throw new Error(`plan-section response had an invalid shape: ${result.error.message}`);
     }
 
     return {
-      title: parsed.title,
-      summary: parsed.summary,
-      sections: parsed.sections,
+      ...result.data,
       tokensUsed,
       promptSnapshot: requestBody,
     };
@@ -151,13 +202,13 @@ export class HttpPlanProvider implements PlanProvider {
       { planSections: request.planSections },
     );
 
-    const parsed = content as { features?: GeneratedFeatureRaw[] };
-    if (!Array.isArray(parsed.features)) {
-      throw new Error('feature-backlog response was missing features');
+    const result = FeatureBacklogContentSchema.safeParse(content);
+    if (!result.success) {
+      throw new Error(`feature-backlog response had an invalid shape: ${result.error.message}`);
     }
 
     return {
-      features: parsed.features,
+      features: result.data.features,
       tokensUsed,
       promptSnapshot: requestBody,
     };

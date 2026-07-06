@@ -1,7 +1,7 @@
 /**
  * Trigger.dev task registration entry point.
  *
- * Registers all 15 canonical tasks with the Trigger.dev runtime. Each task is a
+ * Registers all canonical tasks (see `ALL_TASK_IDS`) with the Trigger.dev runtime. Each task is a
  * thin wrapper that handles DB lifecycle tracking (linkRunToDb / updateRunStatus)
  * then delegates to the business-logic runImpl. No business rules live here.
  *

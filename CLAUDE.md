@@ -412,6 +412,15 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   instance from the same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the
   Coder/Reviewer default resolvers already read, via dynamic `import('@minicoder/adapters-planner')`
   — the same pattern, not a parallel `PLANNER_*` env-var family.
+  **Hardening (post-merge PR review fix, MEDIUM-2):** `HttpPlanProvider` (and, identically,
+  `HttpArbiterProvider` below) originally validated only shallow/top-level response fields — a
+  malformed nested field (e.g. a bad `severity`/`testType` enum buried in an array) either passed
+  through silently or surfaced later as an opaque `TypeError`/DB constraint failure far from the
+  real cause. Both now validate the full parsed LLM response with real Zod schemas at the provider
+  boundary, throwing a clear `... response had an invalid shape: ...` error immediately. Both also
+  gained a `timeoutMs` option (default 30s) applied via `AbortSignal.timeout()` — an LLM endpoint is
+  an untrusted external dependency, and without this a hung request relied entirely on the caller's
+  own, much coarser Trigger.dev task timeout instead of failing fast with an actionable error.
 - **`parseBacklogMarkdown()` (`packages/core/src/backlog/`, issue #33) is the "parse" step for
   `backlog.md` imports (docs/02 §11) — a pure function, no DB access, matching the "Markdown
   artifacts are never runtime state" rule.** It converts `ExportBacklogHandler`'s Markdown output
@@ -1026,6 +1035,18 @@ backlog-activation.ts` now also parses the actual emitted `plan.activated` outbo
   `contextPack` option is written **before** the wrapped adapter call runs, while the prompt
   snapshot is only knowable after it returns. A test double (`MockReviewerAdapter`) that doesn't
   report a `promptSnapshot` simply skips this write — no schema change, no required field.
+  **Diff omission is enforced at the source, not just claimed (post-merge PR review fix, HIGH-1).**
+  The original `HttpReviewProvider` returned the literal outbound request body as `promptSnapshot`
+  — which necessarily embeds the full PR diff, since the LLM cannot review the change otherwise —
+  so this call site's "avoids duplicating the diff itself" claim was false in practice: the full
+  diff (and anything it might contain — credentials, tokens, other secrets `defaultRedactor`'s
+  pattern-based scrubbing cannot reliably catch once serialized into a JSON string) was persisted
+  into `agent_context_packs` verbatim. Fixed in `HttpReviewProvider.review()`: the real outbound
+  request (with the real diff) is unchanged, but `promptSnapshot` is now a distinct, diff-omitted
+  copy (the diff field replaced with a placeholder string) built only for this persistence path.
+  This is a contract every `ReviewerAgentAdapter`/`ReviewProvider` implementation must honor — this
+  call site still only handles whatever `unknown` value the adapter reports and cannot generically
+  strip a diff it has no structural knowledge of.
 - **`ci_failed`'s next-transition ownership stays inside `reconcileGithubState()`, not a separate
   caller.** Immediately after a successful `ci_running -> ci_failed` transition, the same bounded
   catch-up loop (`MAX_RECONCILE_STEPS`) reads the feature run's current `fix_attempt_count` and
@@ -1343,6 +1364,18 @@ approved_pending_execution` unblock** — distinct from `UnblockFeatureCommand`'
   with the same `unmet-dependencies` `CommandError` type. There is still no dependency-waiver
   mechanism — a human wanting to force such a feature through must first resolve (or retry) the
   upstream dependency to `merged`, not bypass this check.
+- **`SkipFeatureCommand`'s dependent cascade re-checks (and retries) a CAS-missed dependent rather
+  than treating a 0-affected-rows result as "nothing to do" (post-merge PR review fix, MEDIUM-1,
+  round 2).** A first-cut fix for the class of bug documented in the Merge Gate section below
+  (bare `execute()` with no affected-row check, risking a false `feature.blocked_by_skipped_dependency`
+  event when a concurrent writer changed the dependent's version) initially just `continue`d on any
+  CAS miss — but that conflated two different situations: the dependent genuinely moved to a
+  different state (fine, nothing to do) versus the dependent is still `approved_pending_execution`
+  and only some other column changed (not fine — silently leaving it there recreates exactly the
+  stranded-forever-behind-a-skipped-dependency state issue #52 exists to prevent). Fixed by
+  re-reading the dependent on a CAS miss: if it's no longer `approved_pending_execution`, skip
+  (no event); if it still is, retry the block against the fresh version, up to
+  `MAX_CASCADE_RETRIES` (3) attempts.
 - **`SKIPPED` is a new terminal `FeatureExecutionState`, added to the glossary before use** (per
   the glossary's own "no new state without adding it to docs/00 first" rule). A `skipped` feature
   never reaches `merged`, so any downstream feature depending on it via `feature_dependencies` will

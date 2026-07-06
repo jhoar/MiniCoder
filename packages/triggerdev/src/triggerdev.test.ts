@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   DbClient,
+  TxClient,
   ConfigBackend,
   SecretBackend,
   PlannerAgentAdapter,
@@ -881,10 +882,13 @@ describe('HumanUnblockFeatureCommand (issue #53)', () => {
 // ── Post-merge review regression: skip-cascade CAS-miss on a dependent (MEDIUM-1) ──────────
 
 describe('SkipFeatureCommand dependent-cascade CAS handling (post-merge review MEDIUM-1)', () => {
-  it('skips event emission for a dependent whose version changed concurrently, without failing the command', async () => {
-    const db = createTestDb();
-    const projectId = 'proj-skip-cascade-cas';
-    insertTestProject(db, projectId);
+  const dependentCascadeUpdatePattern =
+    /UPDATE feature_runs SET current_execution_state = \?, version = \?, updated_at = \? WHERE id = \? AND version = \?/;
+
+  async function seedFixture(
+    db: DbClient,
+    projectId: string,
+  ): Promise<{ skippedRunId: string; dependentRunId: string }> {
     const planId = `plan-${projectId}`;
     const targetFrId = `fr-${projectId}-target`;
     const sourceFrId = `fr-${projectId}-source`;
@@ -920,18 +924,26 @@ describe('SkipFeatureCommand dependent-cascade CAS handling (post-merge review M
        VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
       [dependentRunId, sourceFrId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
     );
+    return { skippedRunId, dependentRunId };
+  }
 
-    // Genuinely simulating two interleaved transactions isn't possible against a single
-    // better-sqlite3 connection (CLAUDE.md's Cross-Dialect Testing section — same reason
-    // Postgres-only suites exist for other concurrency scenarios). Instead, wrap the DbClient so
-    // that the instant SkipFeatureHandler's cascade issues its per-dependent UPDATE, a real
-    // concurrent-writer-style version bump is applied first, *inside the same transaction*,
-    // immediately before the handler's own predicate-matched UPDATE runs — so the handler's
-    // `executeAffected` call genuinely returns 0 for the right reason (a real version mismatch at
-    // UPDATE time), not a contrived assertion.
-    const dependentCascadeUpdatePattern =
-      /UPDATE feature_runs SET current_execution_state = \?, version = \?, updated_at = \? WHERE id = \? AND version = \?/;
-    const racingDb: DbClient = {
+  // Genuinely simulating two interleaved transactions isn't possible against a single
+  // better-sqlite3 connection (CLAUDE.md's Cross-Dialect Testing section — same reason
+  // Postgres-only suites exist for other concurrency scenarios). Instead, wrap the DbClient so
+  // that the instant SkipFeatureHandler's cascade issues its first per-dependent UPDATE attempt, a
+  // real concurrent-writer-style mutation is applied first, *inside the same transaction*,
+  // immediately before the handler's own predicate-matched UPDATE runs — so the handler's
+  // `executeAffected` call genuinely CAS-misses for the right reason (a real mismatch at UPDATE
+  // time), not a contrived assertion. `injectOnce` fires only on the first matching call for the
+  // target dependent, mirroring a single concurrent writer, not an adversary that keeps racing
+  // every one of the handler's own bounded retries.
+  function racingDb(
+    db: DbClient,
+    dependentRunId: string,
+    injectOnce: (tx: TxClient) => Promise<void>,
+  ): DbClient {
+    let injected = false;
+    return {
       query: (sql, params) => db.query(sql, params),
       execute: (sql, params) => db.execute(sql, params),
       executeAffected: (sql, params) => db.executeAffected(sql, params),
@@ -943,11 +955,13 @@ describe('SkipFeatureCommand dependent-cascade CAS handling (post-merge review M
               tx.query<T>(sql, params),
             execute: (sql: string, params?: unknown[]) => tx.execute(sql, params),
             executeAffected: async (sql: string, params?: unknown[]) => {
-              if (dependentCascadeUpdatePattern.test(sql) && params?.[3] === dependentRunId) {
-                await tx.execute(
-                  `UPDATE feature_runs SET version = version + 1, updated_at = datetime('now') WHERE id = ?`,
-                  [dependentRunId],
-                );
+              if (
+                !injected &&
+                dependentCascadeUpdatePattern.test(sql) &&
+                params?.[3] === dependentRunId
+              ) {
+                injected = true;
+                await injectOnce(tx);
               }
               return tx.executeAffected(sql, params);
             },
@@ -955,11 +969,27 @@ describe('SkipFeatureCommand dependent-cascade CAS handling (post-merge review M
           return fn(wrappedTx);
         }),
     };
+  }
 
-    const executor = new TransactionalCommandExecutor(racingDb);
+  it('retries and blocks a dependent whose version changed concurrently but stayed at approved_pending_execution', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-skip-cascade-cas-retry';
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db, projectId);
+
+    const wrappedDb = racingDb(db, dependentRunId, async (tx) => {
+      // Simulate a concurrent writer that only bumps an unrelated column/version, leaving the
+      // dependent still eligible to be blocked.
+      await tx.execute(
+        `UPDATE feature_runs SET version = version + 1, updated_at = datetime('now') WHERE id = ?`,
+        [dependentRunId],
+      );
+    });
+
+    const executor = new TransactionalCommandExecutor(wrappedDb);
     const result = await executor.execute(new SkipFeatureHandler(), {
-      commandId: 'cmd-skip-cas-1',
-      idempotencyKey: 'idem-skip-cas-1',
+      commandId: 'cmd-skip-cas-retry-1',
+      idempotencyKey: 'idem-skip-cas-retry-1',
       payload: {
         featureRunId: skippedRunId,
         projectId,
@@ -970,22 +1000,66 @@ describe('SkipFeatureCommand dependent-cascade CAS handling (post-merge review M
       correlationId: 'corr-1',
     } satisfies CommandEnvelope<SkipFeaturePayload>);
 
-    // The skip itself still succeeds — only the dependent cascade CAS-misses.
     expect(result.resultingState).toBe(FeatureExecutionState.SKIPPED);
 
-    // The dependent's row is untouched by the cascade (still approved_pending_execution, and its
-    // version reflects only the injected concurrent bump, not the handler's own update) — proving
-    // the UPDATE genuinely affected 0 rows rather than silently overwriting the concurrent write.
+    // The dependent is genuinely blocked despite the injected mid-cascade version race — the
+    // handler retried with the fresh version rather than silently leaving it stranded at
+    // approved_pending_execution behind a dependency that can never reach merged.
     const dependentRows = await db.query<{ current_execution_state: string; version: number }>(
       `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
       [dependentRunId],
     );
-    expect(dependentRows[0]?.current_execution_state).toBe(
-      FeatureExecutionState.APPROVED_PENDING_EXECUTION,
-    );
-    expect(dependentRows[0]?.version).toBe(2);
+    expect(dependentRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
 
-    // No false workflow/outbox event was emitted for the CAS-missed dependent.
+    const events = await db.query<{ event_type: string }>(
+      `SELECT event_type FROM workflow_events WHERE feature_run_id = ?`,
+      [dependentRunId],
+    );
+    expect(events.map((e) => e.event_type)).toContain('feature.blocked_by_skipped_dependency');
+  });
+
+  it('does not retry or emit an event for a dependent that concurrently moved to a different state', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-skip-cascade-cas-moved';
+    insertTestProject(db, projectId);
+    const { skippedRunId, dependentRunId } = await seedFixture(db, projectId);
+
+    const wrappedDb = racingDb(db, dependentRunId, async (tx) => {
+      // Simulate a concurrent writer that genuinely moved the dependent off
+      // approved_pending_execution (e.g. it was selected) before this cascade's UPDATE landed.
+      await tx.execute(
+        `UPDATE feature_runs SET current_execution_state = 'selected', version = version + 1, updated_at = datetime('now') WHERE id = ?`,
+        [dependentRunId],
+      );
+    });
+
+    const executor = new TransactionalCommandExecutor(wrappedDb);
+    const result = await executor.execute(new SkipFeatureHandler(), {
+      commandId: 'cmd-skip-cas-moved-1',
+      idempotencyKey: 'idem-skip-cas-moved-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    } satisfies CommandEnvelope<SkipFeaturePayload>);
+
+    // The skip itself still succeeds — the dependent is simply left alone since it's no longer
+    // eligible for this cascade.
+    expect(result.resultingState).toBe(FeatureExecutionState.SKIPPED);
+
+    // The concurrent writer's state is respected, not overwritten.
+    const dependentRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe('selected');
+
+    // No false workflow/outbox event was emitted for a dependent this cascade never actually
+    // blocked.
     const events = await db.query<{ event_type: string }>(
       `SELECT event_type FROM workflow_events WHERE feature_run_id = ?`,
       [dependentRunId],

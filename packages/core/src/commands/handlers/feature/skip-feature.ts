@@ -149,32 +149,59 @@ export class SkipFeatureHandler implements CommandHandler<
            AND fr.current_execution_state = ?`,
         [run.feature_request_id, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
       );
+      const MAX_CASCADE_RETRIES = 3;
       for (const dependent of dependents) {
         validator.assertValid(
           FeatureExecutionState.APPROVED_PENDING_EXECUTION,
           FeatureExecutionState.BLOCKED,
         );
-        const dependentNow = isoNow();
-        // Post-merge review fix: use executeAffected (not a bare execute) so a concurrent version
-        // change on this dependent between the SELECT above and this UPDATE is detected — the
-        // predicate's own `AND version = ?` would otherwise silently affect 0 rows while the
-        // workflow/outbox events below were still written unconditionally, falsely claiming a
-        // transition that never happened. Skip event emission entirely on a CAS miss rather than
-        // failing the whole SkipFeatureCommand — the dependent's actual current state (whatever
-        // the concurrent writer set it to) is authoritative, and a later skip/reconcile pass (or
-        // this same cascade re-running against a fresh version) can still catch it if it's still
-        // eligible.
-        const dependentAffected = await tx.executeAffected(
-          `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
-          [
-            FeatureExecutionState.BLOCKED,
-            nextVersion(dependent.version),
-            dependentNow,
-            dependent.id,
-            dependent.version,
-          ],
-        );
-        if (dependentAffected === 0) {
+
+        // Post-merge review fix (MEDIUM-1): use executeAffected (not a bare execute) so a
+        // concurrent version change on this dependent between the SELECT above and this UPDATE is
+        // detected — the predicate's own `AND version = ?` would otherwise silently affect 0 rows
+        // while the workflow/outbox events below were still written unconditionally, falsely
+        // claiming a transition that never happened. A CAS miss alone is ambiguous, so it is not
+        // treated as "nothing to do": re-read the dependent's fresh state before deciding.
+        // - If it moved to a different state, a concurrent writer already resolved it (or made it
+        //   ineligible some other way) — no event, no retry, nothing stranded.
+        // - If it is STILL `approved_pending_execution` (only its version/other columns changed),
+        //   retry the block with the fresh version, up to MAX_CASCADE_RETRIES — otherwise this
+        //   command would silently leave a dependent on a never-mergeable skipped dependency
+        //   sitting at `approved_pending_execution`, exactly the stranded state issue #52 exists
+        //   to prevent.
+        const currentId = dependent.id;
+        let currentVersion = dependent.version;
+        let blocked = false;
+        for (let attempt = 0; attempt < MAX_CASCADE_RETRIES; attempt++) {
+          const dependentNow = isoNow();
+          const dependentAffected = await tx.executeAffected(
+            `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
+            [
+              FeatureExecutionState.BLOCKED,
+              nextVersion(currentVersion),
+              dependentNow,
+              currentId,
+              currentVersion,
+            ],
+          );
+          if (dependentAffected > 0) {
+            blocked = true;
+            break;
+          }
+          const freshRows = await tx.query<{ current_execution_state: string; version: number }>(
+            `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+            [currentId],
+          );
+          const fresh = freshRows[0];
+          if (
+            !fresh ||
+            fresh.current_execution_state !== FeatureExecutionState.APPROVED_PENDING_EXECUTION
+          ) {
+            break;
+          }
+          currentVersion = fresh.version;
+        }
+        if (!blocked) {
           continue;
         }
         await writeWorkflowEvent(tx, {

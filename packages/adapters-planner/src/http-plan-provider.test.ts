@@ -52,7 +52,25 @@ describe('HttpPlanProvider', () => {
 
     await expect(
       provider.assessReadiness({ specificationContent: 'x', correlationId: 'corr-1' }),
-    ).rejects.toThrow(/invalid readinessResult/);
+    ).rejects.toThrow(/invalid shape/);
+  });
+
+  it('assessReadiness throws on a malformed nested gap (post-merge review MEDIUM-2)', async () => {
+    const provider = new HttpPlanProvider({
+      baseUrl: 'https://example.test',
+      apiKey: 'key',
+      model: 'test-model',
+      fetchImpl: fakeFetch({
+        readinessResult: 'sufficient',
+        questions: [],
+        assumptions: [],
+        gaps: [{ description: 'Missing NFRs', severity: 'extremely-blocking' }],
+      }),
+    });
+
+    await expect(
+      provider.assessReadiness({ specificationContent: 'x', correlationId: 'corr-1' }),
+    ).rejects.toThrow(/invalid shape/);
   });
 
   it('generatePlanSections returns title/sections', async () => {
@@ -86,7 +104,7 @@ describe('HttpPlanProvider', () => {
 
     await expect(
       provider.generatePlanSections({ specificationContent: 'x', correlationId: 'corr-1' }),
-    ).rejects.toThrow(/missing title\/sections/);
+    ).rejects.toThrow(/invalid shape/);
   });
 
   it('generateFeatureBacklog returns features', async () => {
@@ -129,7 +147,56 @@ describe('HttpPlanProvider', () => {
 
     await expect(
       provider.generateFeatureBacklog({ planSections: [], correlationId: 'corr-1' }),
-    ).rejects.toThrow(/missing features/);
+    ).rejects.toThrow(/invalid shape/);
+  });
+
+  it('generateFeatureBacklog throws on a malformed nested testExpectations entry (post-merge review MEDIUM-2)', async () => {
+    const provider = new HttpPlanProvider({
+      baseUrl: 'https://example.test',
+      apiKey: 'key',
+      model: 'test-model',
+      fetchImpl: fakeFetch({
+        features: [
+          {
+            frId: 'FR-001',
+            title: 'Add widget',
+            description: 'A widget.',
+            kind: 'feature',
+            priority: 0,
+            dependsOnFrIds: [],
+            acceptanceCriteria: ['A user can add a widget.'],
+            testExpectations: [{ description: 'Covered.', testType: 'not-a-real-test-type' }],
+          },
+        ],
+      }),
+    });
+
+    await expect(
+      provider.generateFeatureBacklog({ planSections: [], correlationId: 'corr-1' }),
+    ).rejects.toThrow(/invalid shape/);
+  });
+
+  it('applies a request timeout via AbortSignal', async () => {
+    let sawSignal: AbortSignal | undefined;
+    const provider = new HttpPlanProvider({
+      baseUrl: 'https://example.test',
+      apiKey: 'key',
+      model: 'test-model',
+      timeoutMs: 5,
+      fetchImpl: (async (_url: string, init: RequestInit) => {
+        sawSignal = init.signal ?? undefined;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new Error('The operation was aborted.')),
+          );
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(
+      provider.assessReadiness({ specificationContent: 'x', correlationId: 'corr-1' }),
+    ).rejects.toThrow();
+    expect(sawSignal).toBeInstanceOf(AbortSignal);
   });
 
   it('throws on a non-ok HTTP response', async () => {
