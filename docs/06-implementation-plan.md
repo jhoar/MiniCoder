@@ -467,6 +467,18 @@ questions; blocking gaps prevent activation; an approved plan activates features
   `CommandError` (`type: 'backlog-invalid'`) and re-throws everything else, so infrastructure
   failures and "plan not found" errors surface as real task failures (with Trigger.dev retry)
   instead of being reported as a successful `{ valid: false }` run.
+- **Issue #31 (found after the round above shipped):** `SubmitPlanForApprovalHandler`'s
+  unresolved-blocking-`planning_gaps` check had the identical project-vs-assessment scoping bug the
+  round above fixed for `GenerateImplementationPlanHandler`'s clarification guard, just missed in
+  that pass — it joined `planning_gaps` through `planning_readiness_assessments.project_id` instead
+  of filtering directly on the plan's own `assessment_id` (already available on
+  `implementation_plans`), so an unresolved blocking gap tied to an unrelated assessment in the same
+  project could permanently block submission of a plan that has nothing to do with that assessment.
+  Fixed by scoping the query to `pg.assessment_id = {implementation_plans.assessment_id}` (a plan
+  with no `assessment_id`, e.g. an imported one, has no assessment-scoped gaps to block on).
+  Regression in `packages/triggerdev/src/triggerdev.test.ts`: two assessments in one project, each
+  with its own unresolved blocking gap — submitting a plan generated from assessment A succeeds
+  once assessment A's gap is resolved, even while assessment B's gap remains unresolved.
 - `GenerateFeatureBacklogPayload`'s Trigger.dev schema (`packages/triggerdev/src/tasks/types.ts`)
   changed `features` from `.default([])` to `.min(1)`, matching
   `GenerateFeatureBacklogHandler`'s own schema; the task no longer has an empty-payload no-op

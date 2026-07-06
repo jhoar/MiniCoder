@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DbClient, ConfigBackend, SecretBackend, PlannerAgentAdapter } from '@minicoder/core';
-import { MissingSecretError, FeatureExecutionState } from '@minicoder/core';
+import { MissingSecretError, FeatureExecutionState, GapSeverity } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from './test-helpers.js';
 import { MockTriggerRunner } from './mock-runner.js';
@@ -671,6 +671,121 @@ describe('backlog validation gate (HIGH-1) and error propagation (HIGH-2, MEDIUM
       db,
     );
     expect(result.planId).toBe(planId);
+  });
+
+  // Issue #31: SubmitPlanForApprovalCommand's blocking-gap check used to join through
+  // planning_readiness_assessments.project_id, blocking submission on *any* unresolved blocking
+  // gap anywhere in the project — even one tied to a completely different assessment than the one
+  // the plan being submitted was generated from. Fixed to scope by the plan's own assessment_id.
+  it('#31: a blocking gap on a different assessment does not block submitting a plan from this assessment', async () => {
+    async function setupPlanFromFreshAssessment(
+      idemPrefix: string,
+      title: string,
+    ): Promise<{ planId: string; planVersion: number; assessmentId: string }> {
+      await runPlanningReadiness(
+        {
+          ...BASE_PAYLOAD,
+          idempotencyKey: `${idemPrefix}-readiness`,
+          correlationId: `${idemPrefix}-corr`,
+          specificationContent: `Build ${title}.`,
+          plannerAdapterName: 'MockPlannerAdapter',
+        },
+        db,
+        fakePlanner('sufficient'),
+      );
+      const assessmentRows = await db.query<{ id: string }>(
+        `SELECT id FROM planning_readiness_assessments WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+        ['proj-test-001'],
+      );
+      const assessmentId = assessmentRows[0]!.id;
+      await runGeneratePlan(
+        {
+          ...BASE_PAYLOAD,
+          idempotencyKey: `${idemPrefix}-plan`,
+          assessmentId,
+          title,
+          sections: [{ title: 'Overview', content: 'Build CRUD endpoints.' }],
+        },
+        db,
+      );
+      const planRows = await db.query<{ id: string; version: number }>(
+        `SELECT id, version FROM implementation_plans WHERE assessment_id = ?`,
+        [assessmentId],
+      );
+      const plan = planRows[0]!;
+      await runGenerateBacklog(
+        {
+          ...BASE_PAYLOAD,
+          idempotencyKey: `${idemPrefix}-backlog`,
+          planId: plan.id,
+          features: [
+            {
+              frId: `FR-${idemPrefix}-001`,
+              title: 'Create item',
+              description: 'Allow creating an item.',
+              kind: 'feature' as const,
+              priority: 0,
+              dependsOnFrIds: [],
+              acceptanceCriteria: ['A user can create an item.'],
+              testExpectations: [
+                { description: 'Creating an item persists it.', testType: 'unit' as const },
+              ],
+            },
+          ],
+        },
+        db,
+      );
+      await runValidateBacklog(
+        { ...BASE_PAYLOAD, idempotencyKey: `${idemPrefix}-validate`, planId: plan.id },
+        db,
+      );
+      return { planId: plan.id, planVersion: plan.version, assessmentId };
+    }
+
+    const planA = await setupPlanFromFreshAssessment('a31a', 'Plan A');
+    const planB = await setupPlanFromFreshAssessment('a31b', 'Plan B');
+
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO planning_gaps (id, assessment_id, description, severity, resolved_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+      ['gap-a', planA.assessmentId, 'Gap on assessment A', GapSeverity.BLOCKING, now, now],
+    );
+    await db.execute(
+      `INSERT INTO planning_gaps (id, assessment_id, description, severity, resolved_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+      ['gap-b', planB.assessmentId, 'Gap on assessment B', GapSeverity.BLOCKING, now, now],
+    );
+
+    // Plan A is blocked by its own assessment's unresolved gap.
+    await expect(
+      runRequestPlanApproval(
+        {
+          ...BASE_PAYLOAD,
+          ...ACTOR,
+          idempotencyKey: 'a31-submit-a-blocked',
+          planId: planA.planId,
+          expectedVersion: planA.planVersion,
+        },
+        db,
+      ),
+    ).rejects.toThrow(/blocking gap/i);
+
+    // Resolving assessment A's gap allows plan A to submit, even though assessment B's gap is
+    // still unresolved — proving the check is assessment-scoped, not project-scoped.
+    await db.execute(`UPDATE planning_gaps SET resolved_at = ? WHERE id = ?`, [now, 'gap-a']);
+
+    const result = await runRequestPlanApproval(
+      {
+        ...BASE_PAYLOAD,
+        ...ACTOR,
+        idempotencyKey: 'a31-submit-a-allowed',
+        planId: planA.planId,
+        expectedVersion: planA.planVersion,
+      },
+      db,
+    );
+    expect(result.planId).toBe(planA.planId);
   });
 
   it('HIGH-2: validate-backlog task rethrows non-backlog-invalid errors instead of returning valid:false', async () => {
