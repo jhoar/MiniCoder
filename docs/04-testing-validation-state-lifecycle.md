@@ -248,6 +248,23 @@ test smoke scenario, a **security scan** (dependency audit, secret scan, SAST �
 applicable), and Trigger.dev task deployment validation. Longer system tests may run nightly or on
 release branches.
 
+**Security scan job** (`.github/workflows/ci.yml`'s `security-scan`, issue #12) runs four checks,
+every third-party action/tool pinned to a commit SHA or image digest, with least-privilege
+`permissions: contents: read` (workflow-wide, plus the job's own explicit block) and no
+`pull_request_target` — forked-repo PRs never receive repository secrets:
+
+| Check              | Tool                                     | Local reproduction                                                                                     |
+| ------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Dependency audit    | `pnpm audit --prod --audit-level=high`    | `pnpm audit --prod --audit-level=high` (full non-`--prod` audit reports the two accepted dev-only advisories — §12.13) |
+| Dependency audit    | OSV Scanner (`google/osv-scanner-action`) | `osv-scanner --lockfile=pnpm-lock.yaml --recursive`                                                       |
+| Secret scan         | gitleaks (`gitleaks/gitleaks-action`)     | `docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 detect --source /repo --redact -v`          |
+| SAST                | semgrep (pinned image digest)             | `docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep@sha256:ae27024c16f7848cdbfd49c24ed0b78b13f13b85fcd7b87c679aaa8b0c0dce98 semgrep scan --config p/security-audit --config p/typescript --error --metrics=off .` |
+
+**Suppression policy:** gitleaks findings are suppressed only via an inline `.gitleaksignore`
+entry with a commit-linked rationale; semgrep findings are suppressed only via an inline
+`// nosemgrep: <rule-id> -- <reason>` comment at the flagged line. Neither tool uses a blanket
+rule/path exclusion — every suppression is visible in the PR diff that introduces it.
+
 **Cross-dialect matrix (required).** Migration validation and the integration suite run against
 **both** database targets — SQLite and PostgreSQL — as parallel CI jobs, so dialect differences in
 JSON querying, constraint behavior, and locking/transaction semantics are caught before release.
