@@ -63,7 +63,17 @@ terminal `skipped` feature-execution state, and `human_approvals`'s first produc
 Phase 2, given real handlers here), `GitHubClient.mergePullRequest()` and the first production
 caller of `GitHubClient.publishStatusCheck()` (the `minicoder/review-gate` status check), the new
 `run-merge-gate` Trigger.dev task, and the `minicoder merge merge-if-ready` CLI command (Phase 12,
-no new migration — `merge_gate_evaluations` and `pull_requests` already existed).
+no new migration — `merge_gate_evaluations` and `pull_requests` already existed); the Orchestrator
+API implementation — the Fastify-based `packages/api` (API-key auth, RFC 9457 problem-details
+errors, cursor-paginated read routes, generic command dispatch, the dedicated
+`merge-if-ready`/`finalize-if-github-merged`/task-trigger/diagnostics routes, and a hand-authored
+OpenAPI contract enforced at route-registration time) and `minicoder api serve` (Phase 13, no new
+migration); and the Ink Text UI implementation — the new `@minicoder/tui` package (the first
+`react`/`ink` dependency in this repo) and its thirteen `minicoder {status,plan,clarification,
+features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,pause,resume}` CLI
+commands, all calling the Orchestrator API over HTTP only, plus four small additive API read
+routes (`whoami`, `triggerdev-runs`, `human-required-items`, and a `version` field added to
+`GET /status`) needed to back them (Phase 14, no new migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -1884,6 +1894,131 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   rejection, GitHub-not-confirmed rejection (feature run stays untouched), and the full recovery
   path recording the merge.
 
+## Ink Text UI Operational Constraints (`packages/tui/`, `packages/cli/src/commands/{status,clarification,features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,pause,resume,plan}.ts`)
+
+- **`@minicoder/tui` is the first workspace package depending on `react`/`ink`, pinned to
+  `ink@3.2.0`/`react@17.0.2`/`ink-testing-library@2.1.0`** — the last CJS-compatible majors of
+  each. Current Ink/React majors are ESM-only, conflicting with this repo's CommonJS TypeScript
+  output target (`tsconfig.base.json`'s `module: "CommonJS"`); this is the identical pin-the-last-
+  CJS-major decision CLAUDE.md already documents for `@octokit/rest@^19`/
+  `@octokit/webhooks-methods@^3`, not a new pattern. `packages/tui/tsconfig.json` adds
+  `"jsx": "react-jsx"` on top of the shared base config; nothing else in the base config changed.
+  `packages/tui` was added to the root `package.json`'s ordered typecheck build chain, immediately
+  after `api` (see "Typecheck Script Ordering" above) — `packages/cli` imports its compiled types.
+- **Every Phase 14 command talks to the Orchestrator API over HTTP only — never the DB directly.**
+  This is the first CLI code in this repo to consume `@minicoder/api` as an HTTP client rather than
+  importing it in-process (every pre-existing command file — `state.ts`, `github.ts`, `plan.ts`'s
+  `import-backlog`, etc. — calls `@minicoder/api`'s functions directly against a `DbClient`).
+  `ApiClient` (`packages/tui/src/client/api-client.ts`) mirrors the injectable-`fetchImpl` seam
+  already established by `HttpPlanProvider`/`HttpReviewProvider`/`HttpArbiterProvider` (constructor
+  option, defaults to global `fetch`), so unit tests inject a fake `fetch` exactly like those
+  providers' own tests do — no `nock`/`MockAgent`, no new HTTP-mocking dependency.
+- **Every read command is a one-shot fetch-render-exit, not a persistent full-screen app** — Ink is
+  used purely for colorized/tabular formatting of a single API response
+  (`packages/tui/src/render.ts`'s `runView()`: `render()` then immediately `unmount()`), matching
+  docs/05 §4's "fast developer/operator workflows" framing. Every read command also accepts
+  `--json` (bypassing Ink, printing the raw API response) via the shared
+  `renderOrJson()` helper (`packages/cli/src/tui-client.ts`) — parity with every other CLI command
+  group's JSON-envelope convention, and useful for scripting/diffing.
+- **The `Table` component is hand-rolled over Ink `Box`/`Text`, not a dependency on `ink-table` or
+  any other Ink ecosystem package** — one fewer possibly-ESM-only dependency to manage beyond the
+  already-pinned `ink`/`react`. Every cell (`Table.tsx`) uses `flexShrink={0}` on its wrapping `Box`
+  and `wrap="truncate-end"` on its `Text` (including inside `StatusBadge`, which needed the same
+  fix independently since a colored `<Text>` doesn't inherit a plain string cell's padding/
+  truncation path) — without both, Ink lets a column's content wrap onto a new line instead of
+  truncating when a row's total width exceeds the terminal's reported column count (which defaults
+  to a hardcoded `80` whenever stdout isn't a TTY, e.g. output piped to a file/log — confirmed
+  empirically, not just inferred from Ink's source). Column widths across `views.tsx` are sized so
+  a typical row fits comfortably inside 80 columns; long state tokens (e.g.
+  `approved_pending_execution`, 26 characters) are deliberately truncated with an ellipsis rather
+  than widening every table to accommodate the longest possible value — `--json` is the escape
+  hatch for full untruncated values.
+- **`minicoder plan` (bare, no subcommand) shows the plan/planning-readiness view via a distinct
+  `isDefault: true, hidden: true` Commander subcommand (`plan.command('view', ...)`), not a
+  `.requiredOption()`/`.action()` on the `plan` command itself.** Commander resolves an option flag
+  declared identically on both a parent `Command` and one of its subcommands (both declared
+  `--project`) by binding the value to the parent, silently starving the subcommand's own
+  `requiredOption` check even when the flag and value are present on argv (confirmed empirically:
+  `minicoder plan import-backlog foo.md --plan p1 --project proj1` failed with "required option
+  '--project <id>' not specified" when `--project` was _also_ declared as a non-required
+  `.option()` on the parent `plan` command). Two sibling subcommands (`view` and the pre-existing
+  `import-backlog`) each independently declaring their own `--project` do not collide the same way
+  — Commander's `isDefault: true` marks `view` as the command that runs when no subcommand name
+  matches, and `hidden: true` keeps it out of `--help`'s subcommand list since `minicoder plan` (no
+  args) is the documented invocation, not `minicoder plan view`. `import-backlog` itself was not
+  otherwise changed.
+- **"Human-required items" and "state-health" (docs/05 §3/§8) are not separate CLI command
+  tokens** — docs/05 §4's canonical command list never named them, and inventing new top-level
+  tokens not in that list (or in docs/00 §5) would violate CLAUDE.md's own "no new term without
+  updating the glossary first" rule for the _existing_ thirteen tokens, let alone unlisted ones.
+  Instead: `minicoder features --project <id> --human-required` switches to the dedicated
+  `GET /human-required-items` read model instead of `/features` — `feature_requests.state` is a
+  static label set once at backlog generation and never updated to `human_required` (CLAUDE.md's
+  Bootstrap Planner constraints above), so filtering `/features` client-side by state can never
+  find these; only `feature_runs.current_execution_state` reaches `human_required`. State health
+  is a section inside `minicoder status`, backed by `GET /triggerdev-runs` (always) and
+  `POST /commands/doctor` (only when the configured API key is operator-or-above — a `403` simply
+  omits that section rather than failing the whole command; the API enforces the role check, the
+  TUI never re-implements it).
+- **The Phase 14 command tokens were never actually added to `docs/00-glossary-and-terms.md` §5**
+  before this phase, even though `docs/05-ui-specification.md` §4 already named them — a
+  pre-existing documentation gap (docs/05 anticipated commands the canonical glossary never
+  listed), closed here by adding all thirteen tokens plus `MINICODER_API_URL`/`MINICODER_API_KEY`
+  to docs/00 §5 in the same pass that built them.
+- **Four small, additive API changes were needed to back the Phase 14 views — all documented in
+  the OpenAPI spec and covered by tests, no new migration:**
+  1. `GET /whoami` (new `packages/api/src/routes/reads/whoami.ts`) — echoes the resolved
+     `ActorIdentity` (minus `correlationId`). There was no way for any HTTP client to discover its
+     own resolved role/actorKind before this; the TUI displays it in `status` and would otherwise
+     have to guess from a `403`.
+  2. `GET /triggerdev-runs` (`read-models/workflow.ts`'s `listTriggerdevRuns()` + route) — lists
+     the existing `triggerdev_runs` table, filterable by `projectId`/`featureRunId`. Surfaces only
+     the columns that exist today (`triggerdev_task_id`, `triggerdev_status`,
+     `linked_feature_run_id`, `last_seen_at`) — there is no retry-count/next-retry/waitpoint-reason
+     column in the schema, so those fields are not fabricated; a richer Workflow Layer run detail
+     model is future work, not a Phase 14 gap to silently paper over.
+  3. `GET /human-required-items` (`read-models/features.ts`'s `listHumanRequiredItems()` + route)
+     — see the "not a CLI token" bullet above for why this exists as a dedicated read model rather
+     than a `/features` filter. Implemented as a plain single-table `listByCreatedAt` over
+     `feature_runs` (project-scoped via an `IN (SELECT id FROM feature_requests WHERE project_id =
+?)` subquery — the same shape `listPullRequests` above already uses) plus a second batch
+     `feature_requests` lookup for `fr_id`/`title`, **not** a joined `FROM feature_runs fr JOIN
+     feature_requests freq`: `listByCreatedAt`'s cursor `WHERE`/`ORDER BY` reference bare
+     `created_at`/`id`, which is ambiguous across two joined tables carrying columns of the same
+     name on both SQLite and PostgreSQL (SQLite errors "ambiguous column name"; PostgreSQL rejects
+     referencing an output alias in a `WHERE` clause the same way route-idempotency's Postgres/
+     SQLite `JSONB`-vs-`TEXT` fix elsewhere in this document had to work around a similar
+     cross-dialect gap).
+  4. `getProjectStatus()`'s `workflowState` gained a `version` field
+     (`read-models/workflow.ts`) — `pause`/`resume`'s `PauseAutomationCommand`/
+     `ResumeAutomationCommand` both require `expectedVersion` for their optimistic-concurrency
+     check, and there was previously no way to read the current `workflow_states.version` through
+     the API at all.
+- **`minicoder pause`/`minicoder resume` require `--yes`, not an interactive confirmation
+  prompt** — matching `db reset`'s established guarded-destructive-action pattern rather than
+  building Ink `useInput()`-based interactive prompts, which would be the first interactive
+  (non-one-shot) UI surface in this package. Both commands call `GET /status` first to read
+  `workflowState.version`, then dispatch `POST /commands/{pause,resume}-automation` with a freshly
+  generated `crypto.randomUUID()`-suffixed `Idempotency-Key` — a repeated manual invocation is a
+  new, distinct pause/resume attempt against whatever version is current at that moment, not a
+  replay of an earlier one (per this document's own "idempotency keys need a per-occurrence
+  discriminator" rule for `PauseAutomationCommand`/`ResumeAutomationCommand` in the Execution
+  Orchestrator section above — the CLI, as the caller, is what actually supplies that
+  discriminator here, since neither command had a real production caller before this phase).
+- **Deliberately left unfixed: `minicoder api serve` still does not wire a real `TaskTriggerClient`
+  into `buildApp()`.** `packages/api/src/server.ts`'s `serve()` never constructs or injects one, so
+  `request-coder-run`/`request-review`/`request-fixes`/`recompute-merge-gate` fail with a fail-fast
+  "no TaskTriggerClient configured" error against any server started via `minicoder api serve` —
+  a real, pre-existing Phase 13 gap. None of docs/05 §4's thirteen Text UI commands need these
+  endpoints, so wiring a default `TaskTriggerClient` was out of scope for this phase; fixing it
+  remains real, tracked future work, not silently dropped.
+- **The end-to-end integration test (`packages/tui/src/tui-e2e.integration.test.ts`) boots the
+  real `buildApp()` against a throwaway in-memory SQLite DB and drives `ApiClient` against it over
+  genuine HTTP** (`app.listen({ port: 0 })`, not `app.inject()`) — this is the phase's "runnable
+  demo scenario" (docs/06's Definition of Done), made an automated, CI-covered test rather than a
+  manual-only runbook step. Named `*.integration.test.ts` so it runs under `pnpm test`/CI but not
+  `minicoder test unit` (see "Vitest Test Command Tiers" below).
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
@@ -1951,7 +2086,7 @@ calls `process.exit()` on completion, bypassing V8 GC finalizers entirely. Do no
 The root `pnpm typecheck` script builds packages sequentially (generating `dist/`) before
 running `--noEmit` on dependents. Any package whose `types` field points to `dist/` must
 appear in the ordered build chain in `package.json` before the recursive `pnpm -r` pass.
-Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → adapters-reviewer → adapters-planner → adapters-arbiter → triggerdev → testing → api → (rest --noEmit)`.
+Current order: `core → persistence-sqlite → persistence-postgres → workflow → github → adapters-coder → adapters-reviewer → adapters-planner → adapters-arbiter → triggerdev → testing → api → tui → (rest --noEmit)`.
 `workflow` moved ahead of `github`/`triggerdev` in Phase 7: `packages/github`'s inbox handlers and
 `packages/triggerdev`'s `github-reconciliation` task both acquire a `WorkflowLockManager` lock
 before dispatching a lock-gated reconciliation command (`RecordPrOpenedCommand`/
@@ -1969,7 +2104,11 @@ imports `ClaudeReviewerAdapter`/`HttpReviewProvider`). `adapters-planner` was ad
 imports `GenericLLMPlannerAdapter`/`HttpPlanProvider` from `@minicoder/adapters-planner`, the same
 pattern. `adapters-arbiter` was added ahead of `triggerdev` for issue #51: `run-review.ts`'s
 `resolveDefaultArbiterAdapterFactory()` dynamically imports `ClaudeArbiterAdapter`/
-`HttpArbiterProvider` from `@minicoder/adapters-arbiter`, the same pattern.
+`HttpArbiterProvider` from `@minicoder/adapters-arbiter`, the same pattern. `tui` was added ahead
+of the `pnpm -r` tail pass in Phase 14: `packages/cli`'s new Text UI command files import
+`@minicoder/tui`'s compiled screen-render functions and `ApiClient` directly (a static import, not
+a dynamic-`import()` default-resolver pattern like the ones above, since there is no "reference
+implementation vs. injected mock" distinction for a UI-rendering package).
 
 When adding a new workspace package that others import for types, add it to this chain.
 

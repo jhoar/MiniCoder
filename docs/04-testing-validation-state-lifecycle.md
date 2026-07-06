@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.3.9
-> Last-updated: 2026-07-05
+> Version: 1.4.0
+> Last-updated: 2026-07-06
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -1162,6 +1162,85 @@ feature_run_id = '<id>' ORDER BY decided_at DESC`) and a `workflow_events`/`outb
 with nothing to ever pick it up. If the feature run you want to retry isn't the active one, this is
 a signal that `start-next-feature` already moved on; a direct `minicoder state repair` is the
 recovery path, not a retry.
+
+---
+
+### Phase 14 — Ink Text UI Runbook
+
+Covers `@minicoder/tui` and the `minicoder {status,plan,clarification,features,active,runs,
+findings,disagreements,costs,artifacts,adapters,design-doc,pause,resume}` commands (docs/00 §5,
+docs/05 §4). Unlike every other CLI command group, these talk to the Orchestrator API over HTTP
+only — they never open a DB connection directly.
+
+**Preconditions:**
+
+- A running `minicoder api serve` instance (see the Phase 13 API section of docs/01 §9) reachable
+  from the machine running the TUI.
+- `MINICODER_API_URL` (defaults to `http://localhost:4000` if unset) and `MINICODER_API_KEY` (the
+  raw key value for a key configured in that server's `MINICODER_API_KEYS`) exported in the
+  environment. `MINICODER_API_KEY` is required — every command fails fast with an actionable error
+  if it's unset or blank.
+
+#### Procedure: Verify the TUI can reach the API and see its own permissions
+
+```bash
+export MINICODER_API_URL=http://localhost:4000
+export MINICODER_API_KEY=<a configured key value>
+minicoder status --project <id>
+```
+
+The "Acting as" line in the output (or the top-level `whoami` object with `--json`) shows the
+resolved `id`/`role`/`actorKind` for the configured key — use this to confirm you're using the
+intended key before running a guarded command like `pause`/`resume`.
+
+#### Procedure: Read views (all of `status`/`plan`/`clarification`/`features`/`active`/`runs`/
+
+`findings`/`disagreements`/`costs`/`artifacts`/`adapters`/`design-doc`)
+
+Each is a one-shot fetch-render-exit — non-zero exit and a colorized error panel on any API
+failure (401/403/404/5xx), a rendered table/detail view on success. Pass `--json` on any of them to
+get the raw API response instead (useful for scripting or diffing against expectations):
+
+```bash
+minicoder features --project <id> --json | jq '.items[] | select(.kind == "feature")'
+```
+
+`minicoder features --project <id> --human-required` calls the dedicated
+`GET /human-required-items` read model rather than filtering `/features` client-side —
+`feature_requests.state` is a static label that never reaches `human_required`, only
+`feature_runs.current_execution_state` does (CLAUDE.md).
+
+`minicoder status --project <id>`'s state-health section calls the operator-gated
+`POST /commands/doctor`; if the configured key is only `viewer`-role, that section is silently
+omitted (a `403` from the API) rather than failing the whole command — this is expected, not a bug.
+
+#### Procedure: Pause / resume automation
+
+```bash
+minicoder pause --project <id> --yes    # running -> paused_by_operator
+minicoder resume --project <id> --yes   # paused_by_operator -> running
+```
+
+Both require `--yes` (no interactive confirmation prompt — matches the guarded-command convention
+elsewhere in this CLI) and an operator-or-above API key; a lower-privileged key gets a `403`. Both
+internally call `GET /status` first to read the current `workflowState.version` (needed for the
+command's `expectedVersion` optimistic-concurrency check) and mint a fresh `Idempotency-Key` per
+invocation — running the same command twice in a row is a new, distinct pause/resume attempt, not a
+replay of the first.
+
+#### Known gaps (documented, not built in Phase 14)
+
+- Workflow Layer run visibility (`status`'s "Workflow Layer runs" table, backed by
+  `GET /triggerdev-runs`) only ever shows the columns the `triggerdev_runs` table actually has
+  today (task id, status, linked feature run, last-seen timestamp) — there is no retry-count,
+  next-retry, or waitpoint-reason column in the schema to surface, and no dedicated Trigger.dev-run
+  detail read model beyond this. Adding those is future work, not a Phase 14 regression.
+- `minicoder design-doc` is read-only — generation/revision/approval commands don't exist yet
+  (Phase 17 scope); an empty project correctly shows "no design document yet."
+- The TUI has no command surface for `request-coder-run`/`request-review`/`request-fixes`/
+  `recompute-merge-gate` — `minicoder api serve` doesn't wire a real `TaskTriggerClient` into
+  `buildApp()` either (a pre-existing Phase 13 gap), and none of docs/05 §4's Text UI commands need
+  it, so this was deliberately left unfixed rather than expanding this phase's scope.
 
 ---
 

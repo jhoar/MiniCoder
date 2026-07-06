@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.10
-> Last-updated: 2026-07-05
+> Version: 1.0.11
+> Last-updated: 2026-07-06
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -542,6 +542,25 @@ minicoder plan import-backlog <file> --project <id> --plan <id> --actor <id> [--
 
 # Orchestrator API (Phase 13; read/command/webhook endpoints — see 01-system-specification.md §9)
 minicoder api serve [--port <number>] [--host <host>]   # long-running Fastify process
+
+# Ink Text UI (Phase 14; API-only — see 05-ui-specification.md §4). Each renders once and exits;
+# every command accepts --json to print the raw API response instead of the Ink-rendered view.
+# Requires MINICODER_API_URL (default http://localhost:4000) and MINICODER_API_KEY (client-side,
+# singular — distinct from the server's plural MINICODER_API_KEYS; see docs/07 §4).
+minicoder status --project <id>
+minicoder plan --project <id>                           # default view; `plan import-backlog` unchanged
+minicoder clarification --project <id> [--session <id>]
+minicoder features --project <id> [--human-required] [--cursor <c>] [--limit <n>]
+minicoder active --project <id>
+minicoder runs [--project <id>] [--feature-run <id>] [--cursor <c>] [--limit <n>]
+minicoder findings --feature-run <id> [--cursor <c>] [--limit <n>]
+minicoder disagreements [--feature-run <id>] [--state <state>] [--cursor <c>] [--limit <n>]
+minicoder costs --project <id>
+minicoder artifacts --project <id> [--cursor <c>] [--limit <n>]
+minicoder adapters [--adapter <id>]
+minicoder design-doc --project <id> [--document <id>]
+minicoder pause --project <id> --yes                    # running -> paused_by_operator (operator+)
+minicoder resume --project <id> --yes                   # paused_by_operator -> running (operator+)
 
 # Test scenario runner (non-zero exit on failure)
 minicoder test unit

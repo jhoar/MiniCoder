@@ -10,11 +10,41 @@ import {
 } from '@minicoder/core';
 import type { CommandEnvelope } from '@minicoder/core';
 import { humanActor } from '@minicoder/triggerdev';
+import { renderPlanView } from '@minicoder/tui';
+import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
 
 const handler = new ImportBacklogHandler();
 
 export function createPlanCommand(): Command {
-  const plan = new Command('plan').description('Plan and backlog artifact commands');
+  const plan = new Command('plan').description(
+    'Plan and backlog artifact commands (Phase 14: with no subcommand, shows the plan/planning-readiness view via the Orchestrator API)',
+  );
+
+  // A distinct `isDefault`/`hidden` subcommand, not a `.requiredOption()`/`.action()` on `plan`
+  // itself — Commander resolves an option flag shared between a parent Command and one of its
+  // subcommands (both declare `--project`) by binding it to the parent, silently starving the
+  // subcommand's own `requiredOption` even when the value is present on argv. Two sibling
+  // subcommands (this one and `import-backlog`) each independently declaring `--project` do not
+  // collide the same way.
+  plan
+    .command('view', { isDefault: true, hidden: true })
+    .description('Default plan/planning-readiness view')
+    .requiredOption('--project <id>', 'Project ID')
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { project: string } & JsonOption) => {
+      const client = buildApiClient();
+      await renderOrJson(
+        opts,
+        async () => {
+          const [plans, readiness] = await Promise.all([
+            client.listImplementationPlans(opts.project),
+            client.listPlanningReadinessAssessments(opts.project),
+          ]);
+          return { plans, readiness };
+        },
+        (data) => renderPlanView(data),
+      );
+    });
 
   plan
     .command('import-backlog <file>')

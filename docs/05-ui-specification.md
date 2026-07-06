@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_ui_specification.md, minicoder_ui_specification_testing_updated.md
-> Version: 1.0.0
-> Last-updated: 2026-06-12
+> Version: 1.0.1
+> Last-updated: 2026-07-06
 
 ## 1. Purpose
 
@@ -53,6 +53,20 @@ minicoder resume         # resume → running (records a resumed event)
 (State-lifecycle and test commands — `db`, `trigger`, `state`, `github`, `test` — are defined in
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) §5 and surfaced operationally, not as UI
 navigation.)
+
+**Implementation notes (Phase 14).** Each command renders once (fetch, render, exit) rather than a
+persistent full-screen app, matching "fast developer/operator workflows"; every command also
+accepts `--json` to print the raw API response for scripting. "Human-required items" and
+"state-health" (§3/§8) are not separate command tokens — they are `minicoder features
+--human-required` (backed by a dedicated `GET /human-required-items`, since
+`feature_requests.state` is a static label that never reaches `human_required` — only
+`feature_runs.current_execution_state` does) and a section inside `minicoder status` (backed by
+`GET /triggerdev-runs` for Workflow Layer visibility and, when the configured API key is
+operator-or-above, `POST /commands/doctor`; a `viewer`-role key simply omits that section — the API
+enforces the role check, not the TUI). `minicoder status`/`pause`/`resume` also rely on a `version`
+field added to `GET /status`'s `workflowState` (needed for `pause`/`resume`'s `expectedVersion`) and
+on a new `GET /whoami` (echoes the configured key's role/actorKind/id, since there is otherwise no
+way for the TUI to discover its own permissions ahead of a call).
 
 ## 5. Web UI Pages
 

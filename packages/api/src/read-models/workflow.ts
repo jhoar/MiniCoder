@@ -87,7 +87,11 @@ export async function getProjectStatus(
   projectId: string,
 ): Promise<{
   project: { id: string; name: string; state: string } | null;
-  workflowState: { automation_state: string; active_feature_run_id: string | null } | null;
+  workflowState: {
+    automation_state: string;
+    active_feature_run_id: string | null;
+    version: number;
+  } | null;
   pendingOutboxCount: number;
 }> {
   const projectRows = await db.query<{ id: string; name: string; state: string }>(
@@ -97,9 +101,11 @@ export async function getProjectStatus(
   const wsRows = await db.query<{
     automation_state: string;
     active_feature_run_id: string | null;
-  }>('SELECT automation_state, active_feature_run_id FROM workflow_states WHERE project_id = ?', [
-    projectId,
-  ]);
+    version: number;
+  }>(
+    'SELECT automation_state, active_feature_run_id, version FROM workflow_states WHERE project_id = ?',
+    [projectId],
+  );
   const outboxRows = await db.query<{ cnt: number }>(
     `SELECT COUNT(*) as cnt FROM outbox_events WHERE status IN ('pending', 'processing')`,
     [],
@@ -109,4 +115,49 @@ export async function getProjectStatus(
     workflowState: wsRows[0] ?? null,
     pendingOutboxCount: outboxRows[0]?.cnt ?? 0,
   };
+}
+
+export interface TriggerdevRunRow {
+  id: string;
+  triggerdev_run_id: string;
+  triggerdev_task_id: string;
+  triggerdev_status: string;
+  project_id: string | null;
+  linked_feature_run_id: string | null;
+  last_seen_at: string;
+  created_at: string;
+}
+
+/**
+ * Workflow-Layer (Trigger.dev) run/task status (docs/05 §6). Surfaces exactly the columns that
+ * exist on `triggerdev_runs` today — there is no retry-count/waitpoint-reason column in the
+ * schema, so those fields are not fabricated here; see CLAUDE.md's Ink Text UI Operational
+ * Constraints for the documented gap.
+ */
+export function listTriggerdevRuns(
+  db: DbClient,
+  filters: { projectId?: string; featureRunId?: string },
+  params: ListParams,
+): Promise<CursorPage<TriggerdevRunRow>> {
+  const clauses: string[] = [];
+  const queryParams: unknown[] = [];
+  if (filters.projectId) {
+    clauses.push('project_id = ?');
+    queryParams.push(filters.projectId);
+  }
+  if (filters.featureRunId) {
+    clauses.push('linked_feature_run_id = ?');
+    queryParams.push(filters.featureRunId);
+  }
+  return listByCreatedAt<TriggerdevRunRow>(
+    db,
+    {
+      table: 'triggerdev_runs',
+      columns:
+        'id, triggerdev_run_id, triggerdev_task_id, triggerdev_status, project_id, linked_feature_run_id, last_seen_at, created_at',
+      where: clauses.length > 0 ? clauses.join(' AND ') : undefined,
+      params: queryParams,
+    },
+    params,
+  );
 }

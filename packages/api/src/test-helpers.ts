@@ -39,6 +39,58 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** Seeds a plan + feature request + feature run parked at `human_required`, for the whoami-
+ * adjacent Phase 14 read models (`/human-required-items`, `/triggerdev-runs`). */
+export async function seedHumanRequiredFeatureRun(
+  db: DbClient,
+  projectId: string,
+): Promise<{ featureRunId: string; featureRequestId: string }> {
+  const now = new Date().toISOString();
+  const planId = generateId();
+  await db.execute(
+    `INSERT INTO implementation_plans (id, project_id, state, title, version, created_at, updated_at)
+     VALUES (?, ?, 'activated_for_execution', 'Test Plan', 1, ?, ?)`,
+    [planId, projectId, now, now],
+  );
+  const featureRequestId = generateId();
+  await db.execute(
+    `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'FR-001', 'Test Feature', 'A test feature.', 'feature', 1, 'approved_pending_execution', 0, 1, ?, ?)`,
+    [featureRequestId, planId, projectId, now, now],
+  );
+  const featureRunId = generateId();
+  await db.execute(
+    `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+     VALUES (?, ?, 1, 'human_required', 1, ?, ?)`,
+    [featureRunId, featureRequestId, now, now],
+  );
+  return { featureRunId, featureRequestId };
+}
+
+/** Seeds a `triggerdev_runs` row for `/triggerdev-runs` read-model tests. */
+export async function seedTriggerdevRun(
+  db: DbClient,
+  opts: { projectId: string; featureRunId?: string; status?: string },
+): Promise<{ id: string }> {
+  const now = new Date().toISOString();
+  const id = generateId();
+  await db.execute(
+    `INSERT INTO triggerdev_runs (id, triggerdev_run_id, triggerdev_task_id, triggerdev_status, project_id, linked_feature_run_id, last_seen_at, version, created_at, updated_at)
+     VALUES (?, ?, 'run-coder', ?, ?, ?, ?, 1, ?, ?)`,
+    [
+      id,
+      `td-${id}`,
+      opts.status ?? 'running',
+      opts.projectId,
+      opts.featureRunId ?? null,
+      now,
+      now,
+      now,
+    ],
+  );
+  return { id };
+}
+
 export async function seedProjectWithWorkflowState(
   db: DbClient,
   opts: { automationState?: string } = {},

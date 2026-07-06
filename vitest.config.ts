@@ -32,13 +32,14 @@ export default defineConfig({
       '@minicoder/triggerdev': path.resolve(__dirname, 'packages/triggerdev/src/index.ts'),
       '@minicoder/testing': path.resolve(__dirname, 'packages/testing/src/index.ts'),
       '@minicoder/api': path.resolve(__dirname, 'packages/api/src/index.ts'),
+      '@minicoder/tui': path.resolve(__dirname, 'packages/tui/src/index.ts'),
     },
   },
   test: {
     globals: true,
     environment: 'node',
     pool: 'forks',
-    include: ['packages/*/src/**/*.test.ts'],
+    include: ['packages/*/src/**/*.test.ts', 'packages/*/src/**/*.test.tsx'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

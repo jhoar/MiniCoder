@@ -164,6 +164,76 @@ export function listPullRequests(
   );
 }
 
+export interface HumanRequiredItemRow {
+  feature_run_id: string;
+  feature_request_id: string;
+  fr_id: string;
+  title: string;
+  current_execution_state: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * "Human-required items" (docs/05 §3) — `feature_runs` parked at `human_required`, joined to
+ * their `feature_requests` for display. `feature_requests.state` is a static label set once at
+ * backlog generation (CLAUDE.md) and never reaches `human_required` itself, so this must read the
+ * live `feature_runs.current_execution_state`, not a `--state` filter on `/features`.
+ *
+ * Kept as a plain single-table `listByCreatedAt` over `feature_runs` (project-scoped via an `IN`
+ * subquery, the same shape `listPullRequests` above already uses) plus a second batch lookup for
+ * `fr_id`/`title`, rather than a joined FROM — `listByCreatedAt`'s cursor WHERE/ORDER BY reference
+ * bare `created_at`/`id`, which would be ambiguous across two joined tables on both SQLite and
+ * PostgreSQL.
+ */
+export async function listHumanRequiredItems(
+  db: DbClient,
+  projectId: string,
+  params: ListParams,
+): Promise<CursorPage<HumanRequiredItemRow>> {
+  const page = await listByCreatedAt<{
+    id: string;
+    feature_request_id: string;
+    current_execution_state: string;
+    version: number;
+    created_at: string;
+    updated_at: string;
+  }>(
+    db,
+    {
+      table: 'feature_runs',
+      columns: 'id, feature_request_id, current_execution_state, version, created_at, updated_at',
+      where: `current_execution_state = 'human_required' AND feature_request_id IN (SELECT id FROM feature_requests WHERE project_id = ?)`,
+      params: [projectId],
+    },
+    params,
+  );
+  if (page.items.length === 0) return { items: [], nextCursor: page.nextCursor };
+
+  const featureRequestIds = [...new Set(page.items.map((run) => run.feature_request_id))];
+  const placeholders = featureRequestIds.map(() => '?').join(', ');
+  const featureRequests = await db.query<{ id: string; fr_id: string; title: string }>(
+    `SELECT id, fr_id, title FROM feature_requests WHERE id IN (${placeholders})`,
+    featureRequestIds,
+  );
+  const byId = new Map(featureRequests.map((fr) => [fr.id, fr]));
+  const items = page.items.map((run) => {
+    const fr = byId.get(run.feature_request_id);
+    return {
+      feature_run_id: run.id,
+      feature_request_id: run.feature_request_id,
+      fr_id: fr?.fr_id ?? '',
+      title: fr?.title ?? '',
+      current_execution_state: run.current_execution_state,
+      version: run.version,
+      created_at: run.created_at,
+      updated_at: run.updated_at,
+    };
+  });
+  return { items, nextCursor: page.nextCursor };
+}
+
 async function getByIdOrThrowByColumn<T>(
   db: DbClient,
   table: string,

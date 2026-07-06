@@ -7,6 +7,7 @@ import { registerAgentReadRoutes } from './agents.js';
 import { registerGovernanceReadRoutes } from './governance.js';
 import { registerArtifactReadRoutes } from './artifacts.js';
 import { registerWorkflowReadRoutes } from './workflow.js';
+import { registerWhoamiRoute } from './whoami.js';
 
 export function registerAllReadRoutes(app: FastifyInstance, db: DbClient): void {
   registerProjectReadRoutes(app, db);
@@ -16,4 +17,5 @@ export function registerAllReadRoutes(app: FastifyInstance, db: DbClient): void 
   registerGovernanceReadRoutes(app, db);
   registerArtifactReadRoutes(app, db);
   registerWorkflowReadRoutes(app, db);
+  registerWhoamiRoute(app);
 }

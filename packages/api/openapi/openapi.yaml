@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MiniCoder Orchestrator API
-  version: '13.0.0'
+  version: '14.0.0'
   description: >
     Read endpoints, command endpoints, and GitHub webhook endpoints for the MiniCoder
     Orchestrator (docs/01-system-specification.md §9). Command payload validation is enforced by
@@ -412,4 +412,24 @@ paths:
     get:
       operationId: getStatus
       parameters: [{ $ref: '#/components/parameters/projectIdQuery' }]
+      responses: { '200': { description: OK } }
+  /triggerdev-runs:
+    get:
+      operationId: listTriggerdevRuns
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /human-required-items:
+    get:
+      operationId: listHumanRequiredItems
+      parameters:
+        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+  /whoami:
+    get:
+      operationId: whoami
       responses: { '200': { description: OK } }

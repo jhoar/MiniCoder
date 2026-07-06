@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.27
-> Last-updated: 2026-07-05
+> Version: 1.0.28
+> Last-updated: 2026-07-06
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -1681,13 +1681,82 @@ cancel-run/replay-run/drain-queue/reset-dev/reconcile`) remains **out of scope**
   keys — a deliberate API-contract decision (Stripe-style), not an inconsistency with that
   convention.
 
-## Phase 14 — Ink Text UI
+## Phase 14 — Ink Text UI ✓
+
+> **Status: Complete** (2026-07-06)
 
 Deliver dashboard, feature queue, active feature, planning/clarification, review findings, agent
 runs, cost, human-required, artifact, adapter, and state-health views.
 
 Acceptance: the TUI uses the API only; triggers allowed commands; and shows Workflow Layer
 task/waitpoint and state-health status via the API.
+
+**Delivered modules:**
+
+- `packages/tui` (new `@minicoder/tui` package) — the first package in this repo depending on
+  `react`/`ink`. Pinned to `ink@3.2.0` + `react@17.0.2` + `ink-testing-library@2.1.0` (the last
+  CJS-compatible majors), mirroring the exact rationale CLAUDE.md already documents for pinning
+  `@octokit/rest@^19`: this repo's TypeScript output target is CommonJS
+  (`tsconfig.base.json`'s `module: "CommonJS"`) and current Ink/React majors are ESM-only.
+  - `src/client/api-client.ts` — `ApiClient`, an injectable-`fetchImpl` HTTP client (mirroring
+    `packages/adapters-planner`'s `HttpPlanProvider` seam) covering every read/list endpoint the
+    TUI needs plus `pauseAutomation`/`resumeAutomation`; `ApiError` carries the parsed RFC 9457
+    problem-details body.
+  - `src/components/` — three small hand-rolled Ink primitives (`Table`, `KeyValue`,
+    `StatusBadge`) rather than a dependency on `ink-table` or similar — one fewer possibly-ESM-only
+    package to manage beyond the already-pinned `ink`/`react`.
+  - `src/views.tsx` — one pure render function per docs/05 §4 view, taking already-fetched data
+    (fetching happens in `packages/cli`'s command actions) so each is directly unit-testable with
+    `ink-testing-library`.
+  - `src/config.ts` — `resolveApiConfig()` reads `MINICODER_API_URL`/`MINICODER_API_KEY`.
+  - `src/tui-e2e.integration.test.ts` — boots the real `buildApp()` (`@minicoder/api`) against a
+    throwaway in-memory SQLite DB and drives `ApiClient` against it over real HTTP; this is the
+    phase's "runnable demo scenario," automated rather than manual-only.
+  - Added to the root `package.json`'s ordered typecheck build chain, immediately after `api`
+    (`... → api → tui → (rest --noEmit)`) — `packages/cli` imports its compiled types.
+- `packages/cli/src/commands/{status,clarification,features,active,runs,findings,disagreements,
+costs,artifacts,adapters,design-doc,pause,resume}.ts` — one Commander command per docs/05 §4
+  token, each a thin "parse flags → `ApiClient` call(s) → render or `--json`" wrapper via the
+  shared `renderOrJson()` helper (`packages/cli/src/tui-client.ts`). Every read command also
+  accepts `--json` to print the raw API response.
+  - `minicoder plan` (no subcommand) now shows the plan/planning-readiness view. It is implemented
+    as a distinct `isDefault: true, hidden: true` Commander subcommand (`plan.command('view', ...)`),
+    not a `.requiredOption()`/`.action()` on the `plan` command itself — Commander silently binds
+    an option flag shared between a parent `Command` and one of its subcommands to the parent,
+    starving the subcommand's own `requiredOption` even when the value is present on argv; two
+    sibling subcommands (this one and the pre-existing `import-backlog`) each independently
+    declaring `--project` don't collide the same way. `import-backlog` itself is unchanged.
+  - "Human-required items" is `minicoder features --project <id> --human-required`, not a separate
+    command token — `feature_requests.state` is a static label that never reaches
+    `human_required`; only `feature_runs.current_execution_state` does.
+  - `pause`/`resume` require `--yes` (a guarded confirmation flag, matching `db reset`'s
+    established pattern, rather than an interactive prompt) and internally fetch the current
+    `workflowState.version` from `GET /status` before dispatching, minting a fresh
+    `Idempotency-Key` per invocation.
+- **Four additive API changes** (`packages/api`), all read-only except `pause`/`resume`'s
+  pre-existing generic-dispatch route (unchanged):
+  1. `GET /whoami` (new `routes/reads/whoami.ts`) — echoes the resolved `ActorIdentity` so the TUI
+     can display which role/actorKind the configured key resolves to; there was no way to
+     discover this from the API before.
+  2. `GET /triggerdev-runs` (new read-model in `read-models/workflow.ts` + route) — lists the
+     existing `triggerdev_runs` table (task id, status, linked feature run, last-seen), for the
+     Workflow Layer visibility part of `status`. Surfaces only the columns that exist today — no
+     retry-count/waitpoint-reason column exists in the schema; adding one is future work.
+  3. `GET /human-required-items` (new read-model in `read-models/features.ts` + route) —
+     `feature_runs` at `human_required` joined to `feature_requests` for `fr_id`/`title` display.
+     Implemented as a plain single-table `listByCreatedAt` over `feature_runs` (project-scoped via
+     an `IN` subquery, the same shape `listPullRequests` already uses) plus a second batch lookup,
+     rather than a joined `FROM` — `listByCreatedAt`'s cursor `WHERE`/`ORDER BY` reference bare
+     `created_at`/`id`, which is ambiguous across two joined tables on both SQLite and PostgreSQL.
+  4. `getProjectStatus()`'s `workflowState` gained a `version` field — `pause`/`resume` need
+     `expectedVersion`, and there was previously no way to read the current `workflow_states`
+     version through the API at all.
+     All four are documented in `packages/api/openapi/openapi.yaml` (required by the `onRoute`
+     spec-drift-detection hook) and covered by new tests in `routes/reads/reads.test.ts`.
+- **Deliberately left unfixed:** `minicoder api serve` still doesn't wire a real `TaskTriggerClient`
+  into `buildApp()` (a pre-existing Phase 13 gap — `request-coder-run`/`request-review`/
+  `request-fixes`/`recompute-merge-gate` fail against a server started this way). None of docs/05
+  §4's Text UI commands need these endpoints, so fixing this was out of scope for this phase.
 
 ## Phase 15 — Next.js Web UI
 
