@@ -1765,7 +1765,10 @@ Issue #41 adds a sibling suite in this same tier,
 `packages/testing/src/phase8-concurrency-guards.postgres.test.ts`, proving the specific Phase 8
 guards above (`SelectFeatureHandler`'s CAS, `StartCodingHandler`'s automation-state re-check,
 `idempotency_keys`' claim-first `ON CONFLICT DO NOTHING`, `WorkflowLockManager`'s fence-token CAS)
-against real concurrent PostgreSQL connections rather than sequential re-dispatch.
+against real concurrent PostgreSQL connections rather than sequential re-dispatch. Issue #57 adds
+a third suite, `packages/api/src/route-idempotency.postgres.test.ts`, proving the route-level
+claim → fulfill → reclaim round-trip through a real `result JSONB` column and a genuine
+concurrent-claim race resolving to exactly one `owned` outcome.
 
 ## Vitest Test Command Tiers
 

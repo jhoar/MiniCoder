@@ -1455,6 +1455,16 @@ loser transparently returning the winner's cached `CommandResult`); (4) `Workflo
 fence-token compare-and-swap (exactly one of two concurrent `acquire()` calls for the same lock
 resource wins, and the fence strictly increases across a release/re-acquire cycle).
 
+**Issue #57** adds a third suite in this tier, `packages/api/src/route-idempotency.postgres.test.ts`,
+covering the route-level (`packages/api/src/route-idempotency.ts`) claim-first idempotency
+against a real PostgreSQL `idempotency_keys` table: a claim → fulfill → reclaim round-trip through
+a live `result JSONB` column (proving `parseJsonField()`'s auto-parsed-object handling actually
+works against Postgres, not just a mocked query shape — the existing
+`route-idempotency.test.ts` unit tests only mock this); a release-then-retry re-claim; and a real
+concurrent-claim race (two `Promise.all`-driven claims for the same key) resolving to exactly one
+`owned` outcome, the other `in-progress`. Reverting `claimRouteIdempotencyKey`'s `parseJsonField()`
+call back to a bare `JSON.parse()` reproduces a real `TypeError` in the round-trip test.
+
 #### SQLite test teardown — do not call `db.close()`
 
 Never call `db.close()` in Vitest tests or scenario runner code. `better-sqlite3` registers native

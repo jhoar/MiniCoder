@@ -92,12 +92,21 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@minicoder/persistence-postgres':
+        specifier: workspace:*
+        version: link:../persistence-postgres
       '@minicoder/testing':
         specifier: workspace:*
         version: link:../testing
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
+      '@types/pg':
+        specifier: ^8.11.6
+        version: 8.20.0
+      pg:
+        specifier: ^8.12.0
+        version: 8.21.0
 
   packages/cli:
     dependencies:
