@@ -9,3 +9,5 @@ dist/
 coverage/
 *.log
 .DS_Store
+# Local OMX (Claude Code) runtime state — never repo content.
+.omx/

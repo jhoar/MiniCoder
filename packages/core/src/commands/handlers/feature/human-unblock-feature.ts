@@ -37,11 +37,23 @@ interface FeatureRunRow {
 /**
  * `blocked -> approved_pending_execution`, human-triggered (issue #53) — distinct from
  * `UnblockFeatureCommand`'s automatic, dependency-driven counterpart (they share the same matrix
- * row; see its comment for why). A feature blocked via `BlockFeatureCommand`, or via the issue #52
- * skip-cascade, has no unmet `feature_dependencies` row for `UnblockFeatureHandler`'s guard to ever
- * clear — this command lets a human directly confirm the external precondition is now satisfied,
- * with no dependency check at all. Gives every `human_required` disposition a documented,
+ * row; see its comment for why). A feature blocked via `BlockFeatureCommand` is a purely human
+ * decision unrelated to `feature_dependencies`, so this command lets a human directly confirm the
+ * external precondition is now satisfied. Gives every `human_required` disposition a documented,
  * CLI-reachable "undo" (the asymmetry issue #53 was opened to close).
+ *
+ * **Dependency guard (post-merge review fix):** a feature run blocked via the issue #52
+ * skip-cascade still carries a real `feature_dependencies` row pointing at a `feature_request`
+ * whose only `feature_runs` row is now `skipped` — which can never reach `merged`. Unconditionally
+ * transitioning back to `approved_pending_execution` (as this handler originally did) let an
+ * operator see a successful unblock while `SelectFeatureHandler`'s own dependency guard (the real
+ * dependency authority) would still reject the run forever, a misleading "recovered" state that
+ * silently strands the feature again. Fixed by re-running the identical unmet-dependency query
+ * `SelectFeatureHandler` uses before allowing the transition, rejecting with the same
+ * `unmet-dependencies` `CommandError` type when any dependency has not reached `merged`. A human
+ * wanting to force such a feature through anyway must first resolve the upstream dependency (e.g.
+ * `minicoder plan import-backlog`/retry it to `merged`), not bypass the check here — there is no
+ * separate dependency-waiver mechanism.
  */
 export class HumanUnblockFeatureHandler implements CommandHandler<
   HumanUnblockFeaturePayload,
@@ -88,6 +100,32 @@ export class HumanUnblockFeatureHandler implements CommandHandler<
         run.current_execution_state as FeatureExecutionState,
         FeatureExecutionState.APPROVED_PENDING_EXECUTION,
       );
+
+      // Mirrors SelectFeatureHandler's own dependency guard exactly — a dependency is met only
+      // when a feature_run for it has reached 'merged'. Prevents unblocking a skip-cascade-blocked
+      // run into a state that looks recovered but SelectFeatureHandler will still reject forever.
+      const unmetDeps = await tx.query<{ id: string }>(
+        `SELECT fd.id
+         FROM feature_dependencies fd
+         WHERE fd.source_fr_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM feature_runs fr
+             WHERE fr.feature_request_id = fd.target_fr_id
+               AND fr.current_execution_state = 'merged'
+           )`,
+        [run.feature_request_id],
+      );
+      if (unmetDeps.length > 0) {
+        throw new CommandError({
+          type: 'unmet-dependencies',
+          title: 'Feature has unmet dependencies',
+          status: 409,
+          detail:
+            `Cannot unblock feature: ${unmetDeps.length} dependency(ies) not yet merged. ` +
+            `Resolve the upstream dependency (e.g. retry it to 'merged') before unblocking this run.`,
+          instance: envelope.correlationId,
+        });
+      }
 
       const now = isoNow();
       const affected = await tx.executeAffected(

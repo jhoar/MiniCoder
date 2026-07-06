@@ -155,7 +155,16 @@ export class SkipFeatureHandler implements CommandHandler<
           FeatureExecutionState.BLOCKED,
         );
         const dependentNow = isoNow();
-        await tx.execute(
+        // Post-merge review fix: use executeAffected (not a bare execute) so a concurrent version
+        // change on this dependent between the SELECT above and this UPDATE is detected — the
+        // predicate's own `AND version = ?` would otherwise silently affect 0 rows while the
+        // workflow/outbox events below were still written unconditionally, falsely claiming a
+        // transition that never happened. Skip event emission entirely on a CAS miss rather than
+        // failing the whole SkipFeatureCommand — the dependent's actual current state (whatever
+        // the concurrent writer set it to) is authoritative, and a later skip/reconcile pass (or
+        // this same cascade re-running against a fresh version) can still catch it if it's still
+        // eligible.
+        const dependentAffected = await tx.executeAffected(
           `UPDATE feature_runs SET current_execution_state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
           [
             FeatureExecutionState.BLOCKED,
@@ -165,6 +174,9 @@ export class SkipFeatureHandler implements CommandHandler<
             dependent.version,
           ],
         );
+        if (dependentAffected === 0) {
+          continue;
+        }
         await writeWorkflowEvent(tx, {
           featureRunId: dependent.id,
           projectId,

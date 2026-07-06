@@ -54,23 +54,39 @@ jobs:
         run: pnpm --filter @minicoder/triggerdev build
 
       - name: Verify task IDs
+        # Post-merge review fix (MEDIUM-2): this used to check only a curated 9-ID subset of
+        # ALL_TASK_IDS, so a deploy could pass validation while a real canonical task (e.g.
+        # run-coder/run-review/run-merge-gate/import-backlog) was missing from the bundle. Now
+        # asserts exact set equality against packages/triggerdev/src/task-ids.ts's ALL_TASK_IDS —
+        # the single source of truth — failing on both a missing and an unexpected task ID.
         run: |
           node -e "
           const { ALL_TASK_IDS } = require('./packages/triggerdev/dist/task-ids.js');
           const expected = [
+            'ingest-specification',
             'planning-readiness-assessment',
             'start-clarification',
+            'record-clarification-answer',
+            'complete-clarification',
             'generate-implementation-plan',
             'generate-feature-backlog',
+            'validate-backlog',
+            'request-plan-approval',
             'activate-approved-backlog',
             'start-next-feature',
+            'run-coder',
+            'run-review',
+            'run-merge-gate',
             'github-reconciliation',
             'export-plan',
             'export-backlog',
+            'import-backlog',
           ];
           const missing = expected.filter(id => !ALL_TASK_IDS.includes(id));
-          if (missing.length > 0) {
-            console.error('Missing task IDs:', missing);
+          const unexpected = ALL_TASK_IDS.filter(id => !expected.includes(id));
+          if (missing.length > 0 || unexpected.length > 0) {
+            if (missing.length > 0) console.error('Missing task IDs:', missing);
+            if (unexpected.length > 0) console.error('Unexpected task IDs not in the deploy checklist:', unexpected);
             process.exit(1);
           }
           console.log('All', ALL_TASK_IDS.length, 'task IDs verified:', ALL_TASK_IDS.join(', '));

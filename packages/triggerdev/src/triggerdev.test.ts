@@ -16,6 +16,7 @@ import {
   SkipFeatureHandler,
   HumanUnblockFeatureHandler,
   type SkipFeaturePayload,
+  type HumanUnblockFeaturePayload,
 } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from './test-helpers.js';
@@ -779,6 +780,217 @@ describe('HumanUnblockFeatureCommand (issue #53)', () => {
         correlationId: 'corr-2',
       }),
     ).rejects.toThrow();
+  });
+
+  it('rejects unblocking a skip-cascade-blocked dependent whose dependency is still unmerged (post-merge review HIGH-1)', async () => {
+    const db = createTestDb();
+    const skipProjectId = 'proj-human-unblock-skip-cascade';
+    insertTestProject(db, skipProjectId);
+    const planId = `plan-${skipProjectId}`;
+    const targetFrId = `fr-${skipProjectId}-target`;
+    const sourceFrId = `fr-${skipProjectId}-source`;
+    const skippedRunId = `run-${skipProjectId}-target`;
+    const dependentRunId = `run-${skipProjectId}-source`;
+
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, skipProjectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-TARGET', 'Target feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [targetFrId, planId, skipProjectId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-SOURCE', 'Dependent feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [sourceFrId, planId, skipProjectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    await db.execute(
+      `INSERT INTO feature_dependencies (id, source_fr_id, target_fr_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
+      [`dep-${skipProjectId}`, sourceFrId, targetFrId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [skippedRunId, targetFrId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [dependentRunId, sourceFrId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+
+    // Skip the upstream target — cascades the dependent to `blocked` (issue #52).
+    const executor = new TransactionalCommandExecutor(db);
+    await executor.execute(new SkipFeatureHandler(), {
+      commandId: 'cmd-skip-cascade-1',
+      idempotencyKey: 'idem-skip-cascade-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId: skipProjectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({
+        actorId: 'operator-1',
+        actorRole: 'approver',
+        correlationId: 'corr-skip-cascade-1',
+      }),
+      correlationId: 'corr-skip-cascade-1',
+    } satisfies CommandEnvelope<SkipFeaturePayload>);
+
+    const blockedRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(blockedRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
+    const dependentVersion = blockedRows[0]!.version;
+
+    // A human unblock of the dependent must be rejected — its dependency (the skipped feature)
+    // will never reach `merged`, so unblocking would strand it again with a misleading successful
+    // result (a naive fix would have let this proceed to `approved_pending_execution`).
+    await expect(
+      executor.execute(new HumanUnblockFeatureHandler(), {
+        commandId: 'cmd-unblock-skip-cascade-1',
+        idempotencyKey: 'idem-unblock-skip-cascade-1',
+        payload: {
+          featureRunId: dependentRunId,
+          projectId: skipProjectId,
+          expectedVersion: dependentVersion,
+          notes: 'Attempting to unblock despite the unmerged upstream dependency.',
+        },
+        actor: humanActor({
+          actorId: 'approver-1',
+          actorRole: 'approver',
+          correlationId: 'corr-unblock-skip-cascade-1',
+        }),
+        correlationId: 'corr-unblock-skip-cascade-1',
+      } satisfies CommandEnvelope<HumanUnblockFeaturePayload>),
+    ).rejects.toThrow(/not yet merged/i);
+
+    const stillBlockedRows = await db.query<{ current_execution_state: string }>(
+      `SELECT current_execution_state FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(stillBlockedRows[0]?.current_execution_state).toBe(FeatureExecutionState.BLOCKED);
+  });
+});
+
+// ── Post-merge review regression: skip-cascade CAS-miss on a dependent (MEDIUM-1) ──────────
+
+describe('SkipFeatureCommand dependent-cascade CAS handling (post-merge review MEDIUM-1)', () => {
+  it('skips event emission for a dependent whose version changed concurrently, without failing the command', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-skip-cascade-cas';
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    const targetFrId = `fr-${projectId}-target`;
+    const sourceFrId = `fr-${projectId}-source`;
+    const skippedRunId = `run-${projectId}-target`;
+    const dependentRunId = `run-${projectId}-source`;
+
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-TARGET', 'Target feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [targetFrId, planId, projectId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-SOURCE', 'Dependent feature', 'Description', 'feature', 1, ?, 0, 1, datetime('now'), datetime('now'))`,
+      [sourceFrId, planId, projectId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+    await db.execute(
+      `INSERT INTO feature_dependencies (id, source_fr_id, target_fr_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
+      [`dep-${projectId}`, sourceFrId, targetFrId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [skippedRunId, targetFrId, FeatureExecutionState.HUMAN_REQUIRED],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [dependentRunId, sourceFrId, FeatureExecutionState.APPROVED_PENDING_EXECUTION],
+    );
+
+    // Genuinely simulating two interleaved transactions isn't possible against a single
+    // better-sqlite3 connection (CLAUDE.md's Cross-Dialect Testing section — same reason
+    // Postgres-only suites exist for other concurrency scenarios). Instead, wrap the DbClient so
+    // that the instant SkipFeatureHandler's cascade issues its per-dependent UPDATE, a real
+    // concurrent-writer-style version bump is applied first, *inside the same transaction*,
+    // immediately before the handler's own predicate-matched UPDATE runs — so the handler's
+    // `executeAffected` call genuinely returns 0 for the right reason (a real version mismatch at
+    // UPDATE time), not a contrived assertion.
+    const dependentCascadeUpdatePattern =
+      /UPDATE feature_runs SET current_execution_state = \?, version = \?, updated_at = \? WHERE id = \? AND version = \?/;
+    const racingDb: DbClient = {
+      query: (sql, params) => db.query(sql, params),
+      execute: (sql, params) => db.execute(sql, params),
+      executeAffected: (sql, params) => db.executeAffected(sql, params),
+      close: () => db.close(),
+      transaction: (fn) =>
+        db.transaction((tx) => {
+          const wrappedTx = {
+            query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
+              tx.query<T>(sql, params),
+            execute: (sql: string, params?: unknown[]) => tx.execute(sql, params),
+            executeAffected: async (sql: string, params?: unknown[]) => {
+              if (dependentCascadeUpdatePattern.test(sql) && params?.[3] === dependentRunId) {
+                await tx.execute(
+                  `UPDATE feature_runs SET version = version + 1, updated_at = datetime('now') WHERE id = ?`,
+                  [dependentRunId],
+                );
+              }
+              return tx.executeAffected(sql, params);
+            },
+          };
+          return fn(wrappedTx);
+        }),
+    };
+
+    const executor = new TransactionalCommandExecutor(racingDb);
+    const result = await executor.execute(new SkipFeatureHandler(), {
+      commandId: 'cmd-skip-cas-1',
+      idempotencyKey: 'idem-skip-cas-1',
+      payload: {
+        featureRunId: skippedRunId,
+        projectId,
+        expectedVersion: 1,
+        notes: 'Cannot be resolved; abandoning automation.',
+      },
+      actor: humanActor({ actorId: 'operator-1', actorRole: 'approver', correlationId: 'corr-1' }),
+      correlationId: 'corr-1',
+    } satisfies CommandEnvelope<SkipFeaturePayload>);
+
+    // The skip itself still succeeds — only the dependent cascade CAS-misses.
+    expect(result.resultingState).toBe(FeatureExecutionState.SKIPPED);
+
+    // The dependent's row is untouched by the cascade (still approved_pending_execution, and its
+    // version reflects only the injected concurrent bump, not the handler's own update) — proving
+    // the UPDATE genuinely affected 0 rows rather than silently overwriting the concurrent write.
+    const dependentRows = await db.query<{ current_execution_state: string; version: number }>(
+      `SELECT current_execution_state, version FROM feature_runs WHERE id = ?`,
+      [dependentRunId],
+    );
+    expect(dependentRows[0]?.current_execution_state).toBe(
+      FeatureExecutionState.APPROVED_PENDING_EXECUTION,
+    );
+    expect(dependentRows[0]?.version).toBe(2);
+
+    // No false workflow/outbox event was emitted for the CAS-missed dependent.
+    const events = await db.query<{ event_type: string }>(
+      `SELECT event_type FROM workflow_events WHERE feature_run_id = ?`,
+      [dependentRunId],
+    );
+    expect(events).toHaveLength(0);
   });
 });
 

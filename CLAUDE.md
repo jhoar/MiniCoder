@@ -1327,14 +1327,22 @@ type integer` on insert/update; `operator does not exist: boolean = integer` on 
   different feature for the project again. `ResolveDisagreementCommand`/
   `ResumeFeatureExecutionCommand` correctly do **not** clear it — the feature run stays active,
   just at a different execution state.
-- **A human-initiated `blocked` (via `BlockFeatureCommand`) has no matching human-initiated
-  unblock — this is a known, documented limitation, not an oversight.**
-  `UnblockFeatureCommand`'s guard (Phase 8) checks `feature_dependencies`, not "a human said this
-  is unblocked now"; a feature blocked this way with no unmet dependency will never satisfy that
-  guard automatically. Recovering it currently requires `minicoder state repair`. `RetryFeatureCommand`
-  is not reachable from `blocked` either (its `fromState` is `human_required` only) — this is the
-  same "handler exists, full recovery path lands later" posture Phase 8 already left
-  `UnblockFeatureHandler` in for several phases.
+- **`HumanUnblockFeatureCommand` (issue #53) is the human-initiated `blocked ->
+approved_pending_execution` unblock** — distinct from `UnblockFeatureCommand`'s automatic,
+  dependency-driven counterpart (Phase 8), whose guard checks `feature_dependencies` and never
+  fires for a purely human-initiated `blocked` (via `BlockFeatureCommand`, with no unmet
+  dependency to ever clear). `RetryFeatureCommand` still isn't reachable from `blocked` (its
+  `fromState` is `human_required` only).
+  **Dependency guard (post-merge PR review fix, HIGH-1):** `HumanUnblockFeatureHandler` originally
+  transitioned unconditionally, with no dependency check at all — including the issue #52
+  skip-cascade case, where a dependent blocked because its upstream dependency was `skipped` (and
+  can therefore never reach `merged`) would appear successfully "unblocked" into
+  `approved_pending_execution`, while `SelectFeatureHandler`'s own dependency guard (the real
+  dependency authority) would still reject it forever. Fixed by re-running the identical
+  unmet-dependency query `SelectFeatureHandler` uses before allowing the transition, rejecting
+  with the same `unmet-dependencies` `CommandError` type. There is still no dependency-waiver
+  mechanism — a human wanting to force such a feature through must first resolve (or retry) the
+  upstream dependency to `merged`, not bypass this check.
 - **`SKIPPED` is a new terminal `FeatureExecutionState`, added to the glossary before use** (per
   the glossary's own "no new state without adding it to docs/00 first" rule). A `skipped` feature
   never reaches `merged`, so any downstream feature depending on it via `feature_dependencies` will

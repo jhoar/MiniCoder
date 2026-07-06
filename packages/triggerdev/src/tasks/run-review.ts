@@ -42,6 +42,13 @@ export type { RunReviewPayload };
 export interface RunReviewResult {
   projectId: string;
   featureRunId: string;
+  /** True only when THIS invocation actually invoked a `ReviewerAgentAdapter`/`ArbiterAgentAdapter`
+   * and produced a fresh outcome — false for every short-circuit path (no matching feature run,
+   * wrong current state, no tracked PR, or — per issue #46 — a prior-occurrence-marker hit for the
+   * same PR head commit). `reviewed: false, decision: 'approved'` specifically means "this exact
+   * commit was already reviewed and found clean by an earlier invocation; nothing new happened
+   * here," not "this commit has no review coverage." Do not read `reviewed` as "is this commit
+   * covered by review" — check `review_occurrence_markers`/`review_findings` for that. */
   reviewed: boolean;
   decision: 'approved' | 'changes_requested' | 'escalated' | null;
 }
