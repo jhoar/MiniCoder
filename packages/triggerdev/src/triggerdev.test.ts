@@ -1426,6 +1426,12 @@ function makeSecrets(values: Record<string, string>): SecretBackend {
       if (!v) throw new MissingSecretError(k);
       return v;
     },
+    set: async (k, v) => {
+      values[k] = v;
+    },
+    delete: async (k) => {
+      delete values[k];
+    },
     list: async () => [],
   };
 }

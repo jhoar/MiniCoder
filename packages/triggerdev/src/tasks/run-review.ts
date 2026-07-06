@@ -12,6 +12,8 @@ import {
   generateId,
   normalizeReviewerFindings,
   insertReviewFindings,
+  findReviewOccurrenceMarker,
+  recordReviewOccurrenceMarker,
   findRepeatedFinding,
   insertDisagreementRecord,
   recordArbiterDisposition,
@@ -190,6 +192,7 @@ interface FeatureRunRow {
 
 interface PullRequestRow {
   pr_number: number;
+  head_sha: string | null;
 }
 
 export interface RunReviewDeps {
@@ -292,13 +295,27 @@ export async function runImpl(
     [projectId],
   );
   const prRows = await db.query<PullRequestRow>(
-    `SELECT pr_number FROM pull_requests WHERE feature_run_id = ?`,
+    `SELECT pr_number, head_sha FROM pull_requests WHERE feature_run_id = ?`,
     [featureRunId],
   );
   const repo = repoRows[0];
   const pr = prRows[0];
   if (!repo || !pr) {
     return { projectId, featureRunId, reviewed: false, decision: null };
+  }
+
+  // Issue #46: checked BEFORE invoking the reviewer adapter at all. If this exact PR head commit
+  // was already fully reviewed with a clean (approved) outcome, a retry (e.g. a duplicate task
+  // trigger, or a crash after the first attempt's clean-review write already committed) must not
+  // re-invoke the adapter and mint a new reviewCycle for a commit that's already been reviewed.
+  if (pr.head_sha) {
+    const priorOccurrence = await findReviewOccurrenceMarker(db, {
+      featureRunId,
+      headSha: pr.head_sha,
+    });
+    if (priorOccurrence) {
+      return { projectId, featureRunId, reviewed: false, decision: 'approved' };
+    }
   }
 
   const cycleRows = await db.query<{ maxCycle: number | null }>(
@@ -493,12 +510,24 @@ export async function runImpl(
     if (!stillBlocking) {
       // The Arbiter dismissed every blocking finding this cycle; nothing left to request changes
       // for. Record the (now downgraded) findings for audit and stay at under_review, same as the
-      // plain "no blocking findings" path below.
-      await insertReviewFindings(db, {
-        featureRunId,
-        reviewerRunId: agentRunId,
-        reviewCycle,
-        findings: effectiveFindings,
+      // plain "no blocking findings" path below. Issue #46: the findings write and the occurrence
+      // marker commit atomically together, so a crash between them can't leave one without the
+      // other, and a retry's pre-adapter marker check (above) will find this recorded.
+      await db.transaction(async (tx) => {
+        await insertReviewFindings(tx, {
+          featureRunId,
+          reviewerRunId: agentRunId,
+          reviewCycle,
+          findings: effectiveFindings,
+        });
+        if (pr.head_sha) {
+          await recordReviewOccurrenceMarker(tx, {
+            featureRunId,
+            headSha: pr.head_sha,
+            reviewCycle,
+            outcome: 'approved',
+          });
+        }
       });
       return { projectId, featureRunId, reviewed: true, decision: 'approved' };
     }
@@ -548,12 +577,25 @@ export async function runImpl(
 
   // Only non_blocking/nit/question/out_of_scope findings (or none at all) — no transition to
   // piggyback the write on, so this is the one path that still writes findings as a standalone
-  // call; the feature run stays at under_review (Phase 12's Merge Gate owns the next hop).
-  await insertReviewFindings(db, {
-    featureRunId,
-    reviewerRunId: agentRunId,
-    reviewCycle,
-    findings,
+  // call; the feature run stays at under_review (Phase 12's Merge Gate owns the next hop). Issue
+  // #46: the findings write and the occurrence marker commit atomically in one transaction, and a
+  // retry's pre-adapter marker check (above) finds this recorded instead of re-invoking the
+  // adapter and minting a new reviewCycle for an already-reviewed commit.
+  await db.transaction(async (tx) => {
+    await insertReviewFindings(tx, {
+      featureRunId,
+      reviewerRunId: agentRunId,
+      reviewCycle,
+      findings,
+    });
+    if (pr.head_sha) {
+      await recordReviewOccurrenceMarker(tx, {
+        featureRunId,
+        headSha: pr.head_sha,
+        reviewCycle,
+        outcome: 'approved',
+      });
+    }
   });
   return { projectId, featureRunId, reviewed: true, decision: 'approved' };
 }

@@ -190,6 +190,77 @@ describe('run-review', () => {
     expect(findings[0]?.severity).toBe('non_blocking');
   });
 
+  // Issue #46: simulates a retry after the clean-review path already committed once for the same
+  // PR head commit. Before the fix, a retry would recompute reviewCycle = MAX(review_cycle) + 1
+  // and re-invoke the reviewer adapter, duplicating audit-only findings under a new cycle for a
+  // commit that was already fully reviewed. The occurrence-marker check must short-circuit before
+  // ever calling the adapter again.
+  it('a retry for the same PR head commit does not re-invoke the adapter or duplicate findings', async () => {
+    const db = createTestDb();
+    insertTestProject(db, PROJECT_ID);
+    const { featureRunId } = await seedUnderReviewFeatureRun(db);
+    await registerReviewerAdapter(db);
+
+    let adapterInvocations = 0;
+    const adapter: ReviewerAgentAdapter = {
+      role: 'ReviewerAgentAdapter',
+      async run() {
+        adapterInvocations += 1;
+        return {
+          decision: 'approved',
+          findings: [{ severity: 'non_blocking', category: 'style', description: 'minor nit' }],
+        };
+      },
+    };
+    const deps: RunReviewDeps = {
+      reviewerAdapterFactory: async () => adapter,
+      githubClientFactory: async () => fakeGithubClient(),
+    };
+
+    const first = await runImpl(
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-2b',
+        idempotencyKey: 'idem-2b-first',
+        reviewerAdapterName: 'FakeReviewerAdapter',
+      },
+      db,
+      deps,
+    );
+    expect(first.decision).toBe('approved');
+    expect(adapterInvocations).toBe(1);
+
+    // Retry: same feature run, same PR head_sha (unchanged in the fixture) — must not re-invoke
+    // the adapter or write a second review cycle.
+    const second = await runImpl(
+      {
+        projectId: PROJECT_ID,
+        featureRunId,
+        correlationId: 'corr-2b',
+        idempotencyKey: 'idem-2b-second',
+        reviewerAdapterName: 'FakeReviewerAdapter',
+      },
+      db,
+      deps,
+    );
+    expect(second.decision).toBe('approved');
+    expect(second.reviewed).toBe(false);
+    expect(adapterInvocations).toBe(1);
+
+    const findings = await db.query<{ review_cycle: number }>(
+      `SELECT review_cycle FROM review_findings WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(findings).toHaveLength(1);
+
+    const markers = await db.query<{ head_sha: string }>(
+      `SELECT head_sha FROM review_occurrence_markers WHERE feature_run_id = ?`,
+      [featureRunId],
+    );
+    expect(markers).toHaveLength(1);
+  });
+
   it('a blocking finding transitions under_review -> changes_requested -> fixing', async () => {
     const db = createTestDb();
     insertTestProject(db, PROJECT_ID);

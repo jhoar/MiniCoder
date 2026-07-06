@@ -8,3 +8,8 @@ export {
   reviewFindingId,
   type InsertReviewFindingsOptions,
 } from './write-findings.js';
+export {
+  findReviewOccurrenceMarker,
+  recordReviewOccurrenceMarker,
+  type ReviewOccurrenceMarker,
+} from './occurrence-marker.js';
