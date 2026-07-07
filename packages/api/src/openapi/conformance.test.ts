@@ -88,6 +88,7 @@ describe('OpenAPI conformance', () => {
       { path: '/github-links', method: 'get', name: 'projectId', required: false },
       { path: '/agent-runs', method: 'get', name: 'projectId', required: false },
       { path: '/triggerdev-runs', method: 'get', name: 'projectId', required: false },
+      { path: '/workflow-events', method: 'get', name: 'projectId', required: false },
       // projectId — required at runtime via each route file's requireProjectId() helper
       { path: '/specification-inputs', method: 'get', name: 'projectId', required: true },
       { path: '/planning-readiness-assessments', method: 'get', name: 'projectId', required: true },
