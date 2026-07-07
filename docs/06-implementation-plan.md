@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.29
+> Version: 1.0.30
 > Last-updated: 2026-07-07
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -1762,7 +1762,9 @@ costs,artifacts,adapters,design-doc,pause,resume}.ts` — one Commander command 
   barrel export mixes HTTP client/config concerns with Ink presentation concerns — see CLAUDE.md's
   Ink Text UI Operational Constraints section. Tracked as issue #60.
 
-## Phase 15 — Next.js Web UI
+## Phase 15 — Next.js Web UI ✓
+
+> **Status: Complete** (2026-07-07)
 
 Deliver dashboard, planning review, clarification workflow, feature detail, PR/review detail,
 disagreements, human-required queue, cost dashboard, artifact manager, adapter manager, state-health
@@ -1770,6 +1772,80 @@ page, and design-document review page.
 
 Acceptance: the Web UI uses the API only; RBAC is enforced by the backend; human approvals work;
 artifact exports are visible as snapshots.
+
+**Delivered modules:**
+
+- `packages/web` (new `@minicoder/web` package) — the first Next.js/React 18/App Router package in
+  this repo, and the first package whose `tsconfig.json` deliberately does **not** extend
+  `tsconfig.base.json`: Next's own `module: esnext`/`moduleResolution: bundler` compiler settings
+  are fundamentally incompatible with the shared CommonJS base config, and `next build` performs
+  its own full type-check, so there is no dual-emit conflict to reconcile — this is a documented
+  one-off, not a precedent for retrofitting other packages. Pinned to `next@14.2.18`/`react@^18.3.1`
+  for ESLint-8/React-18 alignment, mirroring the same "pin the last CJS/tooling-compatible major"
+  rationale CLAUDE.md already documents for `ink@3.2.0`/`@octokit/rest@^19`.
+  - `src/lib/api-client.ts` — the injectable-`fetchImpl` `ApiClient` (same shape as
+    `packages/tui/src/client/api-client.ts`), covering every read-model endpoint plus every
+    generic-dispatch/dedicated-route command this phase's pages issue. Deliberately kept free of
+    the `server-only` import so unit tests can construct it directly.
+  - `src/lib/api-server.ts` — a thin `server-only`-guarded wrapper (`getApiClient()`) around
+    `api-client.ts`, imported by every Server Component/Server Action. No Route-Handler proxy layer
+    was added — there is no independent Web-UI session/identity system to justify one; the backend's
+    static-API-key model is the sole RBAC authority, reached directly from the Next.js server
+    process. Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` env vars the Text UI already
+    uses (`src/lib/config.ts`), not a new `WEB_*` variant.
+  - `src/lib/role-rank.ts` — a small, deliberately duplicated UX-only mirror of
+    `packages/core/src/auth/guards.ts`'s `ROLE_RANK`/`meetsRole`, used only to pre-emptively hide a
+    button a user's role would fail server-side; every command path still handles a real 403
+    gracefully rather than trusting this check.
+  - `src/lib/action-result.ts` — the `ActionResult<T>` discriminated type and `runCommandAction()`
+    helper every Server Action returns through, since Next.js serializes a thrown error across the
+    Server Action boundary into an opaque digest in production; `newIdempotencyKey()` mints a fresh
+    `crypto.randomUUID()` per logical submission, generated inside the Server Action body (the
+    server is the trust/generation boundary, never browser JS).
+  - `src/components/{table,status-badge,key-value}.tsx` — plain server-renderable presentational
+    primitives (no `ink-table`-style dependency, matching Phase 14's "hand-roll rather than add a
+    dependency" posture). `src/components/command-button.tsx` is the shared
+    call-a-Server-Action-from-a-click-handler wrapper (a supported Next.js 14 pattern not requiring
+    a `<form action>`); uses plain `useState` for its pending flag rather than `useTransition`,
+    since React 18's `TransitionFunction` type requires a synchronous callback and doesn't officially
+    support `async` transitions until React 19.
+  - `src/components/actor-context.tsx` — `ActorProvider`/`useActor()`/`useMeetsRole()`; the root
+    layout fetches `GET /whoami` once per request and passes it down via this context, rather than
+    every nested Client Component re-fetching it.
+  - `src/app/{dashboard,planning,clarification,features,features/[id],pull-requests/[number],
+agent-runs,findings,disagreements,costs,budgets,artifacts,adapters,design-document,human-required,
+state-health,settings}/` — all 17 docs/05 §5 routes, each a Server Component reading directly via
+    `api-server.ts` and (where applicable) a colocated `actions.ts` of Server Actions. - `/design-document` and `/adapters` are explicitly **read-only**: no
+    generate/approve/request-revision design-document command handler, and no adapter-mutation
+    command, exists anywhere in `packages/core`/`packages/api` yet (Phase 17 and untracked future
+    work respectively). Their action buttons render visibly disabled with an honest
+    "not available yet" label rather than being silently omitted or wired to a nonexistent
+    endpoint — the same posture CLAUDE.md documents for other honestly-labeled gaps (e.g. issue
+    #61). - `/findings` and `/pull-requests/[number]` fetch-and-aggregate client-side (across a project's
+    feature runs, or across paginated `/pull-requests` pages respectively) rather than adding new
+    API filters, since neither `GET /review-findings` nor `GET /pull-requests` supports the needed
+    filter today and this repo's expected per-project row volume makes that an acceptable
+    simplification (flagged inline in each file).
+  - `src/lib/api-client.test.ts`, `src/lib/role-rank.test.ts` — Vitest unit tests (fake `fetchImpl`,
+    same convention as `HttpPlanProvider`'s/`packages/tui`'s own client tests).
+  - `src/web-e2e.integration.test.ts` — direct structural port of
+    `packages/tui/src/tui-e2e.integration.test.ts`: boots the real `buildApp()` against a throwaway
+    in-memory SQLite DB and drives `ApiClient` against it over genuine HTTP — this phase's mandatory
+    "runnable demo scenario." Playwright browser-level smoke testing was considered and deliberately
+    deferred (not wired into CI) rather than added speculatively, since this environment's CI
+    browser-sandbox support wasn't verified as part of this phase.
+  - Root `package.json`: `packages/web` is excluded from both the ordered `tsc -p ...` typecheck
+    chain (it is a pure leaf — nothing imports its compiled output) and the trailing
+    `pnpm -r --filter !...` pass (`next build` already performs its own full type-check); `lint` now
+    also runs `pnpm --filter @minicoder/web lint` (`next lint`, via `packages/web/.eslintrc.json`'s
+    own `next/core-web-vitals` config, independent of the root `.eslintrc.cjs`, which gained a
+    `packages/web/**` ignore pattern). `.gitignore` gained `.next/`.
+- **One small, additive `packages/api` read-model change**: `ClarificationQuestionRow` (and
+  `getClarificationSession()`'s query) gained a `version` column — `RecordClarificationAnswerCommand`
+  requires `expectedQuestionVersion`, but no existing caller (there was no Web UI before this phase)
+  needed to discover that value, so it was never selected. Mirrors the "small, additive API change"
+  precedent Phase 14 already established for `whoami`/`triggerdev-runs`/`human-required-items`/
+  `status.version`.
 
 ## Phase 16 — Observability, Cost, and Recovery
 

@@ -73,7 +73,17 @@ migration); and the Ink Text UI implementation — the new `@minicoder/tui` pack
 features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,pause,resume}` CLI
 commands, all calling the Orchestrator API over HTTP only, plus four small additive API read
 routes (`whoami`, `triggerdev-runs`, `human-required-items`, and a `version` field added to
-`GET /status`) needed to back them (Phase 14, no new migration).
+`GET /status`) needed to back them (Phase 14, no new migration); and the Next.js Web UI
+implementation — the new `@minicoder/web` package (the first Next.js/React/App Router dependency in
+this repo, and the first package whose `tsconfig.json` does not extend `tsconfig.base.json`), its
+server-only `ApiClient`/`getApiClient()` HTTP layer (no client-exposed API key), Server-Action-based
+command dispatch with per-submission `Idempotency-Key` generation, and all seventeen
+`docs/05-ui-specification.md` §5 routes (`dashboard`, `planning`, `clarification`, `features`,
+`features/[id]`, `pull-requests/[number]`, `agent-runs`, `findings`, `disagreements`, `costs`,
+`budgets`, `artifacts`, `adapters`, `design-document`, `human-required`, `state-health`, `settings`),
+with `design-document`/`adapters` left explicitly read-only pending a not-yet-built backend command,
+plus one small additive `ClarificationQuestionRow.version` read-model column (Phase 15, no new
+migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -2046,6 +2056,110 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   (`status.test.ts`, `pause.test.ts`) made newly visible via `pnpm --filter @minicoder/cli test`.
   Fixed to `cd ../.. && vitest run packages/cli/src/`, matching the established sibling pattern.
 
+## Next.js Web UI Operational Constraints (`packages/web/`)
+
+- **`@minicoder/web` is the first Next.js/React 18/App Router package in this repo, and the first
+  package whose `tsconfig.json` deliberately does not extend `tsconfig.base.json`.** Pinned to
+  `next@14.2.18`/`react@^18.3.1` — the same "pin the last tooling-compatible major" reasoning
+  already documented for `ink@3.2.0`/`@octokit/rest@^19`: Next 14 stays compatible with this repo's
+  ESLint 8 (`eslint-config-next@14.2.18` targets it), whereas newer Next majors push toward ESLint
+  9 flat config. `tsconfig.base.json`'s `module: "CommonJS"`/`moduleResolution: "Node"` is
+  fundamentally incompatible with Next's own `module: "esnext"`/`moduleResolution: "bundler"`
+  requirements, and `next build` performs its own complete type-check (never invoking this repo's
+  `tsc`-based pipeline) — so `packages/web/tsconfig.json` uses the standard Next-generated shape
+  instead. This is a deliberate, one-off divergence: `packages/web` is a pure leaf (nothing imports
+  its compiled output), so it doesn't need to fit the shared CommonJS contract other packages fit
+  for cross-package type imports. Do not use this as precedent to retrofit any other package.
+- **No client-exposed API key — every Orchestrator API call happens server-side.**
+  `src/lib/api-client.ts` is the injectable-`fetchImpl` `ApiClient` (structurally identical to
+  `packages/tui/src/client/api-client.ts`); `src/lib/api-server.ts` wraps it behind an
+  `import 'server-only'` guard (`getApiClient()`) so an accidental Client Component import fails
+  the build instead of silently shipping `MINICODER_API_KEY` into the browser bundle. Every page is
+  a Server Component calling `api-server.ts` directly — there is no Route-Handler proxy layer and
+  no independent Web-UI session/identity system: RBAC is entirely the backend's static-API-key
+  model (docs/05 §10's "RBAC is enforced by the backend" acceptance wording, taken literally), and
+  a Route-Handler proxy would just re-solve the same key-injection problem with an extra hop and no
+  benefit. `api-client.ts` deliberately has no `server-only` import of its own, precisely so unit
+  tests can construct `ApiClient` directly with a fake `fetchImpl` — `server-only` throws
+  unconditionally when imported outside a Next.js server-component bundle (confirmed empirically),
+  so the guard must live one layer up, in the thin `api-server.ts` wrapper, not in the class itself.
+  Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` env vars the Text UI already established
+  (`src/lib/config.ts`) — there is exactly one Orchestrator API and one key per deployment, so a
+  `WEB_*`-prefixed variant would be a needless parallel configuration surface.
+- **RBAC is backend-enforced only; the frontend's own role check is UX decoration, not a security
+  boundary.** The root layout (`app/layout.tsx`) calls `GET /whoami` once per request and passes the
+  resolved `ActorIdentity` down via `components/actor-context.tsx`'s `ActorProvider`/`useActor()`/
+  `useMeetsRole()`. `lib/role-rank.ts` is a small, **deliberately duplicated** local mirror of
+  `packages/core/src/auth/guards.ts`'s `ROLE_RANK`/`meetsRole` (commented as a UX-only mirror, not
+  the enforcement point) — kept local rather than importing `@minicoder/core` so this leaf UI
+  package carries no runtime dependency on a backend-domain package for a one-line rank comparison.
+  Every command-issuing `CommandButton` (`components/command-button.tsx`) pre-emptively hides
+  itself when `useMeetsRole()` says no, purely to avoid a pointless round trip — but a 403 from the
+  real backend call is always caught and rendered as an inline "insufficient role" message, never a
+  crash, and no client-side check is ever treated as authoritative.
+- **Command-issuing UI = Next.js Server Actions, each minting its own per-submission
+  `Idempotency-Key` inside the action body.** `lib/action-result.ts`'s `newIdempotencyKey()` calls
+  `crypto.randomUUID()` **inside the Server Action**, not in browser JS — the server is the only
+  trust/generation boundary for this value, mirroring the CLI/TUI's own "caller generates one key
+  per logical submission" convention, adapted for the reality that here "the caller" is one Server
+  Action invocation triggered by one user click, not a value computed client-side and passed in.
+  `runCommandAction()` wraps every dispatch in a `try/catch`, returning a discriminated
+  `ActionResult<T>` (`{ok:true,data} | {ok:false,kind:'forbidden'|'error',detail}`) rather than
+  letting an error propagate — Next.js serializes a thrown Server Action error into an opaque
+  production digest, which would destroy the real problem-detail message the UI needs to show.
+  `CommandButton` calls its bound Server Action directly from a click handler (no `<form action>`
+  needed — a supported Next.js 14 pattern) and calls `router.refresh()` on success so the enclosing
+  Server Component page re-fetches current state, the idiomatic replacement for "re-run the read
+  after a write." It uses plain `useState` for its pending flag, not `useTransition` — React 18's
+  `TransitionFunction` type requires a synchronous, void-returning callback, so an `async` callback
+  passed to `startTransition` fails to type-check (confirmed empirically); official `async`
+  transition support only arrived in React 19. A fire-and-forget `startTransition(async () => ...)`
+  workaround would also flip `isPending` back to `false` as soon as the synchronous wrapper
+  returns, before the real request completes — manual state tracks the actual async duration.
+- **`/design-document` and `/adapters` are explicitly read-only pages.** No
+  generate/approve/request-revision design-document command handler, and no adapter-registration/
+  mutation command, exists anywhere in `packages/core`/`packages/api` today (the former is Phase 17
+  scope per this document's own Orchestrator API section above; the latter has never had a command
+  handler at all). Rather than omitting the corresponding UI affordances silently, or wiring them to
+  a nonexistent endpoint, both pages render their action buttons visibly **disabled** with an honest
+  "Not available yet" label — the same honestly-labeled-gap posture this document already applies
+  to other tracked gaps (e.g. issue #61's unwired `TaskTriggerClient`). Do not wire these buttons to
+  a real endpoint without first confirming the backend command actually exists.
+- **`/findings` and `/pull-requests/[number]` fetch-and-aggregate rather than adding new API
+  filters.** `GET /review-findings` requires `featureRunId` (findings are always scoped to one
+  feature run — there is no project-wide findings endpoint) and `GET /pull-requests` has no
+  filter-by-number parameter. Both pages fetch and search across pages/runs server-side instead of
+  extending `packages/api`'s read-models — a deliberate scope-limiting choice (avoids touching
+  `packages/api` for a UI-only convenience), acceptable given this repo's expected per-project
+  row volume; each call site documents this reasoning inline. `/disagreements` similarly has no
+  project-scoping filter on the backend (`GET /disagreements` with no filters lists every
+  disagreement across the whole deployment) — the page lists globally rather than inventing a
+  project filter, and resolution happens from the linked feature's own detail page, where the
+  feature run's current version is already known.
+- **One small, additive `packages/api` read-model change accompanied this phase:**
+  `read-models/planning.ts`'s `ClarificationQuestionRow` (and `getClarificationSession()`'s query)
+  gained a `version` column. `RecordClarificationAnswerCommand` requires `expectedQuestionVersion`,
+  but the column was never selected before this phase since no caller needed to discover it — the
+  same "small, additive API change" precedent Phase 14 established for `whoami`/`triggerdev-runs`/
+  `human-required-items`/`status.version`.
+- **Typecheck/lint wiring**: `packages/web` is excluded from both the root `package.json`'s ordered
+  `tsc -p ...` typecheck chain (nothing imports its compiled output — it is a pure leaf) **and** the
+  trailing `pnpm -r --filter !...` pass (`next build` already performs its own complete type-check;
+  running a second, differently-configured `tsc --noEmit` in addition would be redundant and could
+  produce confusing duplicate diagnostics against a tsconfig that doesn't extend the shared base).
+  `packages/web`'s own `lint` script (`next lint`, via its own `.eslintrc.json` extending
+  `next/core-web-vitals`) is independent of the root `.eslintrc.cjs` (which gained a
+  `packages/web/**` ignore pattern) — the root `lint` script now runs both in sequence.
+- **Playwright browser-level e2e smoke testing was considered and deliberately deferred, not
+  built.** This phase's mandatory "runnable demo scenario" is satisfied by
+  `src/web-e2e.integration.test.ts` (a direct structural port of
+  `packages/tui/src/tui-e2e.integration.test.ts` — boots the real `buildApp()` against a throwaway
+  in-memory SQLite DB and drives `ApiClient` against it over genuine HTTP), which needs no new CI
+  infrastructure. A true browser-level Playwright smoke pass across all 17 routes remains real,
+  documented future work — it was not added in this pass because this environment's CI
+  browser-sandbox support for headless Chromium was not verified as part of this phase, and adding
+  a test that cannot reliably run in CI would be worse than not adding it.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
@@ -2136,6 +2250,13 @@ of the `pnpm -r` tail pass in Phase 14: `packages/cli`'s new Text UI command fil
 `@minicoder/tui`'s compiled screen-render functions and `ApiClient` directly (a static import, not
 a dynamic-`import()` default-resolver pattern like the ones above, since there is no "reference
 implementation vs. injected mock" distinction for a UI-rendering package).
+
+`packages/web` (Phase 15) is deliberately **excluded** from this ordered chain, and also excluded
+from the trailing `pnpm -r --filter !...` pass — the first package to be excluded from both. It is
+a pure leaf (nothing else imports its compiled output) and its own `next build` already performs a
+complete type-check against a tsconfig that intentionally doesn't extend `tsconfig.base.json` (see
+CLAUDE.md's "Next.js Web UI Operational Constraints" section) — running the shared `tsc --noEmit`
+pass against it in addition would be redundant and could produce confusing duplicate diagnostics.
 
 When adding a new workspace package that others import for types, add it to this chain.
 

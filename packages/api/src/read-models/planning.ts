@@ -114,6 +114,11 @@ export interface ClarificationQuestionRow {
   order_index: number;
   asked_at: string | null;
   answered_at: string | null;
+  // Additive (Phase 15): `RecordClarificationAnswerCommand` requires `expectedQuestionVersion`,
+  // but this row previously omitted `version` — no caller (the API had none before the Web UI)
+  // could otherwise discover the value to submit. Mirrors the "small, additive API change"
+  // precedent from Phase 14 (whoami/triggerdev-runs/human-required-items/status.version).
+  version: number;
 }
 
 export async function getClarificationSession(
@@ -128,7 +133,7 @@ export async function getClarificationSession(
     'clarification-session',
   );
   const questions = await db.query<ClarificationQuestionRow>(
-    `SELECT id, clarification_session_id, question, round, order_index, asked_at, answered_at
+    `SELECT id, clarification_session_id, question, round, order_index, asked_at, answered_at, version
      FROM clarification_questions WHERE clarification_session_id = ? ORDER BY round ASC, order_index ASC`,
     [id],
   );
