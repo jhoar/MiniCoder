@@ -69,7 +69,7 @@ errors, cursor-paginated read routes, generic command dispatch, the dedicated
 `merge-if-ready`/`finalize-if-github-merged`/task-trigger/diagnostics routes, and a hand-authored
 OpenAPI contract enforced at route-registration time) and `minicoder api serve` (Phase 13, no new
 migration); and the Ink Text UI implementation — the new `@minicoder/tui` package (the first
-`react`/`ink` dependency in this repo) and its thirteen `minicoder {status,plan,clarification,
+`react`/`ink` dependency in this repo) and its fourteen `minicoder {status,plan,clarification,
 features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,pause,resume}` CLI
 commands, all calling the Orchestrator API over HTTP only, plus four small additive API read
 routes (`whoami`, `triggerdev-runs`, `human-required-items`, and a `version` field added to
@@ -1950,7 +1950,7 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
 - **"Human-required items" and "state-health" (docs/05 §3/§8) are not separate CLI command
   tokens** — docs/05 §4's canonical command list never named them, and inventing new top-level
   tokens not in that list (or in docs/00 §5) would violate CLAUDE.md's own "no new term without
-  updating the glossary first" rule for the _existing_ thirteen tokens, let alone unlisted ones.
+  updating the glossary first" rule for the _existing_ fourteen tokens, let alone unlisted ones.
   Instead: `minicoder features --project <id> --human-required` switches to the dedicated
   `GET /human-required-items` read model instead of `/features` — `feature_requests.state` is a
   static label set once at backlog generation and never updated to `human_required` (CLAUDE.md's
@@ -1963,7 +1963,7 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
 - **The Phase 14 command tokens were never actually added to `docs/00-glossary-and-terms.md` §5**
   before this phase, even though `docs/05-ui-specification.md` §4 already named them — a
   pre-existing documentation gap (docs/05 anticipated commands the canonical glossary never
-  listed), closed here by adding all thirteen tokens plus `MINICODER_API_URL`/`MINICODER_API_KEY`
+  listed), closed here by adding all fourteen tokens plus `MINICODER_API_URL`/`MINICODER_API_KEY`
   to docs/00 §5 in the same pass that built them.
 - **Four small, additive API changes were needed to back the Phase 14 views — all documented in
   the OpenAPI spec and covered by tests, no new migration:**
@@ -2009,7 +2009,7 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   into `buildApp()`.** `packages/api/src/server.ts`'s `serve()` never constructs or injects one, so
   `request-coder-run`/`request-review`/`request-fixes`/`recompute-merge-gate` fail with a fail-fast
   "no TaskTriggerClient configured" error against any server started via `minicoder api serve` —
-  a real, pre-existing Phase 13 gap. None of docs/05 §4's thirteen Text UI commands need these
+  a real, pre-existing Phase 13 gap. None of docs/05 §4's fourteen Text UI commands need these
   endpoints, so wiring a default `TaskTriggerClient` was out of scope for this phase; fixing it
   remains real, tracked future work, not silently dropped.
 - **The end-to-end integration test (`packages/tui/src/tui-e2e.integration.test.ts`) boots the
@@ -2018,6 +2018,33 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   demo scenario" (docs/06's Definition of Done), made an automated, CI-covered test rather than a
   manual-only runbook step. Named `*.integration.test.ts` so it runs under `pnpm test`/CI but not
   `minicoder test unit` (see "Vitest Test Command Tiers" below).
+- **Post-implementation review note (watch, not fixed): `@minicoder/tui`'s single barrel
+  (`src/index.ts`) exports the HTTP `ApiClient`/`resolveApiConfig`/`runView` alongside every
+  screen-render function.** A code review round flagged this as coupling presentation and
+  transport/config concerns in one package/entrypoint. Recorded as a real architectural watch item,
+  not fixed in this pass — splitting into subpath exports (e.g. `@minicoder/tui/client` vs.
+  `@minicoder/tui/views`) or a separate client package is a larger structural change than the
+  Phase 14 fix-review pass warranted; every current consumer (`packages/cli`) already imports
+  everything it needs from the one barrel with no ambiguity.
+- **`featureRunId` query-parameter parity (found in PR review).** `/agent-runs`, `/disagreements`,
+  `/workflow-events` (optional) and `/review-findings`, `/merge-gate-evaluations` (required) all
+  accepted/required `featureRunId` at runtime before this phase, but the hand-authored OpenAPI spec
+  never documented it on any of them — a pre-existing drift the Phase 14 addition of
+  `/triggerdev-runs` only made visible by adding _one more_ undocumented instance. Fixed by adding
+  a shared `featureRunIdQuery` (optional) and `featureRunIdQueryRequired` parameter component and
+  referencing them on all six affected paths (the five pre-existing ones plus `/triggerdev-runs`),
+  plus a `disagreementStateQuery` for `/disagreements`' equally-undocumented `state` filter.
+  `packages/api/src/openapi/conformance.test.ts` gained a parameter-parity regression that resolves
+  each operation's `$ref`s against `components.parameters` and asserts the documented `required`
+  flag matches the route handler's actual behavior — this is intentionally broader than "did I add
+  `featureRunId` to my one new route," so a future addition regresses loudly instead of silently.
+- **`packages/cli/package.json`'s `test` script was `vitest run` (no `cd ../..`), unlike every
+  other package that runs Vitest from the monorepo root (`packages/api`, `packages/tui`, etc.).**
+  Since the root `vitest.config.ts`'s `include` globs are root-relative, running it from
+  `packages/cli`'s own directory resolved to `packages/cli`'s own subtree and found zero test
+  files — a pre-existing gap (present before Phase 14) that Phase 14's own new CLI tests
+  (`status.test.ts`, `pause.test.ts`) made newly visible via `pnpm --filter @minicoder/cli test`.
+  Fixed to `cd ../.. && vitest run packages/cli/src/`, matching the established sibling pattern.
 
 ## Cross-Dialect Testing (Mandatory)
 

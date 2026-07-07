@@ -41,4 +41,51 @@ describe('OpenAPI conformance', () => {
     expect(ops.has('POST /webhooks/github')).toBe(true);
     expect(ops.has('GET /healthz')).toBe(true);
   });
+
+  /**
+   * `featureRunId` query-parameter parity (issue found in PR #59 review): several read routes
+   * accept (or require) `featureRunId` at runtime but the hand-authored spec didn't document it,
+   * so a client following the spec alone couldn't discover the parameter — or, for the two routes
+   * that require it, would see no indication it's mandatory at all. Resolves each operation's
+   * `$ref`-based parameter list against `components.parameters` and asserts the documented
+   * `required` flag matches the route handler's actual behavior (`routes/reads/{agents,
+   * governance,workflow}.ts`).
+   */
+  it('documents featureRunId (required or optional, matching runtime behavior) on every route that accepts it', () => {
+    const spec = loadOpenApiSpec() as unknown as {
+      components: { parameters: Record<string, { name: string; required: boolean }> };
+      paths: Record<string, Record<string, { parameters?: Array<{ $ref: string }> }>>;
+    };
+
+    function resolvedParamNames(
+      path: string,
+      method: string,
+    ): Array<{ name: string; required: boolean }> {
+      const operation = spec.paths[path]?.[method];
+      const refs = operation?.parameters ?? [];
+      return refs.map((p) => {
+        const key = p.$ref.replace('#/components/parameters/', '');
+        const resolved = spec.components.parameters[key];
+        if (!resolved) throw new Error(`Unresolvable parameter ref: ${p.$ref}`);
+        return { name: resolved.name, required: resolved.required };
+      });
+    }
+
+    const expectations: Array<{ path: string; method: string; name: string; required: boolean }> = [
+      { path: '/agent-runs', method: 'get', name: 'featureRunId', required: false },
+      { path: '/review-findings', method: 'get', name: 'featureRunId', required: true },
+      { path: '/disagreements', method: 'get', name: 'featureRunId', required: false },
+      { path: '/disagreements', method: 'get', name: 'state', required: false },
+      { path: '/workflow-events', method: 'get', name: 'featureRunId', required: false },
+      { path: '/merge-gate-evaluations', method: 'get', name: 'featureRunId', required: true },
+      { path: '/triggerdev-runs', method: 'get', name: 'featureRunId', required: false },
+    ];
+
+    for (const { path, method, name, required } of expectations) {
+      const params = resolvedParamNames(path, method);
+      const match = params.find((p) => p.name === name);
+      expect(match, `${method.toUpperCase()} ${path} should document '${name}'`).toBeDefined();
+      expect(match?.required).toBe(required);
+    }
+  });
 });

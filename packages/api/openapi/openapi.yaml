@@ -38,6 +38,16 @@ components:
       in: query
       required: false
       schema: { type: string }
+    featureRunIdQueryRequired:
+      name: featureRunId
+      in: query
+      required: true
+      schema: { type: string }
+    disagreementStateQuery:
+      name: state
+      in: query
+      required: false
+      schema: { type: string }
     idempotencyKey:
       name: Idempotency-Key
       in: header
@@ -312,6 +322,7 @@ paths:
       operationId: listAgentRuns
       parameters:
         - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/featureRunIdQuery'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
       responses: { '200': { description: OK } }
@@ -338,13 +349,16 @@ paths:
     get:
       operationId: listReviewFindings
       parameters:
+        - $ref: '#/components/parameters/featureRunIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing featureRunId } }
   /disagreements:
     get:
       operationId: listDisagreements
       parameters:
+        - $ref: '#/components/parameters/featureRunIdQuery'
+        - $ref: '#/components/parameters/disagreementStateQuery'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
       responses: { '200': { description: OK } }
@@ -403,6 +417,7 @@ paths:
       operationId: listWorkflowEvents
       parameters:
         - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/featureRunIdQuery'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
       responses: { '200': { description: OK } }
@@ -410,9 +425,10 @@ paths:
     get:
       operationId: listMergeGateEvaluations
       parameters:
+        - $ref: '#/components/parameters/featureRunIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing featureRunId } }
   /status:
     get:
       operationId: getStatus

@@ -41,7 +41,7 @@ a dedicated `merge-if-ready` route, and Trigger.dev task-enqueue routes), mounti
 receiver, and publishing a hand-authored OpenAPI 3.1 contract with route-registration-time
 conformance enforcement — a static API-key auth model, claim-first HTTP route idempotency for
 routes spanning an external side effect, and `minicoder api serve` (Phase 13); and the Ink Text UI
-implementation — the `@minicoder/tui` package and its thirteen `minicoder {status,plan,
+implementation — the `@minicoder/tui` package and its fourteen `minicoder {status,plan,
 clarification,features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,
 pause,resume}` CLI commands, all calling the Orchestrator API over HTTP only (Phase 14).
 Specification documents live under `docs/`.

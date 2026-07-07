@@ -13,7 +13,16 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–8 implementation**:
+- The codebase currently contains the **Phase 1–14 implementation**. This section's bullet list
+  below predates Phase 9 and was never fully expanded for Phases 9–14; for the authoritative,
+  currently-accurate per-phase delivered-modules list, see `CLAUDE.md`'s per-phase sections and
+  `docs/06-implementation-plan.md` (each phase there is marked `✓ Complete` with its own
+  "Delivered modules" list). In summary, since Phase 8 this repository has also shipped: the
+  Reference Coder Adapter and sandboxed code-generation (Phase 9); the Reference Reviewer Adapter
+  and review/fix loop (Phase 10); Disagreement/Arbiter/Human Escalation (Phase 11); the Merge Gate
+  and branch protection (Phase 12); the Fastify-based Orchestrator API (`packages/api`, Phase 13);
+  and the Ink Text UI (`packages/tui` + fourteen `minicoder` CLI commands calling that API over
+  HTTP only, Phase 14). Phases 1–8's bullets below remain accurate as far as they go:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -75,8 +84,10 @@ architecture requirements remain under `docs/`.
   - execution-orchestrator scenario coverage for dependency ordering, single-active-feature
     enforcement, budget approval flow, and sequencing continuation
 - Do not describe the repository as specification-only.
-- Phase 9 and later remain target architecture. Do not assume later phases are implemented merely
-  because their schemas, state machines, CLI scaffolds, task stubs, or types already exist.
+- Phases 9–14 are implemented (see the summary above and CLAUDE.md/docs/06 for detail); only
+  Phases 15–18 (Next.js Web UI, observability/cost/recovery, the Final Design Document Generator,
+  and future extensions) remain target architecture. Do not assume Phase 15+ is implemented merely
+  because a schema, state machine, or type already exists for it.
 - Phase 3 delivered the initial task IDs as payload-validated stubs; Phase 6 wired the
   planning/clarification/artifact tasks (`ingest-specification`, `planning-readiness-assessment`,
   `start-clarification`, `record-clarification-answer`, `complete-clarification`,
@@ -85,18 +96,20 @@ architecture requirements remain under `docs/`.
   `import-backlog`) to real core commands. Phase 7 wired `github-reconciliation`, and Phase 8 wired
   `start-next-feature`; every canonical Trigger.dev task now calls Orchestrator Core through
   `TransactionalCommandExecutor`.
-- Phase 5 is an adapter foundation and smoke conformance layer, not the full canonical provider
-  adapter runtime. Provider-specific adapters, workflow task-wrapper invocation, richer
-  provider/model/cost/token fields, and final canonical run metadata remain later-phase work unless
-  the implementation plan says otherwise.
+- Phase 5 shipped an adapter foundation and smoke conformance layer, not yet the full canonical
+  provider adapter runtime. **Superseded by Phases 9–12:** provider-specific reference adapters
+  (`adapters-coder`, `adapters-reviewer`, `adapters-planner`, `adapters-arbiter`), real
+  provider/model/cost/token fields on `agent_runs`, and Workflow Layer task-wrapper invocation
+  (`run-coder.ts`, `run-review.ts`) have all since shipped.
 - Phase 6's `planning-readiness-assessment` and `generate-implementation-plan` tasks never import a
-  concrete `PlannerAgentAdapter` implementation — the caller injects one. No reference/generic
-  planner adapter has shipped yet (docs/02 §7 names `GenericLLMPlannerAdapter` as future work), so a
-  live Trigger.dev deployment fails fast with an actionable error until one exists.
-- Phase 7's GitHub integration is implemented, but scheduled reconciliation only repairs feature
-  runs that already have a `pull_requests` row. Discovering a brand-new PR from a completely missed
-  `pr.opened` webhook remains future work because there is no branch-scoped PR discovery client
-  method yet.
+  concrete `PlannerAgentAdapter` implementation — the caller injects one. **Superseded (issue #32):**
+  `packages/adapters-planner`'s `GenericLLMPlannerAdapter` has since shipped as the reference
+  implementation; a live Trigger.dev deployment now resolves it by default via
+  `resolveDefaultPlannerAdapter()`.
+- Phase 7's GitHub integration is implemented. **Superseded (issue #35):** scheduled reconciliation
+  no longer only repairs feature runs with an existing `pull_requests` row — automated discovery of
+  a brand-new PR missed by webhooks (`GitHubClient.listPullRequestsForBranch()` +
+  `discoverMissingPullRequests()`) now runs as part of every `github-reconciliation` pass.
 - Phase 8's execution orchestrator is implemented for selecting and starting the next eligible
   feature plus threshold-only budget gating. `StartFixingHandler` and `UnblockFeatureHandler` are
   real, exported handlers with no caller yet; review/fix-loop decisions and merge commands remain
@@ -142,8 +155,14 @@ packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycl
 packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
 packages/github/                GitHub webhook receiver, inbox handlers, and Octokit client
 packages/triggerdev/            Trigger.dev Workflow Layer harness and task registrations
+packages/adapters-coder/        Reference CodexCoderAdapter + sandboxed code-generation (Phase 9)
+packages/adapters-reviewer/     Reference ClaudeReviewerAdapter, sandbox-free review seam (Phase 10)
+packages/adapters-planner/      Reference GenericLLMPlannerAdapter (issue #32)
+packages/adapters-arbiter/      Reference ClaudeArbiterAdapter (issue #51, Phase 11)
+packages/api/                   Fastify Orchestrator API: read models, command dispatch, OpenAPI (Phase 13)
+packages/tui/                   Ink Text UI: ApiClient + render views, consumed by packages/cli (Phase 14)
 packages/testing/               Deterministic fixtures, mock adapters, conformance, scenarios, and runner
-packages/cli/                   Thin Commander-based CLI
+packages/cli/                   Thin Commander-based CLI (DB-direct commands plus Phase 14's API-only TUI commands)
 infra/docker-compose.triggerdev.yml  Self-hosted Trigger.dev v4 single-node stack
 infra/docker-compose.test.yml   Disposable PostgreSQL test stack
 infra/k8s/                      Batch jobs for migrations, seed, diagnostics, reconciliation, and system tests
