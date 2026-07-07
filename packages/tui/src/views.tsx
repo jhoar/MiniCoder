@@ -292,7 +292,14 @@ export function renderRunsView(page: CursorPage<AgentRunRow>): React.ReactElemen
     {
       header: 'Cost (USD)',
       width: 10,
-      render: (r) => (r.cost_usd != null ? r.cost_usd.toFixed(4) : '-'),
+      // PostgreSQL's NUMERIC(12,6) column comes back from the `pg` driver as a string, not a
+      // number (SQLite returns a real number) — coerce defensively rather than assuming the
+      // `AgentRunRow.cost_usd: number | null` type is accurate for every dialect.
+      render: (r) => {
+        if (r.cost_usd == null) return '-';
+        const cost = Number(r.cost_usd);
+        return Number.isFinite(cost) ? cost.toFixed(4) : String(r.cost_usd);
+      },
     },
     { header: 'Feature run', width: 16, render: (r) => r.feature_run_id ?? '-' },
   ];

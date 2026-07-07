@@ -6,6 +6,7 @@ import {
   renderStatusView,
   renderActiveFeatureView,
   renderCommandResultView,
+  renderRunsView,
 } from './views.js';
 
 describe('views', () => {
@@ -92,6 +93,69 @@ describe('views', () => {
       renderActiveFeatureView({ automationState: 'running', activeFeatureRun: null }),
     );
     expect(lastFrame()).toContain('(none)');
+  });
+
+  it('renderRunsView tolerates a PostgreSQL NUMERIC cost_usd returned as a string', () => {
+    // pg returns NUMERIC(12,6) columns as strings, not numbers — AgentRunRow's `cost_usd: number
+    // | null` type is inaccurate for that dialect. This must not throw (a bare `.toFixed()` call
+    // would) and should still render a formatted amount.
+    const { lastFrame } = render(
+      renderRunsView({
+        items: [
+          {
+            id: 'run-1',
+            adapter_id: 'adapter-1',
+            project_id: 'proj1',
+            feature_run_id: 'fr-run-1',
+            role: 'coder',
+            state: 'succeeded',
+            input_summary: null,
+            output_summary: null,
+            error: null,
+            started_at: null,
+            ended_at: null,
+            tokens_used: null,
+            cost_usd: '0.030000' as unknown as number,
+            version: 1,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('coder');
+    expect(frame).toContain('0.0300');
+  });
+
+  it('renderRunsView shows "-" for a null cost_usd', () => {
+    const { lastFrame } = render(
+      renderRunsView({
+        items: [
+          {
+            id: 'run-2',
+            adapter_id: 'adapter-1',
+            project_id: 'proj1',
+            feature_run_id: null,
+            role: 'reviewer',
+            state: 'running',
+            input_summary: null,
+            output_summary: null,
+            error: null,
+            started_at: null,
+            ended_at: null,
+            tokens_used: null,
+            cost_usd: null,
+            version: 1,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+    expect(lastFrame()).toContain('reviewer');
   });
 
   it('renderCommandResultView shows the resulting state after pause/resume', () => {

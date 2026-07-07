@@ -33,6 +33,11 @@ components:
       in: query
       required: false
       schema: { type: string }
+    featureRunIdQuery:
+      name: featureRunId
+      in: query
+      required: false
+      schema: { type: string }
     idempotencyKey:
       name: Idempotency-Key
       in: header
@@ -418,6 +423,7 @@ paths:
       operationId: listTriggerdevRuns
       parameters:
         - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/featureRunIdQuery'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
       responses: { '200': { description: OK } }
