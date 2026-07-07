@@ -43,15 +43,16 @@ describe('OpenAPI conformance', () => {
   });
 
   /**
-   * `featureRunId` query-parameter parity (issue found in PR #59 review): several read routes
-   * accept (or require) `featureRunId` at runtime but the hand-authored spec didn't document it,
-   * so a client following the spec alone couldn't discover the parameter — or, for the two routes
-   * that require it, would see no indication it's mandatory at all. Resolves each operation's
-   * `$ref`-based parameter list against `components.parameters` and asserts the documented
-   * `required` flag matches the route handler's actual behavior (`routes/reads/{agents,
-   * governance,workflow}.ts`).
+   * Query-parameter parity (issues found across two rounds of PR #59 review): several read routes
+   * accept (or require) `featureRunId`/`projectId`/`adapterId`/`state` at runtime but the
+   * hand-authored spec didn't document them — or, for routes that require a parameter, gave no
+   * indication it's mandatory at all. Resolves each operation's `$ref`-based parameter list
+   * against `components.parameters` and asserts the documented `required` flag matches the route
+   * handler's actual behavior (`routes/reads/{agents,artifacts,features,governance,planning,
+   * projects,workflow}.ts`) — broader than "did I add the one parameter I just noticed," so a
+   * future addition regresses loudly instead of silently.
    */
-  it('documents featureRunId (required or optional, matching runtime behavior) on every route that accepts it', () => {
+  it('documents every accepted query parameter (required or optional, matching runtime behavior) on every route', () => {
     const spec = loadOpenApiSpec() as unknown as {
       components: { parameters: Record<string, { name: string; required: boolean }> };
       paths: Record<string, Record<string, { parameters?: Array<{ $ref: string }> }>>;
@@ -72,6 +73,7 @@ describe('OpenAPI conformance', () => {
     }
 
     const expectations: Array<{ path: string; method: string; name: string; required: boolean }> = [
+      // featureRunId
       { path: '/agent-runs', method: 'get', name: 'featureRunId', required: false },
       { path: '/review-findings', method: 'get', name: 'featureRunId', required: true },
       { path: '/disagreements', method: 'get', name: 'featureRunId', required: false },
@@ -79,6 +81,28 @@ describe('OpenAPI conformance', () => {
       { path: '/workflow-events', method: 'get', name: 'featureRunId', required: false },
       { path: '/merge-gate-evaluations', method: 'get', name: 'featureRunId', required: true },
       { path: '/triggerdev-runs', method: 'get', name: 'featureRunId', required: false },
+      // adapterId
+      { path: '/agent-configurations', method: 'get', name: 'adapterId', required: false },
+      // projectId — optional where the runtime genuinely accepts omission
+      { path: '/repositories', method: 'get', name: 'projectId', required: false },
+      { path: '/github-links', method: 'get', name: 'projectId', required: false },
+      { path: '/agent-runs', method: 'get', name: 'projectId', required: false },
+      { path: '/triggerdev-runs', method: 'get', name: 'projectId', required: false },
+      // projectId — required at runtime via each route file's requireProjectId() helper
+      { path: '/specification-inputs', method: 'get', name: 'projectId', required: true },
+      { path: '/planning-readiness-assessments', method: 'get', name: 'projectId', required: true },
+      { path: '/clarification-sessions', method: 'get', name: 'projectId', required: true },
+      { path: '/plans', method: 'get', name: 'projectId', required: true },
+      { path: '/features', method: 'get', name: 'projectId', required: true },
+      { path: '/active-feature', method: 'get', name: 'projectId', required: true },
+      { path: '/pull-requests', method: 'get', name: 'projectId', required: true },
+      { path: '/human-required-items', method: 'get', name: 'projectId', required: true },
+      { path: '/policy-decisions', method: 'get', name: 'projectId', required: true },
+      { path: '/costs', method: 'get', name: 'projectId', required: true },
+      { path: '/budgets', method: 'get', name: 'projectId', required: true },
+      { path: '/artifacts', method: 'get', name: 'projectId', required: true },
+      { path: '/design-documents', method: 'get', name: 'projectId', required: true },
+      { path: '/status', method: 'get', name: 'projectId', required: true },
     ];
 
     for (const { path, method, name, required } of expectations) {

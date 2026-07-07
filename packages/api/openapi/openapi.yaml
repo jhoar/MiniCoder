@@ -33,6 +33,16 @@ components:
       in: query
       required: false
       schema: { type: string }
+    projectIdQueryRequired:
+      name: projectId
+      in: query
+      required: true
+      schema: { type: string }
+    adapterIdQuery:
+      name: adapterId
+      in: query
+      required: false
+      schema: { type: string }
     featureRunIdQuery:
       name: featureRunId
       in: query
@@ -238,18 +248,18 @@ paths:
     get:
       operationId: listSpecificationInputs
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /planning-readiness-assessments:
     get:
       operationId: listPlanningReadinessAssessments
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /planning-readiness-assessments/{id}:
     get:
       operationId: getPlanningReadinessAssessment
@@ -259,10 +269,10 @@ paths:
     get:
       operationId: listClarificationSessions
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /clarification-sessions/{id}:
     get:
       operationId: getClarificationSession
@@ -272,10 +282,10 @@ paths:
     get:
       operationId: listPlans
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /plans/{id}:
     get:
       operationId: getPlan
@@ -285,10 +295,10 @@ paths:
     get:
       operationId: listFeatures
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /features/{id}:
     get:
       operationId: getFeature
@@ -307,16 +317,16 @@ paths:
   /active-feature:
     get:
       operationId: getActiveFeature
-      parameters: [{ $ref: '#/components/parameters/projectIdQuery' }]
-      responses: { '200': { description: OK } }
+      parameters: [{ $ref: '#/components/parameters/projectIdQueryRequired' }]
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /pull-requests:
     get:
       operationId: listPullRequests
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /agent-runs:
     get:
       operationId: listAgentRuns
@@ -342,6 +352,7 @@ paths:
     get:
       operationId: listAgentConfigurations
       parameters:
+        - $ref: '#/components/parameters/adapterIdQuery'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
       responses: { '200': { description: OK } }
@@ -366,34 +377,34 @@ paths:
     get:
       operationId: listPolicyDecisions
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /costs:
     get:
       operationId: listCosts
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /budgets:
     get:
       operationId: listBudgets
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /artifacts:
     get:
       operationId: listArtifacts
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /artifacts/{id}:
     get:
       operationId: getArtifact
@@ -403,10 +414,10 @@ paths:
     get:
       operationId: listDesignDocuments
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /design-documents/{id}:
     get:
       operationId: getDesignDocument
@@ -432,8 +443,8 @@ paths:
   /status:
     get:
       operationId: getStatus
-      parameters: [{ $ref: '#/components/parameters/projectIdQuery' }]
-      responses: { '200': { description: OK } }
+      parameters: [{ $ref: '#/components/parameters/projectIdQueryRequired' }]
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /triggerdev-runs:
     get:
       operationId: listTriggerdevRuns
@@ -447,10 +458,10 @@ paths:
     get:
       operationId: listHumanRequiredItems
       parameters:
-        - $ref: '#/components/parameters/projectIdQuery'
+        - $ref: '#/components/parameters/projectIdQueryRequired'
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /whoami:
     get:
       operationId: whoami
