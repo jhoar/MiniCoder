@@ -15,7 +15,7 @@ import { StatusBadge } from '../../components/status-badge';
 export default async function DesignDocumentPage({
   searchParams,
 }: {
-  searchParams: { project?: string };
+  searchParams: Promise<{ project?: string }>;
 }): Promise<JSX.Element> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);

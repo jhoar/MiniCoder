@@ -8,12 +8,14 @@ export default async function FeatureDetailPage({
   params,
   searchParams,
 }: {
-  params: { id: string };
-  searchParams: { project?: string };
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ project?: string }>;
 }): Promise<JSX.Element> {
+  const { id } = await params;
+  const { project } = await searchParams;
   const client = getApiClient();
-  const { feature, runs } = await client.getFeature(params.id);
-  const projectId = searchParams.project ?? feature.project_id;
+  const { feature, runs } = await client.getFeature(id);
+  const projectId = project ?? feature.project_id;
   const latestRun = runs[0];
 
   const [

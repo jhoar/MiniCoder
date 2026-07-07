@@ -8,7 +8,7 @@ import { OverrideForm } from './override-form';
 export default async function BudgetsPage({
   searchParams,
 }: {
-  searchParams: { project?: string };
+  searchParams: Promise<{ project?: string }>;
 }): Promise<JSX.Element> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);

@@ -8,7 +8,7 @@ import { SessionActions, QuestionAnswerForm } from './session-actions';
 export default async function ClarificationPage({
   searchParams,
 }: {
-  searchParams: { project?: string };
+  searchParams: Promise<{ project?: string }>;
 }): Promise<JSX.Element> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);

@@ -31,7 +31,7 @@ async function collectProjectFindings(
 export default async function FindingsPage({
   searchParams,
 }: {
-  searchParams: { project?: string };
+  searchParams: Promise<{ project?: string }>;
 }): Promise<JSX.Element> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);

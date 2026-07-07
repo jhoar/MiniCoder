@@ -1780,9 +1780,13 @@ artifact exports are visible as snapshots.
   `tsconfig.base.json`: Next's own `module: esnext`/`moduleResolution: bundler` compiler settings
   are fundamentally incompatible with the shared CommonJS base config, and `next build` performs
   its own full type-check, so there is no dual-emit conflict to reconcile — this is a documented
-  one-off, not a precedent for retrofitting other packages. Pinned to `next@14.2.18`/`react@^18.3.1`
-  for ESLint-8/React-18 alignment, mirroring the same "pin the last CJS/tooling-compatible major"
-  rationale CLAUDE.md already documents for `ink@3.2.0`/`@octokit/rest@^19`.
+  one-off, not a precedent for retrofitting other packages. Pinned to `next@15.5.20`/`react@^18.3.1`
+  for ESLint-8/React-18 alignment (originally `14.2.18`, bumped after `pnpm audit --prod
+  --audit-level=high` caught several high/critical CVEs only patched from Next 15.5.16+; Next 15
+  still supports React 18 and ESLint 8, so the alignment reasoning — mirroring the "pin the last
+  CJS/tooling-compatible major" rationale CLAUDE.md already documents for `ink@3.2.0`/
+  `@octokit/rest@^19` — holds), which required migrating every page to Next 15's async
+  `searchParams`/`params` Server Component APIs.
   - `src/lib/api-client.ts` — the injectable-`fetchImpl` `ApiClient` (same shape as
     `packages/tui/src/client/api-client.ts`), covering every read-model endpoint plus every
     generic-dispatch/dedicated-route command this phase's pages issue. Deliberately kept free of

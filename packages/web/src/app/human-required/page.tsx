@@ -7,7 +7,7 @@ import { Table } from '../../components/table';
 export default async function HumanRequiredPage({
   searchParams,
 }: {
-  searchParams: { project?: string };
+  searchParams: Promise<{ project?: string }>;
 }): Promise<JSX.Element> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);

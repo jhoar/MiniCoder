@@ -8,12 +8,13 @@ export default async function PullRequestDetailPage({
   params,
   searchParams,
 }: {
-  params: { number: string };
-  searchParams: { project?: string };
+  params: Promise<{ number: string }>;
+  searchParams: Promise<{ project?: string }>;
 }): Promise<JSX.Element> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);
-  const prNumber = Number(params.number);
+  const { number } = await params;
+  const prNumber = Number(number);
   const pr = await client.findPullRequestByNumber(projectId, prNumber);
 
   if (!pr) {
