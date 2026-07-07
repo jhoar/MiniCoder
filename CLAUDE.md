@@ -2011,7 +2011,7 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   "no TaskTriggerClient configured" error against any server started via `minicoder api serve` —
   a real, pre-existing Phase 13 gap. None of docs/05 §4's fourteen Text UI commands need these
   endpoints, so wiring a default `TaskTriggerClient` was out of scope for this phase; fixing it
-  remains real, tracked future work, not silently dropped.
+  remains real, tracked future work, not silently dropped — see issue #61.
 - **The end-to-end integration test (`packages/tui/src/tui-e2e.integration.test.ts`) boots the
   real `buildApp()` against a throwaway in-memory SQLite DB and drives `ApiClient` against it over
   genuine HTTP** (`app.listen({ port: 0 })`, not `app.inject()`) — this is the phase's "runnable
@@ -2025,7 +2025,7 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   not fixed in this pass — splitting into subpath exports (e.g. `@minicoder/tui/client` vs.
   `@minicoder/tui/views`) or a separate client package is a larger structural change than the
   Phase 14 fix-review pass warranted; every current consumer (`packages/cli`) already imports
-  everything it needs from the one barrel with no ambiguity.
+  everything it needs from the one barrel with no ambiguity. Tracked as issue #60.
 - **`featureRunId` query-parameter parity (found in PR review).** `/agent-runs`, `/disagreements`,
   `/workflow-events` (optional) and `/review-findings`, `/merge-gate-evaluations` (required) all
   accepted/required `featureRunId` at runtime before this phase, but the hand-authored OpenAPI spec

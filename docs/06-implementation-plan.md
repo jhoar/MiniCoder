@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.28
-> Last-updated: 2026-07-06
+> Version: 1.0.29
+> Last-updated: 2026-07-07
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -1757,6 +1757,10 @@ costs,artifacts,adapters,design-doc,pause,resume}.ts` — one Commander command 
   into `buildApp()` (a pre-existing Phase 13 gap — `request-coder-run`/`request-review`/
   `request-fixes`/`recompute-merge-gate` fail against a server started this way). None of docs/05
   §4's Text UI commands need these endpoints, so fixing this was out of scope for this phase.
+  Tracked as issue #61.
+- **Recorded, not fixed (post-implementation review watch item):** `@minicoder/tui`'s single
+  barrel export mixes HTTP client/config concerns with Ink presentation concerns — see CLAUDE.md's
+  Ink Text UI Operational Constraints section. Tracked as issue #60.
 
 ## Phase 15 — Next.js Web UI
 

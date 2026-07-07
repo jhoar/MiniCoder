@@ -97,6 +97,9 @@ history.
   state-lifecycle tooling are foundational.
 - **A single Fastify Orchestrator API** is the one network-facing surface: it dispatches the same
   command layer the CLI and Workflow Layer tasks use — no arbitrary state-mutation endpoints.
+- **The Ink Text UI talks to that API over HTTP only** — no direct database access, no duplicated
+  authorization logic; the backend is the sole enforcement point for every command it renders a
+  UI for.
 
 Technology stack and the full term set are in
 [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md).
