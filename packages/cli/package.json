@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "cd ../.. && vitest run packages/cli/src/",
     "start": "tsx src/index.ts"
   },
   "dependencies": {
@@ -18,6 +18,11 @@
     "@minicoder/migrations": "workspace:*",
     "@minicoder/testing": "workspace:*",
     "@minicoder/triggerdev": "workspace:*",
-    "commander": "^12.1.0"
+    "@minicoder/tui": "workspace:*",
+    "commander": "^12.1.0",
+    "react": "17.0.2"
+  },
+  "devDependencies": {
+    "@types/react": "^17.0.83"
   }
 }

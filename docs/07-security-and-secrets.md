@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.5
-> Last-updated: 2026-07-04
+> Version: 1.0.6
+> Last-updated: 2026-07-06
 
 This document is the authoritative security and secrets specification. It expands the principles in
 [`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
@@ -67,6 +67,17 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
   activation, budget override, disagreement resolution, merge-if-ready, final design-document
   approval, and guarded state-lifecycle/destructive actions.
 - **Authorization is backend-enforced.** UIs never enforce authorization themselves.
+- **Client-side API credential (Phase 14 — Ink Text UI).** The Text UI is an HTTP client of the
+  Orchestrator API, not an in-process caller — it holds exactly one raw API key value and sends it
+  as `Authorization: Bearer <key>`. It is configured via `MINICODER_API_URL` (base URL, defaults to
+  `http://localhost:4000`) and `MINICODER_API_KEY` (the raw key; required, singular) — deliberately
+  distinct from the server-side `MINICODER_API_KEYS` (plural, a JSON array of key configs consumed
+  by `ApiKeyProvider`), so the two are never confused. `MINICODER_API_KEY` is env-var-only: the TUI
+  never writes it to a config file or any other on-disk location, preserving "no plaintext at rest"
+  for a credential the TUI merely holds rather than issues. The TUI has no `/whoami`-independent
+  role model of its own — it calls `GET /whoami` to display which role/actorKind the configured key
+  resolves to, and otherwise simply surfaces whatever `AuthorizationError`/403 the API returns,
+  never re-implementing the role/rank check client-side.
 
 ## 5. Token Rotation and Audit Retention
 

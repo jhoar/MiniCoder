@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   buildTestApp,
   TEST_OPERATOR_KEY,
+  TEST_VIEWER_KEY,
   seedProjectWithWorkflowState,
+  seedHumanRequiredFeatureRun,
+  seedTriggerdevRun,
 } from '../../test-helpers.js';
 
 describe('read endpoints', () => {
@@ -69,5 +72,69 @@ describe('read endpoints', () => {
     const body = JSON.parse(res.body);
     expect(body.project.id).toBe(projectId);
     expect(body.pendingOutboxCount).toBe(0);
+    expect(body.workflowState.version).toBe(1);
+  });
+
+  it('GET /whoami echoes the resolved actor identity', async () => {
+    const { app } = await buildTestApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/whoami',
+      headers: { authorization: `Bearer ${TEST_VIEWER_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      id: 'test-viewer',
+      role: 'viewer',
+      actorKind: 'human',
+    });
+  });
+
+  it('GET /human-required-items requires a projectId query parameter', async () => {
+    const { app } = await buildTestApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/human-required-items',
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('GET /human-required-items lists feature runs parked at human_required', async () => {
+    const { app, db } = await buildTestApp();
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId } = await seedHumanRequiredFeatureRun(db, projectId);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/human-required-items?projectId=${projectId}`,
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      feature_run_id: featureRunId,
+      fr_id: 'FR-001',
+      title: 'Test Feature',
+      current_execution_state: 'human_required',
+    });
+  });
+
+  it('GET /triggerdev-runs filters by projectId', async () => {
+    const { app, db } = await buildTestApp();
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { projectId: otherProjectId } = await seedProjectWithWorkflowState(db);
+    await seedTriggerdevRun(db, { projectId, status: 'running' });
+    await seedTriggerdevRun(db, { projectId: otherProjectId, status: 'failed' });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/triggerdev-runs?projectId=${projectId}`,
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ project_id: projectId, triggerdev_status: 'running' });
   });
 });

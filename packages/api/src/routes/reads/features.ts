@@ -7,6 +7,7 @@ import {
   getActiveFeature,
   getPullRequestByFeatureRun,
   listPullRequests,
+  listHumanRequiredItems,
 } from '../../read-models/index.js';
 import { parseListParams } from '../query-params.js';
 import { RequestValidationError } from '../../errors.js';
@@ -54,6 +55,16 @@ export function registerFeatureReadRoutes(app: FastifyInstance, db: DbClient): v
       return reply
         .code(200)
         .send(await getPullRequestByFeatureRun(db, request.params.featureRunId));
+    },
+  );
+
+  app.get<{ Querystring: { projectId?: string; cursor?: string; limit?: string } }>(
+    '/human-required-items',
+    async (request, reply) => {
+      const projectId = requireProjectId(request.query);
+      return reply
+        .code(200)
+        .send(await listHumanRequiredItems(db, projectId, parseListParams(request)));
     },
   );
 }

@@ -9,6 +9,19 @@ import { createHumanCommand } from './commands/human.js';
 import { createMergeCommand } from './commands/merge.js';
 import { createApiCommand } from './commands/api.js';
 import { createPlanCommand } from './commands/plan.js';
+import { createStatusCommand } from './commands/status.js';
+import { createClarificationCommand } from './commands/clarification.js';
+import { createFeaturesCommand } from './commands/features.js';
+import { createActiveCommand } from './commands/active.js';
+import { createRunsCommand } from './commands/runs.js';
+import { createFindingsCommand } from './commands/findings.js';
+import { createDisagreementsCommand } from './commands/disagreements.js';
+import { createCostsCommand } from './commands/costs.js';
+import { createArtifactsCommand } from './commands/artifacts.js';
+import { createAdaptersCommand } from './commands/adapters.js';
+import { createDesignDocCommand } from './commands/design-doc.js';
+import { createPauseCommand } from './commands/pause.js';
+import { createResumeCommand } from './commands/resume.js';
 
 const program = new Command();
 
@@ -26,6 +39,19 @@ program.addCommand(createHumanCommand());
 program.addCommand(createMergeCommand());
 program.addCommand(createApiCommand());
 program.addCommand(createPlanCommand());
+program.addCommand(createStatusCommand());
+program.addCommand(createClarificationCommand());
+program.addCommand(createFeaturesCommand());
+program.addCommand(createActiveCommand());
+program.addCommand(createRunsCommand());
+program.addCommand(createFindingsCommand());
+program.addCommand(createDisagreementsCommand());
+program.addCommand(createCostsCommand());
+program.addCommand(createArtifactsCommand());
+program.addCommand(createAdaptersCommand());
+program.addCommand(createDesignDocCommand());
+program.addCommand(createPauseCommand());
+program.addCommand(createResumeCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error('Fatal error:', err);

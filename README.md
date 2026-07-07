@@ -7,7 +7,7 @@ implementation backlog, then orchestrates feature-branch development, pull reque
 reviews, fixes, merge gates, and final design documentation. It is designed to be auditable,
 deterministic, cost-aware, safe, and fully testable without human intervention.
 
-This repository contains the **Phase 1–13 implementation** of MiniCoder — the monorepo skeleton,
+This repository contains the **Phase 1–14 implementation** of MiniCoder — the monorepo skeleton,
 persistence abstraction (SQLite + PostgreSQL), initial schema, migration tooling,
 config/secrets backends, database lifecycle CLI, and CI (Phase 1); full state-machine / command
 layer, transactional idempotent commands, outbox/inbox dispatching, workflow locks, and local auth
@@ -40,8 +40,11 @@ Fastify-based HTTP API exposing read models, dispatching existing core commands 
 a dedicated `merge-if-ready` route, and Trigger.dev task-enqueue routes), mounting the GitHub webhook
 receiver, and publishing a hand-authored OpenAPI 3.1 contract with route-registration-time
 conformance enforcement — a static API-key auth model, claim-first HTTP route idempotency for
-routes spanning an external side effect, and `minicoder api serve` (Phase 13). Specification
-documents live under `docs/`.
+routes spanning an external side effect, and `minicoder api serve` (Phase 13); and the Ink Text UI
+implementation — the `@minicoder/tui` package and its fourteen `minicoder {status,plan,
+clarification,features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,
+pause,resume}` CLI commands, all calling the Orchestrator API over HTTP only (Phase 14).
+Specification documents live under `docs/`.
 
 ## Documentation (canonical)
 
@@ -94,6 +97,9 @@ history.
   state-lifecycle tooling are foundational.
 - **A single Fastify Orchestrator API** is the one network-facing surface: it dispatches the same
   command layer the CLI and Workflow Layer tasks use — no arbitrary state-mutation endpoints.
+- **The Ink Text UI talks to that API over HTTP only** — no direct database access, no duplicated
+  authorization logic; the backend is the sole enforcement point for every command it renders a
+  UI for.
 
 Technology stack and the full term set are in
 [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md).

@@ -4,6 +4,7 @@ import {
   listWorkflowEvents,
   listMergeGateEvaluations,
   getProjectStatus,
+  listTriggerdevRuns,
 } from '../../read-models/index.js';
 import { parseListParams } from '../query-params.js';
 import { RequestValidationError } from '../../errors.js';
@@ -37,5 +38,14 @@ export function registerWorkflowReadRoutes(app: FastifyInstance, db: DbClient): 
       throw new RequestValidationError('projectId query parameter is required');
     }
     return reply.code(200).send(await getProjectStatus(db, request.query.projectId));
+  });
+
+  app.get<{
+    Querystring: { projectId?: string; featureRunId?: string; cursor?: string; limit?: string };
+  }>('/triggerdev-runs', async (request, reply) => {
+    const { projectId, featureRunId } = request.query;
+    return reply
+      .code(200)
+      .send(await listTriggerdevRuns(db, { projectId, featureRunId }, parseListParams(request)));
   });
 }
