@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 const TONE_BY_KEYWORD: Array<{ pattern: RegExp; color: string; background: string }> = [
   { pattern: /fail|error|blocked|rejected|escalat/i, color: '#7f1d1d', background: '#fee2e2' },
   {
@@ -19,7 +20,7 @@ function toneFor(value: string): { color: string; background: string } {
   return { color: '#1e293b', background: '#e2e8f0' };
 }
 
-export function StatusBadge({ value }: { value: string }): JSX.Element {
+export function StatusBadge({ value }: { value: string }): ReactElement {
   const tone = toneFor(value);
   return (
     <span

@@ -1,6 +1,6 @@
 'use server';
 
-import { revalidatePath } from 'next/cache.js';
+import { revalidatePath } from 'next/cache';
 import { getApiClient } from '../../../lib/api-server';
 import { runCommandAction, newIdempotencyKey, type ActionResult } from '../../../lib/action-result';
 

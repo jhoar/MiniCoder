@@ -1,6 +1,7 @@
 'use client';
 
-import { useRouter, usePathname, useSearchParams } from 'next/navigation.js';
+import type { ReactElement } from 'react';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import type { ProjectRow } from '@minicoder/api';
 
 export function ProjectSwitcher({
@@ -9,7 +10,7 @@ export function ProjectSwitcher({
 }: {
   projects: ProjectRow[];
   currentProjectId: string;
-}): JSX.Element {
+}): ReactElement {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();

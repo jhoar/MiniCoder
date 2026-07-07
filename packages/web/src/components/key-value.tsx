@@ -1,10 +1,10 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, ReactElement } from 'react';
 
 export function KeyValue({
   entries,
 }: {
   entries: Array<{ label: string; value: ReactNode }>;
-}): JSX.Element {
+}): ReactElement {
   return (
     <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 16px' }}>
       {entries.map((entry) => (

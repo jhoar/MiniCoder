@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 import { getApiClient } from '../../../lib/api-server';
 import { resolveProjectId } from '../../../lib/project';
 import { StatusBadge } from '../../../components/status-badge';
@@ -10,7 +11,7 @@ export default async function PullRequestDetailPage({
 }: {
   params: Promise<{ number: string }>;
   searchParams: Promise<{ project?: string }>;
-}): Promise<JSX.Element> {
+}): Promise<ReactElement> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);
   const { number } = await params;

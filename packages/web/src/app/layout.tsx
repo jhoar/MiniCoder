@@ -1,3 +1,4 @@
+import type { ReactElement, ReactNode } from 'react';
 import { getApiClient } from '../lib/api-server';
 import { ActorProvider } from '../components/actor-context';
 import { Nav } from '../components/nav';
@@ -10,13 +11,11 @@ export const metadata = {
 // cached/prerendered.
 export const dynamic = 'force-dynamic';
 
-// `children` is typed `any` rather than `React.ReactNode` here as a narrow, deliberate workaround:
-// Next 15.5.16's generated build-time `LayoutConfig<'/'>` check (`.next/types`) reports a false
-// positive — "Type '{}' is not assignable to type 'ReactNode'" — against a strictly-typed
-// `children: ReactNode` root-layout prop, reproduced even with a maximally minimal layout with no
-// other app code involved (confirmed empirically; not specific to this file). Scoped to this one
-// prop in this one file.
-export default async function RootLayout({ children }: { children: any }): Promise<JSX.Element> {
+export default async function RootLayout({
+  children,
+}: {
+  children: ReactNode;
+}): Promise<ReactElement> {
   const client = getApiClient();
   const actor = await client.getWhoami();
 

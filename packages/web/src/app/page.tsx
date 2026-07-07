@@ -1,4 +1,4 @@
-import { redirect } from 'next/navigation.js';
+import { redirect } from 'next/navigation';
 
 export default function RootPage(): never {
   redirect('/dashboard');

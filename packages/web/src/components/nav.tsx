@@ -1,4 +1,5 @@
-import Link from 'next/link.js';
+import type { ReactElement } from 'react';
+import Link from 'next/link';
 
 const LINKS: Array<{ href: string; label: string }> = [
   { href: '/dashboard', label: 'Dashboard' },
@@ -18,7 +19,7 @@ const LINKS: Array<{ href: string; label: string }> = [
   { href: '/settings', label: 'Settings' },
 ];
 
-export function Nav(): JSX.Element {
+export function Nav(): ReactElement {
   return (
     <nav
       style={{

@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 import { getApiClient, ApiError } from '../../lib/api-server';
 import { resolveProjectId } from '../../lib/project';
 import { ProjectSwitcher } from '../../components/project-switcher';
@@ -23,7 +24,7 @@ export default async function StateHealthPage({
   searchParams,
 }: {
   searchParams: Promise<{ project?: string }>;
-}): Promise<JSX.Element> {
+}): Promise<ReactElement> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);
   const [projects, triggerdevRuns, doctor, validation] = await Promise.all([

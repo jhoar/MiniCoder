@@ -1,10 +1,11 @@
+import type { ReactElement } from 'react';
 import { getApiClient } from '../../lib/api-server';
 import { Table } from '../../components/table';
 
 /** Read-only: no command handler registers/mutates adapter config from any API route today (see
  * CLAUDE.md's "Next.js Web UI Operational Constraints" section). This page mirrors what
  * `minicoder adapters` (Text UI) already exposes over the same read models. */
-export default async function AdaptersPage(): Promise<JSX.Element> {
+export default async function AdaptersPage(): Promise<ReactElement> {
   const client = getApiClient();
   const [adapters, configurations] = await Promise.all([
     client.listAgentAdapters({ limit: '100' }),

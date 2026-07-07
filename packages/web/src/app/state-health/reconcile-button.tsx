@@ -1,9 +1,10 @@
 'use client';
 
+import type { ReactElement } from 'react';
 import { CommandButton } from '../../components/command-button';
 import { reconcileAction } from './actions';
 
-export function ReconcileButton({ projectId }: { projectId: string }): JSX.Element {
+export function ReconcileButton({ projectId }: { projectId: string }): ReactElement {
   return (
     <div>
       <CommandButton

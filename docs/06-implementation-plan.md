@@ -1775,18 +1775,23 @@ artifact exports are visible as snapshots.
 
 **Delivered modules:**
 
-- `packages/web` (new `@minicoder/web` package) — the first Next.js/React 18/App Router package in
+- `packages/web` (new `@minicoder/web` package) — the first Next.js/React/App Router package in
   this repo, and the first package whose `tsconfig.json` deliberately does **not** extend
   `tsconfig.base.json`: Next's own `module: esnext`/`moduleResolution: bundler` compiler settings
   are fundamentally incompatible with the shared CommonJS base config, and `next build` performs
   its own full type-check, so there is no dual-emit conflict to reconcile — this is a documented
-  one-off, not a precedent for retrofitting other packages. Pinned to `next@15.5.20`/`react@^18.3.1`
-  for ESLint-8/React-18 alignment (originally `14.2.18`, bumped after `pnpm audit --prod
-  --audit-level=high` caught several high/critical CVEs only patched from Next 15.5.16+; Next 15
-  still supports React 18 and ESLint 8, so the alignment reasoning — mirroring the "pin the last
-  CJS/tooling-compatible major" rationale CLAUDE.md already documents for `ink@3.2.0`/
-  `@octokit/rest@^19` — holds), which required migrating every page to Next 15's async
-  `searchParams`/`params` Server Component APIs.
+  one-off, not a precedent for retrofitting other packages. Now pinned to
+  `next@16.2.10`/`react@^19.2.7`/`react-dom@^19.2.7` (originally `14.2.18`, bumped to `15.5.20`
+  after `pnpm audit --prod --audit-level=high` caught high/critical CVEs only patched from Next
+  15.5.16+, then bumped again to `16.2.10` to track the latest secure Next 16 release). The React
+  18→19 bump was required by Next 16 itself, not optional — Next 16's bundled type declarations
+  (e.g. `next/link`) are written against React 19 and produce real type-check failures on ordinary
+  built-ins when paired with React 18 types. `next lint` was removed in Next 16;
+  `packages/web` now runs plain `eslint .` against its own ESLint 9 flat-config
+  `eslint.config.mjs`, with `eslint@^9` scoped as a devDependency to this package alone — the rest
+  of the monorepo stays on the root's ESLint 8 setup. See CLAUDE.md's "Next.js Web UI Operational
+  Constraints" section for the full version history and the React-19 `ReactElement`/`JSX`-namespace
+  migration details.
   - `src/lib/api-client.ts` — the injectable-`fetchImpl` `ApiClient` (same shape as
     `packages/tui/src/client/api-client.ts`), covering every read-model endpoint plus every
     generic-dispatch/dedicated-route command this phase's pages issue. Deliberately kept free of

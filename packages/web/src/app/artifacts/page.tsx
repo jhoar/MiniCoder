@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 import { getApiClient } from '../../lib/api-server';
 import { resolveProjectId } from '../../lib/project';
 import { ProjectSwitcher } from '../../components/project-switcher';
@@ -8,7 +9,7 @@ export default async function ArtifactsPage({
   searchParams,
 }: {
   searchParams: Promise<{ project?: string }>;
-}): Promise<JSX.Element> {
+}): Promise<ReactElement> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);
   const [projects, artifacts] = await Promise.all([

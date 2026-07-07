@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactElement } from 'react';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ActionResult } from '../lib/action-result';
@@ -8,18 +9,21 @@ import type { UserRole } from '../lib/role-rank';
 
 /**
  * Generic wrapper for every command-issuing button in this package. Calls the bound Server Action
- * directly from a click handler (a supported Next.js 14 pattern — Server Actions need not be
+ * directly from a click handler (a supported Next.js pattern — Server Actions need not be
  * attached to a `<form action>` to run server-side). Renders the discriminated `ActionResult`
  * inline rather than throwing: a 403 shows "insufficient role", any other failure shows the raw
  * problem-detail message. The backend is the only real authorization check — `requiredRole` here
  * only pre-emptively hides/disables the button for the common case (see `lib/role-rank.ts`).
  *
- * Uses plain `useState` for the pending flag rather than `useTransition` — React 18's
- * `TransitionFunction` type requires a synchronous, void-returning callback, so an `async`
- * callback doesn't type-check with `startTransition` (this only became a first-class pattern in
- * React 19). Manual state tracks the real async duration precisely, where a fire-and-forget
- * `startTransition(async () => ...)` workaround would flip `isPending` back to `false` as soon as
- * the synchronous wrapper returns, before the request actually completes.
+ * Uses plain `useState` for the pending flag rather than `useTransition`. This package was
+ * originally built against React 18, where `startTransition` doesn't accept an `async` callback
+ * (`TransitionFunction` requires a synchronous, void-returning function) — manual state was
+ * required to track the real async duration, since a fire-and-forget
+ * `startTransition(async () => ...)` workaround flips `isPending` back to `false` as soon as the
+ * synchronous wrapper returns, before the request actually completes. React 19 (adopted with the
+ * Next 16 upgrade) does support `async` transitions natively, but the plain-`useState` approach
+ * was kept as-is rather than migrated purely for its own sake — it already behaves correctly and
+ * introduces no React-19-specific behavior to verify.
  */
 export function CommandButton({
   label,
@@ -35,7 +39,7 @@ export function CommandButton({
   requiredRole?: UserRole;
   confirmMessage?: string;
   onSuccess?: (data: unknown) => void;
-}): JSX.Element | null {
+}): ReactElement | null {
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const router = useRouter();

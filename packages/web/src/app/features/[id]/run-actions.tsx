@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactElement } from 'react';
 import { useState } from 'react';
 import { CommandButton } from '../../../components/command-button';
 import {
@@ -29,7 +30,7 @@ export function RunActions({
   projectId: string;
   state: string;
   version: number;
-}): JSX.Element {
+}): ReactElement {
   const [notes, setNotes] = useState('');
   const [coderAdapterName, setCoderAdapterName] = useState('CodexCoderAdapter');
   const [reviewerAdapterName, setReviewerAdapterName] = useState('ClaudeReviewerAdapter');

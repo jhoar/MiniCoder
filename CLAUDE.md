@@ -2058,33 +2058,36 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
 
 ## Next.js Web UI Operational Constraints (`packages/web/`)
 
-- **`@minicoder/web` is the first Next.js/React 18/App Router package in this repo, and the first
-  package whose `tsconfig.json` deliberately does not extend `tsconfig.base.json`.** Originally
-  pinned to `next@14.2.18` for ESLint 8 compatibility (the same "pin the last tooling-compatible
-  major" reasoning already documented for `ink@3.2.0`/`@octokit/rest@^19`), then bumped to
-  `next@15.5.20`/`eslint-config-next@15.5.20` (still `react@^18.3.1` — Next 15 keeps supporting
-  React 18, and `eslint-config-next@15.x` still supports ESLint 8, so the original ESLint-8
-  compatibility reasoning holds) after `pnpm audit --prod --audit-level=high` caught several real
-  high/critical CVEs in the 14.2.18 line that are only patched from Next 15.5.16+ onward. The
-  version bump required migrating every page/layout to Next 15's async `searchParams`/`params`
-  Server Component APIs (`Promise<T>`, awaited at the top of each component) —
-  `lib/project.ts`'s `resolveProjectId()` accepts the raw `searchParams` Promise directly so most
-  pages needed no body changes beyond the type annotation. `tsconfig.base.json`'s
+- **`@minicoder/web` is the first Next.js/React/App Router package in this repo, and the first
+  package whose `tsconfig.json` deliberately does not extend `tsconfig.base.json`.** Version
+  history: pinned to `next@14.2.18` for ESLint 8 compatibility at first (the same "pin the last
+  tooling-compatible major" reasoning already documented for `ink@3.2.0`/`@octokit/rest@^19`);
+  bumped to `next@15.5.20` (still `react@^18.3.1`) after `pnpm audit --prod --audit-level=high`
+  caught several high/critical CVEs in the 14.2.18 line only patched from Next 15.5.16+, which
+  required migrating every page/layout to Next 15's async `searchParams`/`params` Server Component
+  APIs (`Promise<T>`, awaited at the top of each component — `lib/project.ts`'s
+  `resolveProjectId()` accepts the raw Promise directly, so most pages needed only a type-
+  annotation change); then bumped again to `next@16.2.10`/`react@^19.2.7`/`react-dom@^19.2.7` on
+  explicit request to track the latest secure Next 16 release. Next 16's own bundled type
+  declarations (e.g. `next/link`) are written against React 19 — staying on React 18 types
+  produced real, reproducible `next build` type-check failures on ordinary built-ins, not just app
+  code — so the React major bump is required, not optional, for Next 16. React 19's `@types/react`
+  also dropped the global ambient `JSX` namespace (`JSX.Element` no longer resolves unqualified);
+  every such reference in this package was changed to the standard `ReactElement` import from
+  `react` instead. `next lint` was removed in Next 16 — `packages/web` now runs plain `eslint .`
+  against its own flat-config `eslint.config.mjs` (built from `eslint-config-next/core-web-vitals`,
+  which itself now requires ESLint 9+), with its own `eslint@^9` devDependency scoped to this
+  package alone — the rest of the monorepo stays on the root's ESLint 8 legacy `.eslintrc.cjs`;
+  `packages/web/**` is excluded from that root config's scan, exactly as before. `tsconfig.base.json`'s
   `module: "CommonJS"`/`moduleResolution: "Node"` is fundamentally incompatible with Next's own
   `module: "esnext"`/`moduleResolution: "bundler"` requirements, and `next build` performs its own
   complete type-check (never invoking this repo's `tsc`-based pipeline) — so
-  `packages/web/tsconfig.json` uses the standard Next-generated shape instead. This is a
-  deliberate, one-off divergence: `packages/web` is a pure leaf (nothing imports its compiled
+  `packages/web/tsconfig.json` uses the standard Next-generated shape instead (Next 16 also
+  auto-set `jsx: "react-jsx"`, replacing the earlier `"preserve"`, and added
+  `.next/dev/types/**/*.ts` to `include` for Turbopack's separate dev-mode output directory). This
+  is a deliberate, one-off divergence: `packages/web` is a pure leaf (nothing imports its compiled
   output), so it doesn't need to fit the shared CommonJS contract other packages fit for
   cross-package type imports. Do not use this as precedent to retrofit any other package.
-- **`app/layout.tsx`'s `children` prop is typed `any`, not `React.ReactNode` — a narrow, confirmed
-  workaround, not an oversight.** Next 15.5.x's generated build-time `LayoutConfig<'/'>` check
-  (`.next/types`) reports a false-positive type error against a strictly-typed
-  `children: React.ReactNode` root-layout prop — reproduced empirically even with a maximally
-  minimal layout file containing no other app code, so it is a tooling/dependency-version
-  incompatibility, not a mistake in this package's code. Scoped to this one prop in this one file;
-  do not spread `any` to other props or files chasing an unrelated type error before confirming
-  it's the same root cause.
 - **No client-exposed API key — every Orchestrator API call happens server-side.**
   `src/lib/api-client.ts` is the injectable-`fetchImpl` `ApiClient` (structurally identical to
   `packages/tui/src/client/api-client.ts`); `src/lib/api-server.ts` wraps it behind an

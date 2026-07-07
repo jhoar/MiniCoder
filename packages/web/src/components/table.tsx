@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, ReactElement } from 'react';
 
 export interface Column<T> {
   header: string;
@@ -19,7 +19,7 @@ export function Table<T>({
   rows: T[];
   emptyLabel?: string;
   rowKey: (row: NoInfer<T>) => string;
-}): JSX.Element {
+}): ReactElement {
   if (rows.length === 0) {
     return <p style={{ color: '#64748b' }}>{emptyLabel}</p>;
   }

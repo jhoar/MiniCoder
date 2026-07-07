@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 import { getApiClient } from '../../../lib/api-server';
 import { StatusBadge } from '../../../components/status-badge';
 import { KeyValue } from '../../../components/key-value';
@@ -10,7 +11,7 @@ export default async function FeatureDetailPage({
 }: {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ project?: string }>;
-}): Promise<JSX.Element> {
+}): Promise<ReactElement> {
   const { id } = await params;
   const { project } = await searchParams;
   const client = getApiClient();

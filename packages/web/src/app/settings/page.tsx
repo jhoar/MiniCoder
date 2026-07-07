@@ -1,8 +1,9 @@
+import type { ReactElement } from 'react';
 import { getApiClient } from '../../lib/api-server';
 import { resolveApiConfig } from '../../lib/config';
 import { KeyValue } from '../../components/key-value';
 
-export default async function SettingsPage(): Promise<JSX.Element> {
+export default async function SettingsPage(): Promise<ReactElement> {
   const client = getApiClient();
   const whoami = await client.getWhoami();
   const config = resolveApiConfig();

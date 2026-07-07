@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactElement } from 'react';
 import { useState } from 'react';
 import { CommandButton } from '../../components/command-button';
 import { approveBudgetOverrideAction } from './actions';
@@ -12,7 +13,7 @@ export function OverrideForm({
   projectId: string;
   workflowVersion: number;
   budgetPolicyId: string;
-}): JSX.Element {
+}): ReactElement {
   const [reason, setReason] = useState('');
 
   return (

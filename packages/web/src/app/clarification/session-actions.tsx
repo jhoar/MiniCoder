@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactElement } from 'react';
 import { useState } from 'react';
 import { CommandButton } from '../../components/command-button';
 import {
@@ -19,7 +20,7 @@ export function SessionActions({
   projectId: string;
   status: string;
   version: number;
-}): JSX.Element {
+}): ReactElement {
   return (
     <div>
       {status === 'clarification_required' && (
@@ -49,7 +50,7 @@ export function QuestionAnswerForm({
   question: ClarificationQuestionRow;
   sessionId: string;
   projectId: string;
-}): JSX.Element {
+}): ReactElement {
   const [answer, setAnswer] = useState('');
 
   if (question.answered_at) {

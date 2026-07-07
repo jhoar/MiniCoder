@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactElement } from 'react';
 import { createContext, createElement, useContext, type ReactNode } from 'react';
 import { meetsRole, type UserRole } from '../lib/role-rank';
 
@@ -21,7 +22,7 @@ export function ActorProvider({
 }: {
   actor: ActorInfo;
   children: ReactNode;
-}): JSX.Element {
+}): ReactElement {
   // `createElement` rather than `<ActorContext.Provider>` JSX syntax — a known @types/react 18.x
   // strictness quirk rejects `Context.Provider` as a JSX tag ("its return type 'ReactNode' is not
   // a valid JSX element") because the Provider's declared signature returns the broader

@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactElement } from 'react';
 import { CommandButton } from '../../components/command-button';
 import {
   submitPlanForApprovalAction,
@@ -19,7 +20,7 @@ export function PlanRowActions({
   projectId: string;
   state: string;
   version: number;
-}): JSX.Element {
+}): ReactElement {
   return (
     <div>
       {state === 'draft' && (
