@@ -114,6 +114,17 @@ export interface ClarificationQuestionRow {
   order_index: number;
   asked_at: string | null;
   answered_at: string | null;
+  // Additive (Phase 15): `RecordClarificationAnswerCommand` requires `expectedQuestionVersion`,
+  // but this row previously omitted `version` — no caller (the API had none before the Web UI)
+  // could otherwise discover the value to submit. Mirrors the "small, additive API change"
+  // precedent from Phase 14 (whoami/triggerdev-runs/human-required-items/status.version).
+  version: number;
+  // Additive (post-merge PR review fix, MEDIUM-5): the row previously carried no way to show
+  // what was actually answered — the Web UI's clarification page could only render "Answered",
+  // not the answer text itself. `clarification_answers.clarification_question_id` is UNIQUE, so
+  // a plain LEFT JOIN is safe (at most one answer row per question) and needs no aggregation.
+  // `null` for an unanswered question (`answered_at IS NULL`), the same nullability shape.
+  answer_text: string | null;
 }
 
 export async function getClarificationSession(
@@ -128,8 +139,11 @@ export async function getClarificationSession(
     'clarification-session',
   );
   const questions = await db.query<ClarificationQuestionRow>(
-    `SELECT id, clarification_session_id, question, round, order_index, asked_at, answered_at
-     FROM clarification_questions WHERE clarification_session_id = ? ORDER BY round ASC, order_index ASC`,
+    `SELECT q.id, q.clarification_session_id, q.question, q.round, q.order_index, q.asked_at,
+            q.answered_at, q.version, a.answer AS answer_text
+     FROM clarification_questions q
+     LEFT JOIN clarification_answers a ON a.clarification_question_id = q.id
+     WHERE q.clarification_session_id = ? ORDER BY q.round ASC, q.order_index ASC`,
     [id],
   );
   return { session, questions };

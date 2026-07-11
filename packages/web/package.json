@@ -1,0 +1,27 @@
+{
+  "name": "@minicoder/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "next build",
+    "test": "cd ../.. && vitest run packages/web/src/"
+  },
+  "dependencies": {
+    "next": "16.2.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@minicoder/api": "workspace:*",
+    "@minicoder/testing": "workspace:*",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "eslint": "^9.39.0",
+    "eslint-config-next": "16.2.10"
+  }
+}

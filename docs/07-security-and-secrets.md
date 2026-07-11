@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.6
-> Last-updated: 2026-07-06
+> Version: 1.0.7
+> Last-updated: 2026-07-07
 
 This document is the authoritative security and secrets specification. It expands the principles in
 [`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
@@ -78,6 +78,22 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
   role model of its own — it calls `GET /whoami` to display which role/actorKind the configured key
   resolves to, and otherwise simply surfaces whatever `AuthorizationError`/403 the API returns,
   never re-implementing the role/rank check client-side.
+- **Server-side API credential, single shared identity (Phase 15 — Next.js Web UI).** `packages/web`
+  reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` env vars as the Text UI, but holds the key
+  server-side only (`import 'server-only'`-guarded — see CLAUDE.md's "Next.js Web UI Operational
+  Constraints") and never exposes it to the browser. This closes the "credential in the browser"
+  risk, but does **not** provide per-end-user authentication or authorization: every browser
+  session reaching a deployed `@minicoder/web` instance shares the one server-side key's role/
+  actorKind identity — the Web UI process is a single logged-in "operator" (or whatever role the
+  configured key carries) as far as the Orchestrator API is concerned, with no session/login layer
+  of its own to distinguish one human viewer from another. This is the identical trust-boundary
+  shape "Hosted mode" above already documents as future work (OAuth/SSO issuing short-lived,
+  revocable, per-user sessions) — not a Phase 15-specific gap. **Until hosted-mode end-user
+  auth ships, `packages/web` must only be deployed on a trusted/internal network (e.g. behind a VPN,
+  an internal load balancer, or a reverse proxy that itself performs end-user authentication) — never
+  exposed directly to the public internet with a privileged (`operator`/`approver`/`admin`) API key.**
+  A `viewer`-role key is comparatively low-risk to expose more broadly (read-only), but still shares
+  one identity across every viewer.
 
 ## 5. Token Rotation and Audit Retention
 

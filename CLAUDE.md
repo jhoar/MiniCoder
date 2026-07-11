@@ -7,7 +7,7 @@ system specifications into a clarified, approved, sequential implementation back
 orchestrates feature-branch development, pull requests, structured reviews, fixes, merge gates,
 and final design documentation.
 
-This repository contains the **Phase 1–14 implementation**: monorepo skeleton, persistence
+This repository contains the **Phase 1–15 implementation**: monorepo skeleton, persistence
 abstraction (SQLite + PostgreSQL), 43-table initial schema, migration tooling, config/secrets
 backends, database lifecycle CLI (`minicoder db`), CI (Phase 1); full state-machine / command
 layer with state-transition validator, transactional idempotent commands, outbox/inbox dispatching,
@@ -73,7 +73,17 @@ migration); and the Ink Text UI implementation — the new `@minicoder/tui` pack
 features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,pause,resume}` CLI
 commands, all calling the Orchestrator API over HTTP only, plus four small additive API read
 routes (`whoami`, `triggerdev-runs`, `human-required-items`, and a `version` field added to
-`GET /status`) needed to back them (Phase 14, no new migration).
+`GET /status`) needed to back them (Phase 14, no new migration); and the Next.js Web UI
+implementation — the new `@minicoder/web` package (the first Next.js/React/App Router dependency in
+this repo, and the first package whose `tsconfig.json` does not extend `tsconfig.base.json`), its
+server-only `ApiClient`/`getApiClient()` HTTP layer (no client-exposed API key), Server-Action-based
+command dispatch with per-submission `Idempotency-Key` generation, and all seventeen
+`docs/05-ui-specification.md` §5 routes (`dashboard`, `planning`, `clarification`, `features`,
+`features/[id]`, `pull-requests/[number]`, `agent-runs`, `findings`, `disagreements`, `costs`,
+`budgets`, `artifacts`, `adapters`, `design-document`, `human-required`, `state-health`, `settings`),
+with `design-document`/`adapters` left explicitly read-only pending a not-yet-built backend command,
+plus one small additive `ClarificationQuestionRow.version` read-model column (Phase 15, no new
+migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -2046,6 +2056,194 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   (`status.test.ts`, `pause.test.ts`) made newly visible via `pnpm --filter @minicoder/cli test`.
   Fixed to `cd ../.. && vitest run packages/cli/src/`, matching the established sibling pattern.
 
+## Next.js Web UI Operational Constraints (`packages/web/`)
+
+- **`@minicoder/web` is the first Next.js/React/App Router package in this repo, and the first
+  package whose `tsconfig.json` deliberately does not extend `tsconfig.base.json`.** Version
+  history: pinned to `next@14.2.18` for ESLint 8 compatibility at first (the same "pin the last
+  tooling-compatible major" reasoning already documented for `ink@3.2.0`/`@octokit/rest@^19`);
+  bumped to `next@15.5.20` (still `react@^18.3.1`) after `pnpm audit --prod --audit-level=high`
+  caught several high/critical CVEs in the 14.2.18 line only patched from Next 15.5.16+, which
+  required migrating every page/layout to Next 15's async `searchParams`/`params` Server Component
+  APIs (`Promise<T>`, awaited at the top of each component — `lib/project.ts`'s
+  `resolveProjectId()` accepts the raw Promise directly, so most pages needed only a type-
+  annotation change); then bumped again to `next@16.2.10`/`react@^19.2.7`/`react-dom@^19.2.7` on
+  explicit request to track the latest secure Next 16 release. Next 16's own bundled type
+  declarations (e.g. `next/link`) are written against React 19 — staying on React 18 types
+  produced real, reproducible `next build` type-check failures on ordinary built-ins, not just app
+  code — so the React major bump is required, not optional, for Next 16. React 19's `@types/react`
+  also dropped the global ambient `JSX` namespace (`JSX.Element` no longer resolves unqualified);
+  every such reference in this package was changed to the standard `ReactElement` import from
+  `react` instead. `next lint` was removed in Next 16 — `packages/web` now runs plain `eslint .`
+  against its own flat-config `eslint.config.mjs` (built from `eslint-config-next/core-web-vitals`,
+  which itself now requires ESLint 9+), with its own `eslint@^9` devDependency scoped to this
+  package alone — the rest of the monorepo stays on the root's ESLint 8 legacy `.eslintrc.cjs`;
+  `packages/web/**` is excluded from that root config's scan, exactly as before. `tsconfig.base.json`'s
+  `module: "CommonJS"`/`moduleResolution: "Node"` is fundamentally incompatible with Next's own
+  `module: "esnext"`/`moduleResolution: "bundler"` requirements, and `next build` performs its own
+  complete type-check (never invoking this repo's `tsc`-based pipeline) — so
+  `packages/web/tsconfig.json` uses the standard Next-generated shape instead (Next 16 also
+  auto-set `jsx: "react-jsx"`, replacing the earlier `"preserve"`, and added
+  `.next/dev/types/**/*.ts` to `include` for Turbopack's separate dev-mode output directory). This
+  is a deliberate, one-off divergence: `packages/web` is a pure leaf (nothing imports its compiled
+  output), so it doesn't need to fit the shared CommonJS contract other packages fit for
+  cross-package type imports. Do not use this as precedent to retrofit any other package.
+- **No client-exposed API key — every Orchestrator API call happens server-side.**
+  `src/lib/api-client.ts` is the injectable-`fetchImpl` `ApiClient` (structurally identical to
+  `packages/tui/src/client/api-client.ts`); `src/lib/api-server.ts` wraps it behind an
+  `import 'server-only'` guard (`getApiClient()`) so an accidental Client Component import fails
+  the build instead of silently shipping `MINICODER_API_KEY` into the browser bundle. Every page is
+  a Server Component calling `api-server.ts` directly — there is no Route-Handler proxy layer and
+  no independent Web-UI session/identity system: RBAC is entirely the backend's static-API-key
+  model (docs/05 §10's "RBAC is enforced by the backend" acceptance wording, taken literally), and
+  a Route-Handler proxy would just re-solve the same key-injection problem with an extra hop and no
+  benefit. `api-client.ts` deliberately has no `server-only` import of its own, precisely so unit
+  tests can construct `ApiClient` directly with a fake `fetchImpl` — `server-only` throws
+  unconditionally when imported outside a Next.js server-component bundle (confirmed empirically),
+  so the guard must live one layer up, in the thin `api-server.ts` wrapper, not in the class itself.
+  Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` env vars the Text UI already established
+  (`src/lib/config.ts`) — there is exactly one Orchestrator API and one key per deployment, so a
+  `WEB_*`-prefixed variant would be a needless parallel configuration surface.
+- **Trusted/internal deployment only — there is no per-end-user auth boundary.** Keeping the API
+  key server-side stops _browser_ exposure, but every visitor to a deployed `@minicoder/web`
+  instance still shares the one configured key's role/actorKind identity; there is no login/session
+  layer distinguishing one human from another (see docs/07-security-and-secrets.md §4's new
+  "Server-side API credential, single shared identity" bullet — the identical trust-boundary shape
+  already documented as future "Hosted mode" OAuth/SSO work, not a Phase 15-specific gap). Do not
+  deploy `packages/web` directly on the public internet with a privileged
+  (`operator`/`approver`/`admin`) key; put it behind a trusted/internal network boundary (VPN,
+  internal load balancer, or a reverse proxy that itself authenticates end users) until real
+  end-user auth ships.
+- **RBAC is backend-enforced only; the frontend's own role check is UX decoration, not a security
+  boundary.** The root layout (`app/layout.tsx`) calls `GET /whoami` once per request and passes the
+  resolved `ActorIdentity` down via `components/actor-context.tsx`'s `ActorProvider`/`useActor()`/
+  `useMeetsRole()`. `lib/role-rank.ts` is a small, **deliberately duplicated** local mirror of
+  `packages/core/src/auth/guards.ts`'s `ROLE_RANK`/`meetsRole` (commented as a UX-only mirror, not
+  the enforcement point) — kept local rather than importing `@minicoder/core` so this leaf UI
+  package carries no runtime dependency on a backend-domain package for a one-line rank comparison.
+  Every command-issuing `CommandButton` (`components/command-button.tsx`) pre-emptively hides
+  itself when `useMeetsRole()` says no, purely to avoid a pointless round trip — but a 403 from the
+  real backend call is always caught and rendered as an inline "insufficient role" message, never a
+  crash, and no client-side check is ever treated as authoritative.
+- **Command-issuing UI = Next.js Server Actions, each minting its own per-submission
+  `Idempotency-Key` inside the action body.** `lib/action-result.ts`'s `newIdempotencyKey()` calls
+  `crypto.randomUUID()` **inside the Server Action**, not in browser JS — the server is the only
+  trust/generation boundary for this value, mirroring the CLI/TUI's own "caller generates one key
+  per logical submission" convention, adapted for the reality that here "the caller" is one Server
+  Action invocation triggered by one user click, not a value computed client-side and passed in.
+  `runCommandAction()` wraps every dispatch in a `try/catch`, returning a discriminated
+  `ActionResult<T>` (`{ok:true,data} | {ok:false,kind:'forbidden'|'error',detail}`) rather than
+  letting an error propagate — Next.js serializes a thrown Server Action error into an opaque
+  production digest, which would destroy the real problem-detail message the UI needs to show.
+  `CommandButton` calls its bound Server Action directly from a click handler (no `<form action>`
+  needed — a supported Next.js 14 pattern) and calls `router.refresh()` on success so the enclosing
+  Server Component page re-fetches current state, the idiomatic replacement for "re-run the read
+  after a write." It uses plain `useState` for its pending flag, not `useTransition` — React 18's
+  `TransitionFunction` type requires a synchronous, void-returning callback, so an `async` callback
+  passed to `startTransition` fails to type-check (confirmed empirically); official `async`
+  transition support only arrived in React 19. A fire-and-forget `startTransition(async () => ...)`
+  workaround would also flip `isPending` back to `false` as soon as the synchronous wrapper
+  returns, before the real request completes — manual state tracks the actual async duration.
+- **`/design-document` and `/adapters` are explicitly read-only pages.** No
+  generate/approve/request-revision design-document command handler, and no adapter-registration/
+  mutation command, exists anywhere in `packages/core`/`packages/api` today (the former is Phase 17
+  scope per this document's own Orchestrator API section above; the latter has never had a command
+  handler at all). Rather than omitting the corresponding UI affordances silently, or wiring them to
+  a nonexistent endpoint, both pages render their action buttons visibly **disabled** with an honest
+  "Not available yet" label — the same honestly-labeled-gap posture this document already applies
+  to other tracked gaps (e.g. issue #61's unwired `TaskTriggerClient`). Do not wire these buttons to
+  a real endpoint without first confirming the backend command actually exists.
+- **`/findings` and `/pull-requests/[number]` fetch-and-aggregate rather than adding new API
+  filters.** `GET /review-findings` requires `featureRunId` (findings are always scoped to one
+  feature run — there is no project-wide findings endpoint) and `GET /pull-requests` has no
+  filter-by-number parameter. Both pages fetch and search across pages/runs server-side instead of
+  extending `packages/api`'s read-models — a deliberate scope-limiting choice (avoids touching
+  `packages/api` for a UI-only convenience), acceptable given this repo's expected per-project
+  row volume; each call site documents this reasoning inline. `/disagreements` similarly has no
+  project-scoping filter on the backend (`GET /disagreements` with no filters lists every
+  disagreement across the whole deployment) — the page lists globally rather than inventing a
+  project filter, and resolution happens from the linked feature's own detail page, where the
+  feature run's current version is already known.
+- **One small, additive `packages/api` read-model change accompanied this phase:**
+  `read-models/planning.ts`'s `ClarificationQuestionRow` (and `getClarificationSession()`'s query)
+  gained a `version` column. `RecordClarificationAnswerCommand` requires `expectedQuestionVersion`,
+  but the column was never selected before this phase since no caller needed to discover it — the
+  same "small, additive API change" precedent Phase 14 established for `whoami`/`triggerdev-runs`/
+  `human-required-items`/`status.version`.
+- **Typecheck/lint wiring**: `packages/web` is excluded from both the root `package.json`'s ordered
+  `tsc -p ...` typecheck chain (nothing imports its compiled output — it is a pure leaf) **and** the
+  trailing `pnpm -r --filter !...` pass (`next build` already performs its own complete type-check;
+  running a second, differently-configured `tsc --noEmit` in addition would be redundant and could
+  produce confusing duplicate diagnostics against a tsconfig that doesn't extend the shared base).
+  `packages/web`'s own `lint` script (`next lint`, via its own `.eslintrc.json` extending
+  `next/core-web-vitals`) is independent of the root `.eslintrc.cjs` (which gained a
+  `packages/web/**` ignore pattern) — the root `lint` script now runs both in sequence.
+- **Playwright browser-level e2e smoke testing was considered and deliberately deferred, not
+  built.** This phase's mandatory "runnable demo scenario" is satisfied by
+  `src/web-e2e.integration.test.ts` (a direct structural port of
+  `packages/tui/src/tui-e2e.integration.test.ts` — boots the real `buildApp()` against a throwaway
+  in-memory SQLite DB and drives `ApiClient` against it over genuine HTTP), which needs no new CI
+  infrastructure. A true browser-level Playwright smoke pass across all 17 routes remains real,
+  documented future work — it was not added in this pass because this environment's CI
+  browser-sandbox support for headless Chromium was not verified as part of this phase, and adding
+  a test that cannot reliably run in CI would be worse than not adding it.
+
+**Post-implementation review fixes (round 1):**
+
+- **HIGH-1 (`next build` failed on a genuinely clean install — Next 16 + React 19's
+  `@types/react` structural incompatibility with the ambient `LayoutConfig<Route>`/`Link` typing).**
+  `app/layout.tsx`'s `children` prop and `next/link`'s `Link` component both failed
+  `Type '{}' is not assignable to type 'ReactNode'` — the internally-generated `ReactNode` Next's
+  own typegen uses for `LayoutProps<Route>` is not structurally assignable to the `ReactNode`
+  imported from `'react'`, reproduced identically on two independent, genuinely clean
+  (`rm -rf node_modules && pnpm install --frozen-lockfile`) reinstalls, not a caching artifact.
+  `Readonly<{children: ReactNode}>`, a namespace-imported `React.ReactNode`, and Next's own
+  generated `LayoutProps<'/'>` helper (via `next typegen`) were all tried and still failed (the last
+  one only moved the error to the `{children}` render call site). Fixed with `children: any` on
+  `layout.tsx`'s destructured prop (a documented, deliberate workaround, not an oversight) and by
+  replacing `next/link`'s `<Link>` with a plain `<a href>` in `nav.tsx` (same underlying bug class).
+  A new `web-build` CI job (`.github/workflows/ci.yml`) now runs `pnpm --filter @minicoder/web build`
+  against a real, cold `pnpm install --frozen-lockfile` on every PR — no prior CI job actually built
+  `packages/web`, so this class of failure was invisible to CI entirely before this fix.
+- **MEDIUM-1/2 (`state-health`'s doctor/validation 403 was indistinguishable from a genuine backend
+  failure).** `tryOperatorCheck()` returned `T | 'forbidden' | null` for both the intentional
+  403-on-viewer-role case and any other thrown error (5xx, network, malformed response) — an
+  operator-role key hitting a real backend outage saw the same "requires operator role" message as
+  a viewer-role key correctly denied access. Fixed with a discriminated `CheckResult<T> =
+{kind:'ok',data} | {kind:'forbidden'} | {kind:'error',detail}`, rendering a distinct error message
+  for a genuine failure.
+- **MEDIUM-3 (`features/[id]`'s pull-request fetch silently swallowed every error, not just the
+  expected "no PR yet" 404).** `.catch(() => null)` treated a real 5xx/network failure identically
+  to the normal pre-`code_pushed` no-PR-yet case. Fixed with `fetchLinkedPullRequest()`, which only
+  returns `null` on a genuine `ApiError` with `status === 404` and rethrows everything else.
+- **MEDIUM-4 (`findings`'s per-feature/per-run/per-finding sampling caps were silent).**
+  `collectProjectFindings()`'s 50-feature/3-run/20-finding caps could produce an incomplete view
+  with no indication to the operator that anything was omitted. Fixed by tracking whether any cap
+  was actually hit (`ProjectFindings.truncated`) and rendering a visible warning banner when true.
+- **MEDIUM-5 (the clarification page could only show "Answered," never the actual answer text).**
+  `ClarificationQuestionRow` carried no join against `clarification_answers` — the table holding the
+  real answer text was never queried. Fixed with a second, additive read-model column,
+  `answer_text` (`getClarificationSession()`'s query gained a `LEFT JOIN clarification_answers a ON
+a.clarification_question_id = q.id` — safe as a plain, non-aggregating join since that column
+  carries a `UNIQUE` constraint, so a question has at most one answer row), rendered by
+  `QuestionAnswerForm` in place of the static "Answered" label.
+- **MEDIUM-6 (`disagreements`/`pull-requests/[number]` linked to `/features/{featureRunId}` instead
+  of `/features/{featureRequestId}`).** `DisagreementRow`/`PullRequestRow` only carry
+  `feature_run_id`, but `/features/[id]` expects a feature _request_ ID — every such link 404'd.
+  Fixed both pages with an extra `client.getFeatureRun(...)` resolution hop before linking; the
+  disagreements page's resolution helper also carries the disagreement's real `project_id` through
+  (a second, related bug: the page previously linked into the _currently selected_ project's
+  context regardless of which project the disagreement's feature actually belonged to), so
+  `/disagreements`' cross-project listing now links each row into its own correct project.
+- **HIGH-3 (no per-end-user auth boundary — documented, not code-fixed).** `packages/web` holds one
+  server-side API key shared by every browser visitor; there is no session/identity layer
+  distinguishing one visitor from another, unlike the backend's own per-key role model. Building a
+  real auth layer is out of scope for this phase (hosted-mode OAuth/SSO is explicitly deferred,
+  docs/07 §4) — instead documented as an explicit deployment-boundary constraint (this section's own
+  "Trusted/internal deployment only" bullet, and docs/07 §4's matching entry): `packages/web` must
+  only be deployed on a trusted/internal network until real end-user auth ships, the same
+  honestly-labeled-gap posture this document applies elsewhere (e.g. issue #61).
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
@@ -2137,7 +2335,30 @@ of the `pnpm -r` tail pass in Phase 14: `packages/cli`'s new Text UI command fil
 a dynamic-`import()` default-resolver pattern like the ones above, since there is no "reference
 implementation vs. injected mock" distinction for a UI-rendering package).
 
+`packages/web` (Phase 15) is deliberately **excluded** from this ordered chain, and also excluded
+from the trailing `pnpm -r --filter !...` pass — the first package to be excluded from both. It is
+a pure leaf (nothing else imports its compiled output) and its own `next build` already performs a
+complete type-check against a tsconfig that intentionally doesn't extend `tsconfig.base.json` (see
+CLAUDE.md's "Next.js Web UI Operational Constraints" section) — running the shared `tsc --noEmit`
+pass against it in addition would be redundant and could produce confusing duplicate diagnostics.
+
 When adding a new workspace package that others import for types, add it to this chain.
+
+**`pnpm build:web` (root `package.json`) is a hand-maintained dependency list, not a
+graph-driven `pnpm --filter ...@minicoder/web` command — deliberately, not an oversight (post-merge
+PR review fix, MEDIUM-1).** `@minicoder/api` is a _devDependency_ of `packages/web` (correctly: the
+only thing `packages/web` imports from it is `import type { ... }`, never runtime code — decision 2
+of this section) — and pnpm's `...<pkg>` dependency-closure filter selector only walks a package's
+`dependencies`, not its `devDependencies` (confirmed empirically: `pnpm --filter
+"...@minicoder/web" list --depth -1` resolves to `@minicoder/web` alone, and the same build failure
+this fix addresses — `next build` failing with `'row' is of type 'unknown'` in `adapters/page.tsx`
+because `@minicoder/api`'s `dist/` didn't exist yet — reproduces if you try to rely on that
+selector). So a graph-driven filter cannot express "build the packages `packages/web`'s type-only
+devDependency actually needs first" here; the list is the same one the ordered `typecheck` chain
+above already hand-maintains (everything through `@minicoder/api`, minus `@minicoder/tui` which
+`packages/web` doesn't depend on). `build:web` is the **one** place this list is written down —
+the `web-build` CI job (`.github/workflows/ci.yml`) calls `pnpm build:web` rather than duplicating
+the filter chain in YAML, so a local contributor and CI always run the identical command.
 
 ## Budget Gate
 

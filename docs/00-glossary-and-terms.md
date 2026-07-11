@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.11
-> Last-updated: 2026-07-06
+> Version: 1.0.12
+> Last-updated: 2026-07-07
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -561,6 +561,11 @@ minicoder adapters [--adapter <id>]
 minicoder design-doc --project <id> [--document <id>]
 minicoder pause --project <id> --yes                    # running -> paused_by_operator (operator+)
 minicoder resume --project <id> --yes                   # paused_by_operator -> running (operator+)
+
+# Next.js Web UI (Phase 15; browser-based, API-only — see 05-ui-specification.md §5 for the full
+# 17-route list). Not a CLI surface — `packages/web`'s Next.js server process reads the same
+# MINICODER_API_URL/MINICODER_API_KEY env vars the Ink Text UI above already uses; no new
+# WEB_*-prefixed variant was introduced.
 
 # Test scenario runner (non-zero exit on failure)
 minicoder test unit

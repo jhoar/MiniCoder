@@ -7,7 +7,7 @@ implementation backlog, then orchestrates feature-branch development, pull reque
 reviews, fixes, merge gates, and final design documentation. It is designed to be auditable,
 deterministic, cost-aware, safe, and fully testable without human intervention.
 
-This repository contains the **Phase 1–14 implementation** of MiniCoder — the monorepo skeleton,
+This repository contains the **Phase 1–15 implementation** of MiniCoder — the monorepo skeleton,
 persistence abstraction (SQLite + PostgreSQL), initial schema, migration tooling,
 config/secrets backends, database lifecycle CLI, and CI (Phase 1); full state-machine / command
 layer, transactional idempotent commands, outbox/inbox dispatching, workflow locks, and local auth
@@ -35,16 +35,28 @@ inline Arbiter adjudication, the five `human_required` exit commands and their `
 CLI surface, and the terminal `skipped` feature state (Phase 11); the Merge Gate and Branch
 Protection implementation — the merge-policy engine, real approve/merge/record-failure command
 handlers, the `minicoder/review-gate` GitHub status check, the `run-merge-gate` Trigger.dev task, and
-`minicoder merge merge-if-ready` (Phase 12); and the Orchestrator API implementation — a
+`minicoder merge merge-if-ready` (Phase 12); the Orchestrator API implementation — a
 Fastify-based HTTP API exposing read models, dispatching existing core commands (generic dispatch,
 a dedicated `merge-if-ready` route, and Trigger.dev task-enqueue routes), mounting the GitHub webhook
 receiver, and publishing a hand-authored OpenAPI 3.1 contract with route-registration-time
 conformance enforcement — a static API-key auth model, claim-first HTTP route idempotency for
-routes spanning an external side effect, and `minicoder api serve` (Phase 13); and the Ink Text UI
+routes spanning an external side effect, and `minicoder api serve` (Phase 13); the Ink Text UI
 implementation — the `@minicoder/tui` package and its fourteen `minicoder {status,plan,
 clarification,features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,
-pause,resume}` CLI commands, all calling the Orchestrator API over HTTP only (Phase 14).
+pause,resume}` CLI commands, all calling the Orchestrator API over HTTP only (Phase 14); and the
+Next.js Web UI implementation — the `@minicoder/web` package (the first Next.js/React/App Router
+package in this repo), a server-only Orchestrator API client with no client-exposed API key,
+Server-Action-based command dispatch with per-submission idempotency keys, and all seventeen
+`docs/05-ui-specification.md` §5 routes (dashboard, planning, clarification, features, feature
+detail, pull-request detail, agent runs, findings, disagreements, costs, budgets, artifacts,
+adapters, design document, human-required, state health, settings), with the design-document and
+adapters pages explicitly read-only pending backend commands that don't exist yet (Phase 15).
 Specification documents live under `docs/`.
+
+**Deployment note:** `packages/web` holds one server-side Orchestrator API credential shared by
+every browser visitor — there is no per-end-user session/auth layer yet. Deploy it only on a
+trusted/internal network (VPN, internal load balancer, or an authenticating reverse proxy) until
+real end-user auth ships; see `docs/07-security-and-secrets.md` §4.
 
 ## Documentation (canonical)
 
@@ -97,9 +109,11 @@ history.
   state-lifecycle tooling are foundational.
 - **A single Fastify Orchestrator API** is the one network-facing surface: it dispatches the same
   command layer the CLI and Workflow Layer tasks use — no arbitrary state-mutation endpoints.
-- **The Ink Text UI talks to that API over HTTP only** — no direct database access, no duplicated
-  authorization logic; the backend is the sole enforcement point for every command it renders a
-  UI for.
+- **The Ink Text UI and the Next.js Web UI both talk to that API over HTTP only** — no direct
+  database access, no duplicated authorization logic; the backend is the sole enforcement point
+  for every command either UI renders a control for. The Web UI additionally keeps its API
+  credential server-side only (no client-exposed key) and is scoped to trusted/internal
+  deployment until real end-user auth ships.
 
 Technology stack and the full term set are in
 [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md).

@@ -13,16 +13,19 @@ architecture requirements remain under `docs/`.
 ## Current Repository State
 
 - The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–14 implementation**. This section's bullet list
-  below predates Phase 9 and was never fully expanded for Phases 9–14; for the authoritative,
+- The codebase currently contains the **Phase 1–15 implementation**. This section's bullet list
+  below predates Phase 9 and was never fully expanded for Phases 9–15; for the authoritative,
   currently-accurate per-phase delivered-modules list, see `CLAUDE.md`'s per-phase sections and
   `docs/06-implementation-plan.md` (each phase there is marked `✓ Complete` with its own
   "Delivered modules" list). In summary, since Phase 8 this repository has also shipped: the
   Reference Coder Adapter and sandboxed code-generation (Phase 9); the Reference Reviewer Adapter
   and review/fix loop (Phase 10); Disagreement/Arbiter/Human Escalation (Phase 11); the Merge Gate
   and branch protection (Phase 12); the Fastify-based Orchestrator API (`packages/api`, Phase 13);
-  and the Ink Text UI (`packages/tui` + fourteen `minicoder` CLI commands calling that API over
-  HTTP only, Phase 14). Phases 1–8's bullets below remain accurate as far as they go:
+  the Ink Text UI (`packages/tui` + fourteen `minicoder` CLI commands calling that API over
+  HTTP only, Phase 14); and the Next.js Web UI (`packages/web`, all seventeen `docs/05` §5 routes,
+  a server-only Orchestrator API client with no client-exposed API key, scoped to trusted/internal
+  deployment pending real end-user auth, Phase 15). Phases 1–8's bullets below remain accurate as
+  far as they go:
   - TypeScript/pnpm monorepo
   - domain state and entity types
   - persistence abstractions
@@ -84,10 +87,10 @@ architecture requirements remain under `docs/`.
   - execution-orchestrator scenario coverage for dependency ordering, single-active-feature
     enforcement, budget approval flow, and sequencing continuation
 - Do not describe the repository as specification-only.
-- Phases 9–14 are implemented (see the summary above and CLAUDE.md/docs/06 for detail); only
-  Phases 15–18 (Next.js Web UI, observability/cost/recovery, the Final Design Document Generator,
-  and future extensions) remain target architecture. Do not assume Phase 15+ is implemented merely
-  because a schema, state machine, or type already exists for it.
+- Phases 9–15 are implemented (see the summary above and CLAUDE.md/docs/06 for detail); only
+  Phases 16–18 (observability/cost/recovery, the Final Design Document Generator, and future
+  extensions) remain target architecture. Do not assume Phase 16+ is implemented merely because a
+  schema, state machine, or type already exists for it.
 - Phase 3 delivered the initial task IDs as payload-validated stubs; Phase 6 wired the
   planning/clarification/artifact tasks (`ingest-specification`, `planning-readiness-assessment`,
   `start-clarification`, `record-clarification-answer`, `complete-clarification`,
@@ -161,6 +164,7 @@ packages/adapters-planner/      Reference GenericLLMPlannerAdapter (issue #32)
 packages/adapters-arbiter/      Reference ClaudeArbiterAdapter (issue #51, Phase 11)
 packages/api/                   Fastify Orchestrator API: read models, command dispatch, OpenAPI (Phase 13)
 packages/tui/                   Ink Text UI: ApiClient + render views, consumed by packages/cli (Phase 14)
+packages/web/                   Next.js Web UI: server-only API client, all 17 docs/05 §5 routes (Phase 15)
 packages/testing/               Deterministic fixtures, mock adapters, conformance, scenarios, and runner
 packages/cli/                   Thin Commander-based CLI (DB-direct commands plus Phase 14's API-only TUI commands)
 infra/docker-compose.triggerdev.yml  Self-hosted Trigger.dev v4 single-node stack

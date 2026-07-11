@@ -60,5 +60,5 @@ module.exports = {
       },
     },
   ],
-  ignorePatterns: ['dist/', 'node_modules/', '*.js', '*.cjs', '*.mjs'],
+  ignorePatterns: ['dist/', 'node_modules/', '*.js', '*.cjs', '*.mjs', 'packages/web/**'],
 };
