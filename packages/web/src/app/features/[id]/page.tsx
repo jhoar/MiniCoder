@@ -1,26 +1,10 @@
 import type { ReactElement } from 'react';
-import type { PullRequestRow } from '@minicoder/api';
-import { getApiClient, ApiError } from '../../../lib/api-server';
+import { getApiClient } from '../../../lib/api-server';
+import { fetchLinkedPullRequest } from '../../../lib/fetch-linked-pull-request';
 import { StatusBadge } from '../../../components/status-badge';
 import { KeyValue } from '../../../components/key-value';
 import { Table } from '../../../components/table';
 import { RunActions } from './run-actions';
-
-/** A feature run genuinely has no linked PR yet (before `code_pushed`) — that's a 404, not a
- * failure, and should render as "no pull request" rather than an error. Any other failure (5xx,
- * network, auth) must not be silently swallowed the same way, or a real API/backend problem looks
- * identical to the normal no-PR-yet case (caught in PR review). */
-async function fetchLinkedPullRequest(
-  client: ReturnType<typeof getApiClient>,
-  featureRunId: string,
-): Promise<PullRequestRow | null> {
-  try {
-    return await client.getPullRequestByFeatureRun(featureRunId);
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) return null;
-    throw err;
-  }
-}
 
 export default async function FeatureDetailPage({
   params,

@@ -2344,6 +2344,22 @@ pass against it in addition would be redundant and could produce confusing dupli
 
 When adding a new workspace package that others import for types, add it to this chain.
 
+**`pnpm build:web` (root `package.json`) is a hand-maintained dependency list, not a
+graph-driven `pnpm --filter ...@minicoder/web` command — deliberately, not an oversight (post-merge
+PR review fix, MEDIUM-1).** `@minicoder/api` is a _devDependency_ of `packages/web` (correctly: the
+only thing `packages/web` imports from it is `import type { ... }`, never runtime code — decision 2
+of this section) — and pnpm's `...<pkg>` dependency-closure filter selector only walks a package's
+`dependencies`, not its `devDependencies` (confirmed empirically: `pnpm --filter
+"...@minicoder/web" list --depth -1` resolves to `@minicoder/web` alone, and the same build failure
+this fix addresses — `next build` failing with `'row' is of type 'unknown'` in `adapters/page.tsx`
+because `@minicoder/api`'s `dist/` didn't exist yet — reproduces if you try to rely on that
+selector). So a graph-driven filter cannot express "build the packages `packages/web`'s type-only
+devDependency actually needs first" here; the list is the same one the ordered `typecheck` chain
+above already hand-maintains (everything through `@minicoder/api`, minus `@minicoder/tui` which
+`packages/web` doesn't depend on). `build:web` is the **one** place this list is written down —
+the `web-build` CI job (`.github/workflows/ci.yml`) calls `pnpm build:web` rather than duplicating
+the filter chain in YAML, so a local contributor and CI always run the identical command.
+
 ## Budget Gate
 
 The budget-gate primitive ships in **Phase 8** (not Phase 16). Phase 16 adds dashboards and

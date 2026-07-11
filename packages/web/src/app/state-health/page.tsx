@@ -1,32 +1,12 @@
 import type { ReactElement } from 'react';
-import { getApiClient, ApiError } from '../../lib/api-server';
+import { getApiClient } from '../../lib/api-server';
+import { tryOperatorCheck } from '../../lib/try-operator-check';
 import { resolveProjectId } from '../../lib/project';
 import { ProjectSwitcher } from '../../components/project-switcher';
 import { StatusBadge } from '../../components/status-badge';
 import { Table } from '../../components/table';
 import { ReconcileButton } from './reconcile-button';
 import type { DoctorResult, ValidationResult } from '@minicoder/api';
-
-type CheckResult<T> =
-  | { kind: 'ok'; data: T }
-  | { kind: 'forbidden' }
-  | { kind: 'error'; detail: string };
-
-/** `doctor`/`validate` require `operator`+ (backend-enforced). A `viewer`-role key gets a 403 —
- * caught here and rendered as an omitted section, mirroring `packages/tui`'s own established
- * "the API enforces authorization, the UI never duplicates the check, just degrades gracefully"
- * convention (see CLAUDE.md's Ink Text UI section and this package's own operational constraints).
- * Any *other* failure (5xx, network, malformed response) must render as a distinct error state,
- * not the same "no access" message — collapsing them made a real backend outage indistinguishable
- * from an intentional permission restriction (caught in PR review). */
-async function tryOperatorCheck<T>(fn: () => Promise<T>): Promise<CheckResult<T>> {
-  try {
-    return { kind: 'ok', data: await fn() };
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 403) return { kind: 'forbidden' };
-    return { kind: 'error', detail: err instanceof Error ? err.message : 'Unknown error' };
-  }
-}
 
 export default async function StateHealthPage({
   searchParams,

@@ -60,9 +60,7 @@ jobs:
           node-version: "20"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - name: Build @minicoder/web's type dependencies
-        run: pnpm --filter @minicoder/core --filter @minicoder/persistence-sqlite --filter @minicoder/persistence-postgres --filter @minicoder/workflow --filter @minicoder/github --filter @minicoder/adapters-coder --filter @minicoder/adapters-reviewer --filter @minicoder/adapters-planner --filter @minicoder/adapters-arbiter --filter @minicoder/triggerdev --filter @minicoder/testing --filter @minicoder/api build
-      - run: pnpm --filter @minicoder/web build
+      - run: pnpm build:web
 
   test-sqlite:
     name: Tests (SQLite)
