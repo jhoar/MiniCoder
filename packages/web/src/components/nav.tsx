@@ -1,5 +1,4 @@
 import type { ReactElement } from 'react';
-import Link from 'next/link';
 
 const LINKS: Array<{ href: string; label: string }> = [
   { href: '/dashboard', label: 'Dashboard' },
@@ -32,9 +31,15 @@ export function Nav(): ReactElement {
       }}
     >
       {LINKS.map((link) => (
-        <Link key={link.href} href={link.href} style={{ color: '#334155' }}>
+        // Plain `<a>` rather than `next/link`'s `Link` — sidesteps a confirmed Next 16 /
+        // @types/react typing incompatibility (`Link` fails the JSX-component-validity check;
+        // see CLAUDE.md's Next.js Web UI Operational Constraints). Every other internal link in
+        // this package already uses a plain `<a>` for the same reason this is an acceptable
+        // trade-off here: an ops dashboard nav bar has no meaningful need for client-side
+        // transitions over a full navigation.
+        <a key={link.href} href={link.href} style={{ color: '#334155' }}>
           {link.label}
-        </Link>
+        </a>
       ))}
     </nav>
   );

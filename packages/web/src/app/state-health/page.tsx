@@ -7,16 +7,24 @@ import { Table } from '../../components/table';
 import { ReconcileButton } from './reconcile-button';
 import type { DoctorResult, ValidationResult } from '@minicoder/api';
 
+type CheckResult<T> =
+  | { kind: 'ok'; data: T }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; detail: string };
+
 /** `doctor`/`validate` require `operator`+ (backend-enforced). A `viewer`-role key gets a 403 —
  * caught here and rendered as an omitted section, mirroring `packages/tui`'s own established
  * "the API enforces authorization, the UI never duplicates the check, just degrades gracefully"
- * convention (see CLAUDE.md's Ink Text UI section and this package's own operational constraints). */
-async function tryOperatorCheck<T>(fn: () => Promise<T>): Promise<T | 'forbidden' | null> {
+ * convention (see CLAUDE.md's Ink Text UI section and this package's own operational constraints).
+ * Any *other* failure (5xx, network, malformed response) must render as a distinct error state,
+ * not the same "no access" message — collapsing them made a real backend outage indistinguishable
+ * from an intentional permission restriction (caught in PR review). */
+async function tryOperatorCheck<T>(fn: () => Promise<T>): Promise<CheckResult<T>> {
   try {
-    return await fn();
+    return { kind: 'ok', data: await fn() };
   } catch (err) {
-    if (err instanceof ApiError && err.status === 403) return 'forbidden';
-    return null;
+    if (err instanceof ApiError && err.status === 403) return { kind: 'forbidden' };
+    return { kind: 'error', detail: err instanceof Error ? err.message : 'Unknown error' };
   }
 }
 
@@ -65,16 +73,20 @@ export default async function StateHealthPage({
 
       <section>
         <h2>Doctor checks</h2>
-        {doctor === 'forbidden' && (
+        {doctor.kind === 'forbidden' && (
           <p style={{ color: '#64748b' }}>Requires operator role or above.</p>
         )}
-        {doctor && doctor !== 'forbidden' && (
+        {doctor.kind === 'error' && (
+          <p style={{ color: '#b91c1c' }}>Failed to load doctor checks: {doctor.detail}</p>
+        )}
+        {doctor.kind === 'ok' && (
           <>
             <p>
-              Overall: {doctor.healthy ? <StatusBadge value="ok" /> : <StatusBadge value="error" />}
+              Overall:{' '}
+              {doctor.data.healthy ? <StatusBadge value="ok" /> : <StatusBadge value="error" />}
             </p>
             <Table
-              rows={doctor.checks}
+              rows={doctor.data.checks}
               rowKey={(row) => row.name}
               columns={[
                 { key: 'name', header: 'Check', render: (row) => row.name },
@@ -97,14 +109,21 @@ export default async function StateHealthPage({
 
       <section>
         <h2>Validation</h2>
-        {validation === 'forbidden' && (
+        {validation.kind === 'forbidden' && (
           <p style={{ color: '#64748b' }}>Requires operator role or above.</p>
         )}
-        {validation && validation !== 'forbidden' && (
+        {validation.kind === 'error' && (
+          <p style={{ color: '#b91c1c' }}>Failed to load validation: {validation.detail}</p>
+        )}
+        {validation.kind === 'ok' && (
           <p>
-            Checked {validation.checkedRuns} feature runs —{' '}
-            {validation.valid ? <StatusBadge value="valid" /> : <StatusBadge value="invalid" />} (
-            {validation.violations.length} violations)
+            Checked {validation.data.checkedRuns} feature runs —{' '}
+            {validation.data.valid ? (
+              <StatusBadge value="valid" />
+            ) : (
+              <StatusBadge value="invalid" />
+            )}{' '}
+            ({validation.data.violations.length} violations)
           </p>
         )}
       </section>

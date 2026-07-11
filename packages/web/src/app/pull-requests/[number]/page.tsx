@@ -22,7 +22,8 @@ export default async function PullRequestDetailPage({
     return <p>No pull request #{prNumber} found for this project.</p>;
   }
 
-  const [findings, mergeGateEvaluations] = await Promise.all([
+  const [featureRun, findings, mergeGateEvaluations] = await Promise.all([
+    client.getFeatureRun(pr.feature_run_id),
     client.listReviewFindings(pr.feature_run_id, { limit: '20' }),
     client.listMergeGateEvaluations(pr.feature_run_id, { limit: '10' }),
   ]);
@@ -41,10 +42,15 @@ export default async function PullRequestDetailPage({
             value: pr.mergeable === null ? 'unknown' : pr.mergeable ? 'yes' : 'no',
           },
           {
-            label: 'Feature run',
+            // `/features/[id]` expects a feature *request* ID, not a feature *run* ID — these are
+            // distinct identifiers (a feature request can have multiple runs across retries). The
+            // link must resolve through the run's `feature_request_id`, not use `pr.feature_run_id`
+            // directly (a real navigation bug caught in PR review — see CLAUDE.md's Next.js Web UI
+            // Operational Constraints for the general pattern).
+            label: 'Feature',
             value: (
-              <a href={`/features/${pr.feature_run_id}?project=${projectId}`}>
-                {pr.feature_run_id}
+              <a href={`/features/${featureRun.feature_request_id}?project=${projectId}`}>
+                {featureRun.feature_request_id}
               </a>
             ),
           },

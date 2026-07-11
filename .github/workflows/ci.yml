@@ -43,6 +43,27 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
 
+  web-build:
+    name: Web UI Build
+    runs-on: ubuntu-latest
+    # `pnpm typecheck` above deliberately excludes packages/web (see CLAUDE.md's "Typecheck
+    # Script Ordering" section) — `next build`'s own type-check is the only thing that exercises
+    # packages/web's App Router type contracts (e.g. the generated `LayoutConfig<Route>` check),
+    # so it needs its own CI job rather than relying on the root typecheck job to cover it.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Build @minicoder/web's type dependencies
+        run: pnpm --filter @minicoder/core --filter @minicoder/persistence-sqlite --filter @minicoder/persistence-postgres --filter @minicoder/workflow --filter @minicoder/github --filter @minicoder/adapters-coder --filter @minicoder/adapters-reviewer --filter @minicoder/adapters-planner --filter @minicoder/adapters-arbiter --filter @minicoder/triggerdev --filter @minicoder/testing --filter @minicoder/api build
+      - run: pnpm --filter @minicoder/web build
+
   test-sqlite:
     name: Tests (SQLite)
     runs-on: ubuntu-latest

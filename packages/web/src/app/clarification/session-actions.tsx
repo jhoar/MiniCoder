@@ -54,7 +54,7 @@ export function QuestionAnswerForm({
   const [answer, setAnswer] = useState('');
 
   if (question.answered_at) {
-    return <span style={{ color: '#166534' }}>Answered</span>;
+    return <span style={{ color: '#166534' }}>{question.answer_text ?? 'Answered'}</span>;
   }
 
   return (

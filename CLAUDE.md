@@ -2104,6 +2104,16 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` env vars the Text UI already established
   (`src/lib/config.ts`) — there is exactly one Orchestrator API and one key per deployment, so a
   `WEB_*`-prefixed variant would be a needless parallel configuration surface.
+- **Trusted/internal deployment only — there is no per-end-user auth boundary.** Keeping the API
+  key server-side stops _browser_ exposure, but every visitor to a deployed `@minicoder/web`
+  instance still shares the one configured key's role/actorKind identity; there is no login/session
+  layer distinguishing one human from another (see docs/07-security-and-secrets.md §4's new
+  "Server-side API credential, single shared identity" bullet — the identical trust-boundary shape
+  already documented as future "Hosted mode" OAuth/SSO work, not a Phase 15-specific gap). Do not
+  deploy `packages/web` directly on the public internet with a privileged
+  (`operator`/`approver`/`admin`) key; put it behind a trusted/internal network boundary (VPN,
+  internal load balancer, or a reverse proxy that itself authenticates end users) until real
+  end-user auth ships.
 - **RBAC is backend-enforced only; the frontend's own role check is UX decoration, not a security
   boundary.** The root layout (`app/layout.tsx`) calls `GET /whoami` once per request and passes the
   resolved `ActorIdentity` down via `components/actor-context.tsx`'s `ActorProvider`/`useActor()`/
@@ -2177,6 +2187,62 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   documented future work — it was not added in this pass because this environment's CI
   browser-sandbox support for headless Chromium was not verified as part of this phase, and adding
   a test that cannot reliably run in CI would be worse than not adding it.
+
+**Post-implementation review fixes (round 1):**
+
+- **HIGH-1 (`next build` failed on a genuinely clean install — Next 16 + React 19's
+  `@types/react` structural incompatibility with the ambient `LayoutConfig<Route>`/`Link` typing).**
+  `app/layout.tsx`'s `children` prop and `next/link`'s `Link` component both failed
+  `Type '{}' is not assignable to type 'ReactNode'` — the internally-generated `ReactNode` Next's
+  own typegen uses for `LayoutProps<Route>` is not structurally assignable to the `ReactNode`
+  imported from `'react'`, reproduced identically on two independent, genuinely clean
+  (`rm -rf node_modules && pnpm install --frozen-lockfile`) reinstalls, not a caching artifact.
+  `Readonly<{children: ReactNode}>`, a namespace-imported `React.ReactNode`, and Next's own
+  generated `LayoutProps<'/'>` helper (via `next typegen`) were all tried and still failed (the last
+  one only moved the error to the `{children}` render call site). Fixed with `children: any` on
+  `layout.tsx`'s destructured prop (a documented, deliberate workaround, not an oversight) and by
+  replacing `next/link`'s `<Link>` with a plain `<a href>` in `nav.tsx` (same underlying bug class).
+  A new `web-build` CI job (`.github/workflows/ci.yml`) now runs `pnpm --filter @minicoder/web build`
+  against a real, cold `pnpm install --frozen-lockfile` on every PR — no prior CI job actually built
+  `packages/web`, so this class of failure was invisible to CI entirely before this fix.
+- **MEDIUM-1/2 (`state-health`'s doctor/validation 403 was indistinguishable from a genuine backend
+  failure).** `tryOperatorCheck()` returned `T | 'forbidden' | null` for both the intentional
+  403-on-viewer-role case and any other thrown error (5xx, network, malformed response) — an
+  operator-role key hitting a real backend outage saw the same "requires operator role" message as
+  a viewer-role key correctly denied access. Fixed with a discriminated `CheckResult<T> =
+{kind:'ok',data} | {kind:'forbidden'} | {kind:'error',detail}`, rendering a distinct error message
+  for a genuine failure.
+- **MEDIUM-3 (`features/[id]`'s pull-request fetch silently swallowed every error, not just the
+  expected "no PR yet" 404).** `.catch(() => null)` treated a real 5xx/network failure identically
+  to the normal pre-`code_pushed` no-PR-yet case. Fixed with `fetchLinkedPullRequest()`, which only
+  returns `null` on a genuine `ApiError` with `status === 404` and rethrows everything else.
+- **MEDIUM-4 (`findings`'s per-feature/per-run/per-finding sampling caps were silent).**
+  `collectProjectFindings()`'s 50-feature/3-run/20-finding caps could produce an incomplete view
+  with no indication to the operator that anything was omitted. Fixed by tracking whether any cap
+  was actually hit (`ProjectFindings.truncated`) and rendering a visible warning banner when true.
+- **MEDIUM-5 (the clarification page could only show "Answered," never the actual answer text).**
+  `ClarificationQuestionRow` carried no join against `clarification_answers` — the table holding the
+  real answer text was never queried. Fixed with a second, additive read-model column,
+  `answer_text` (`getClarificationSession()`'s query gained a `LEFT JOIN clarification_answers a ON
+a.clarification_question_id = q.id` — safe as a plain, non-aggregating join since that column
+  carries a `UNIQUE` constraint, so a question has at most one answer row), rendered by
+  `QuestionAnswerForm` in place of the static "Answered" label.
+- **MEDIUM-6 (`disagreements`/`pull-requests/[number]` linked to `/features/{featureRunId}` instead
+  of `/features/{featureRequestId}`).** `DisagreementRow`/`PullRequestRow` only carry
+  `feature_run_id`, but `/features/[id]` expects a feature _request_ ID — every such link 404'd.
+  Fixed both pages with an extra `client.getFeatureRun(...)` resolution hop before linking; the
+  disagreements page's resolution helper also carries the disagreement's real `project_id` through
+  (a second, related bug: the page previously linked into the _currently selected_ project's
+  context regardless of which project the disagreement's feature actually belonged to), so
+  `/disagreements`' cross-project listing now links each row into its own correct project.
+- **HIGH-3 (no per-end-user auth boundary — documented, not code-fixed).** `packages/web` holds one
+  server-side API key shared by every browser visitor; there is no session/identity layer
+  distinguishing one visitor from another, unlike the backend's own per-key role model. Building a
+  real auth layer is out of scope for this phase (hosted-mode OAuth/SSO is explicitly deferred,
+  docs/07 §4) — instead documented as an explicit deployment-boundary constraint (this section's own
+  "Trusted/internal deployment only" bullet, and docs/07 §4's matching entry): `packages/web` must
+  only be deployed on a trusted/internal network until real end-user auth ships, the same
+  honestly-labeled-gap posture this document applies elsewhere (e.g. issue #61).
 
 ## Cross-Dialect Testing (Mandatory)
 
