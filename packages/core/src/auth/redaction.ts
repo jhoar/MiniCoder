@@ -36,6 +36,28 @@ export class SecretRedactor {
     return result;
   }
 
+  /**
+   * Phase 16 addition (docs/07 "private chain-of-thought is never stored" verification):
+   * a non-mutating check reusing the exact same rule set `redact()` already applies, rather than
+   * a second, independently-maintained pattern library. Returns the human-readable replacement
+   * text of every rule that matched (deduped), for use by a defense-in-depth audit check (e.g.
+   * `state doctor`'s secret-leak scan) over already-persisted rows — it never redacts anything
+   * itself; `redact()`/`redactObject()` remain the only write-path redaction mechanism.
+   */
+  scanForSecrets(input: string): string[] {
+    const hits: string[] = [];
+    for (const rule of this.rules) {
+      const re = new RegExp(
+        rule.pattern.source,
+        rule.pattern.flags.includes('g') ? rule.pattern.flags : rule.pattern.flags + 'g',
+      );
+      if (re.test(input)) {
+        hits.push(rule.pattern.source);
+      }
+    }
+    return hits;
+  }
+
   redactObject<T>(obj: T): T {
     if (typeof obj === 'string') {
       return this.redact(obj) as unknown as T;

@@ -20,6 +20,7 @@ import type { RunCoderPayload } from './types.js';
 import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 import { requireNonBlankEnvVar } from './env.js';
+import { budgetPreflightCheck, resolveEstimatedCostUsd } from './budget-preflight.js';
 
 export type { RunCoderPayload };
 
@@ -256,6 +257,23 @@ export async function runImpl(
     return { projectId, featureRunId, pushed: false, prNumber: null };
   }
   const repoUrl = `https://github.com/${repo.owner}/${repo.name}.git`;
+
+  // Phase 16 pre-flight budget forecast (docs/01 §5.11 "Forecast before run"): opt-in via
+  // CODE_GEN_ESTIMATED_COST_USD — a no-op (always proceeds) unless a deployment configures it.
+  // Runs BEFORE the coder adapter is invoked, so a forecasted hard breach skips the (possibly
+  // expensive) LLM call entirely rather than only detecting the breach after paying for it. Does
+  // NOT replace the retrospective evaluateBudget()/applyBudgetDecision() check that runs after
+  // real cost is recorded — see budget-preflight.ts's doc comment.
+  const preflight = await budgetPreflightCheck(db, {
+    projectId,
+    featureRequestId: run.feature_request_id,
+    scope: 'feature',
+    correlationId,
+    estimatedCostUsd: resolveEstimatedCostUsd('CODE_GEN_ESTIMATED_COST_USD'),
+  });
+  if (!preflight.proceed) {
+    return { projectId, featureRunId, pushed: false, prNumber: null };
+  }
 
   // Phase 10: unresolved review_findings for this feature run, folded into CoderInput.openFindings
   // for a fix-cycle invocation only — a first-pass `coding` run has no findings yet.

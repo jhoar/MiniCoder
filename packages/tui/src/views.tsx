@@ -27,6 +27,10 @@ import type {
   DesignDocumentSectionRow,
   DoctorResult,
   TriggerdevRunRow,
+  BudgetReport,
+  BudgetBreakdownRow,
+  FeatureRunTimeline,
+  TimelineEntry,
 } from '@minicoder/api';
 import type { ProjectStatus, WhoamiResponse } from './client/api-client.js';
 import { Table, type Column } from './components/Table.js';
@@ -388,6 +392,59 @@ export function renderCostsView(props: {
         <Footer nextCursor={props.budgets.nextCursor} />
       </Section>
     </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// budget report (Phase 16)
+// ---------------------------------------------------------------------------
+
+function renderBreakdown(title: string, rows: BudgetBreakdownRow[]): React.ReactElement {
+  const columns: Column<BudgetBreakdownRow>[] = [
+    { header: 'Key', width: 20, render: (r) => r.key },
+    { header: 'Total', width: 12, render: (r) => r.totalAmount.toFixed(4) },
+    { header: 'Records', width: 8, render: (r) => String(r.recordCount) },
+  ];
+  return (
+    <Section title={title}>
+      <Table columns={columns} rows={rows} />
+    </Section>
+  );
+}
+
+export function renderBudgetReportView(report: BudgetReport): React.ReactElement {
+  return (
+    <Box flexDirection="column">
+      <KeyValue
+        fields={[
+          { label: 'Project', value: report.projectId },
+          { label: 'Window (days)', value: report.windowDays ? String(report.windowDays) : 'all' },
+          { label: 'Total spend', value: `${report.totalAmount.toFixed(4)} (${report.recordCount} records)` },
+        ]}
+      />
+      {renderBreakdown('By scope', report.byScope)}
+      {renderBreakdown('By feature', report.byFeature)}
+      {renderBreakdown('By provider', report.byProvider)}
+      {renderBreakdown('By model', report.byModel)}
+      {renderBreakdown('By role', report.byRole)}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// feature-run timeline (Phase 16)
+// ---------------------------------------------------------------------------
+
+export function renderTimelineView(timeline: FeatureRunTimeline): React.ReactElement {
+  const columns: Column<TimelineEntry>[] = [
+    { header: 'Timestamp', width: 24, render: (e) => e.timestamp },
+    { header: 'Kind', width: 16, render: (e) => e.kind },
+    { header: 'Summary', width: 40, render: (e) => e.summary },
+  ];
+  return (
+    <Section title={`Timeline: feature run ${timeline.featureRunId}`}>
+      <Table columns={columns} rows={timeline.entries} />
+    </Section>
   );
 }
 

@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.12
-> Last-updated: 2026-07-07
+> Version: 1.0.13
+> Last-updated: 2026-07-11
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -553,9 +553,11 @@ minicoder clarification --project <id> [--session <id>]
 minicoder features --project <id> [--human-required] [--cursor <c>] [--limit <n>]
 minicoder active --project <id>
 minicoder runs [--project <id>] [--feature-run <id>] [--cursor <c>] [--limit <n>]
+minicoder runs --timeline <featureRunId>                # Phase 16: merged workflow-history view
 minicoder findings --feature-run <id> [--cursor <c>] [--limit <n>]
 minicoder disagreements [--feature-run <id>] [--state <state>] [--cursor <c>] [--limit <n>]
 minicoder costs --project <id>
+minicoder costs --project <id> --report [--window-days <n>]  # Phase 16: aggregate spend breakdown
 minicoder artifacts --project <id> [--cursor <c>] [--limit <n>]
 minicoder adapters [--adapter <id>]
 minicoder design-doc --project <id> [--document <id>]

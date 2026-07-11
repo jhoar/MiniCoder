@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.4.0
-> Last-updated: 2026-07-06
+> Version: 1.5.0
+> Last-updated: 2026-07-11
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -1244,6 +1244,66 @@ replay of the first.
 
 ---
 
+### Phase 16 — Observability, Cost, and Recovery Runbook
+
+Covers the workflow timeline, budget forecasting/reporting, and the two new `state doctor` checks
+(see §12.6 above for the doctor-check table).
+
+#### Procedure: Reconstruct a feature run's full history
+
+```bash
+minicoder runs --timeline <featureRunId>
+# or, via the API directly:
+curl -sH "Authorization: Bearer $MINICODER_API_KEY" \
+  "$MINICODER_API_URL/feature-runs/<featureRunId>/timeline"
+```
+
+Returns a chronologically-sorted list merging `workflow_events`, `agent_runs` (with their
+`agent_tool_operations`), `review_findings` (with their `coder_responses`), the `pull_requests`
+row, `cost_records`, and `human_approvals` for that one feature run — the single place to answer
+"what actually happened to this feature, in what order."
+
+#### Procedure: Inspect aggregate spend
+
+```bash
+minicoder costs --project <id> --report                    # all-time
+minicoder costs --project <id> --report --window-days 7    # trailing 7 days
+```
+
+Returns total spend plus breakdowns by scope, feature, provider, model, and role
+(`GET /budget-report`). Use this before setting/adjusting a `budget_policies` threshold, or to
+explain why a project paused at `paused_budget_exceeded`/`waiting_for_budget_approval`.
+
+#### Procedure: Enable prospective (pre-flight) budget forecasting
+
+Opt-in only — unset by default. Set on the `run-coder`/`run-review` Trigger.dev worker process:
+
+```bash
+export CODE_GEN_ESTIMATED_COST_USD=0.50   # run-coder.ts pre-flight estimate
+export REVIEW_ESTIMATED_COST_USD=0.20     # run-review.ts pre-flight estimate
+```
+
+With these set, each task calls `forecastBudget()` before invoking its adapter; a forecasted hard
+breach skips the adapter call entirely and records the breach via the existing
+`RecordBudgetExceededCommand` path (same effect as the retrospective breach, just without paying
+for the LLM call first). Leave unset to keep the pre-Phase-16 retrospective-only behavior
+unchanged — this is the default and requires no action.
+
+#### Procedure: Enable optional OpenTelemetry export
+
+Opt-in only — unset by default, and no scheduled caller is wired in this phase. To export
+`workflow_events` to a collector manually or from your own cron:
+
+```ts
+import { exportWorkflowEventsToOtlp } from '@minicoder/core';
+await exportWorkflowEventsToOtlp(db, { sinceEventId: lastExportedId });
+```
+
+No-ops with `{ attempted: false, ... }` unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set in the calling
+process's environment.
+
+---
+
 ## 12. Phase 4 Runbook — Test Harness and State Lifecycle Tooling
 
 This section documents the operational procedures added in Phase 4.
@@ -1364,16 +1424,18 @@ minicoder state doctor
 minicoder state doctor --project proj-1
 ```
 
-The doctor runs 6 checks:
+The doctor runs 8 checks:
 
-| Check                 | Severity | Auto-clearable      |
-| --------------------- | -------- | ------------------- |
-| `stale_locks`         | error    | yes                 |
-| `stuck_outbox`        | error    | yes                 |
-| `stuck_inbox`         | error    | yes                 |
-| `orphaned_runs`       | error    | manually repairable |
-| `triggerdev_mismatch` | warning  | no (future phase)   |
-| `skipped_dependency`  | error    | manually repairable |
+| Check                          | Severity | Auto-clearable       |
+| ------------------------------ | -------- | --------------------- |
+| `stale_locks`                  | error    | yes                    |
+| `stuck_outbox`                 | error    | yes                    |
+| `stuck_inbox`                  | error    | yes                    |
+| `orphaned_runs`                | error    | manually repairable    |
+| `triggerdev_mismatch`          | warning  | no (future phase)      |
+| `skipped_dependency`           | error    | manually repairable    |
+| `code_pushed_no_pull_request`  | warning  | manually repairable    |
+| `secret_leak_scan`             | error    | no (audit finding only)|
 
 `skipped_dependency` (issue #52) flags a feature run at `approved_pending_execution` whose
 `feature_dependencies` target has been transitioned to `skipped` — a state that can never satisfy
@@ -1381,6 +1443,24 @@ the "merged" dependency guard. `SkipFeatureHandler` proactively transitions any 
 `blocked` at skip time (a new `approved_pending_execution -> blocked` matrix row), so this check
 exists mainly as defense-in-depth for cases that predate that fix, surfaced via `blocked`
 diagnostics going forward instead.
+
+`code_pushed_no_pull_request` (Phase 16, closes the previously-deferred LOW-3 observability gap —
+CLAUDE.md's Reference Coder Adapter Operational Constraints) flags a `code_pushed` feature run
+with no tracked `pull_requests` row after a 30-minute grace period. Manual recovery: confirm via
+`minicoder state doctor --project <id> --check-github` (`checkPrDiscoveryDivergence()`) whether
+GitHub actually has an open PR for the run's branch that a webhook missed — if so, the next
+scheduled `github-reconciliation` pass auto-heals it via `discoverMissingPullRequests()`; if the
+push itself never produced a PR (e.g. a swallowed `createPullRequest` failure), re-trigger
+`run-coder` for the feature run once it is confirmed still at `code_pushed`.
+
+`secret_leak_scan` (Phase 16, docs/07 "private chain-of-thought is never stored" automated
+verification) samples the 50 most-recently-written `agent_context_packs`/`agent_runs` rows and
+re-scans their `content`/`input_summary`/`output_summary`/`error` fields with
+`SecretRedactor.scanForSecrets()` — the exact rule set `AgentRunRecorder`'s write-time `redact()`
+path already applies, reused rather than duplicated. A hit means content that should already have
+been redacted was persisted un-redacted; it is a global-scope, read-only audit finding (never
+auto-clearable) — investigate the flagged row's `agent_run_id`/adapter and treat it as a possible
+redaction-boundary regression, not something this check itself repairs.
 
 Exits with code 1 if any error-severity issues are found.
 

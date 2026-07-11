@@ -72,4 +72,32 @@ describe('SecretRedactor', () => {
   it('exports a defaultRedactor instance', () => {
     expect(defaultRedactor).toBeInstanceOf(SecretRedactor);
   });
+
+  describe('scanForSecrets', () => {
+    it('flags a GitHub PAT without mutating the input', () => {
+      const input = 'token: ghp_abc123def456ghi789jkl012mno345pqr678';
+      const hits = redactor.scanForSecrets(input);
+      expect(hits.length).toBeGreaterThan(0);
+      expect(input).toContain('ghp_abc123def456ghi789jkl012mno345pqr678');
+    });
+
+    it('flags an OpenAI-shaped API key', () => {
+      const hits = redactor.scanForSecrets('sk-' + 'a'.repeat(40));
+      expect(hits.length).toBeGreaterThan(0);
+    });
+
+    it('flags a secret-named JSON field', () => {
+      const hits = redactor.scanForSecrets('{"apiKey": "my-secret-value"}');
+      expect(hits.length).toBeGreaterThan(0);
+    });
+
+    it('returns an empty array for clean content', () => {
+      expect(redactor.scanForSecrets('Hello, world! featureRunId: abc-123')).toEqual([]);
+    });
+
+    it('does not false-positive on already-redacted content', () => {
+      const redacted = redactor.redact('token: ghp_abc123def456ghi789jkl012mno345pqr678');
+      expect(redactor.scanForSecrets(redacted)).toEqual([]);
+    });
+  });
 });

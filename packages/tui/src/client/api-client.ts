@@ -26,6 +26,8 @@ import type {
   HumanRequiredItemRow,
   TriggerdevRunRow,
   DoctorResult,
+  BudgetReport,
+  FeatureRunTimeline,
 } from '@minicoder/api';
 
 export interface ApiClientOptions {
@@ -248,6 +250,19 @@ export class ApiClient {
     query?: { cursor?: string; limit?: string },
   ): Promise<CursorPage<BudgetPolicyRow>> {
     return this.get('/budgets', { projectId, ...query });
+  }
+
+  /** Phase 16: aggregate spend breakdown by scope/feature/provider/model/role. */
+  getBudgetReport(projectId: string, windowDays?: number): Promise<BudgetReport> {
+    return this.get('/budget-report', {
+      projectId,
+      windowDays: windowDays !== undefined ? String(windowDays) : undefined,
+    });
+  }
+
+  /** Phase 16: the merged chronological history for one feature run. */
+  getFeatureRunTimeline(featureRunId: string): Promise<FeatureRunTimeline> {
+    return this.get(`/feature-runs/${encodeURIComponent(featureRunId)}/timeline`, {});
   }
 
   listArtifactExports(

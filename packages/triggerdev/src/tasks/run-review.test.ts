@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type {
   CommandEnvelope,
   DbClient,
@@ -645,6 +645,91 @@ describe('run-review', () => {
         [featureRunId],
       );
       expect(runRows[0]?.current_execution_state).toBe(FeatureExecutionState.UNDER_REVIEW);
+    });
+  });
+
+  describe('Phase 16 pre-flight budget forecast', () => {
+    const ENV_VAR = 'REVIEW_ESTIMATED_COST_USD';
+    let original: string | undefined;
+
+    beforeEach(() => {
+      original = process.env[ENV_VAR];
+    });
+
+    afterEach(() => {
+      if (original === undefined) delete process.env[ENV_VAR];
+      else process.env[ENV_VAR] = original;
+    });
+
+    it('proceeds and invokes the adapter when the env var is not configured (default, no-op)', async () => {
+      delete process.env[ENV_VAR];
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedUnderReviewFeatureRun(db);
+      await registerReviewerAdapter(db);
+
+      const result = await runImpl(
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-preflight-noop',
+          idempotencyKey: 'idem-preflight-noop',
+          reviewerAdapterName: 'FakeReviewerAdapter',
+        },
+        db,
+        {
+          reviewerAdapterFactory: async () => fakeReviewerAdapter({ decision: 'approved', findings: [] }),
+          githubClientFactory: async () => fakeGithubClient(),
+        },
+      );
+
+      expect(result.reviewed).toBe(true);
+    });
+
+    it('skips the reviewer invocation and dispatches RecordBudgetExceededCommand on a forecasted hard breach', async () => {
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedUnderReviewFeatureRun(db);
+      await registerReviewerAdapter(db);
+      const frRows = await db.query<{ feature_request_id: string }>(
+        `SELECT feature_request_id FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      const featureRequestId = frRows[0]?.feature_request_id;
+      await db.execute(
+        `INSERT INTO budget_policies (id, project_id, scope, feature_request_id, currency, soft_limit, hard_limit, window_days, is_active, version, created_at, updated_at)
+         VALUES (?, ?, 'feature', ?, 'USD', NULL, 10, NULL, 1, 1, datetime('now'), datetime('now'))`,
+        [`policy-${featureRunId}`, PROJECT_ID, featureRequestId],
+      );
+      process.env[ENV_VAR] = '50';
+
+      let adapterInvoked = false;
+      const result = await runImpl(
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-preflight-hard-breach',
+          idempotencyKey: 'idem-preflight-hard-breach',
+          reviewerAdapterName: 'FakeReviewerAdapter',
+        },
+        db,
+        {
+          reviewerAdapterFactory: async () => {
+            adapterInvoked = true;
+            return fakeReviewerAdapter({ decision: 'approved', findings: [] });
+          },
+          githubClientFactory: async () => fakeGithubClient(),
+        },
+      );
+
+      expect(adapterInvoked).toBe(false);
+      expect(result.reviewed).toBe(false);
+
+      const workflowState = await db.query<{ automation_state: string }>(
+        `SELECT automation_state FROM workflow_states WHERE project_id = ?`,
+        [PROJECT_ID],
+      );
+      expect(workflowState[0]?.automation_state).toBe('paused_budget_exceeded');
     });
   });
 });

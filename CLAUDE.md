@@ -83,7 +83,16 @@ command dispatch with per-submission `Idempotency-Key` generation, and all seven
 `budgets`, `artifacts`, `adapters`, `design-document`, `human-required`, `state-health`, `settings`),
 with `design-document`/`adapters` left explicitly read-only pending a not-yet-built backend command,
 plus one small additive `ClarificationQuestionRow.version` read-model column (Phase 15, no new
-migration).
+migration); and the Observability, Cost Forecasting, and Recovery implementation — the workflow
+timeline / agent-run trace view (`packages/api/src/read-models/timeline.ts`'s
+`getFeatureRunTimeline()`, `GET /feature-runs/:id/timeline`, `minicoder runs --timeline`), budget
+forecasting (`packages/core/src/cost/forecast.ts`'s `forecastBudget()`, wired as an opt-in
+pre-flight check into `run-coder`/`run-review` via `packages/triggerdev/src/tasks/
+budget-preflight.ts`), budget reporting (`packages/api/src/read-models/budget-report.ts`'s
+`getBudgetReport()`, `GET /budget-report`, `minicoder costs --report`), two new `state doctor`
+checks (`code_pushed_no_pull_request`, `secret_leak_scan`), `SecretRedactor.scanForSecrets()`, and
+an optional, fully env-gated, hand-rolled-`fetch` OpenTelemetry Logs export
+(`packages/core/src/observability/otel-export.ts`) (Phase 16, no new migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -2243,6 +2252,90 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   "Trusted/internal deployment only" bullet, and docs/07 §4's matching entry): `packages/web` must
   only be deployed on a trusted/internal network until real end-user auth ships, the same
   honestly-labeled-gap posture this document applies elsewhere (e.g. issue #61).
+
+## Observability, Cost Forecasting, and Recovery Operational Constraints (`packages/core/src/{cost,observability}/`, `packages/api/src/read-models/{timeline,budget-report,diagnostics}.ts`, `packages/triggerdev/src/tasks/budget-preflight.ts`)
+
+- **`forecastBudget()` (`packages/core/src/cost/forecast.ts`) is a pure, side-effect-free
+  evaluation function — it dispatches no command and writes no row**, mirroring
+  `evaluateBudget()`'s own "pure evaluation, caller decides what to do" separation from
+  `applyBudgetDecision()`. It reuses `evaluateBudget()`'s exact active-policy lookup and live
+  `SUM(cost_records.amount)` query shape (same `window_days` handling, same hard-before-soft
+  precedence, same "most recent wins" tiebreaker for an ambiguous multi-policy match) and adds a
+  caller-supplied `estimatedCostUsd` to the live total before comparing against the policy's
+  limits. It does **not** replace or weaken `evaluateBudget()` — that retrospective, post-hoc
+  check is unchanged and still runs after a run's real cost is recorded.
+- **The pre-flight forecast check is opt-in via env var, not a new default behavior.**
+  `packages/triggerdev/src/tasks/budget-preflight.ts`'s `budgetPreflightCheck()` reads
+  `CODE_GEN_ESTIMATED_COST_USD` (from `run-coder.ts`) / `REVIEW_ESTIMATED_COST_USD` (from
+  `run-review.ts`) via `resolveEstimatedCostUsd()` — unset, blank, non-finite, or negative all
+  resolve to `undefined`, which short-circuits to `{ proceed: true }` with zero additional DB
+  work. Only a forecasted **hard** breach skips the adapter invocation; a forecasted soft breach
+  still proceeds (soft breaches are an approval-waiting signal, not a hard stop, matching
+  `evaluateBudget()`'s own precedence). On a hard-breach skip, it dispatches the existing
+  `RecordBudgetExceededCommand` via `applyBudgetDecision()` — reusing that plumbing exactly,
+  no new command or matrix row — by adapting the `BudgetForecast`'s `projectedSpend` into a
+  `BudgetEvaluation`-shaped `{status, policy, totalSpend}` argument. If no `workflow_states` row
+  exists for the project (nothing to gate `automation_state` against), the check fails open
+  (`proceed: true`) rather than blocking a run over a missing, unrelated prerequisite row.
+- **`resolveEstimatedCostUsd()` lives in the shared `budget-preflight.ts`, not duplicated per
+  task** — `run-coder.ts` and `run-review.ts` both import it, passing their own env-var name.
+  This mirrors the already-established `requireNonBlankEnvVar()`/`isTransientRace()` sharing
+  pattern between these same task files.
+- **`getFeatureRunTimeline()` (`packages/api/src/read-models/timeline.ts`) queries each source
+  table independently and merges/sorts in application code — it is deliberately not one large
+  JOIN.** `workflow_events`, `agent_runs` (+`agent_tool_operations`), `review_findings`
+  (+`coder_responses`), `pull_requests`, `cost_records`, and `human_approvals` all carry their own
+  `id`/`created_at`-shaped columns; a single JOIN across seven tables would fan out rows and
+  reintroduce the same ambiguous-bare-column problem `listHumanRequiredItems()`'s two-step-query
+  pattern already exists to avoid (CLAUDE.md's Ink Text UI Operational Constraints) — this is that
+  same pattern generalized to more source tables, not a new one.
+- **`getBudgetReport()` (`packages/api/src/read-models/budget-report.ts`) is a plain `GROUP BY`
+  aggregation, not a cursor-paginated listing** — its one `LEFT JOIN` (`cost_records` to
+  `agent_runs`, for the by-role breakdown) is safe because every output column is aliased/derived
+  via an aggregate function, so there is no bare shared-name column in a `WHERE`/`ORDER BY`
+  clause for either dialect to treat ambiguously; the ambiguous-JOIN gotcha only bites
+  cursor-pagination's raw `WHERE`/`ORDER BY id`/`created_at` clauses, which this function has none
+  of.
+- **The two new `state doctor` checks added to `runDoctorChecks()` follow the existing
+  always-on, pure-DB check contract — neither needs a live GitHub credential**, unlike the
+  separately opt-in `checkPrDiscoveryDivergence()` (`--check-github`).
+  `code_pushed_no_pull_request` (closing the previously explicitly-deferred LOW-3 gap — CLAUDE.md's
+  Reference Coder Adapter Operational Constraints) uses a longer grace period (30 minutes) than
+  `github-reconciliation`'s own discovery-pass interval specifically so a routine, still-in-flight
+  PR-creation retry never trips it as a false positive. `secret_leak_scan` is a bounded-sample
+  (50 rows per call) audit, not a full-table scan — it is `global` scope (spans all projects, like
+  `stuck_outbox`/`stuck_inbox`) and `autoClearable: false`/no `manuallyRepairable` flag, since a
+  hit is an audit finding requiring human investigation of a possible redaction-boundary
+  regression, not a state this doctor check itself can safely repair.
+- **`SecretRedactor.scanForSecrets()` reuses `redact()`'s exact rule set — it is not a second,
+  independently-maintained pattern library.** It is purely a non-mutating detector (returns which
+  rule patterns matched, changes nothing) — the write-path `redact()`/`redactObject()` remain the
+  only place redaction actually happens. `secret_leak_scan` calls it against already-persisted
+  `agent_context_packs.content` and `agent_runs.{input_summary,output_summary,error}` as
+  defense-in-depth verification of docs/07's "private chain-of-thought is never stored" rule —
+  it is an audit of the write-time redaction boundary, not a replacement for it.
+- **`exportWorkflowEventsToOtlp()` (`packages/core/src/observability/otel-export.ts`) is a
+  hand-rolled OTLP/HTTP JSON exporter via plain `fetch`, not a dependency on the
+  `@opentelemetry/*` SDK.** The current OTel JS SDK majors ship ESM-only with no CommonJS export
+  condition — the same wall this repo has hit repeatedly (GitHub's REST client, `ink`/`react`,
+  `next`), documented each time as "pin the last CJS-compatible major, or hand-roll a plain-fetch
+  client" (`HttpReviewProvider`/`HttpCodeGenerationProvider`/`HttpPlanProvider`/
+  `HttpArbiterProvider` all being the prior examples of the latter). `mapWorkflowEventsToOtlp()` is
+  a pure function (no I/O, fully unit-testable without a real collector); the I/O wrapper reads
+  `OTEL_EXPORTER_OTLP_ENDPOINT` via `ConfigBackend` (never bare `process.env`, per core's
+  `no-restricted-syntax` rule) and is a complete no-op — `{attempted: false, ...}`, zero DB
+  queries, zero network calls — when that var is unset or blank. This module lives in
+  `packages/core` deliberately: an OTLP collector endpoint is an open, vendor-neutral wire format,
+  not an LLM/DB provider the "provider-SDK-free core" rule targets — do not read this as
+  precedent for adding other vendor HTTP clients directly into core.
+- **No scheduled/automatic caller for `exportWorkflowEventsToOtlp()` is wired in Phase 16** — it
+  is a library function a deployment can call from its own cron/task if it opts in, matching the
+  phase's own "optional" framing verbatim. Do not add a default Trigger.dev task calling this
+  without discussing the resulting always-on network dependency first.
+- **No new Web UI page was added for the timeline or budget-report views in Phase 16** — the
+  existing `/costs`/`/agent-runs`/`features/[id]` Web UI pages are unchanged. This is real,
+  documented future work (like issue #61's unwired `TaskTriggerClient`), not a silently dropped
+  requirement; the read-model/API/core functions backing a future page are fully built and tested.
 
 ## Cross-Dialect Testing (Mandatory)
 

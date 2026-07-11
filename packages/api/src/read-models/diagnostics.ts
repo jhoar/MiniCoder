@@ -9,7 +9,7 @@
  * HTTP API (see CLAUDE.md's Orchestrator API Operational Constraints).
  */
 import type { DbClient, GitHubClient } from '@minicoder/core';
-import { FEATURE_EXECUTION_MATRIX } from '@minicoder/core';
+import { FEATURE_EXECUTION_MATRIX, defaultRedactor } from '@minicoder/core';
 import type { FeatureExecutionState } from '@minicoder/core';
 import { branchNameFor } from '@minicoder/adapters-coder';
 
@@ -21,6 +21,16 @@ const KNOWN_FEATURE_STATES = new Set<string>(
 const ORPHANED_RUN_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 // Triggerdev mismatch threshold: 30 minutes
 const TRIGGERDEV_MISMATCH_THRESHOLD_MS = 30 * 60 * 1000;
+// Phase 16 (LOW-3 from the Reference Coder Adapter operational-constraints section — previously
+// explicitly deferred): grace period before a code_pushed run with no tracked pull_requests row
+// is flagged. Deliberately longer than github-reconciliation's own discovery pass interval so a
+// routine, still-in-flight PR-creation retry never trips this check.
+const PUSHED_NO_PR_THRESHOLD_MS = 30 * 60 * 1000;
+// Phase 16 secret-redaction audit check: how many of the most recent agent_context_packs/
+// agent_runs rows to sample per call. A bounded sample, not a full-table scan — this is a
+// defense-in-depth audit (docs/07 "private chain-of-thought is never stored"), not a replacement
+// for AgentRunRecorder's own write-time redaction.
+const SECRET_SCAN_SAMPLE_SIZE = 50;
 
 function agoIso(ms: number): string {
   return new Date(Date.now() - ms).toISOString();
@@ -211,6 +221,80 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
     manuallyRepairable: true,
     count: skippedDependencies.length,
     details: skippedDependencies,
+  });
+
+  // Phase 16 (closes the previously-deferred LOW-3 observability gap): code_pushed feature runs
+  // with no linked pull_requests row after a grace period. github-reconciliation's
+  // discoverMissingPullRequests() pre-pass already auto-heals most of these; this is the
+  // always-on, pure-DB visibility check for whatever slips past it (or hasn't run yet).
+  const pushedNoPrThreshold = agoIso(PUSHED_NO_PR_THRESHOLD_MS);
+  const pushedNoPrProjectFilter = projectId ? `AND freq.project_id = ?` : '';
+  const pushedNoPrParams: unknown[] = [pushedNoPrThreshold];
+  if (projectId) pushedNoPrParams.push(projectId);
+  const pushedNoPr = await db.query<{ id: string; started_at: string }>(
+    `SELECT fr.id, fr.started_at
+     FROM feature_runs fr
+     JOIN feature_requests freq ON fr.feature_request_id = freq.id
+     LEFT JOIN pull_requests pr ON pr.feature_run_id = fr.id
+     WHERE fr.current_execution_state = 'code_pushed'
+       AND pr.id IS NULL
+       AND fr.started_at < ?
+       ${pushedNoPrProjectFilter}`,
+    pushedNoPrParams,
+  );
+  checks.push({
+    name: 'code_pushed_no_pull_request',
+    severity: pushedNoPr.length > 0 ? 'warning' : 'ok',
+    autoClearable: false,
+    manuallyRepairable: true,
+    count: pushedNoPr.length,
+    details: pushedNoPr,
+  });
+
+  // Phase 16 secret-redaction audit (docs/07 "private chain-of-thought is never stored"):
+  // defense-in-depth scan of a bounded sample of recently-written agent_context_packs/agent_runs
+  // rows for secret-shaped content that should already have been redacted at write time by
+  // AgentRunRecorder's SecretRedactor. Reuses that exact same rule set via `scanForSecrets()` —
+  // no second pattern library. Read-only/audit: a hit here indicates a redaction-boundary gap
+  // worth investigating, it never blocks anything.
+  const recentContextPacks = await db.query<{ id: string; agent_run_id: string; content: string }>(
+    `SELECT id, agent_run_id, content FROM agent_context_packs ORDER BY created_at DESC, id DESC LIMIT ?`,
+    [SECRET_SCAN_SAMPLE_SIZE],
+  );
+  const recentAgentRuns = await db.query<{
+    id: string;
+    input_summary: string | null;
+    output_summary: string | null;
+    error: string | null;
+  }>(
+    `SELECT id, input_summary, output_summary, error FROM agent_runs ORDER BY created_at DESC, id DESC LIMIT ?`,
+    [SECRET_SCAN_SAMPLE_SIZE],
+  );
+  const secretHits: Array<{ table: string; id: string; field: string; rules: string[] }> = [];
+  for (const row of recentContextPacks) {
+    const rules = defaultRedactor.scanForSecrets(row.content);
+    if (rules.length > 0) {
+      secretHits.push({ table: 'agent_context_packs', id: row.id, field: 'content', rules });
+    }
+  }
+  for (const row of recentAgentRuns) {
+    for (const field of ['input_summary', 'output_summary', 'error'] as const) {
+      const value = row[field];
+      if (!value) continue;
+      const rules = defaultRedactor.scanForSecrets(value);
+      if (rules.length > 0) {
+        secretHits.push({ table: 'agent_runs', id: row.id, field, rules });
+      }
+    }
+  }
+  checks.push({
+    name: 'secret_leak_scan',
+    scope: 'global',
+    severity: secretHits.length > 0 ? 'error' : 'ok',
+    autoClearable: false,
+    manuallyRepairable: false,
+    count: secretHits.length,
+    details: secretHits,
   });
 
   const hasErrors = checks.some((c) => c.severity === 'error');

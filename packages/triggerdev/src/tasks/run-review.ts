@@ -37,6 +37,7 @@ import type { RunReviewPayload } from './types.js';
 import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 import { requireNonBlankEnvVar } from './env.js';
+import { budgetPreflightCheck, resolveEstimatedCostUsd } from './budget-preflight.js';
 
 export type { RunReviewPayload };
 
@@ -344,6 +345,23 @@ export async function runImpl(
   const repo = repoRows[0];
   const pr = prRows[0];
   if (!repo || !pr) {
+    return { projectId, featureRunId, reviewed: false, decision: null };
+  }
+
+  // Phase 16 pre-flight budget forecast — same opt-in, no-op-by-default contract as
+  // run-coder.ts's identical call (see budget-preflight.ts's doc comment): only proceeds to
+  // invoke the reviewer/arbiter adapters when the forecasted total would not hard-breach the
+  // active budget policy. Placed before the occurrence-marker check below (issue #46) — that
+  // check does no adapter/LLM work itself, so this keeps a single "can we afford this" gate at
+  // the top of the whole adapter-invoking branch.
+  const preflight = await budgetPreflightCheck(db, {
+    projectId,
+    featureRequestId: run.feature_request_id,
+    scope: 'feature',
+    correlationId,
+    estimatedCostUsd: resolveEstimatedCostUsd('REVIEW_ESTIMATED_COST_USD'),
+  });
+  if (!preflight.proceed) {
     return { projectId, featureRunId, reviewed: false, decision: null };
   }
 
