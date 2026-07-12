@@ -137,4 +137,52 @@ describe('read endpoints', () => {
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({ project_id: projectId, triggerdev_status: 'running' });
   });
+
+  it('GET /feature-runs/:id/timeline returns an empty entry list for an unknown feature run', async () => {
+    const { app } = await buildTestApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/feature-runs/does-not-exist/timeline',
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toMatchObject({ featureRunId: 'does-not-exist', entries: [] });
+  });
+
+  it('GET /budget-report requires a projectId query parameter', async () => {
+    const { app } = await buildTestApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/budget-report',
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('GET /budget-report returns a zeroed report for a project with no cost_records', async () => {
+    const { app, db } = await buildTestApp();
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/budget-report?projectId=${projectId}`,
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toMatchObject({ projectId, totalAmount: 0, recordCount: 0 });
+  });
+
+  // Post-merge PR review fix (LOW-1): windowDays is documented as `type: integer` in the OpenAPI
+  // spec; a decimal value must be rejected rather than silently accepted.
+  it('GET /budget-report rejects a non-integer windowDays', async () => {
+    const { app, db } = await buildTestApp();
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/budget-report?projectId=${projectId}&windowDays=1.5`,
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });

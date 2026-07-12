@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.0.4
-> Last-updated: 2026-07-05
+> Version: 1.0.5
+> Last-updated: 2026-07-11
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) and are authoritative there.
@@ -392,11 +392,21 @@ review cycle.
 - **Resume:** an approved override (or human resume) returns automation to `running`; the
   resumption itself is recorded as a `resumed` event / `policy_decision`, not a durable state
   (glossary §3.8).
-- **Forecast before run:** before an expensive agent run, the Cost Manager estimates the run cost
-  and refuses to start (deferring, not stranding the branch) when the forecast would breach a hard
-  limit — complementing the capacity pre-flight in §4.3.
-- **Per-`AgentRun` pre-flight cap:** every `AgentRun` carries a pre-flight **token/cost cap**;
-  enforcement is prospective (before the call), not only retrospective.
+- **Forecast before run (Phase 16, implemented):** `packages/core/src/cost/forecast.ts`'s
+  `forecastBudget()` estimates the projected total (current live spend + a caller-supplied
+  `estimatedCostUsd`) and reports `ok`/`soft_breach`/`hard_breach` against the active policy —
+  the same query shape and hard-before-soft precedence as `evaluateBudget()`, but prospective. A
+  caller wired into `run-coder.ts`/`run-review.ts`
+  (`packages/triggerdev/src/tasks/budget-preflight.ts`) skips the (possibly expensive) agent
+  invocation and dispatches the existing `RecordBudgetExceededCommand` when a hard breach is
+  forecast — deferring, not stranding the branch — complementing the capacity pre-flight in §4.3.
+  This is opt-in via env var (`CODE_GEN_ESTIMATED_COST_USD`/`REVIEW_ESTIMATED_COST_USD`); it does
+  not replace the retrospective `evaluateBudget()` check, which still runs after the real cost is
+  recorded.
+- **Per-`AgentRun` pre-flight cap:** the same `forecastBudget()` call, scoped per feature/project,
+  serves as the per-`AgentRun` prospective cap described here — enforcement is prospective (before
+  the call) when the env var above is configured, in addition to the always-on retrospective
+  check.
 - **Review/fix-loop circuit breaker:** the iterative `CoderAgentAdapter` ↔ `ReviewerAgentAdapter`
   loop is a budget scope. When its cumulative cost crosses the feature's soft/hard threshold, the
   Cost Manager trips a circuit breaker — pausing to `waiting_for_budget_approval` (soft) or
@@ -417,6 +427,30 @@ review cycle.
 Records workflow events, agent runs, tool operations, GitHub operations, review findings, coder
 responses, disagreements, policy decisions, cost records, human approvals, outbox/inbox events, and
 Workflow Layer run references.
+
+**Workflow timeline / agent-run trace view (Phase 16, implemented):**
+`packages/api/src/read-models/timeline.ts`'s `getFeatureRunTimeline()` reconstructs a single
+feature run's full chronological history by merging `workflow_events`, `agent_runs` (with linked
+`agent_tool_operations`), `review_findings` (with linked `coder_responses`), `pull_requests`,
+`cost_records`, and `human_approvals` — exposed via `GET /feature-runs/:id/timeline` and
+`minicoder runs --timeline <featureRunId>`.
+
+**Budget reporting (Phase 16, implemented):** `packages/api/src/read-models/budget-report.ts`'s
+`getBudgetReport()` aggregates `cost_records` spend by scope/feature/provider/model/role over an
+optional lookback window — exposed via `GET /budget-report` and `minicoder costs --report`.
+
+**Secret-redaction verification (Phase 16, implemented):** `state doctor`'s `secret_leak_scan`
+check (`packages/api/src/read-models/diagnostics.ts`) samples recently-written
+`agent_context_packs`/`agent_runs` rows and re-scans them with `SecretRedactor.scanForSecrets()`
+(the same rule set the write-time `redact()` path already uses) as a defense-in-depth audit that
+private chain-of-thought/secret material was not accidentally persisted un-redacted.
+
+**Optional OpenTelemetry-compatible export (Phase 16, implemented):**
+`packages/core/src/observability/otel-export.ts`'s `exportWorkflowEventsToOtlp()` maps
+`workflow_events` rows to OTLP Logs JSON and POSTs them to a configured
+`OTEL_EXPORTER_OTLP_ENDPOINT` via plain `fetch` (no `@opentelemetry/*` SDK dependency, which ships
+ESM-only). Fully opt-in and a no-op when the endpoint is not configured; no default
+scheduled/automatic caller is wired in this phase.
 
 ### 5.13 Orchestrator API
 

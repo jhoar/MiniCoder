@@ -466,3 +466,22 @@ paths:
     get:
       operationId: whoami
       responses: { '200': { description: OK } }
+  /feature-runs/{id}/timeline:
+    get:
+      operationId: getFeatureRunTimeline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: OK } }
+  /budget-report:
+    get:
+      operationId: getBudgetReport
+      parameters:
+        - $ref: '#/components/parameters/projectIdQueryRequired'
+        - name: windowDays
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1 }
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }

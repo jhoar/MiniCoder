@@ -15,6 +15,11 @@ export interface ApplyBudgetDecisionParams {
   expectedVersion: number;
   actor: ActorIdentity;
   correlationId: string;
+  /** Phase 16 (post-merge PR review fix, MEDIUM-2): optional feature-run attribution for a
+   * hard-breach event, so a feature-run-scoped caller (budget-preflight.ts) can make the
+   * resulting `workflow_events` row show up in that feature run's timeline. Ignored on the
+   * soft-breach path — `RecordBudgetApprovalWaitingCommand` has no caller that needs this yet. */
+  featureRunId?: string;
 }
 
 export type ApplyBudgetDecisionResult =
@@ -47,7 +52,7 @@ export async function applyBudgetDecision(
 ): Promise<ApplyBudgetDecisionResult> {
   if (evaluation.status === 'ok') return { applied: false };
 
-  const { projectId, expectedVersion, actor, correlationId } = params;
+  const { projectId, expectedVersion, actor, correlationId, featureRunId } = params;
   const executor = new TransactionalCommandExecutor(db);
 
   if (evaluation.status === 'hard_breach') {
@@ -57,6 +62,7 @@ export async function applyBudgetDecision(
       breachedPolicyId: evaluation.policy.id,
       currentSpend: evaluation.totalSpend,
       hardLimit: Number(evaluation.policy.hard_limit),
+      featureRunId,
     };
     const envelope: CommandEnvelope<typeof payload> = {
       commandId: generateId(),

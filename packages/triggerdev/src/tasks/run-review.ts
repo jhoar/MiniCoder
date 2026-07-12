@@ -37,6 +37,7 @@ import type { RunReviewPayload } from './types.js';
 import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 import { requireNonBlankEnvVar } from './env.js';
+import { budgetPreflightCheck, resolveEstimatedCostUsd } from './budget-preflight.js';
 
 export type { RunReviewPayload };
 
@@ -351,6 +352,12 @@ export async function runImpl(
   // was already fully reviewed with a clean (approved) outcome, a retry (e.g. a duplicate task
   // trigger, or a crash after the first attempt's clean-review write already committed) must not
   // re-invoke the adapter and mint a new reviewCycle for a commit that's already been reviewed.
+  //
+  // Checked BEFORE the Phase 16 budget preflight below (post-merge PR review fix, MEDIUM-1): the
+  // preflight can mutate automation state (pause on a forecasted hard breach) when it proceeds,
+  // but a retry of an already-cleanly-reviewed commit does no adapter/LLM work at all — it must
+  // short-circuit here without ever reaching (and possibly pausing automation via) the budget
+  // check.
   if (pr.head_sha) {
     const priorOccurrence = await findReviewOccurrenceMarker(db, {
       featureRunId,
@@ -359,6 +366,22 @@ export async function runImpl(
     if (priorOccurrence) {
       return { projectId, featureRunId, reviewed: false, decision: 'approved' };
     }
+  }
+
+  // Phase 16 pre-flight budget forecast — same opt-in, no-op-by-default contract as
+  // run-coder.ts's identical call (see budget-preflight.ts's doc comment): only proceeds to
+  // invoke the reviewer/arbiter adapters when the forecasted total would not hard-breach the
+  // active budget policy.
+  const preflight = await budgetPreflightCheck(db, {
+    projectId,
+    featureRequestId: run.feature_request_id,
+    scope: 'feature',
+    correlationId,
+    estimatedCostUsd: resolveEstimatedCostUsd('REVIEW_ESTIMATED_COST_USD'),
+    featureRunId,
+  });
+  if (!preflight.proceed) {
+    return { projectId, featureRunId, reviewed: false, decision: null };
   }
 
   const cycleRows = await db.query<{ maxCycle: number | null }>(

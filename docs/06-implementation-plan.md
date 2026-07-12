@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.30
-> Last-updated: 2026-07-07
+> Version: 1.0.31
+> Last-updated: 2026-07-11
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -1856,7 +1856,9 @@ state-health,settings}/` — all 17 docs/05 §5 routes, each a Server Component 
   precedent Phase 14 already established for `whoami`/`triggerdev-runs`/`human-required-items`/
   `status.version`.
 
-## Phase 16 — Observability, Cost, and Recovery
+## Phase 16 — Observability, Cost, and Recovery ✓
+
+> **Status: Complete** (2026-07-11)
 
 Deliver the workflow timeline, agent-run trace view, Workflow Layer run mapping, cost dashboards,
 budget forecasting and reporting (the **budget-gate primitive ships in Phase 8**),
@@ -1865,6 +1867,75 @@ export.
 
 Acceptance: operators can reconstruct workflow history; budgets can pause automation; recovery
 commands are safe and audited; private chain-of-thought is not stored.
+
+**Delivered modules:**
+
+- **Workflow timeline / agent-run trace view** — `packages/api/src/read-models/timeline.ts`'s
+  `getFeatureRunTimeline()` merges `workflow_events`, `agent_runs` (with linked
+  `agent_tool_operations`), `review_findings` (with linked `coder_responses`), `pull_requests`,
+  `cost_records`, and `human_approvals` into one chronologically-sorted `TimelineEntry[]` for a
+  single feature run. Each source table is queried independently and merged in application code
+  (not one large JOIN) — the same "two-step queries, not an ambiguous JOIN" posture
+  `listHumanRequiredItems()` already established, generalized to seven source tables. Exposed via
+  `GET /feature-runs/:id/timeline` (documented in `openapi/openapi.yaml`) and
+  `minicoder runs --timeline <featureRunId>` (extends the existing Phase 14 `runs` command rather
+  than inventing a new top-level CLI token — added to `docs/00-glossary-and-terms.md` §5).
+- **Budget forecasting** — `packages/core/src/cost/forecast.ts`'s `forecastBudget()` is Phase 8's
+  `evaluateBudget()`'s prospective counterpart: given a caller-supplied `estimatedCostUsd`, it
+  reports whether _current live spend + the estimate_ would breach the active policy's soft/hard
+  limits, using the identical query shape and hard-before-soft precedence — a pure evaluation
+  function with no side effects, mirroring `evaluateBudget()`/`applyBudgetDecision()`'s own
+  separation. Wired into `run-coder.ts`/`run-review.ts` as an opt-in pre-flight check
+  (`packages/triggerdev/src/tasks/budget-preflight.ts`'s `budgetPreflightCheck()`, gated by the
+  `CODE_GEN_ESTIMATED_COST_USD`/`REVIEW_ESTIMATED_COST_USD` env vars — unset means "not
+  configured," a full no-op with zero extra DB work, so no existing deployment/test sees a
+  behavior change): a forecasted hard breach skips the (possibly expensive) adapter/LLM
+  invocation entirely and dispatches the existing `RecordBudgetExceededCommand` via
+  `applyBudgetDecision()` — no new command, no new matrix row. This is strictly additive; the
+  existing retrospective post-hoc check is unchanged.
+- **Budget reporting** — `packages/api/src/read-models/budget-report.ts`'s `getBudgetReport()`
+  aggregates `cost_records` by scope/feature/provider/model/role (the role breakdown joins to
+  `agent_runs` for its `role` column) over an optional `windowDays` lookback, with a real total.
+  Exposed via `GET /budget-report` and `minicoder costs --report [--window-days <n>]` (extends the
+  existing Phase 14 `costs` command) plus a new `@minicoder/tui` render function
+  (`renderBudgetReportView`).
+- **Recovery / observability doctor checks** — two new checks added to
+  `packages/api/src/read-models/diagnostics.ts`'s `runDoctorChecks()` (both pure-DB, always-on,
+  same posture as the existing checks): `code_pushed_no_pull_request` closes the previously
+  explicitly-deferred LOW-3 observability gap (CLAUDE.md's Reference Coder Adapter Operational
+  Constraints) — flags a `code_pushed` feature run with no tracked `pull_requests` row after a
+  30-minute grace period (longer than `github-reconciliation`'s own discovery-pass interval, so a
+  routine in-flight retry never trips it); `secret_leak_scan` is the docs/07 "private
+  chain-of-thought is never stored" automated verification this phase adds — a bounded sample
+  (50 rows) of the most recent `agent_context_packs`/`agent_runs` rows scanned via
+  `SecretRedactor`'s new `scanForSecrets()` method (reusing the exact same rule set `redact()`
+  already applies, not a second pattern library) for content that should already have been
+  redacted at write time; a hit is a defense-in-depth audit finding, not a blocking gate.
+- **`SecretRedactor.scanForSecrets()`** (`packages/core/src/auth/redaction.ts`) — a non-mutating
+  check reusing `redact()`'s rule set, returning which rules matched without altering the input;
+  the write-path `redact()`/`redactObject()` remain the only redaction mechanism.
+- **Optional OpenTelemetry-compatible export** —
+  `packages/core/src/observability/otel-export.ts`'s `exportWorkflowEventsToOtlp()`, fully
+  env-gated (`OTEL_EXPORTER_OTLP_ENDPOINT`; unset/blank is always a no-op) and implemented as a
+  hand-rolled OTLP/HTTP JSON POST via plain `fetch` rather than the `@opentelemetry/*` SDK — the
+  current OTel JS SDK majors are ESM-only with no CommonJS export condition, the same wall this
+  repo has hit repeatedly (documented "pin the last CJS-compatible major, or hand-roll a
+  plain-fetch client" pattern). `mapWorkflowEventsToOtlp()` (pure, no I/O) maps `workflow_events`
+  rows to the OTLP Logs JSON payload shape (`resourceLogs[].scopeLogs[].logRecords[]`) — the
+  simplest OTLP signal fitting an already-discrete, already-timestamped domain event, rather than
+  reconstructing spans this schema has no parent/child data for. No caller wires this into a
+  scheduled task in this phase — it is a library function an operator/deployment can call from
+  their own cron/task if they opt in, matching "optional" in the phase's own acceptance wording.
+- **No new migration** — every table this phase reads (`workflow_events`, `agent_runs`,
+  `agent_tool_operations`, `agent_context_packs`, `review_findings`, `coder_responses`,
+  `pull_requests`, `cost_records`, `human_approvals`, `budget_policies`) already existed with every
+  column needed.
+- **Descoped from this pass** (explicitly, not silently dropped): a dedicated `/timeline` or
+  `/budget-report` Web UI page (the existing `/costs`/`/agent-runs`/`features/[id]` pages are
+  unchanged — tracked as issue #66) and a scheduled/automatic caller for
+  `exportWorkflowEventsToOtlp()` (tracked as issue #67). Both are real, tracked future work — the
+  read-model/API/core functions they would call are fully built and tested; only the additional UI
+  surface and default automatic scheduling were out of scope for this pass's time budget.
 
 ## Phase 17 — Final Design Document Generator
 
