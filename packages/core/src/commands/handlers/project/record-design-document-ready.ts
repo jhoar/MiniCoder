@@ -37,6 +37,7 @@ interface ProjectRow {
 interface ArtifactExportRow {
   id: string;
   state: string;
+  design_document_id: string | null;
 }
 
 interface DesignDocumentRow {
@@ -98,7 +99,7 @@ export class RecordDesignDocumentReadyHandler implements CommandHandler<
       );
 
       const artifactRows = await tx.query<ArtifactExportRow>(
-        `SELECT id, state FROM artifact_exports WHERE id = ? AND project_id = ? AND artifact_type = 'design_document'`,
+        `SELECT id, state, design_document_id FROM artifact_exports WHERE id = ? AND project_id = ? AND artifact_type = 'design_document'`,
         [artifactExportId, projectId],
       );
       const artifact = artifactRows[0];
@@ -108,6 +109,21 @@ export class RecordDesignDocumentReadyHandler implements CommandHandler<
           title: 'Design document artifact not yet exported',
           status: 409,
           detail: `artifact_exports ${artifactExportId} is not in 'exported' state`,
+        });
+      }
+      // Durable artifact-to-document association (migration 0014, PR review finding) — see
+      // ExportDesignDocumentHandler's identical check for the full rationale: without this, an
+      // exported artifact could be marked ready against a different design_documents row than the
+      // one it was actually rendered from.
+      if (
+        artifact.design_document_id !== null &&
+        artifact.design_document_id !== designDocumentId
+      ) {
+        throw new CommandError({
+          type: 'design-document-mismatch',
+          title: 'Design document does not match the artifact export',
+          status: 409,
+          detail: `artifact_exports ${artifactExportId} was generated from design_documents ${artifact.design_document_id}, not ${designDocumentId}`,
         });
       }
 

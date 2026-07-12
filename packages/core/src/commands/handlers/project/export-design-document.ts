@@ -31,6 +31,7 @@ const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 interface ArtifactExportRow {
   id: string;
   state: string;
+  design_document_id: string | null;
 }
 
 interface DesignDocumentRow {
@@ -72,7 +73,7 @@ export class ExportDesignDocumentHandler implements CommandHandler<
       if (!claim.owned) return claim.result;
 
       const artifactRows = await tx.query<ArtifactExportRow>(
-        `SELECT id, state FROM artifact_exports WHERE id = ? AND project_id = ? AND artifact_type = 'design_document'`,
+        `SELECT id, state, design_document_id FROM artifact_exports WHERE id = ? AND project_id = ? AND artifact_type = 'design_document'`,
         [artifactExportId, projectId],
       );
       const artifact = artifactRows[0];
@@ -82,6 +83,26 @@ export class ExportDesignDocumentHandler implements CommandHandler<
           title: 'Design document artifact export not found',
           status: 404,
           detail: `artifact_exports ${artifactExportId} not found for project ${projectId}`,
+        });
+      }
+      // Durable artifact-to-document association (migration 0014, PR review finding): without
+      // this, the ownership/completeness checks below only prove the CALLER-SUPPLIED
+      // designDocumentId is valid and complete — they cannot prove it's the SAME document this
+      // artifact_exports row was actually generated from. A manual/system replay could otherwise
+      // pair an already-exported artifact with a different, also-complete design_documents row in
+      // the same project and receive success. `design_document_id` is set once, at INSERT time,
+      // by `GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler` — the same call that
+      // creates both rows together — so it is never ambiguous which document an artifact belongs
+      // to.
+      if (
+        artifact.design_document_id !== null &&
+        artifact.design_document_id !== designDocumentId
+      ) {
+        throw new CommandError({
+          type: 'design-document-mismatch',
+          title: 'Design document does not match the artifact export',
+          status: 409,
+          detail: `artifact_exports ${artifactExportId} was generated from design_documents ${artifact.design_document_id}, not ${designDocumentId}`,
         });
       }
       // Document ownership and section-completeness are validated BEFORE the already-exported

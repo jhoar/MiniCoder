@@ -105,9 +105,9 @@ export class GenerateDesignDocumentHandler implements CommandHandler<
 
       const artifactExportId = generateId();
       await tx.execute(
-        `INSERT INTO artifact_exports (id, project_id, artifact_type, state, content, format, version, created_at, updated_at)
-         VALUES (?, ?, 'design_document', 'pending', NULL, 'markdown', 1, ?, ?)`,
-        [artifactExportId, projectId, now, now],
+        `INSERT INTO artifact_exports (id, project_id, artifact_type, state, content, format, design_document_id, version, created_at, updated_at)
+         VALUES (?, ?, 'design_document', 'pending', NULL, 'markdown', ?, 1, ?, ?)`,
+        [artifactExportId, projectId, designDocumentId, now, now],
       );
 
       const eventId = await writeWorkflowEvent(tx, {

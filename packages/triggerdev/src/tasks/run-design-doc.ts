@@ -154,20 +154,27 @@ interface PlanRow {
  * condition and returns a clean no-op, the same "transient race -> false, don't throw" posture
  * `start-next-feature.ts`/`github-reconciliation.ts` already establish for their own locks.
  */
-export async function runImpl(
-  payload: RunDesignDocPayload,
-  db: DbClient,
-  deps: RunDesignDocDeps = {},
-): Promise<RunDesignDocResult> {
-  const { projectId, correlationId, documentationAdapterName } = payload;
+interface GenerationTargets {
+  designDocumentId: string;
+  artifactExportId: string;
+}
 
+/** Reads whether this project currently has generation work pending: `design_document_generating`
+ * state plus a latest `design_documents` row and a `pending` `artifact_exports` row. Called twice
+ * by `runImpl` — once before lock acquisition (a fast no-op path that avoids the lock-manager
+ * round trip for the common "nothing to do" case) and once again immediately after acquiring the
+ * lock (the authoritative read the rest of the generation cycle actually uses). */
+async function readGenerationTargets(
+  db: DbClient,
+  projectId: string,
+): Promise<GenerationTargets | null> {
   const projectRows = await db.query<ProjectRow>(
     `SELECT id, name, state, version FROM projects WHERE id = ?`,
     [projectId],
   );
   const project = projectRows[0];
   if (!project || project.state !== ProjectState.DESIGN_DOCUMENT_GENERATING) {
-    return { projectId, generated: false, designDocumentId: null, artifactExportId: null };
+    return null;
   }
 
   const designDocRows = await db.query<DesignDocumentRow>(
@@ -178,10 +185,24 @@ export async function runImpl(
     `SELECT id FROM artifact_exports WHERE project_id = ? AND artifact_type = 'design_document' AND state = 'pending' ORDER BY created_at DESC LIMIT 1`,
     [projectId],
   );
-  const designDocumentId = designDocRows[0]?.id ?? null;
-  const artifactExportId = artifactRows[0]?.id ?? null;
+  const designDocumentId = designDocRows[0]?.id;
+  const artifactExportId = artifactRows[0]?.id;
   if (!designDocumentId || !artifactExportId) {
-    return { projectId, generated: false, designDocumentId, artifactExportId };
+    return null;
+  }
+  return { designDocumentId, artifactExportId };
+}
+
+export async function runImpl(
+  payload: RunDesignDocPayload,
+  db: DbClient,
+  deps: RunDesignDocDeps = {},
+): Promise<RunDesignDocResult> {
+  const { projectId, correlationId, documentationAdapterName } = payload;
+
+  const preLockTargets = await readGenerationTargets(db, projectId);
+  if (!preLockTargets) {
+    return { projectId, generated: false, designDocumentId: null, artifactExportId: null };
   }
 
   const lockManager = new WorkflowLockManager(db);
@@ -195,19 +216,37 @@ export async function runImpl(
     if (err instanceof LockConflictError) {
       // Another generation cycle for this project is already in flight — a routine, expected
       // condition (e.g. a duplicate Web UI retry click), not a failure.
-      return { projectId, generated: false, designDocumentId, artifactExportId };
+      return {
+        projectId,
+        generated: false,
+        designDocumentId: preLockTargets.designDocumentId,
+        artifactExportId: preLockTargets.artifactExportId,
+      };
     }
     throw err;
   }
 
   try {
+    // Re-read the generation targets NOW THAT THE LOCK IS HELD, rather than trusting the
+    // pre-lock snapshot above — closes a real race (found in PR review): a second invocation
+    // could pass the pre-lock check, block on `acquire()` until a first, faster invocation
+    // finishes and releases the lock, then proceed using stale `designDocumentId`/
+    // `artifactExportId` values that no longer describe pending work (the project may have
+    // already advanced past `design_document_generating`, or a new generation cycle may have
+    // replaced the pending artifact). The lock only prevents two invocations from running the
+    // generation body *concurrently* — it does not, by itself, invalidate data a delayed
+    // invocation already read before the lock existed.
+    const targets = await readGenerationTargets(db, projectId);
+    if (!targets) {
+      return { projectId, generated: false, designDocumentId: null, artifactExportId: null };
+    }
     return await generateAndRecord({
       db,
       projectId,
       correlationId,
       documentationAdapterName,
-      designDocumentId,
-      artifactExportId,
+      designDocumentId: targets.designDocumentId,
+      artifactExportId: targets.artifactExportId,
       deps,
     });
   } finally {

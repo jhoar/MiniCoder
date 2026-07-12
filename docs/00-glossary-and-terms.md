@@ -571,7 +571,7 @@ minicoder pause --project <id> --yes                    # running -> paused_by_o
 minicoder resume --project <id> --yes                   # paused_by_operator -> running (operator+)
 
 # Final Design Document Generator (Phase 17; project-lifecycle write actions — docs/01 §13)
-minicoder project mark-implementation-complete --project <id> --yes   # active -> implementation_complete (system-gated by Project Acceptance Validation)
+minicoder project mark-implementation-complete --project <id> --evidence <ci-run-url-or-signoff> --yes   # active -> implementation_complete (system-gated by Project Acceptance Validation)
 minicoder project validate-acceptance --project <id>                  # inspects Project Acceptance Validation without transitioning
 minicoder project complete --project <id> --yes                       # design_document_approved -> project_complete
 minicoder design-doc generate --project <id> --yes                            # implementation_complete -> design_document_generating (operator+)

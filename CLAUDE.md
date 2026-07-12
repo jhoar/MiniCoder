@@ -2370,11 +2370,26 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   the `ProjectState` enum (`packages/core/src/domain/states.ts`) already existed before this
   phase** — this phase's job was giving the matrix's seven already-defined rows their first real
   handlers, the same "matrix defined ahead of its handler" posture Phase 6/7/8/9/10/12 already
-  established for other rows. No new migration: `projects.state`/`.version` (Phase 1's 43-table
-  initial schema) and `design_documents`/`design_document_sections`/`design_decisions`/
-  `glossary_terms`/`artifact_exports` (also Phase 1) already carried every column this phase
-  needed — confirmed by inspection before writing any handler, per this phase's own scoping
-  instructions, rather than assumed.
+  established for other rows. No new migration in the phase's initial implementation:
+  `projects.state`/`.version` (Phase 1's 43-table initial schema) and `design_documents`/
+  `design_document_sections`/`design_decisions`/`glossary_terms`/`artifact_exports` (also Phase 1)
+  already carried every column the initial implementation needed — confirmed by inspection before
+  writing any handler, per this phase's own scoping instructions, rather than assumed.
+  **Migration 0014 (`artifact_export_design_document_id`, PR review finding) was added
+  post-merge-review**, adding a nullable `artifact_exports.design_document_id` column: without a
+  durable association, `ExportDesignDocumentHandler`/`RecordDesignDocumentReadyHandler` could only
+  validate that a caller-supplied `designDocumentId` existed for the project and had complete
+  sections — not that it was the SAME document a given `artifact_exports` row was actually
+  generated from. A manual/system replay could pair an already-exported artifact with a different,
+  also-complete `design_documents` row in the same project and receive success.
+  `GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler` set the column once, at
+  `INSERT` time (the same call that creates both the `design_documents` and `artifact_exports`
+  rows together, so it is never ambiguous); both export/ready handlers now reject a
+  `design-document-mismatch` (409) if the caller-supplied `designDocumentId` doesn't match the
+  artifact's recorded one. The column is nullable and the mismatch check is skipped when it's
+  `NULL`, purely for backward compatibility with `artifact_exports` rows written before this
+  migration existed in a live deployment — every row this phase's own handlers write going
+  forward always sets it.
 - **`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`) is deliberately
   DB-knowable-only, not a literal implementation of docs/01 §13.1's full checklist.** A core
   command handler cannot itself shell out to `pnpm test`/`pnpm build`/lint/security-scan without a
@@ -2453,6 +2468,20 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   ready. A conflicting concurrent invocation (`LockConflictError`) returns a clean no-op, the same
   "transient race -> false, don't throw" posture `start-next-feature.ts`/`github-reconciliation.ts`
   already establish for their own locks.
+  **The lock alone was not sufficient (post-merge PR review fix, HIGH-1, round 2):** `runImpl()`
+  originally read the project state, latest `design_documents` row, and pending `artifact_exports`
+  row BEFORE acquiring the lock, then passed those pre-lock IDs into the generation body — a
+  second invocation could pass that pre-lock read, block on `acquire()` until a first, faster
+  invocation finished and released the lock, then proceed using stale IDs that no longer described
+  pending work (the project may have already advanced past `design_document_generating`, or a new
+  generation cycle may have replaced the pending artifact). The lock only serializes two
+  invocations from running the generation body concurrently — it does not, by itself, invalidate
+  data a delayed invocation already read before the lock existed. Fixed by extracting
+  `readGenerationTargets()` and calling it twice: once before lock acquisition (an unlocked
+  fast-path no-op, avoiding the lock-manager round trip for the common "nothing pending" case) and
+  once again immediately after acquiring the lock — the second, authoritative read is what the
+  rest of the generation cycle actually uses; a `null` result at that point (project no longer
+  generating, or no pending doc/artifact) is a clean no-op instead of proceeding on stale data.
 - **`DocumentationAgentAdapter`'s reference implementation needs no sandbox — the same
   simplification `ClaudeReviewerAdapter` documents versus `CodexCoderAdapter`.** Drafting a design
   document from already-collected DB evidence is read-only; `ClaudeDocumentationAdapter`
