@@ -30,9 +30,9 @@ async function seedGeneratingProject(
 
   const artifactExportId = generateId();
   await db.execute(
-    `INSERT INTO artifact_exports (id, project_id, artifact_type, state, format, version, created_at, updated_at)
-     VALUES (?, ?, 'design_document', 'pending', 'markdown', 1, datetime('now'), datetime('now'))`,
-    [artifactExportId, PROJECT_ID],
+    `INSERT INTO artifact_exports (id, project_id, artifact_type, state, format, design_document_id, version, created_at, updated_at)
+     VALUES (?, ?, 'design_document', 'pending', 'markdown', ?, 1, datetime('now'), datetime('now'))`,
+    [artifactExportId, PROJECT_ID, designDocumentId],
   );
 
   return { designDocumentId, artifactExportId };

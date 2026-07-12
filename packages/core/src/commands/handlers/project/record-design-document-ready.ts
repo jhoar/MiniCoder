@@ -112,18 +112,16 @@ export class RecordDesignDocumentReadyHandler implements CommandHandler<
         });
       }
       // Durable artifact-to-document association (migration 0014, PR review finding) — see
-      // ExportDesignDocumentHandler's identical check for the full rationale: without this, an
-      // exported artifact could be marked ready against a different design_documents row than the
-      // one it was actually rendered from.
-      if (
-        artifact.design_document_id !== null &&
-        artifact.design_document_id !== designDocumentId
-      ) {
+      // ExportDesignDocumentHandler's identical check for the full rationale, including why a
+      // NULL `design_document_id` fails closed (round 2 PR review fix) rather than being treated
+      // as "no binding to check": an exported artifact could otherwise be marked ready against a
+      // different design_documents row than the one it was actually rendered from.
+      if (artifact.design_document_id !== designDocumentId) {
         throw new CommandError({
           type: 'design-document-mismatch',
           title: 'Design document does not match the artifact export',
           status: 409,
-          detail: `artifact_exports ${artifactExportId} was generated from design_documents ${artifact.design_document_id}, not ${designDocumentId}`,
+          detail: `artifact_exports ${artifactExportId} is bound to design_documents ${artifact.design_document_id ?? 'NULL'}, not ${designDocumentId}`,
         });
       }
 

@@ -93,16 +93,18 @@ export class ExportDesignDocumentHandler implements CommandHandler<
       // the same project and receive success. `design_document_id` is set once, at INSERT time,
       // by `GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler` — the same call that
       // creates both rows together — so it is never ambiguous which document an artifact belongs
-      // to.
-      if (
-        artifact.design_document_id !== null &&
-        artifact.design_document_id !== designDocumentId
-      ) {
+      // to. Fails closed (round 2 PR review fix): a NULL `design_document_id` is REJECTED, not
+      // treated as "no binding to check" — every `artifact_type = 'design_document'` row this
+      // codebase's own handlers write always sets it, so a NULL here only ever means a
+      // pre-migration/manually-inserted row this handler cannot prove is bound to anything; a
+      // caller wanting to export/ready such a row must first backfill its `design_document_id`
+      // directly.
+      if (artifact.design_document_id !== designDocumentId) {
         throw new CommandError({
           type: 'design-document-mismatch',
           title: 'Design document does not match the artifact export',
           status: 409,
-          detail: `artifact_exports ${artifactExportId} was generated from design_documents ${artifact.design_document_id}, not ${designDocumentId}`,
+          detail: `artifact_exports ${artifactExportId} is bound to design_documents ${artifact.design_document_id ?? 'NULL'}, not ${designDocumentId}`,
         });
       }
       // Document ownership and section-completeness are validated BEFORE the already-exported

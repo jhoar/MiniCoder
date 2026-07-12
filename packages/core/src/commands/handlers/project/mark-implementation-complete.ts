@@ -53,6 +53,23 @@ interface ProjectRow {
  * `evaluateProjectAcceptance()` structurally cannot itself verify from the database (see that
  * module's doc comment) — this command no longer silently treats "every DB-knowable check passed"
  * as if it also meant "the CI-only checks passed."
+ *
+ * Evaluating acceptance inside the transaction narrows the stale-read window but does not, by
+ * itself, close it under ordinary `READ COMMITTED` isolation (PostgreSQL's default): a concurrent
+ * writer could still commit an acceptance-invalidating change (a new non-terminal feature run, an
+ * unresolved blocking finding, a stuck outbox/inbox row, a failed artifact export) after the
+ * `SELECT`-based `evaluateProjectAcceptance()` reads but before this handler's own `UPDATE`
+ * commits (PR review finding). Fixed by making the terminal `UPDATE` itself carry the same
+ * acceptance predicate as `NOT EXISTS` guards in its `WHERE` clause — the same "guarded update
+ * instead of relying on isolation level" pattern `StartCodingHandler`'s `AND EXISTS (SELECT 1
+ * FROM workflow_states WHERE automation_state = 'running')` guard already establishes elsewhere
+ * in this codebase. A 0-affected-row result is disambiguated the same two-step way
+ * `SelectFeatureHandler` already does for its own compare-and-swap: re-check whether the version
+ * changed (a genuine `OptimisticLockError`) or the acceptance predicate itself changed underneath
+ * (re-run `evaluateProjectAcceptance()` for a clear `project-acceptance-failed` message). The
+ * `SELECT`-based `evaluateProjectAcceptance()` call above stays — it is what produces a fast,
+ * readable rejection message on the common "acceptance already fails" path — but it is no longer
+ * the sole enforcement of the predicate; the guarded `UPDATE` is.
  */
 export class MarkImplementationCompleteHandler implements CommandHandler<
   MarkImplementationCompletePayload,
@@ -120,17 +137,73 @@ export class MarkImplementationCompleteHandler implements CommandHandler<
 
       const now = isoNow();
       const affected = await tx.executeAffected(
-        `UPDATE projects SET state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
+        `UPDATE projects SET state = ?, version = ?, updated_at = ?
+         WHERE id = ? AND version = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM feature_requests freq
+             LEFT JOIN feature_runs fr ON fr.feature_request_id = freq.id
+             WHERE freq.project_id = ? AND freq.kind = 'feature'
+               AND (fr.id IS NULL OR fr.current_execution_state NOT IN ('merged', 'skipped'))
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM feature_runs fr
+             JOIN feature_requests freq ON fr.feature_request_id = freq.id
+             WHERE freq.project_id = ? AND fr.current_execution_state IN ('human_required', 'blocked')
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM review_findings rf
+             JOIN feature_runs fr ON rf.feature_run_id = fr.id
+             JOIN feature_requests freq ON fr.feature_request_id = freq.id
+             WHERE freq.project_id = ? AND rf.severity = 'blocking' AND rf.resolved = FALSE
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM outbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM inbox_events WHERE status IN ('pending', 'processing') AND attempts >= 5
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM artifact_exports WHERE project_id = ? AND state = 'failed'
+           )`,
         [
           ProjectState.IMPLEMENTATION_COMPLETE,
           nextVersion(project.version),
           now,
           projectId,
           expectedVersion,
+          projectId,
+          projectId,
+          projectId,
+          projectId,
         ],
       );
       if (affected === 0) {
-        throw new OptimisticLockError('projects', projectId, expectedVersion, -1);
+        // Disambiguate: a stale version (a genuine optimistic-lock conflict) vs. an acceptance
+        // predicate that changed underneath between the SELECT-based check above and this UPDATE
+        // (the race this guard exists to close) — the same two-step pattern
+        // `SelectFeatureHandler` already uses for its own compare-and-swap.
+        const refreshed = await tx.query<ProjectRow>(
+          `SELECT id, state, version FROM projects WHERE id = ?`,
+          [projectId],
+        );
+        if (!refreshed[0] || refreshed[0].version !== expectedVersion) {
+          throw new OptimisticLockError(
+            'projects',
+            projectId,
+            expectedVersion,
+            refreshed[0]?.version ?? -1,
+          );
+        }
+        const recheck = await evaluateProjectAcceptance(tx, projectId);
+        throw new CommandError({
+          type: 'project-acceptance-failed',
+          title: 'Project Acceptance Validation failed',
+          status: 409,
+          detail: `Project ${projectId} no longer passes Project Acceptance Validation (changed concurrently): ${recheck.checks
+            .filter((c) => !c.passed)
+            .map((c) => c.name)
+            .join(', ')}`,
+        });
       }
 
       await insertHumanApproval(tx, {

@@ -2386,10 +2386,14 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   `INSERT` time (the same call that creates both the `design_documents` and `artifact_exports`
   rows together, so it is never ambiguous); both export/ready handlers now reject a
   `design-document-mismatch` (409) if the caller-supplied `designDocumentId` doesn't match the
-  artifact's recorded one. The column is nullable and the mismatch check is skipped when it's
-  `NULL`, purely for backward compatibility with `artifact_exports` rows written before this
-  migration existed in a live deployment — every row this phase's own handlers write going
-  forward always sets it.
+  artifact's recorded one. The column is nullable at the schema level (SQLite has no partial
+  `NOT NULL ... WHERE artifact_type = 'design_document'` constraint syntax), but both handlers
+  **fail closed** on `NULL` (round 2 PR review fix) rather than skipping the check for it — a
+  `NULL` only ever means a pre-migration/manually-inserted row this handler cannot prove is bound
+  to anything, and silently allowing it through would just reopen the same replay ambiguity for
+  that row. A caller wanting to export/ready such a legacy row must first backfill its
+  `design_document_id` directly (no backfill migration/repair command was built for this — it is
+  real, undocumented-elsewhere future work, not silently assumed unnecessary).
 - **`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`) is deliberately
   DB-knowable-only, not a literal implementation of docs/01 §13.1's full checklist.** A core
   command handler cannot itself shell out to `pnpm test`/`pnpm build`/lint/security-scan without a

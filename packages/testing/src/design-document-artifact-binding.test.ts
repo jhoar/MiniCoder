@@ -49,7 +49,7 @@ async function seedDesignDocumentWithSections(
 
 async function seedArtifactExport(
   db: DbClient,
-  opts: { state: string; designDocumentId: string },
+  opts: { state: string; designDocumentId: string | null },
 ): Promise<string> {
   const artifactExportId = generateId();
   await db.execute(
@@ -106,6 +106,57 @@ describe('artifact_exports.design_document_id binding (migration 0014)', () => {
           projectId: PROJECT_ID,
           expectedVersion: 1,
           designDocumentId: otherDocumentId,
+          artifactExportId,
+        },
+        actor: systemActor,
+        correlationId: 'corr-1',
+      } as CommandEnvelope<Record<string, unknown>>),
+    ).rejects.toMatchObject({ problem: { type: 'design-document-mismatch' } });
+  });
+
+  it('ExportDesignDocumentHandler fails closed for a NULL-bound (legacy/pre-migration) artifact row', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const documentId = await seedDesignDocumentWithSections(db, { state: 'draft' });
+    const artifactExportId = await seedArtifactExport(db, {
+      state: 'pending',
+      designDocumentId: null,
+    });
+
+    const executor = new TransactionalCommandExecutor(db);
+    const handler = new ExportDesignDocumentHandler();
+
+    await expect(
+      executor.execute(handler, {
+        commandId: generateId(),
+        idempotencyKey: 'export-null-binding-1',
+        payload: { projectId: PROJECT_ID, designDocumentId: documentId, artifactExportId },
+        actor: systemActor,
+        correlationId: 'corr-1',
+      } as CommandEnvelope<Record<string, unknown>>),
+    ).rejects.toMatchObject({ problem: { type: 'design-document-mismatch' } });
+  });
+
+  it('RecordDesignDocumentReadyHandler fails closed for a NULL-bound (legacy/pre-migration) artifact row', async () => {
+    const db = createTestDb();
+    await seedProject(db);
+    const documentId = await seedDesignDocumentWithSections(db, { state: 'draft' });
+    const artifactExportId = await seedArtifactExport(db, {
+      state: 'exported',
+      designDocumentId: null,
+    });
+
+    const executor = new TransactionalCommandExecutor(db);
+    const handler = new RecordDesignDocumentReadyHandler();
+
+    await expect(
+      executor.execute(handler, {
+        commandId: generateId(),
+        idempotencyKey: 'ready-null-binding-1',
+        payload: {
+          projectId: PROJECT_ID,
+          expectedVersion: 1,
+          designDocumentId: documentId,
           artifactExportId,
         },
         actor: systemActor,
