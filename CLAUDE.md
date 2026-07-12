@@ -1753,6 +1753,11 @@ displayName?}`; `ApiKeyProvider` hashes each key with SHA-256 at boot and never 
   target is now visible and testable at this call site. `taskId` is also now typed as
   `@minicoder/triggerdev`'s `TaskId` (not a bare `string`), and a regression test asserts every
   triggered task id is a member of the canonical `ALL_TASK_IDS` list (PR #73 review fix, LOW-3).
+  **PR #73 review fix (round 2, MEDIUM-1):** requiring `TRIGGER_API_URL` (round 1) only checked it
+  was non-blank, not that it was actually a URL — a typo'd value or unsupported scheme (`ftp://`)
+  would reach the SDK and fail later with a less actionable error. `parseTriggerApiUrl()` now
+  parses it with `new URL()`, requires an `http:`/`https:` scheme, and passes the normalized form
+  to `configure()`; both failure modes are regression-tested.
 - **`generate final design document` / `approve final design document` (docs/01 §9) are not
   built.** No core command handler exists for either yet — the Design Document Generator is Phase
   17 scope. Building a route with no command behind it would violate this phase's own "API
@@ -2420,6 +2425,25 @@ observability.ts`'s `export-otel` subcommand is a one-shot CLI invocation, meant
   caller-tunable, generous margin — the same "at-least-once with a bounded staleness window"
   posture already accepted for this exporter. Regression-tested in `otel-export.test.ts` with an
   injectable clock (`now` option).
+- **PR #73 review fix (round 2, MEDIUM-2): the cursor is now a composite `(occurred_at, id)`
+  keyset, not `id` alone.** Round 1's `safetyMarginMs` fix only closed the "same id scheme,
+  concurrent transaction" race — it did not help when two different id _schemes_ are mixed in the
+  same table. `workflow_events.id` is usually `generateId()`'s time-sortable
+  `${Date.now()}-${random}` shape, but `state repair --apply`
+  (`packages/cli/src/commands/state.ts`) inserts a `workflow_events` row keyed by
+  `crypto.randomUUID()` instead — a UUID has no consistent lexical ordering relative to
+  `generateId()`'s ids, so a UUID-keyed row becoming the cursor could make a later, ordinary event
+  compare "lower" and be skipped forever by a plain `id > cursor` resume. Fixed by making
+  `ExportWorkflowEventsOptions`/`ExportWorkflowEventsResult` carry both `sinceOccurredAt`/
+  `sinceEventId` and `lastOccurredAt`/`lastEventId` together — `id` is now only the tiebreaker for
+  same-`occurred_at` rows, not the primary ordering key. `observability_export_cursors` (migration
+  0015, edited in place since this PR was still unmerged when the fix landed — not a new
+  migration) gained a `last_occurred_at` column alongside the existing `last_event_id`;
+  `getObservabilityExportCursor()`/`setObservabilityExportCursor()` now return/accept the pair as
+  one `ObservabilityExportCursor` object, treating a partial cursor (only one field set) as "no
+  cursor" rather than a malformed resume. Regression-tested in `otel-export.test.ts` and
+  `observability.test.ts` (CLI) with a UUID-keyed event followed by an ordinary one that sorts
+  lower by id but later by `occurred_at`.
 - **Issue #66 (closed): the Web UI now surfaces both the Phase 16 timeline and budget-report read
   models.** `packages/web/src/lib/api-client.ts` gained `getFeatureRunTimeline(featureRunId)` and
   `getBudgetReport(projectId, windowDays?)`, mirroring `packages/tui/src/client/api-client.ts`'s
@@ -2641,6 +2665,14 @@ adapter.run(documentationInput))` (`role: AgentRole.DOCUMENTATION`, `capabilitie
   Fixed by building `adapterEvidence` once and passing it to both adapter construction and the
   recorded context pack (`content: { documentationInput, adapterEvidence }`) — the same
   "documented, then structurally proven" gap-closing this document applies elsewhere.
+  **PR #73 review fix (round 2, LOW-1):** the same `adapterEvidence` object reference was passed
+  to the (extension-point, not fully trusted) `documentationAdapterFactory` and then persisted
+  into the context pack — a custom factory mutating it in place before returning would corrupt the
+  recorded provenance to reflect the mutated view, not the real evidence actually computed. Fixed
+  with `Object.freeze()` on both the object and its `featureSummaries` array, applied immediately
+  after construction and before either factory sees it; a mutation attempt throws (this repo's
+  compiled/ESM output is always strict mode) rather than silently succeeding. Regression-tested
+  with a factory that attempts both an object-property mutation and an array `.push()`.
 - **Issue #70 (closed): `documentationAdapterName` is still validation/provenance-only, but the
   _default_ adapter-factory path now rejects a mismatched name instead of silently ignoring it.**
   `run-design-doc.ts` still resolves `documentationAdapterName` via
@@ -2740,13 +2772,22 @@ posture — an unrelated project's stuck queue entries can affect this check's v
 project, the same pre-existing, intentional trade-off `state doctor` already accepts elsewhere, not
 a new gap this fix introduces.
 
-**PR #73 review fix (MEDIUM-4): the sweep is bounded, not unbounded.** `runDoctorChecks()`
-originally evaluated `evaluateProjectAcceptance()` (itself several queries) against every
-post-acceptance project with no limit — an N×M query cost as the number of accepted projects
-grows, risky for an always-on diagnostic endpoint. Fixed with `PROJECT_ACCEPTANCE_SWEEP_LIMIT`
-(50, `ORDER BY updated_at DESC LIMIT`), the same "bounded sample, not a full-table scan" posture
-`SECRET_SCAN_SAMPLE_SIZE` already establishes elsewhere in this file — irrelevant when the caller
-passes `--project` (at most one row either way).
+**PR #73 review fix (round 1, MEDIUM-4), then reverted (round 2, HIGH-1): the sweep is
+exhaustive, not bounded.** Round 1 bounded `project_acceptance_violated`'s sweep to the 50
+most-recently-updated post-acceptance projects (`PROJECT_ACCEPTANCE_SWEEP_LIMIT`, `ORDER BY
+updated_at DESC LIMIT`), mirroring `SECRET_SCAN_SAMPLE_SIZE`'s bounded-sample posture. Round 2
+correctly flagged this as a real correctness regression, not a proportionate trade-off: unlike
+`secret_leak_scan` (a best-effort defense-in-depth audit where a missed sample is low-stakes),
+this check exists specifically to catch a rare-but-real concurrency violation from CLAUDE.md's
+own "accept and monitor" resolution above — a project outside the sampled window could sit in a
+permanently-violated state forever while `state doctor` reports healthy, silently defeating the
+whole point of the check. Reverted to an exhaustive, unbounded sweep of every post-acceptance
+project. The N×M query-cost concern the round-1 fix was responding to is real but secondary to
+correctness here — this is a diagnostic endpoint, not a request-latency-sensitive hot path. If
+that cost ever becomes an operational problem, the correct fix is a persisted incremental-coverage
+cursor (the same shape `observability_export_cursors` already establishes for an analogous
+"make an unbounded periodic sweep resumable, without ever silently skipping" problem), not
+truncation that trades correctness for speed.
 
 ## Cross-Dialect Testing (Mandatory)
 

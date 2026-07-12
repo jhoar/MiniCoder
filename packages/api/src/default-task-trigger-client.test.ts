@@ -55,6 +55,45 @@ describe('resolveDefaultTaskTriggerClient (issue #61)', () => {
     expect(configureMock).not.toHaveBeenCalled();
   });
 
+  // PR #73 review fix (round 2, MEDIUM-1): TRIGGER_API_URL was required but not URL-validated.
+  it('throws an actionable error for a malformed TRIGGER_API_URL', async () => {
+    process.env['TRIGGER_SECRET_KEY'] = 'tr_test_123';
+    process.env['TRIGGER_API_URL'] = 'not-a-url';
+    const { resolveDefaultTaskTriggerClient } = await import('./default-task-trigger-client.js');
+    const client = resolveDefaultTaskTriggerClient();
+
+    await expect(
+      client.triggerRunCoder({
+        projectId: 'proj-1',
+        featureRunId: 'run-1',
+        coderAdapterName: 'CodexCoderAdapter',
+        correlationId: 'corr-1',
+        idempotencyKey: 'idem-1',
+      }),
+    ).rejects.toThrow(/not a valid URL/);
+    expect(triggerMock).not.toHaveBeenCalled();
+    expect(configureMock).not.toHaveBeenCalled();
+  });
+
+  it('throws an actionable error for a TRIGGER_API_URL with an unsupported scheme', async () => {
+    process.env['TRIGGER_SECRET_KEY'] = 'tr_test_123';
+    process.env['TRIGGER_API_URL'] = 'ftp://trigger.internal.example.com';
+    const { resolveDefaultTaskTriggerClient } = await import('./default-task-trigger-client.js');
+    const client = resolveDefaultTaskTriggerClient();
+
+    await expect(
+      client.triggerRunCoder({
+        projectId: 'proj-1',
+        featureRunId: 'run-1',
+        coderAdapterName: 'CodexCoderAdapter',
+        correlationId: 'corr-1',
+        idempotencyKey: 'idem-1',
+      }),
+    ).rejects.toThrow(/http: or https:/);
+    expect(triggerMock).not.toHaveBeenCalled();
+    expect(configureMock).not.toHaveBeenCalled();
+  });
+
   it('triggers run-coder by task ID with the payload and idempotency key, returning the run id', async () => {
     process.env['TRIGGER_SECRET_KEY'] = 'tr_test_123';
     process.env['TRIGGER_API_URL'] = 'https://trigger.internal.example.com';
@@ -74,7 +113,7 @@ describe('resolveDefaultTaskTriggerClient (issue #61)', () => {
     expect(result).toEqual({ triggerdevRunId: 'run_abc123' });
     expect(triggerMock).toHaveBeenCalledWith('run-coder', payload, { idempotencyKey: 'idem-1' });
     expect(configureMock).toHaveBeenCalledWith({
-      baseURL: 'https://trigger.internal.example.com',
+      baseURL: 'https://trigger.internal.example.com/',
       accessToken: 'tr_test_123',
     });
   });

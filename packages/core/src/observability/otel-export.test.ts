@@ -79,7 +79,12 @@ describe('exportWorkflowEventsToOtlp', () => {
       config: new FakeConfig({}),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    expect(result).toEqual({ attempted: false, exportedCount: 0, lastEventId: null });
+    expect(result).toEqual({
+      attempted: false,
+      exportedCount: 0,
+      lastEventId: null,
+      lastOccurredAt: null,
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -101,7 +106,12 @@ describe('exportWorkflowEventsToOtlp', () => {
       config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    expect(result).toEqual({ attempted: true, exportedCount: 1, lastEventId: 'evt-1' });
+    expect(result).toEqual({
+      attempted: true,
+      exportedCount: 1,
+      lastEventId: 'evt-1',
+      lastOccurredAt: '2026-01-01T00:00:00.000Z',
+    });
     expect(fetchImpl).toHaveBeenCalledWith(
       'http://collector:4318/v1/logs',
       expect.objectContaining({ method: 'POST' }),
@@ -158,25 +168,45 @@ describe('exportWorkflowEventsToOtlp', () => {
       config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    expect(result).toEqual({ attempted: true, exportedCount: 0, lastEventId: null });
+    expect(result).toEqual({
+      attempted: true,
+      exportedCount: 0,
+      lastEventId: null,
+      lastOccurredAt: null,
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
 /** Unlike `FakeDb` above (which ignores its query entirely — fine for the tests above, which
- * don't depend on filtering), this one actually applies the `occurred_at <= ?` / `id > ?` /
- * `ORDER BY id ASC LIMIT ?` clauses `exportWorkflowEventsToOtlp()` builds, so the safety-margin
- * regression below can prove the real filtering behavior, not just that some rows were returned. */
+ * don't depend on filtering), this one actually applies the `occurred_at <= ?` / composite
+ * `(occurred_at, id)` keyset / `ORDER BY occurred_at ASC, id ASC LIMIT ?` clauses
+ * `exportWorkflowEventsToOtlp()` builds, so the regressions below can prove the real filtering
+ * behavior, not just that some rows were returned. */
 class FilteringFakeDb implements DbClient {
   constructor(private readonly rows: WorkflowEventRow[]) {}
   async query<T = Record<string, unknown>>(_sql: string, params: unknown[] = []): Promise<T[]> {
-    const [watermark, sinceEventId, limit] =
-      params.length === 3
-        ? (params as [string, string, number])
-        : [params[0] as string, undefined, params[1] as number];
+    // Param shapes exportWorkflowEventsToOtlp() builds:
+    //   no cursor:   [watermark, limit]                                (length 2)
+    //   with cursor: [watermark, sinceOccurredAt, sinceOccurredAt, sinceEventId, limit] (length 5)
+    const watermark = params[0] as string;
+    const hasCursor = params.length === 5;
+    const sinceOccurredAt = hasCursor ? (params[1] as string) : undefined;
+    const sinceEventId = hasCursor ? (params[3] as string) : undefined;
+    const limit = params[params.length - 1] as number;
+
     let filtered = this.rows.filter((r) => r.occurred_at <= watermark);
-    if (sinceEventId) filtered = filtered.filter((r) => r.id > sinceEventId);
-    filtered = [...filtered].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (sinceOccurredAt !== undefined && sinceEventId !== undefined) {
+      filtered = filtered.filter(
+        (r) =>
+          r.occurred_at > sinceOccurredAt ||
+          (r.occurred_at === sinceOccurredAt && r.id > sinceEventId),
+      );
+    }
+    filtered = [...filtered].sort((a, b) => {
+      if (a.occurred_at !== b.occurred_at) return a.occurred_at < b.occurred_at ? -1 : 1;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
     return filtered.slice(0, limit) as unknown as T[];
   }
   async execute(): Promise<void> {}
@@ -206,7 +236,12 @@ describe('exportWorkflowEventsToOtlp: safety-margin cursor fix (PR #73 review, M
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => fixedNow,
     });
-    expect(result).toEqual({ attempted: true, exportedCount: 1, lastEventId: 'evt-old' });
+    expect(result).toEqual({
+      attempted: true,
+      exportedCount: 1,
+      lastEventId: 'evt-old',
+      lastOccurredAt: '2026-01-01T00:02:00.000Z',
+    });
   });
 
   it('includes the previously-too-recent event once it falls outside the margin on a later call', async () => {
@@ -226,10 +261,16 @@ describe('exportWorkflowEventsToOtlp: safety-margin cursor fix (PR #73 review, M
     const second = await exportWorkflowEventsToOtlp(db, {
       config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
       fetchImpl: fetchImpl as unknown as typeof fetch,
+      sinceOccurredAt: first.lastOccurredAt ?? undefined,
       sinceEventId: first.lastEventId ?? undefined,
       now: () => new Date('2026-01-01T00:20:00.000Z'), // 10 minutes later: past the margin now
     });
-    expect(second).toEqual({ attempted: true, exportedCount: 1, lastEventId: 'evt-recent' });
+    expect(second).toEqual({
+      attempted: true,
+      exportedCount: 1,
+      lastEventId: 'evt-recent',
+      lastOccurredAt: '2026-01-01T00:09:30.000Z',
+    });
   });
 
   it('respects a caller-supplied safetyMarginMs override', async () => {
@@ -242,6 +283,57 @@ describe('exportWorkflowEventsToOtlp: safety-margin cursor fix (PR #73 review, M
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => new Date('2026-01-01T00:10:00.000Z'),
       safetyMarginMs: 10_000, // 10s margin -- 15s-old event is eligible
+    });
+    expect(result.exportedCount).toBe(1);
+  });
+});
+
+describe('exportWorkflowEventsToOtlp: composite (occurred_at, id) cursor (PR #73 review round 2, MEDIUM-2)', () => {
+  it('resumes correctly past a UUID-keyed event whose id does not sort chronologically', async () => {
+    // Simulates `state repair --apply`'s crypto.randomUUID()-keyed workflow_events row: its id
+    // ('ffffffff-...') sorts lexically *after* a later, ordinary generateId()-keyed event's id
+    // ('1700000005000-...'), even though the ordinary event occurred after it. A plain
+    // `id > cursor` resume (the pre-fix behavior) would skip 'evt-later' forever once
+    // 'evt-uuid-repair' became the cursor; the composite (occurred_at, id) cursor does not.
+    const db = new FilteringFakeDb([
+      event({
+        id: 'ffffffff-uuid-from-state-repair',
+        occurred_at: '2026-01-01T00:01:00.000Z',
+      }),
+      event({ id: '1700000005000-later', occurred_at: '2026-01-01T00:02:00.000Z' }),
+    ]);
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const fixedNow = () => new Date('2026-01-01T00:10:00.000Z');
+
+    const first = await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: fixedNow,
+      limit: 1,
+    });
+    expect(first.lastEventId).toBe('ffffffff-uuid-from-state-repair');
+
+    const second = await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sinceOccurredAt: first.lastOccurredAt ?? undefined,
+      sinceEventId: first.lastEventId ?? undefined,
+      now: fixedNow,
+    });
+    expect(second.exportedCount).toBe(1);
+    expect(second.lastEventId).toBe('1700000005000-later');
+  });
+
+  it('treats a partial cursor (only one of sinceOccurredAt/sinceEventId set) as no cursor', async () => {
+    const db = new FilteringFakeDb([
+      event({ id: 'evt-1', occurred_at: '2026-01-01T00:00:00.000Z' }),
+    ]);
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const result = await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sinceEventId: 'evt-0', // sinceOccurredAt omitted
+      now: () => new Date('2026-01-01T00:10:00.000Z'),
     });
     expect(result.exportedCount).toBe(1);
   });

@@ -32,7 +32,7 @@ export function createObservabilityCommand(): Command {
     .action(async (opts: { cursorId: string; limit?: string }) => {
       const db = await createDbClientFromEnv();
       try {
-        const sinceEventId = await getObservabilityExportCursor(db, opts.cursorId);
+        const cursor = await getObservabilityExportCursor(db, opts.cursorId);
         const limit = opts.limit ? Number(opts.limit) : undefined;
         // PR #73 review fix (LOW-1): the error message already said "positive integer" — the
         // check only verified finite/positive, so e.g. --limit 1.5 silently passed through.
@@ -43,12 +43,16 @@ export function createObservabilityCommand(): Command {
         }
 
         const result = await exportWorkflowEventsToOtlp(db, {
-          sinceEventId: sinceEventId ?? undefined,
+          sinceOccurredAt: cursor?.lastOccurredAt,
+          sinceEventId: cursor?.lastEventId,
           limit,
         });
 
-        if (result.attempted && result.lastEventId) {
-          await setObservabilityExportCursor(db, opts.cursorId, result.lastEventId);
+        if (result.attempted && result.lastEventId && result.lastOccurredAt) {
+          await setObservabilityExportCursor(db, opts.cursorId, {
+            lastEventId: result.lastEventId,
+            lastOccurredAt: result.lastOccurredAt,
+          });
         }
 
         console.log(

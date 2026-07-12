@@ -20,8 +20,13 @@ class FakeCursorDb implements DbClient {
   }
 
   async execute(sql: string, params: unknown[] = []): Promise<void> {
-    const [id, lastEventId, updatedAt] = params as [string, string, string];
-    this.rows.set(id, { id, last_event_id: lastEventId, updated_at: updatedAt });
+    const [id, lastEventId, lastOccurredAt, updatedAt] = params as [string, string, string, string];
+    this.rows.set(id, {
+      id,
+      last_event_id: lastEventId,
+      last_occurred_at: lastOccurredAt,
+      updated_at: updatedAt,
+    });
   }
 
   async executeAffected(): Promise<number> {
@@ -43,22 +48,43 @@ describe('observability export cursor', () => {
 
   it('round-trips a stored cursor', async () => {
     const db = new FakeCursorDb();
-    await setObservabilityExportCursor(db, 'workflow_events_otlp', 'evt-42');
-    expect(await getObservabilityExportCursor(db, 'workflow_events_otlp')).toBe('evt-42');
+    await setObservabilityExportCursor(db, 'workflow_events_otlp', {
+      lastEventId: 'evt-42',
+      lastOccurredAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(await getObservabilityExportCursor(db, 'workflow_events_otlp')).toEqual({
+      lastEventId: 'evt-42',
+      lastOccurredAt: '2026-01-01T00:00:00.000Z',
+    });
   });
 
   it('overwrites a prior cursor on a later call (upsert, not insert-only)', async () => {
     const db = new FakeCursorDb();
-    await setObservabilityExportCursor(db, 'workflow_events_otlp', 'evt-1');
-    await setObservabilityExportCursor(db, 'workflow_events_otlp', 'evt-2');
-    expect(await getObservabilityExportCursor(db, 'workflow_events_otlp')).toBe('evt-2');
+    await setObservabilityExportCursor(db, 'workflow_events_otlp', {
+      lastEventId: 'evt-1',
+      lastOccurredAt: '2026-01-01T00:00:00.000Z',
+    });
+    await setObservabilityExportCursor(db, 'workflow_events_otlp', {
+      lastEventId: 'evt-2',
+      lastOccurredAt: '2026-01-01T00:01:00.000Z',
+    });
+    expect(await getObservabilityExportCursor(db, 'workflow_events_otlp')).toEqual({
+      lastEventId: 'evt-2',
+      lastOccurredAt: '2026-01-01T00:01:00.000Z',
+    });
   });
 
   it('keeps distinct cursor ids independent', async () => {
     const db = new FakeCursorDb();
-    await setObservabilityExportCursor(db, 'target-a', 'evt-a');
-    await setObservabilityExportCursor(db, 'target-b', 'evt-b');
-    expect(await getObservabilityExportCursor(db, 'target-a')).toBe('evt-a');
-    expect(await getObservabilityExportCursor(db, 'target-b')).toBe('evt-b');
+    await setObservabilityExportCursor(db, 'target-a', {
+      lastEventId: 'evt-a',
+      lastOccurredAt: '2026-01-01T00:00:00.000Z',
+    });
+    await setObservabilityExportCursor(db, 'target-b', {
+      lastEventId: 'evt-b',
+      lastOccurredAt: '2026-01-01T00:01:00.000Z',
+    });
+    expect((await getObservabilityExportCursor(db, 'target-a'))?.lastEventId).toBe('evt-a');
+    expect((await getObservabilityExportCursor(db, 'target-b'))?.lastEventId).toBe('evt-b');
   });
 });

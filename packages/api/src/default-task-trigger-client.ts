@@ -37,13 +37,37 @@
  * and testable at this call site.
  *
  * Fails fast with an actionable error only when a route is actually invoked and either env var
- * is missing/blank — not at server startup, matching `unconfiguredTaskTriggerClient()`'s existing
- * "fail only when actually used" contract so a deployment that never calls these five routes is
- * unaffected by missing Trigger.dev credentials.
+ * is missing/blank/malformed — not at server startup, matching `unconfiguredTaskTriggerClient()`'s
+ * existing "fail only when actually used" contract so a deployment that never calls these five
+ * routes is unaffected by missing Trigger.dev credentials.
+ *
+ * PR #73 review fix (round 2, MEDIUM-1): `TRIGGER_API_URL` was required (round 1) but only
+ * blank-checked, not URL-validated — a typo'd value (`not-a-url`, or an unsupported scheme like
+ * `ftp://`) would reach the SDK and fail later with a less actionable error, one layer removed
+ * from the actual misconfiguration. `parseTriggerApiUrl()` validates it's a well-formed URL with
+ * an `http:`/`https:` scheme and passes the normalized (`URL#toString()`) form to `configure()`.
  */
 import { requireNonBlankEnvVar } from '@minicoder/triggerdev';
 import type { TaskId } from '@minicoder/triggerdev';
 import type { TaskTriggerClient, TriggeredRun } from './commands/task-trigger-routes.js';
+
+function parseTriggerApiUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      `TRIGGER_API_URL "${raw}" is not a valid URL — expected e.g. ` +
+        '"https://trigger.internal.example.com".',
+    );
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `TRIGGER_API_URL "${raw}" must use the http: or https: scheme (got "${parsed.protocol}").`,
+    );
+  }
+  return parsed.toString();
+}
 
 async function triggerTask(
   taskId: TaskId,
@@ -56,7 +80,7 @@ async function triggerTask(
       "(see docs/01-system-specification.md §14 and CLAUDE.md's Trigger.dev Operational " +
       'Constraints for the self-hosted/Cloud backend setup).',
   );
-  const apiUrl = requireNonBlankEnvVar(
+  const rawApiUrl = requireNonBlankEnvVar(
     'TRIGGER_API_URL',
     'minicoder api serve requires TRIGGER_API_URL to be set explicitly (e.g. your self-hosted ' +
       'Trigger.dev webapp URL) — this is never inferred or defaulted to Trigger.dev Cloud, per ' +
@@ -64,6 +88,7 @@ async function triggerTask(
       "backend; Cloud is a separate, explicit choice since payloads leave the deployment's " +
       'trust boundary).',
   );
+  const apiUrl = parseTriggerApiUrl(rawApiUrl);
   const { tasks, configure } = await import('@trigger.dev/sdk/v3');
   configure({ baseURL: apiUrl, accessToken: secretKey });
   // `tasks.trigger<TTask>()`'s generic signature is designed for a caller that imports the real

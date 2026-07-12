@@ -13,11 +13,16 @@ import { runDoctorChecks } from './diagnostics.js';
  * the acceptance gate (any state after `active`) so a rare violation surfaces here instead of
  * silently persisting forever.
  */
-async function seedProject(db: DbClient, projectId: string, state: string): Promise<void> {
+async function seedProject(
+  db: DbClient,
+  projectId: string,
+  state: string,
+  updatedAt?: string,
+): Promise<void> {
   await db.execute(
     `INSERT INTO projects (id, name, state, version, created_at, updated_at)
-     VALUES (?, 'Test Project', ?, 1, datetime('now'), datetime('now'))`,
-    [projectId, state],
+     VALUES (?, 'Test Project', ?, 1, datetime('now'), ?)`,
+    [projectId, state, updatedAt ?? new Date().toISOString()],
   );
 }
 
@@ -96,5 +101,42 @@ describe('runDoctorChecks: project_acceptance_violated (issue #69)', () => {
     const check = result.checks.find((c) => c.name === 'project_acceptance_violated');
     expect(check?.severity).toBe('error');
     expect(check?.count).toBe(1);
+  });
+
+  // PR #73 review round 2 (HIGH-1): an earlier revision bounded this sweep to the 50
+  // most-recently-updated post-acceptance projects, which meant a violating project outside that
+  // window would never be flagged -- a real correctness regression, since this check exists to
+  // catch a rare-but-real concurrency violation, not to act as a best-effort audit sample.
+  // Reverted to an exhaustive sweep; this proves it stays exhaustive past the old bound.
+  it('still flags a violating project outside a 50-project recency window (global sweep, no --project)', async () => {
+    const db = createTestDb() as unknown as DbClient;
+    const now = Date.now();
+
+    // The violating project is the *oldest* by updated_at -- if the sweep were bounded to the
+    // most-recently-updated N projects (as it was in a prior revision), this project would never
+    // be reached.
+    const violatingProjectId = 'proj-acceptance-old-violator';
+    await seedProject(
+      db,
+      violatingProjectId,
+      ProjectState.IMPLEMENTATION_COMPLETE,
+      new Date(now - 1_000_000).toISOString(),
+    );
+    await seedNonTerminalFeature(db, violatingProjectId, 'run-old-violator-1');
+
+    for (let i = 0; i < 55; i++) {
+      await seedProject(
+        db,
+        `proj-acceptance-recent-clean-${i}`,
+        ProjectState.IMPLEMENTATION_COMPLETE,
+        new Date(now - i * 1000).toISOString(),
+      );
+    }
+
+    const result = await runDoctorChecks(db);
+    const check = result.checks.find((c) => c.name === 'project_acceptance_violated');
+    expect(check?.severity).toBe('error');
+    expect(check?.count).toBe(1);
+    expect((check?.details as Array<{ projectId: string }>)[0]?.projectId).toBe(violatingProjectId);
   });
 });

@@ -387,12 +387,19 @@ async function generateAndRecord(args: GenerateAndRecordArgs): Promise<RunDesign
   // generated design document could not be fully reconstructed from `agent_context_packs` alone:
   // `projectName`/`projectDescription`/`featureSummaries`/`mergedPullRequestCount` were used to
   // drive the LLM call but never persisted as provenance.
-  const adapterEvidence = {
+  // PR #73 review fix (round 2, LOW-1): frozen before being handed to either factory below — a
+  // custom `documentationAdapterFactory` (an extension point, so not fully trusted) could
+  // otherwise mutate this object or its `featureSummaries` array in place before returning, and
+  // since the exact same reference is persisted into the context pack further down, the recorded
+  // provenance would then reflect the adapter's mutated view rather than the real evidence that
+  // was actually computed. `Object.freeze` throws in strict mode / silently no-ops on a mutation
+  // attempt either way, so the persisted snapshot is guaranteed to match what was built here.
+  const adapterEvidence = Object.freeze({
     projectName: evidence.project.name,
     projectDescription: evidence.project.description,
-    featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
+    featureSummaries: Object.freeze(evidence.features.map((f) => `${f.frId}: ${f.title}`)),
     mergedPullRequestCount: evidence.mergedPullRequests.length,
-  };
+  });
 
   let adapter: DocumentationAgentAdapter;
   if (deps.documentationAdapterFactory) {

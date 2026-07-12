@@ -201,6 +201,63 @@ describe('runImpl (run-design-doc)', () => {
       expect(parsed.adapterEvidence).toHaveProperty('mergedPullRequestCount');
     });
 
+    // PR #73 review fix (round 2, LOW-1): a custom documentationAdapterFactory mutating its input
+    // must not corrupt the persisted provenance -- the recorded context pack must reflect the
+    // real evidence that was computed, not whatever the adapter mutated it into.
+    it('persists the original evidence even when a custom adapter factory mutates its input', async () => {
+      const db = createTestDb();
+      const { DESIGN_DOCUMENT_SECTION_NAMES } = await import('@minicoder/core');
+      await seedGeneratingProject(db);
+
+      const mutatingFactory: DocumentationAdapterFactory = async (opts) => {
+        expect(() => {
+          (opts as { projectName: string }).projectName = 'HACKED';
+        }).toThrow();
+        expect(() => {
+          (opts.featureSummaries as string[]).push('injected summary');
+        }).toThrow();
+        return {
+          role: 'DocumentationAgentAdapter',
+          async run() {
+            return {
+              documentId: 'doc-mutation',
+              sections: DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName: string) => ({
+                sectionName,
+                content: `content for ${sectionName}`,
+              })),
+              requiresRevision: false,
+            };
+          },
+        };
+      };
+
+      const runRows = await (async () => {
+        await runImpl(
+          {
+            projectId: PROJECT_ID,
+            documentationAdapterName: 'FakeAdapter',
+            correlationId: 'corr-mutation',
+            idempotencyKey: 'idem-mutation',
+          },
+          db,
+          { documentationAdapterFactory: mutatingFactory },
+        );
+        return db.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_id = ?`, [
+          PROJECT_ID,
+        ]);
+      })();
+
+      const contextPackRows = await db.query<{ content: string }>(
+        `SELECT content FROM agent_context_packs WHERE agent_run_id = ?`,
+        [runRows[0]!.id],
+      );
+      const parsed = JSON.parse(contextPackRows[0]!.content) as {
+        adapterEvidence: { projectName: string; featureSummaries: string[] };
+      };
+      expect(parsed.adapterEvidence.projectName).toBe('Test Project');
+      expect(parsed.adapterEvidence.featureSummaries).not.toContain('injected summary');
+    });
+
     it('writes a cost_records row scoped to the project when the adapter reports token usage', async () => {
       const db = createTestDb();
       const { DESIGN_DOCUMENT_SECTION_NAMES } = await import('@minicoder/core');

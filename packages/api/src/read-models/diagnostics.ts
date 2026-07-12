@@ -44,14 +44,6 @@ const PUSHED_NO_PR_THRESHOLD_MS = 30 * 60 * 1000;
 // defense-in-depth audit (docs/07 "private chain-of-thought is never stored"), not a replacement
 // for AgentRunRecorder's own write-time redaction.
 const SECRET_SCAN_SAMPLE_SIZE = 50;
-// PR #73 review fix (MEDIUM-4): the project_acceptance_violated check (issue #69) evaluates
-// evaluateProjectAcceptance() once per candidate project, and each evaluation runs several
-// queries -- an unbounded global sweep would become an N*M query cost as the number of
-// post-acceptance projects grows. Bounded to the most-recently-updated projects first (an
-// unaccepted-then-since-invalidated project is most likely to be a recent one), the same
-// "bounded sample, not a full sweep" posture SECRET_SCAN_SAMPLE_SIZE already establishes for this
-// function. Irrelevant when the caller passes --project (at most one row either way).
-const PROJECT_ACCEPTANCE_SWEEP_LIMIT = 50;
 
 function agoIso(ms: number): string {
   return new Date(Date.now() - ms).toISOString();
@@ -328,16 +320,24 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
   // evaluateProjectAcceptance() against every project that has already passed the acceptance gate
   // (any state past `active`) and flag one whose acceptance would now fail — catching a rare
   // violation after the fact rather than trying to make it structurally impossible.
+  //
+  // PR #73 review fix (round 2, HIGH-1): an earlier revision of this pass bounded this query to
+  // the PROJECT_ACCEPTANCE_SWEEP_LIMIT most-recently-updated projects, mirroring
+  // secret_leak_scan's bounded-sample posture. That was a real correctness regression, not a
+  // proportionate trade-off — unlike secret_leak_scan (a best-effort defense-in-depth audit),
+  // this check exists specifically to catch a rare-but-real concurrency violation, and a project
+  // outside the sampled window could sit in a permanently-violated state forever while `state
+  // doctor` reports healthy. Reverted to an exhaustive, unbounded sweep of every post-acceptance
+  // project — correctness here matters more than the theoretical N*M query cost as project count
+  // grows (this is a diagnostic endpoint, not a request-latency-sensitive hot path); if that cost
+  // ever becomes a real operational problem, the fix is a persisted incremental-coverage cursor
+  // (the same shape `observability_export_cursors` already establishes for a similar "make an
+  // unbounded periodic sweep resumable" problem), not silent truncation.
   const postAcceptanceProjectFilter = projectId ? `AND id = ?` : '';
   const postAcceptanceProjectParams = projectId ? [projectId] : [];
   const postAcceptanceProjects = await db.query<{ id: string }>(
-    `SELECT id FROM projects WHERE state IN (${POST_ACCEPTANCE_PROJECT_STATES.map(() => '?').join(', ')}) ${postAcceptanceProjectFilter}
-     ORDER BY updated_at DESC LIMIT ?`,
-    [
-      ...POST_ACCEPTANCE_PROJECT_STATES,
-      ...postAcceptanceProjectParams,
-      PROJECT_ACCEPTANCE_SWEEP_LIMIT,
-    ],
+    `SELECT id FROM projects WHERE state IN (${POST_ACCEPTANCE_PROJECT_STATES.map(() => '?').join(', ')}) ${postAcceptanceProjectFilter}`,
+    [...POST_ACCEPTANCE_PROJECT_STATES, ...postAcceptanceProjectParams],
   );
   const acceptanceViolations: Array<{
     projectId: string;
