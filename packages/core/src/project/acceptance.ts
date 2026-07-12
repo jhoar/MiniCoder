@@ -1,4 +1,4 @@
-import type { DbClient } from '../persistence/types.js';
+import type { TxClient } from '../persistence/types.js';
 
 /**
  * Project Acceptance Validation (docs/01 §13.1, Phase 17). This module deliberately does **not**
@@ -57,9 +57,16 @@ interface CountRow {
  *    `runDoctorChecks()`'s exact same threshold/shape, global scope since these tables carry no
  *    `project_id` column
  *  - no `artifact_exports` row for this project sitting at `failed`
+ *
+ * Takes a `TxClient` (not `DbClient`) — it only ever calls `.query()`, never opens its own
+ * transaction — so `MarkImplementationCompleteHandler` can call it from inside its own guarding
+ * transaction (the same "parameter type widened from `DbClient` to `TxClient`" precedent
+ * `evaluateBudget()` already established for an identical reason: evaluating a precondition
+ * outside the transaction that acts on it leaves a window for a concurrent write to invalidate
+ * the precondition between the check and the state mutation).
  */
 export async function evaluateProjectAcceptance(
-  db: DbClient,
+  db: TxClient,
   projectId: string,
 ): Promise<ProjectAcceptanceResult> {
   const checks: ProjectAcceptanceCheck[] = [];

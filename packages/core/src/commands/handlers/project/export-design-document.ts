@@ -13,7 +13,10 @@ import {
   fulfillIdempotencyKey,
 } from '../../helpers.js';
 import { renderDesignDocumentMarkdown } from '../../../design-doc/render-markdown.js';
-import { DESIGN_DOCUMENT_SECTION_NAMES } from '../../../design-doc/generator.js';
+import {
+  DESIGN_DOCUMENT_SECTION_NAMES,
+  isPlaceholderSectionContent,
+} from '../../../design-doc/generator.js';
 
 export const ExportDesignDocumentPayloadSchema = z.object({
   projectId: z.string(),
@@ -114,14 +117,19 @@ export class ExportDesignDocumentHandler implements CommandHandler<
       const sectionNamesPresent = new Set(sectionRows.map((s) => s.section_name));
       const missingOrBlank = DESIGN_DOCUMENT_SECTION_NAMES.filter((name) => {
         const row = sectionRows.find((s) => s.section_name === name);
-        return !sectionNamesPresent.has(name) || !row?.content || row.content.trim().length === 0;
+        return (
+          !sectionNamesPresent.has(name) ||
+          !row?.content ||
+          row.content.trim().length === 0 ||
+          isPlaceholderSectionContent(row.content)
+        );
       });
       if (missingOrBlank.length > 0) {
         throw new CommandError({
           type: 'incomplete-sections',
           title: 'Design document sections are incomplete',
           status: 409,
-          detail: `design_documents ${designDocumentId} is missing or has blank content for: ${missingOrBlank.join(', ')}`,
+          detail: `design_documents ${designDocumentId} is missing, blank, or still placeholder content for: ${missingOrBlank.join(', ')}`,
         });
       }
 

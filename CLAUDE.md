@@ -2387,12 +2387,28 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   stuck `outbox_events`/`inbox_events` (reusing `runDoctorChecks()`'s exact threshold); no
   `artifact_exports` row at `failed` for the project. The CI-only checks (full test suite,
   migration validation, build, lint/typecheck, security scan) are returned as an honest
-  `externalChecksNotVerified` string list, not silently assumed to pass — an operator/CI pipeline
-  is expected to have already confirmed those out-of-band before invoking
-  `MarkImplementationCompleteCommand`. `MarkImplementationCompleteHandler` calls this evaluator
-  before opening its transaction and throws `project-acceptance-failed` (409) if any internal
-  check fails; `GET /project-acceptance`/`minicoder project validate-acceptance` expose the same
-  evaluation read-only for pre-flight inspection.
+  `externalChecksNotVerified` string list, not silently assumed to pass. `evaluateProjectAcceptance()`
+  takes a `TxClient` (not `DbClient`) — the same "widened for caller-transaction use" precedent
+  `evaluateBudget()` already established — because `MarkImplementationCompleteHandler` calls it
+  **inside** its own guarding transaction (not before opening it, as an earlier revision did): a
+  concurrent write to a feature run/review finding/outbox row between a pre-transaction check and
+  the state mutation could otherwise slip a stale "passed" verdict through (PR review finding).
+  Passing the DB-knowable checks is **not** sufficient on its own to advance the project: the
+  handler's payload also requires a non-blank, caller-supplied `externalChecksEvidence` string
+  (an attestation that the CI-only checks already passed out-of-band — e.g. a CI run URL or an
+  operator sign-off note), persisted as a `human_approvals` audit row
+  (`context_type = 'project_acceptance_external_checks'`) in the same transaction. This closes a
+  real gap a PR review round found: without it, "every DB-knowable check passed" could be
+  (mis)read as "Project Acceptance Validation passed" per docs/01 §13.1's full checklist, with no
+  durable evidence the CI-only checks were ever actually confirmed. `GET /project-acceptance`/
+  `minicoder project validate-acceptance` still expose `evaluateProjectAcceptance()`'s DB-knowable
+  result read-only for pre-flight inspection (unaffected by this — they don't take/require
+  evidence, since they don't transition anything). `minicoder project mark-implementation-complete`
+  gained a required `--evidence <text>` flag; the Web/TUI `ApiClient.markImplementationComplete()`
+  methods gained a required `externalChecksEvidence` parameter — every real call site was updated,
+  not defaulted, matching this document's established "no default, every caller passes it
+  explicitly" posture for parameters that must never be silently omitted (e.g. Phase 9's
+  `coderAdapterName`).
 - **`GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler` both create a fresh
   `design_documents` row (state `draft`) and a fresh `artifact_exports` row (`artifact_type =
 'design_document'`, state `pending`) for their generation cycle — regeneration does not reuse
@@ -2409,6 +2425,34 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   exported" guard requires this handler to have already run and left that row at `exported`, which
   it enforces with a direct re-check of the referenced row's state (an `artifact-not-exported`
   `CommandError` on a premature call), not an implicit assumption.
+- **`ExportDesignDocumentHandler` validates `design_documents` ownership and full section
+  completeness BEFORE its already-exported idempotent-return and failed-state-rejection
+  branches, not after (PR review fix).** An earlier revision validated `designDocumentId`
+  ownership and the 13-section completeness only on the not-yet-exported path — a manual/system
+  replay (this handler is on the generic-dispatch system-replay allow-list) could pass an
+  already-exported artifact from the same project paired with a different or incomplete
+  `designDocumentId` and receive a clean idempotent success with neither check ever running.
+  Completeness itself is two-layered: a section is rejected if missing, blank, **or** matches
+  `isPlaceholderSectionContent()` (`packages/core/src/design-doc/generator.ts`'s
+  `PLACEHOLDER_SECTION_CONTENT_PATTERN`, matching `(no content generated for X)`/
+  `(no content drafted for X)`) — the second layer is a deliberate, adapter-implementation-agnostic
+  backstop, the same "storage-boundary backstop, not a replacement for the adapter-level contract"
+  posture `sanitizePromptSnapshot()` already established: a non-compliant custom
+  `DocumentationAgentAdapter` could still report `requiresRevision: false` while a section came
+  back as literal placeholder text, and this check catches that independently of the adapter's own
+  honesty.
+- **`run-design-doc` acquires a single-flight `WorkflowLockManager` lock
+  (`design-doc-generation:{projectId}`) around the entire adapter-invocation-through-record-ready
+  sequence (PR review fix).** Mirrors `execution-lane:{projectId}`'s shape but is a distinct
+  resource key — design-document generation is project-lifecycle-scoped, not
+  feature-execution-scoped, so it must not contend with an unrelated in-flight feature-execution
+  lock. Without this, the Web UI's "Retry generation" affordance (or a duplicate scheduled
+  invocation) could race an in-flight run: both would pass the initial no-op gates, both invoke
+  the adapter, and the slower call could overwrite `design_document_sections` — or export a
+  `requiresRevision: true` result — after the faster call had already recorded the document
+  ready. A conflicting concurrent invocation (`LockConflictError`) returns a clean no-op, the same
+  "transient race -> false, don't throw" posture `start-next-feature.ts`/`github-reconciliation.ts`
+  already establish for their own locks.
 - **`DocumentationAgentAdapter`'s reference implementation needs no sandbox — the same
   simplification `ClaudeReviewerAdapter` documents versus `CodexCoderAdapter`.** Drafting a design
   document from already-collected DB evidence is read-only; `ClaudeDocumentationAdapter`

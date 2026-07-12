@@ -20,9 +20,14 @@ export function createProjectCommand(): Command {
       'active -> implementation_complete, gated by Project Acceptance Validation (system key)',
     )
     .requiredOption('--project <id>', 'Project ID')
+    .requiredOption(
+      '--evidence <text>',
+      'Attestation that the CI-only checks (tests, build, lint, security scan) already passed ' +
+        'out-of-band — e.g. a CI run URL or a sign-off note',
+    )
     .option('--yes', 'Confirm the transition (required)')
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string; yes?: boolean } & JsonOption) => {
+    .action(async (opts: { project: string; evidence: string; yes?: boolean } & JsonOption) => {
       if (!opts.yes) {
         console.error('Error: --yes is required to confirm marking implementation complete.');
         process.exitCode = 1;
@@ -38,6 +43,7 @@ export function createProjectCommand(): Command {
           const result = await client.markImplementationComplete(
             opts.project,
             status.project.version,
+            opts.evidence,
             idempotencyKey,
           );
           return {

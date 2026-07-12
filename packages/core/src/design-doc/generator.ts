@@ -21,6 +21,21 @@ export const DESIGN_DOCUMENT_SECTION_NAMES = [
   'Glossary',
 ] as const;
 
+/** Matches the placeholder markers this module (and `ClaudeDocumentationAdapter`) substitute for
+ * a missing/blank section — e.g. `(no content generated for Glossary)` /
+ * `(no content drafted for Glossary)`. Exported so `ExportDesignDocumentHandler` can reject a
+ * placeholder-filled section as an independent, adapter-implementation-agnostic backstop: a
+ * caller-supplied `requiresRevision` flag is a *contract* every `DocumentationAgentAdapter`
+ * implementation is expected to honor, not a guarantee this layer can itself enforce — a
+ * non-compliant or buggy adapter could still report `requiresRevision: false` while a section
+ * came back as this exact marker text. This mirrors `sanitizePromptSnapshot()`'s
+ * "storage-boundary backstop, not a replacement for the adapter-level contract" posture. */
+export const PLACEHOLDER_SECTION_CONTENT_PATTERN = /^\(no content (generated|drafted) for .+\)$/;
+
+export function isPlaceholderSectionContent(content: string): boolean {
+  return PLACEHOLDER_SECTION_CONTENT_PATTERN.test(content.trim());
+}
+
 export interface GenerateDesignDocumentSectionsResult {
   readonly documentId: string;
   readonly sections: Array<{ sectionName: string; content: string }>;

@@ -327,11 +327,12 @@ export class ApiClient {
   markImplementationComplete(
     projectId: string,
     expectedVersion: number,
+    externalChecksEvidence: string,
     idempotencyKey: string,
   ): Promise<CommandEnvelopeResponse> {
     return this.post(
       '/commands/mark-implementation-complete',
-      { projectId, expectedVersion },
+      { projectId, expectedVersion, externalChecksEvidence },
       idempotencyKey,
     );
   }

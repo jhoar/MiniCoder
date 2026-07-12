@@ -126,7 +126,11 @@ export const designDocumentLifecycleScenario: Scenario = {
     await executor.execute(markImplementationCompleteHandler, {
       commandId: generateId(),
       idempotencyKey: `implementation-complete:${projectId}:1`,
-      payload: { projectId, expectedVersion: project.version },
+      payload: {
+        projectId,
+        expectedVersion: project.version,
+        externalChecksEvidence: 'scenario: CI checks assumed green for this fixture',
+      },
       actor: system,
       correlationId,
     } as CommandEnvelope<Record<string, unknown>>);
