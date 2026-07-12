@@ -1235,8 +1235,11 @@ replay of the first.
   today (task id, status, linked feature run, last-seen timestamp) — there is no retry-count,
   next-retry, or waitpoint-reason column in the schema to surface, and no dedicated Trigger.dev-run
   detail read model beyond this. Adding those is future work, not a Phase 14 regression.
-- `minicoder design-doc` is read-only — generation/revision/approval commands don't exist yet
-  (Phase 17 scope); an empty project correctly shows "no design document yet."
+- `minicoder design-doc`'s default (no-subcommand) view is read-only; an empty project correctly
+  shows "no design document yet." (Phase 17 added the `generate`/`regenerate`/`request-revision`/
+  `approve`/`request-run` write subcommands and a new `minicoder project` command group — see
+  docs/06's Phase 17 write-up and CLAUDE.md's Final Design Document Generator Operational
+  Constraints.)
 - The TUI has no command surface for `request-coder-run`/`request-review`/`request-fixes`/
   `recompute-merge-gate` — `minicoder api serve` doesn't wire a real `TaskTriggerClient` into
   `buildApp()` either (a pre-existing Phase 13 gap), and none of docs/05 §4's Text UI commands need

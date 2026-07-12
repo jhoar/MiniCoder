@@ -150,7 +150,12 @@ detailed scope.
   `RunReviewDeps.arbiterAdapterFactory` for tests/custom deployments, but now falls back to
   `resolveDefaultArbiterAdapterFactory()` — constructing a real `ClaudeArbiterAdapter` from the
   same `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars — when none is supplied.
-  `GenericLLMDocumentationAdapter` remains future work.
+  **`ClaudeDocumentationAdapter` is delivered (Phase 17)** (`packages/adapters-documentation`),
+  mirroring the same shape: a sandbox-free `DocumentationAgentAdapter` implementation against an
+  injected `DocumentationProvider` seam (`HttpDocumentationProvider`). `run-design-doc.ts`
+  similarly accepts a caller-injected factory via `RunDesignDocDeps.documentationAdapterFactory`
+  for tests/custom deployments, falling back to a default resolver constructing a real
+  `ClaudeDocumentationAdapter` from the same `CODE_GEN_*` env vars when none is supplied.
 
 ## 10. Acceptance
 

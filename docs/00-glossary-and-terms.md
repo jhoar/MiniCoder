@@ -422,6 +422,12 @@ run-review
 run-merge-gate
 ```
 
+**Phase 17 addition** (Final Design Document Generator — shipped with Phase 17):
+
+```text
+run-design-doc
+```
+
 ---
 
 ## 4. Agent Roles and Adapters (canonical names)
@@ -564,6 +570,16 @@ minicoder design-doc --project <id> [--document <id>]
 minicoder pause --project <id> --yes                    # running -> paused_by_operator (operator+)
 minicoder resume --project <id> --yes                   # paused_by_operator -> running (operator+)
 
+# Final Design Document Generator (Phase 17; project-lifecycle write actions — docs/01 §13)
+minicoder project mark-implementation-complete --project <id> --yes   # active -> implementation_complete (system-gated by Project Acceptance Validation)
+minicoder project validate-acceptance --project <id>                  # inspects Project Acceptance Validation without transitioning
+minicoder project complete --project <id> --yes                       # design_document_approved -> project_complete
+minicoder design-doc generate --project <id> --yes                            # implementation_complete -> design_document_generating (operator+)
+minicoder design-doc regenerate --project <id> --yes                          # design_document_revision_requested -> design_document_generating (operator+)
+minicoder design-doc request-revision --project <id> --document <id> --yes [--notes <text>]  # -> design_document_revision_requested (approver+)
+minicoder design-doc approve --project <id> --document <id> --yes [--notes <text>]           # -> design_document_approved (approver+)
+minicoder design-doc request-run --project <id> --documentation-adapter <name> # enqueues run-design-doc (drafts sections, exports final-design-document.md)
+
 # Next.js Web UI (Phase 15; browser-based, API-only — see 05-ui-specification.md §5 for the full
 # 17-route list). Not a CLI surface — `packages/web`'s Next.js server process reads the same
 # MINICODER_API_URL/MINICODER_API_KEY env vars the Ink Text UI above already uses; no new
@@ -585,6 +601,7 @@ minicoder test scenario execution-orchestrator
 minicoder test scenario coder-adapter-run
 minicoder test scenario review-fix-loop
 minicoder test scenario disagreement-arbiter
+minicoder test scenario design-document-lifecycle
 ```
 
 Destructive commands (`db reset`, `trigger reset-dev`, `state repair --apply`) require an

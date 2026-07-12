@@ -148,6 +148,12 @@ export const ImportBacklogPayload = BasePayload.merge(ActorPayload).extend({
   dryRun: z.boolean().default(false),
 });
 
+export const RunDesignDocPayload = BasePayload.extend({
+  // No default, per Phase 9's MEDIUM-3 precedent ("no silent test-adapter default in production
+  // payloads") — every production/test call site must name the adapter explicitly.
+  documentationAdapterName: z.string(),
+});
+
 export type IngestSpecificationPayload = z.infer<typeof IngestSpecificationPayload>;
 export type PlanningReadinessPayload = z.infer<typeof PlanningReadinessPayload>;
 export type StartClarificationPayload = z.infer<typeof StartClarificationPayload>;
@@ -166,3 +172,4 @@ export type RunMergeGatePayload = z.infer<typeof RunMergeGatePayload>;
 export type ExportPlanPayload = z.infer<typeof ExportPlanPayload>;
 export type ExportBacklogPayload = z.infer<typeof ExportBacklogPayload>;
 export type ImportBacklogPayload = z.infer<typeof ImportBacklogPayload>;
+export type RunDesignDocPayload = z.infer<typeof RunDesignDocPayload>;

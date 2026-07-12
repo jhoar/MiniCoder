@@ -29,6 +29,7 @@ import type {
   BudgetReport,
   FeatureRunTimeline,
 } from '@minicoder/api';
+import type { ProjectAcceptanceResult } from '@minicoder/core';
 
 export interface ApiClientOptions {
   readonly baseUrl: string;
@@ -66,7 +67,7 @@ export interface WhoamiResponse {
 }
 
 export interface ProjectStatus {
-  project: { id: string; name: string; state: string } | null;
+  project: { id: string; name: string; state: string; version: number } | null;
   workflowState: {
     automation_state: string;
     active_feature_run_id: string | null;
@@ -314,5 +315,98 @@ export class ApiClient {
     idempotencyKey: string,
   ): Promise<CommandEnvelopeResponse> {
     return this.post('/commands/resume-automation', { projectId, expectedVersion }, idempotencyKey);
+  }
+
+  /** `GET /project-acceptance` (Phase 17) — Project Acceptance Validation's DB-knowable checks. */
+  getProjectAcceptance(projectId: string): Promise<ProjectAcceptanceResult> {
+    return this.get('/project-acceptance', { projectId });
+  }
+
+  // Phase 17: project-lifecycle / final design document commands.
+
+  markImplementationComplete(
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/mark-implementation-complete',
+      { projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  generateDesignDocument(
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/generate-design-document',
+      { projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  regenerateDesignDocument(
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/regenerate-design-document',
+      { projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  requestDesignDocumentRevision(
+    projectId: string,
+    expectedVersion: number,
+    designDocumentId: string,
+    notes: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/request-design-document-revision',
+      { projectId, expectedVersion, designDocumentId, notes },
+      idempotencyKey,
+    );
+  }
+
+  approveDesignDocument(
+    projectId: string,
+    expectedVersion: number,
+    designDocumentId: string,
+    notes: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/approve-design-document',
+      { projectId, expectedVersion, designDocumentId, notes },
+      idempotencyKey,
+    );
+  }
+
+  completeProject(
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post('/commands/complete-project', { projectId, expectedVersion }, idempotencyKey);
+  }
+
+  /** Enqueues the `run-design-doc` Trigger.dev task (drafts sections, exports
+   * final-design-document.md, records the document ready). */
+  requestDesignDoc(
+    projectId: string,
+    documentationAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-design-doc',
+      { projectId, documentationAdapterName },
+      idempotencyKey,
+    );
   }
 }

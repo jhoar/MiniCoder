@@ -1,0 +1,221 @@
+import {
+  ProjectState,
+  ExportDesignDocumentHandler,
+  RecordDesignDocumentReadyHandler,
+  TransactionalCommandExecutor,
+  generateId,
+  collectDesignDocumentEvidence,
+  generateDesignDocumentSections,
+  writeDesignDocumentSections,
+} from '@minicoder/core';
+import type { CommandEnvelope, DbClient, DocumentationAgentAdapter } from '@minicoder/core';
+import type { RunDesignDocPayload } from './types.js';
+import { systemActor } from './actor.js';
+import { isTransientRace as isTransientRaceShared } from './transient-race.js';
+import { requireNonBlankEnvVar } from './env.js';
+
+export type { RunDesignDocPayload };
+
+export interface RunDesignDocResult {
+  projectId: string;
+  generated: boolean;
+  designDocumentId: string | null;
+  artifactExportId: string | null;
+}
+
+const exportDesignDocumentHandler = new ExportDesignDocumentHandler();
+const recordDesignDocumentReadyHandler = new RecordDesignDocumentReadyHandler();
+
+// A concurrent invocation of this same task (e.g. two operators triggering generation at once)
+// racing the same idempotency key is the only expected non-fatal race — this task never acquires
+// the execution-lane lock (design-document generation is project-lifecycle-scoped, not
+// feature-execution-scoped).
+const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'not-found']);
+
+function isTransientRace(err: unknown): boolean {
+  return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
+}
+
+export type DocumentationAdapterFactory = (opts: {
+  projectName: string;
+  projectDescription: string | null;
+  featureSummaries: readonly string[];
+  mergedPullRequestCount: number;
+}) => Promise<DocumentationAgentAdapter>;
+
+/** Constructs the real reference `ClaudeDocumentationAdapter` from env config — reuses the same
+ * `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the Coder/Reviewer/Planner/
+ * Arbiter default resolvers already use, mirroring that exact pattern. */
+function resolveDefaultDocumentationAdapterFactory(): DocumentationAdapterFactory {
+  return async (opts) => {
+    const codeGenBaseUrl = requireNonBlankEnvVar(
+      'CODE_GEN_BASE_URL',
+      'run-design-doc requires an OpenAI-compatible endpoint to draft the design document — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenApiKey = requireNonBlankEnvVar(
+      'CODE_GEN_API_KEY',
+      'run-design-doc requires an OpenAI-compatible endpoint to draft the design document — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const codeGenModel = requireNonBlankEnvVar(
+      'CODE_GEN_MODEL',
+      'run-design-doc requires an OpenAI-compatible endpoint to draft the design document — see ' +
+        'docs/07-security-and-secrets.md §3.',
+    );
+    const { ClaudeDocumentationAdapter, HttpDocumentationProvider } =
+      await import('@minicoder/adapters-documentation');
+    return new ClaudeDocumentationAdapter({
+      documentationProvider: new HttpDocumentationProvider({
+        baseUrl: codeGenBaseUrl,
+        apiKey: codeGenApiKey,
+        model: codeGenModel,
+      }),
+      ...opts,
+    });
+  };
+}
+
+export interface RunDesignDocDeps {
+  documentationAdapterFactory?: DocumentationAdapterFactory;
+}
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  state: string;
+  version: number;
+}
+
+interface DesignDocumentRow {
+  id: string;
+}
+
+interface ArtifactExportRow {
+  id: string;
+}
+
+interface PlanRow {
+  id: string;
+}
+
+/**
+ * Drives one design-document generation cycle: `implementation_complete`'s
+ * `GenerateDesignDocumentCommand`/`RegenerateDesignDocumentCommand` handlers already moved the
+ * project to `design_document_generating` and created a fresh `design_documents`/
+ * `artifact_exports` row before this task ever runs (this task never dispatches those two
+ * commands itself) — a separate, independently scheduled/triggered task from every other
+ * project-lifecycle command dispatch, matching this codebase's established "never inline" rule
+ * for GitHub-facing/execution tasks. It collects DB evidence, invokes
+ * `DocumentationAgentAdapter`, writes the 13 sections, exports `final-design-document.md`
+ * (`ExportDesignDocumentCommand`), and finally records the document ready
+ * (`RecordDesignDocumentReadyCommand`) — moving the project to
+ * `design_document_ready_for_review`.
+ *
+ * Deliberately does **not** write `agent_runs`/`agent_context_packs`/`cost_records` provenance via
+ * `AgentRunRecorder` the way `run-coder.ts`/`run-review.ts` do for their adapter invocations —
+ * a real, documented scope trade-off for this phase (see CLAUDE.md's Final Design Document
+ * Generator Operational Constraints), not an oversight; a future pass can add it without changing
+ * this task's public shape.
+ */
+export async function runImpl(
+  payload: RunDesignDocPayload,
+  db: DbClient,
+  deps: RunDesignDocDeps = {},
+): Promise<RunDesignDocResult> {
+  const { projectId, correlationId } = payload;
+
+  const projectRows = await db.query<ProjectRow>(
+    `SELECT id, name, state, version FROM projects WHERE id = ?`,
+    [projectId],
+  );
+  const project = projectRows[0];
+  if (!project || project.state !== ProjectState.DESIGN_DOCUMENT_GENERATING) {
+    return { projectId, generated: false, designDocumentId: null, artifactExportId: null };
+  }
+
+  const designDocRows = await db.query<DesignDocumentRow>(
+    `SELECT id FROM design_documents WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [projectId],
+  );
+  const artifactRows = await db.query<ArtifactExportRow>(
+    `SELECT id FROM artifact_exports WHERE project_id = ? AND artifact_type = 'design_document' AND state = 'pending' ORDER BY created_at DESC LIMIT 1`,
+    [projectId],
+  );
+  const designDocumentId = designDocRows[0]?.id ?? null;
+  const artifactExportId = artifactRows[0]?.id ?? null;
+  if (!designDocumentId || !artifactExportId) {
+    return { projectId, generated: false, designDocumentId, artifactExportId };
+  }
+
+  const evidence = await collectDesignDocumentEvidence(db, projectId);
+  const planRows = await db.query<PlanRow>(
+    `SELECT id FROM implementation_plans WHERE project_id = ? AND state = 'activated_for_execution' ORDER BY created_at DESC LIMIT 1`,
+    [projectId],
+  );
+  const planId = planRows[0]?.id ?? '';
+
+  const documentationAdapterFactory =
+    deps.documentationAdapterFactory ?? resolveDefaultDocumentationAdapterFactory();
+  const adapter = await documentationAdapterFactory({
+    projectName: evidence.project.name,
+    projectDescription: evidence.project.description,
+    featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
+    mergedPullRequestCount: evidence.mergedPullRequests.length,
+  });
+
+  const generated = await generateDesignDocumentSections(adapter, evidence, {
+    planId,
+    correlationId,
+  });
+  await writeDesignDocumentSections(db, { designDocumentId, sections: generated.sections });
+
+  const executor = new TransactionalCommandExecutor(db);
+  const actor = systemActor(correlationId);
+
+  try {
+    await executor.execute(exportDesignDocumentHandler, {
+      commandId: generateId(),
+      idempotencyKey: `export-design-document:${artifactExportId}`,
+      payload: { projectId, designDocumentId, artifactExportId },
+      actor,
+      correlationId,
+    } as CommandEnvelope<Record<string, unknown>>);
+  } catch (err) {
+    if (isTransientRace(err)) {
+      return { projectId, generated: false, designDocumentId, artifactExportId };
+    }
+    throw err;
+  }
+
+  const refreshed = await db.query<ProjectRow>(
+    `SELECT id, name, state, version FROM projects WHERE id = ?`,
+    [projectId],
+  );
+  const currentProject = refreshed[0];
+  if (!currentProject || currentProject.state !== ProjectState.DESIGN_DOCUMENT_GENERATING) {
+    return { projectId, generated: true, designDocumentId, artifactExportId };
+  }
+
+  try {
+    await executor.execute(recordDesignDocumentReadyHandler, {
+      commandId: generateId(),
+      idempotencyKey: `design-doc-ready:${projectId}:${designDocumentId}`,
+      payload: {
+        projectId,
+        expectedVersion: currentProject.version,
+        designDocumentId,
+        artifactExportId,
+      },
+      actor,
+      correlationId,
+    } as CommandEnvelope<Record<string, unknown>>);
+  } catch (err) {
+    if (isTransientRace(err)) {
+      return { projectId, generated: true, designDocumentId, artifactExportId };
+    }
+    throw err;
+  }
+
+  return { projectId, generated: true, designDocumentId, artifactExportId };
+}

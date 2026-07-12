@@ -92,7 +92,23 @@ budget-preflight.ts`), budget reporting (`packages/api/src/read-models/budget-re
 `getBudgetReport()`, `GET /budget-report`, `minicoder costs --report`), two new `state doctor`
 checks (`code_pushed_no_pull_request`, `secret_leak_scan`), `SecretRedactor.scanForSecrets()`, and
 an optional, fully env-gated, hand-rolled-`fetch` OpenTelemetry Logs export
-(`packages/core/src/observability/otel-export.ts`) (Phase 16, no new migration).
+(`packages/core/src/observability/otel-export.ts`) (Phase 16, no new migration); and the Final
+Design Document Generator implementation — the `PROJECT_LIFECYCLE_MATRIX`'s seven command handlers
+(`packages/core/src/commands/handlers/project/`) driving `active → implementation_complete →
+design_document_generating → design_document_ready_for_review → {design_document_revision_requested
+→ design_document_generating, design_document_approved → project_complete}`,
+`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`, docs/01 §13.1's
+DB-knowable Project Acceptance Validation subset), the `DocumentationAgentAdapter` reference
+implementation (`packages/adapters-documentation`'s `ClaudeDocumentationAdapter`, mirroring
+`packages/adapters-reviewer`'s shape), the Design Document Generator
+(`packages/core/src/design-doc/`'s evidence collection, section generation, and
+`final-design-document.md` rendering), the 19th canonical Trigger.dev task `run-design-doc`, the
+`ExportDesignDocumentHandler` artifact-export handler, `POST /commands/request-design-doc` plus the
+generic-dispatch/system-replay command registrations, the `minicoder design-doc
+{generate,regenerate,request-revision,approve,request-run}`/`minicoder project
+{mark-implementation-complete,validate-acceptance,complete}` CLI surfaces, and the Web UI
+`/design-document` page's now-live (previously disabled) action buttons (Phase 17, no new
+migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -2347,6 +2363,131 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   documented future work (like issue #61's unwired `TaskTriggerClient`), not a silently dropped
   requirement; the read-model/API/core functions backing a future page are fully built and tested.
   Tracked as issue #66.
+
+## Final Design Document Generator Operational Constraints (`packages/core/src/{project,design-doc}/`, `packages/core/src/commands/handlers/project/`, `packages/adapters-documentation/`, `packages/triggerdev/src/tasks/run-design-doc.ts`)
+
+- **`PROJECT_LIFECYCLE_MATRIX` (`packages/core/src/statemachine/machines/project-lifecycle.ts`) and
+  the `ProjectState` enum (`packages/core/src/domain/states.ts`) already existed before this
+  phase** — this phase's job was giving the matrix's seven already-defined rows their first real
+  handlers, the same "matrix defined ahead of its handler" posture Phase 6/7/8/9/10/12 already
+  established for other rows. No new migration: `projects.state`/`.version` (Phase 1's 43-table
+  initial schema) and `design_documents`/`design_document_sections`/`design_decisions`/
+  `glossary_terms`/`artifact_exports` (also Phase 1) already carried every column this phase
+  needed — confirmed by inspection before writing any handler, per this phase's own scoping
+  instructions, rather than assumed.
+- **`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`) is deliberately
+  DB-knowable-only, not a literal implementation of docs/01 §13.1's full checklist.** A core
+  command handler cannot itself shell out to `pnpm test`/`pnpm build`/lint/security-scan without a
+  major layering violation (a domain module invoking the build toolchain) and non-deterministic
+  test behavior — the same reasoning `state doctor`'s `runDoctorChecks()` already established for
+  "what a pure-DB check can prove." It checks: every feature run for the project has reached
+  `merged` or `skipped` (matching this document's established "skipped never reaches merged"
+  semantics — a skipped feature counts as accepted-as-terminal, not as a blocker); no feature run
+  is at `human_required`/`blocked`; no unresolved `blocking` `review_findings` row; no globally
+  stuck `outbox_events`/`inbox_events` (reusing `runDoctorChecks()`'s exact threshold); no
+  `artifact_exports` row at `failed` for the project. The CI-only checks (full test suite,
+  migration validation, build, lint/typecheck, security scan) are returned as an honest
+  `externalChecksNotVerified` string list, not silently assumed to pass — an operator/CI pipeline
+  is expected to have already confirmed those out-of-band before invoking
+  `MarkImplementationCompleteCommand`. `MarkImplementationCompleteHandler` calls this evaluator
+  before opening its transaction and throws `project-acceptance-failed` (409) if any internal
+  check fails; `GET /project-acceptance`/`minicoder project validate-acceptance` expose the same
+  evaluation read-only for pre-flight inspection.
+- **`GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler` both create a fresh
+  `design_documents` row (state `draft`) and a fresh `artifact_exports` row (`artifact_type =
+'design_document'`, state `pending`) for their generation cycle — regeneration does not reuse
+  the prior document's rows in place.** The prior cycle's `design_document_sections`/
+  `design_decisions` rows are left untouched as historical audit record, the same append-only
+  posture this document already applies to `adapter_conformance_results`/
+  `merge_gate_evaluations`. `create_artifact_export_record` is these two handlers' own matrix side
+  effect; `ExportDesignDocumentHandler` (below) never creates this row itself, only drives an
+  already-existing one through its state transitions.
+- **`ExportDesignDocumentHandler` mirrors `ExportBacklogHandler`'s exact two-step `assertValid`
+  shape** (`ARTIFACT_EXPORT_MATRIX`'s `pending -> generating -> exported`) but does **not** create
+  the `artifact_exports` row itself — it operates on the row `GenerateDesignDocumentHandler`/
+  `RegenerateDesignDocumentHandler` already created. `RecordDesignDocumentReadyCommand`'s "artifact
+  exported" guard requires this handler to have already run and left that row at `exported`, which
+  it enforces with a direct re-check of the referenced row's state (an `artifact-not-exported`
+  `CommandError` on a premature call), not an implicit assumption.
+- **`DocumentationAgentAdapter`'s reference implementation needs no sandbox — the same
+  simplification `ClaudeReviewerAdapter` documents versus `CodexCoderAdapter`.** Drafting a design
+  document from already-collected DB evidence is read-only; `ClaudeDocumentationAdapter`
+  (`packages/adapters-documentation`) calls its injected `DocumentationProvider`
+  (`HttpDocumentationProvider`, a plain-`fetch` OpenAI-compatible client, no vendor SDK) directly
+  from the `run-design-doc` task process — no container isolation to create or tear down.
+- **`DocumentationInput` (the shared, Phase-5-vintage adapter contract:
+  `projectId`/`planId`/`featureCount`/`correlationId`) stays narrow — the richer evidence bundle
+  (project name/description, feature summaries, merged-PR count) is supplied via
+  `ClaudeDocumentationAdapterOptions` constructor options instead**, mirroring
+  `ClaudeReviewerAdapter`'s identical "narrow shared input type, caller enriches via
+  constructor options" shape for `owner`/`repo`. `run-design-doc.ts`'s
+  `DocumentationAdapterFactory` therefore takes the evidence-derived fields as its own argument,
+  not `DocumentationInput` directly — the same "factory, not a no-argument constructed singleton"
+  pattern `CoderAdapterFactory`/`ReviewerAdapterFactory` already established, since a real
+  deployment serves multiple projects with different evidence per invocation.
+- **`collectDesignDocumentEvidence()` (`packages/core/src/design-doc/evidence.ts`) reads merged
+  pull requests from the already-tracked `pull_requests` mirror table, not a fresh live
+  `GitHubClient` call.** Every merged PR was already durably recorded by
+  `reconcileGithubState()`/`RecordMergedHandler` during execution — re-fetching from GitHub live
+  at design-document-generation time would only duplicate data this deployment already has, with
+  no new information. This is a deliberate simplification, not a missed integration: a live
+  `GitHubClient` call remains available to a future pass if a richer PR body/description turns out
+  to be needed evidence beyond what `pull_requests` already mirrors.
+- **`writeDesignDocumentSections()` (`packages/core/src/design-doc/write-sections.ts`) is a
+  non-command evidence writer, the same category as `insertReviewFindings()`/
+  `insertHumanApproval()`** — not a `CommandHandler`. It upserts on `design_document_sections`'s
+  own `UNIQUE(design_document_id, section_name)` constraint (`ON CONFLICT ... DO UPDATE`, not the
+  `DO NOTHING`-then-requery anti-pattern this document warns against elsewhere for
+  `AdapterRegistry.register()` — an `ON CONFLICT DO UPDATE` never aborts the enclosing transaction
+  the way a raw failed `INSERT` does in PostgreSQL, so this is a different, safe idempotency
+  shape), so a retried or regenerated call overwrites the prior content for that section rather
+  than erroring or duplicating rows.
+- **`run-design-doc` (19th canonical Trigger.dev task ID) is a separate, independently
+  scheduled/triggered task from every other project-lifecycle or execution task — never inlined**,
+  matching this document's established "never inline" rule. It was registered for real in
+  `triggerdev-tasks.ts` (`task({ id: 'run-design-doc', ... })`) in the same commit that added it to
+  `ALL_TASK_IDS`, not merely added to the ID list — the Phase 10 HIGH-1 mistake this document
+  documents elsewhere (a task added to `ALL_TASK_IDS` with a real `runImpl` but never actually
+  registered) was not repeated here, and `triggerdev.test.ts`'s existing static
+  task-registration-parity regression covers it for free.
+- **`run-design-doc.ts` deliberately does not route its `DocumentationAgentAdapter` invocation
+  through `AgentRunRecorder`** the way `run-coder.ts`/`run-review.ts` do for their own adapter
+  calls — no `agent_runs`/`agent_context_packs`/`cost_records` provenance row is written for a
+  design-document-generation run in this phase. This is a real, tracked scope trade-off (not an
+  oversight): the change is additive and would not alter this phase's public shape, but was
+  deprioritized in favor of a complete vertical slice through every other layer (migration →
+  handler → task → API → CLI/TUI/Web) within this phase's time budget. Tracked as future work, the
+  same "honestly-labeled gap" posture this document applies to issues #61/#66/#67.
+- **The Orchestrator API registers Phase 17's four human-actorKind handlers
+  (`generate-design-document`, `request-design-document-revision`, `regenerate-design-document`,
+  `approve-design-document`) for generic `/commands/{slug}` dispatch, and its four
+  system-actorKind handlers (`mark-implementation-complete`, `record-design-document-ready`,
+  `export-design-document`, `complete-project`) on the existing manual-replay system-key
+  allow-list** — the same split Phase 13 already established for every other handler family; no
+  new routing concept was introduced. `POST /commands/request-design-doc` is a ninth
+  operator-role-gated "enqueue" route (mirroring `request-coder-run`/`request-review`/
+  `recompute-merge-gate`'s exact `{triggerdevRunId, accepted}` response shape), since it also
+  corresponds to a whole Trigger.dev task orchestration, not a single synchronous command.
+  `GET /status`'s `project` row gained an additive `version` field (mirroring Phase 15's identical
+  addition to `workflowState.version`) — every project-lifecycle write command requires
+  `expectedVersion`, and there was previously no way to read the current `projects.version`
+  through the API.
+- **`minicoder design-doc`'s read-only default view moved to a hidden `design-doc view`
+  subcommand** (`{ isDefault: true, hidden: true }`), the exact `plan.ts`-established shape for
+  avoiding Commander's parent/subcommand `--project` flag collision (CLAUDE.md's Ink Text UI
+  Operational Constraints section already documents why: a flag declared on both a parent Command
+  and one of its subcommands binds to the parent, silently starving the subcommand's own
+  `requiredOption` check). The new `generate`/`regenerate`/`request-revision`/`approve`/
+  `request-run` subcommands, and the new `minicoder project` command group
+  (`mark-implementation-complete`/`validate-acceptance`/`complete`), are both HTTP-only against the
+  Orchestrator API — not direct DB dispatch — matching every other Phase 14 Ink Text UI command's
+  posture (`minicoder human`/`minicoder merge merge-if-ready` remain the two DB-direct CLI
+  surfaces from earlier phases; this phase did not add a third).
+- **The Web UI `/design-document` page's `generate`/`regenerate`/`request revision`/`approve`
+  buttons are now real `CommandButton`/Server Action dispatches**, closing the gap Phase 15 left
+  explicitly disabled ("Not available yet — Phase 17 scope"). `/adapters` remains the one other
+  page still carrying that disabled-button posture — no adapter-registration command exists
+  anywhere in this codebase yet, unrelated to this phase's scope.
 
 ## Cross-Dialect Testing (Mandatory)
 

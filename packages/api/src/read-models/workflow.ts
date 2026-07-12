@@ -86,7 +86,7 @@ export async function getProjectStatus(
   db: DbClient,
   projectId: string,
 ): Promise<{
-  project: { id: string; name: string; state: string } | null;
+  project: { id: string; name: string; state: string; version: number } | null;
   workflowState: {
     automation_state: string;
     active_feature_run_id: string | null;
@@ -94,8 +94,12 @@ export async function getProjectStatus(
   } | null;
   pendingOutboxCount: number;
 }> {
-  const projectRows = await db.query<{ id: string; name: string; state: string }>(
-    'SELECT id, name, state FROM projects WHERE id = ?',
+  // Phase 17: `version` is additive (mirrors Phase 15's identical addition to `workflowState`
+  // above) — every project-lifecycle write command (`MarkImplementationCompleteCommand`,
+  // `CompleteProjectCommand`, etc.) requires `expectedVersion`, and there was previously no way
+  // to read the current `projects.version` through the API at all.
+  const projectRows = await db.query<{ id: string; name: string; state: string; version: number }>(
+    'SELECT id, name, state, version FROM projects WHERE id = ?',
     [projectId],
   );
   const wsRows = await db.query<{
