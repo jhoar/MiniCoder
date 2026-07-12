@@ -73,7 +73,7 @@ describe('views', () => {
     const { lastFrame } = render(
       renderStatusView({
         status: {
-          project: { id: 'proj1', name: 'Test Project', state: 'active' },
+          project: { id: 'proj1', name: 'Test Project', state: 'active', version: 1 },
           workflowState: { automation_state: 'running', active_feature_run_id: null, version: 2 },
           pendingOutboxCount: 0,
         },

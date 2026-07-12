@@ -117,3 +117,15 @@ export * from './commands/handlers/feature/reconcile-merge-failed.js';
 
 // Issue #33: backlog.md Markdown parser
 export * from './backlog/parse-backlog-markdown.js';
+
+// Phase 17: Final Design Document Generator
+export * from './project/acceptance.js';
+export * from './design-doc/index.js';
+export * from './commands/handlers/project/mark-implementation-complete.js';
+export * from './commands/handlers/project/generate-design-document.js';
+export * from './commands/handlers/project/export-design-document.js';
+export * from './commands/handlers/project/record-design-document-ready.js';
+export * from './commands/handlers/project/request-design-document-revision.js';
+export * from './commands/handlers/project/regenerate-design-document.js';
+export * from './commands/handlers/project/approve-design-document.js';
+export * from './commands/handlers/project/complete-project.js';

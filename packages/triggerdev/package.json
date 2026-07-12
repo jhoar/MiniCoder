@@ -12,6 +12,7 @@
   "dependencies": {
     "@minicoder/adapters-arbiter": "workspace:*",
     "@minicoder/adapters-coder": "workspace:*",
+    "@minicoder/adapters-documentation": "workspace:*",
     "@minicoder/adapters-planner": "workspace:*",
     "@minicoder/adapters-reviewer": "workspace:*",
     "@minicoder/core": "workspace:*",

@@ -3,15 +3,15 @@ import { getApiClient } from '../../lib/api-server';
 import { resolveProjectId } from '../../lib/project';
 import { ProjectSwitcher } from '../../components/project-switcher';
 import { StatusBadge } from '../../components/status-badge';
+import { DesignDocumentActions } from './document-actions';
+import { GenerateDesignDocumentActions } from './generate-actions';
 
 /**
- * Explicitly read-only (decision #5 of the Phase 15 plan): no `generate final design document` /
- * `approve final design document` / `request revision` command handler exists anywhere in
- * `packages/core` or `packages/api` yet — Phase 17 scope (see CLAUDE.md's Orchestrator API
- * Operational Constraints: "generate/approve final design document are not built"). Rather than
- * wiring these buttons to a nonexistent endpoint, or omitting them silently, they render visibly
- * disabled with an honest label — the same posture CLAUDE.md documents for other tracked gaps
- * (e.g. issue #61's unwired TaskTriggerClient).
+ * Phase 17: the `generate`/`regenerate`/`request revision`/`approve` actions this page's buttons
+ * previously rendered disabled ("Not available yet — Phase 17 scope") now dispatch real
+ * state-machine commands, via `CommandButton`/Server Actions — see `document-actions.tsx`/
+ * `generate-actions.tsx` and `actions.ts`. `/adapters` remains the one other page still carrying
+ * that disabled-button posture (no adapter-registration command exists anywhere yet).
  */
 export default async function DesignDocumentPage({
   searchParams,
@@ -20,9 +20,10 @@ export default async function DesignDocumentPage({
 }): Promise<ReactElement> {
   const client = getApiClient();
   const projectId = await resolveProjectId(searchParams);
-  const [projects, documents] = await Promise.all([
+  const [projects, documents, status] = await Promise.all([
     client.listProjects({ limit: '100' }),
     client.listDesignDocuments(projectId, { limit: '20' }),
+    client.getStatus(projectId),
   ]);
 
   const details = await Promise.all(documents.items.map((doc) => client.getDesignDocument(doc.id)));
@@ -34,6 +35,19 @@ export default async function DesignDocumentPage({
         <ProjectSwitcher projects={projects.items} currentProjectId={projectId} />
       </div>
 
+      {status.project && (
+        <div style={{ marginBottom: 16 }}>
+          <span style={{ marginRight: 8 }}>
+            Project state: <StatusBadge value={status.project.state} />
+          </span>
+          <GenerateDesignDocumentActions
+            projectId={projectId}
+            projectState={status.project.state}
+            projectVersion={status.project.version}
+          />
+        </div>
+      )}
+
       {details.length === 0 && (
         <p style={{ color: '#64748b' }}>No design documents have been generated yet.</p>
       )}
@@ -43,14 +57,13 @@ export default async function DesignDocumentPage({
           <h2>
             Document {document.id} — <StatusBadge value={document.state} /> (v{document.version})
           </h2>
-          <div style={{ marginBottom: 8 }}>
-            <button disabled title="Not available yet — no backend command exists (Phase 17 scope)">
-              Request revision
-            </button>{' '}
-            <button disabled title="Not available yet — no backend command exists (Phase 17 scope)">
-              Approve
-            </button>
-          </div>
+          {status.project && (
+            <DesignDocumentActions
+              projectId={projectId}
+              projectVersion={status.project.version}
+              designDocumentId={document.id}
+            />
+          )}
           {sections
             .sort((a, b) => a.order_index - b.order_index)
             .map((section) => (

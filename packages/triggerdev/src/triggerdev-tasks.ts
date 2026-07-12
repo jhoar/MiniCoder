@@ -36,6 +36,7 @@ import { runImpl as runGithubReconciliation } from './tasks/github-reconciliatio
 import { runImpl as runExportPlan } from './tasks/export-plan.js';
 import { runImpl as runExportBacklog } from './tasks/export-backlog.js';
 import { runImpl as runImportBacklog } from './tasks/import-backlog.js';
+import { runImpl as runRunDesignDoc } from './tasks/run-design-doc.js';
 
 import {
   IngestSpecificationPayload as IngestSpecificationSchema,
@@ -56,6 +57,7 @@ import {
   ExportPlanPayload as ExportPlanSchema,
   ExportBacklogPayload as ExportBacklogSchema,
   ImportBacklogPayload as ImportBacklogSchema,
+  RunDesignDocPayload as RunDesignDocSchema,
 } from './tasks/types.js';
 
 const RETRY_CONFIG = {
@@ -276,6 +278,13 @@ export const importBacklogTask = task({
   queue: { concurrencyLimit: 1 },
   retry: RETRY_CONFIG,
   run: makeTaskRunner('import-backlog', ImportBacklogSchema, runImportBacklog),
+});
+
+export const runDesignDocTask = task({
+  id: 'run-design-doc',
+  queue: { concurrencyLimit: 5 },
+  retry: RETRY_CONFIG,
+  run: makeTaskRunner('run-design-doc', RunDesignDocSchema, runRunDesignDoc),
 });
 
 export { ALL_TASK_IDS } from './task-ids.js';

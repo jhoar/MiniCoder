@@ -91,8 +91,8 @@ async function registerMockPlanner(db: DbClient, name = 'MockPlannerAdapter'): P
 // ── ALL_TASK_IDS ────────────────────────────────────────────────────────────
 
 describe('ALL_TASK_IDS', () => {
-  it("exports the 18 canonical task ID strings (15 from Phases 3/6/7 plus Phase 9's run-coder, Phase 10's run-review, and Phase 12's run-merge-gate)", () => {
-    expect(ALL_TASK_IDS).toHaveLength(18);
+  it("exports the 19 canonical task ID strings (15 from Phases 3/6/7 plus Phase 9's run-coder, Phase 10's run-review, Phase 12's run-merge-gate, and Phase 17's run-design-doc)", () => {
+    expect(ALL_TASK_IDS).toHaveLength(19);
     expect(ALL_TASK_IDS).toContain('ingest-specification');
     expect(ALL_TASK_IDS).toContain('planning-readiness-assessment');
     expect(ALL_TASK_IDS).toContain('start-clarification');
@@ -111,6 +111,7 @@ describe('ALL_TASK_IDS', () => {
     expect(ALL_TASK_IDS).toContain('export-plan');
     expect(ALL_TASK_IDS).toContain('export-backlog');
     expect(ALL_TASK_IDS).toContain('import-backlog');
+    expect(ALL_TASK_IDS).toContain('run-design-doc');
   });
 
   // HIGH-1 code-review fix (Phase 10 PR review): run-review was added to ALL_TASK_IDS with a

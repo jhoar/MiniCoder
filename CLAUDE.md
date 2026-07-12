@@ -92,7 +92,23 @@ budget-preflight.ts`), budget reporting (`packages/api/src/read-models/budget-re
 `getBudgetReport()`, `GET /budget-report`, `minicoder costs --report`), two new `state doctor`
 checks (`code_pushed_no_pull_request`, `secret_leak_scan`), `SecretRedactor.scanForSecrets()`, and
 an optional, fully env-gated, hand-rolled-`fetch` OpenTelemetry Logs export
-(`packages/core/src/observability/otel-export.ts`) (Phase 16, no new migration).
+(`packages/core/src/observability/otel-export.ts`) (Phase 16, no new migration); and the Final
+Design Document Generator implementation — the `PROJECT_LIFECYCLE_MATRIX`'s seven command handlers
+(`packages/core/src/commands/handlers/project/`) driving `active → implementation_complete →
+design_document_generating → design_document_ready_for_review → {design_document_revision_requested
+→ design_document_generating, design_document_approved → project_complete}`,
+`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`, docs/01 §13.1's
+DB-knowable Project Acceptance Validation subset), the `DocumentationAgentAdapter` reference
+implementation (`packages/adapters-documentation`'s `ClaudeDocumentationAdapter`, mirroring
+`packages/adapters-reviewer`'s shape), the Design Document Generator
+(`packages/core/src/design-doc/`'s evidence collection, section generation, and
+`final-design-document.md` rendering), the 19th canonical Trigger.dev task `run-design-doc`, the
+`ExportDesignDocumentHandler` artifact-export handler, `POST /commands/request-design-doc` plus the
+generic-dispatch/system-replay command registrations, the `minicoder design-doc
+{generate,regenerate,request-revision,approve,request-run}`/`minicoder project
+{mark-implementation-complete,validate-acceptance,complete}` CLI surfaces, and the Web UI
+`/design-document` page's now-live (previously disabled) action buttons (Phase 17, no new
+migration).
 Canonical specification documents live under `docs/`.
 
 ## Repository Structure
@@ -2347,6 +2363,240 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   documented future work (like issue #61's unwired `TaskTriggerClient`), not a silently dropped
   requirement; the read-model/API/core functions backing a future page are fully built and tested.
   Tracked as issue #66.
+
+## Final Design Document Generator Operational Constraints (`packages/core/src/{project,design-doc}/`, `packages/core/src/commands/handlers/project/`, `packages/adapters-documentation/`, `packages/triggerdev/src/tasks/run-design-doc.ts`)
+
+- **`PROJECT_LIFECYCLE_MATRIX` (`packages/core/src/statemachine/machines/project-lifecycle.ts`) and
+  the `ProjectState` enum (`packages/core/src/domain/states.ts`) already existed before this
+  phase** — this phase's job was giving the matrix's seven already-defined rows their first real
+  handlers, the same "matrix defined ahead of its handler" posture Phase 6/7/8/9/10/12 already
+  established for other rows. No new migration in the phase's initial implementation:
+  `projects.state`/`.version` (Phase 1's 43-table initial schema) and `design_documents`/
+  `design_document_sections`/`design_decisions`/`glossary_terms`/`artifact_exports` (also Phase 1)
+  already carried every column the initial implementation needed — confirmed by inspection before
+  writing any handler, per this phase's own scoping instructions, rather than assumed.
+  **Migration 0014 (`artifact_export_design_document_id`, PR review finding) was added
+  post-merge-review**, adding a nullable `artifact_exports.design_document_id` column: without a
+  durable association, `ExportDesignDocumentHandler`/`RecordDesignDocumentReadyHandler` could only
+  validate that a caller-supplied `designDocumentId` existed for the project and had complete
+  sections — not that it was the SAME document a given `artifact_exports` row was actually
+  generated from. A manual/system replay could pair an already-exported artifact with a different,
+  also-complete `design_documents` row in the same project and receive success.
+  `GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler` set the column once, at
+  `INSERT` time (the same call that creates both the `design_documents` and `artifact_exports`
+  rows together, so it is never ambiguous); both export/ready handlers now reject a
+  `design-document-mismatch` (409) if the caller-supplied `designDocumentId` doesn't match the
+  artifact's recorded one. The column is nullable at the schema level (SQLite has no partial
+  `NOT NULL ... WHERE artifact_type = 'design_document'` constraint syntax), but both handlers
+  **fail closed** on `NULL` (round 2 PR review fix) rather than skipping the check for it — a
+  `NULL` only ever means a pre-migration/manually-inserted row this handler cannot prove is bound
+  to anything, and silently allowing it through would just reopen the same replay ambiguity for
+  that row. A caller wanting to export/ready such a legacy row must first backfill its
+  `design_document_id` directly (no backfill migration/repair command was built for this — it is
+  real, tracked future work, not silently assumed unnecessary; tracked as issue #71).
+- **`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`) is deliberately
+  DB-knowable-only, not a literal implementation of docs/01 §13.1's full checklist.** A core
+  command handler cannot itself shell out to `pnpm test`/`pnpm build`/lint/security-scan without a
+  major layering violation (a domain module invoking the build toolchain) and non-deterministic
+  test behavior — the same reasoning `state doctor`'s `runDoctorChecks()` already established for
+  "what a pure-DB check can prove." It checks: every feature run for the project has reached
+  `merged` or `skipped` (matching this document's established "skipped never reaches merged"
+  semantics — a skipped feature counts as accepted-as-terminal, not as a blocker); no feature run
+  is at `human_required`/`blocked`; no unresolved `blocking` `review_findings` row; no globally
+  stuck `outbox_events`/`inbox_events` (reusing `runDoctorChecks()`'s exact threshold); no
+  `artifact_exports` row at `failed` for the project. The CI-only checks (full test suite,
+  migration validation, build, lint/typecheck, security scan) are returned as an honest
+  `externalChecksNotVerified` string list, not silently assumed to pass. `evaluateProjectAcceptance()`
+  takes a `TxClient` (not `DbClient`) — the same "widened for caller-transaction use" precedent
+  `evaluateBudget()` already established — because `MarkImplementationCompleteHandler` calls it
+  **inside** its own guarding transaction (not before opening it, as an earlier revision did): a
+  concurrent write to a feature run/review finding/outbox row between a pre-transaction check and
+  the state mutation could otherwise slip a stale "passed" verdict through (PR review finding).
+  Passing the DB-knowable checks is **not** sufficient on its own to advance the project: the
+  handler's payload also requires a non-blank, caller-supplied `externalChecksEvidence` string
+  (an attestation that the CI-only checks already passed out-of-band — e.g. a CI run URL or an
+  operator sign-off note), persisted as a `human_approvals` audit row
+  (`context_type = 'project_acceptance_external_checks'`) in the same transaction. This closes a
+  real gap a PR review round found: without it, "every DB-knowable check passed" could be
+  (mis)read as "Project Acceptance Validation passed" per docs/01 §13.1's full checklist, with no
+  durable evidence the CI-only checks were ever actually confirmed. `GET /project-acceptance`/
+  `minicoder project validate-acceptance` still expose `evaluateProjectAcceptance()`'s DB-knowable
+  result read-only for pre-flight inspection (unaffected by this — they don't take/require
+  evidence, since they don't transition anything). `minicoder project mark-implementation-complete`
+  gained a required `--evidence <text>` flag; the Web/TUI `ApiClient.markImplementationComplete()`
+  methods gained a required `externalChecksEvidence` parameter — every real call site was updated,
+  not defaulted, matching this document's established "no default, every caller passes it
+  explicitly" posture for parameters that must never be silently omitted (e.g. Phase 9's
+  `coderAdapterName`).
+- **`GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler` both create a fresh
+  `design_documents` row (state `draft`) and a fresh `artifact_exports` row (`artifact_type =
+'design_document'`, state `pending`) for their generation cycle — regeneration does not reuse
+  the prior document's rows in place.** The prior cycle's `design_document_sections`/
+  `design_decisions` rows are left untouched as historical audit record, the same append-only
+  posture this document already applies to `adapter_conformance_results`/
+  `merge_gate_evaluations`. `create_artifact_export_record` is these two handlers' own matrix side
+  effect; `ExportDesignDocumentHandler` (below) never creates this row itself, only drives an
+  already-existing one through its state transitions.
+- **`ExportDesignDocumentHandler` mirrors `ExportBacklogHandler`'s exact two-step `assertValid`
+  shape** (`ARTIFACT_EXPORT_MATRIX`'s `pending -> generating -> exported`) but does **not** create
+  the `artifact_exports` row itself — it operates on the row `GenerateDesignDocumentHandler`/
+  `RegenerateDesignDocumentHandler` already created. `RecordDesignDocumentReadyCommand`'s "artifact
+  exported" guard requires this handler to have already run and left that row at `exported`, which
+  it enforces with a direct re-check of the referenced row's state (an `artifact-not-exported`
+  `CommandError` on a premature call), not an implicit assumption.
+- **`ExportDesignDocumentHandler` validates `design_documents` ownership and full section
+  completeness BEFORE its already-exported idempotent-return and failed-state-rejection
+  branches, not after (PR review fix).** An earlier revision validated `designDocumentId`
+  ownership and the 13-section completeness only on the not-yet-exported path — a manual/system
+  replay (this handler is on the generic-dispatch system-replay allow-list) could pass an
+  already-exported artifact from the same project paired with a different or incomplete
+  `designDocumentId` and receive a clean idempotent success with neither check ever running.
+  Completeness itself is two-layered: a section is rejected if missing, blank, **or** matches
+  `isPlaceholderSectionContent()` (`packages/core/src/design-doc/generator.ts`'s
+  `PLACEHOLDER_SECTION_CONTENT_PATTERN`, matching `(no content generated for X)`/
+  `(no content drafted for X)`) — the second layer is a deliberate, adapter-implementation-agnostic
+  backstop, the same "storage-boundary backstop, not a replacement for the adapter-level contract"
+  posture `sanitizePromptSnapshot()` already established: a non-compliant custom
+  `DocumentationAgentAdapter` could still report `requiresRevision: false` while a section came
+  back as literal placeholder text, and this check catches that independently of the adapter's own
+  honesty.
+- **`run-design-doc` acquires a single-flight `WorkflowLockManager` lock
+  (`design-doc-generation:{projectId}`) around the entire adapter-invocation-through-record-ready
+  sequence (PR review fix).** Mirrors `execution-lane:{projectId}`'s shape but is a distinct
+  resource key — design-document generation is project-lifecycle-scoped, not
+  feature-execution-scoped, so it must not contend with an unrelated in-flight feature-execution
+  lock. Without this, the Web UI's "Retry generation" affordance (or a duplicate scheduled
+  invocation) could race an in-flight run: both would pass the initial no-op gates, both invoke
+  the adapter, and the slower call could overwrite `design_document_sections` — or export a
+  `requiresRevision: true` result — after the faster call had already recorded the document
+  ready. A conflicting concurrent invocation (`LockConflictError`) returns a clean no-op, the same
+  "transient race -> false, don't throw" posture `start-next-feature.ts`/`github-reconciliation.ts`
+  already establish for their own locks.
+  **The lock alone was not sufficient (post-merge PR review fix, HIGH-1, round 2):** `runImpl()`
+  originally read the project state, latest `design_documents` row, and pending `artifact_exports`
+  row BEFORE acquiring the lock, then passed those pre-lock IDs into the generation body — a
+  second invocation could pass that pre-lock read, block on `acquire()` until a first, faster
+  invocation finished and released the lock, then proceed using stale IDs that no longer described
+  pending work (the project may have already advanced past `design_document_generating`, or a new
+  generation cycle may have replaced the pending artifact). The lock only serializes two
+  invocations from running the generation body concurrently — it does not, by itself, invalidate
+  data a delayed invocation already read before the lock existed. Fixed by extracting
+  `readGenerationTargets()` and calling it twice: once before lock acquisition (an unlocked
+  fast-path no-op, avoiding the lock-manager round trip for the common "nothing pending" case) and
+  once again immediately after acquiring the lock — the second, authoritative read is what the
+  rest of the generation cycle actually uses; a `null` result at that point (project no longer
+  generating, or no pending doc/artifact) is a clean no-op instead of proceeding on stale data.
+- **`DocumentationAgentAdapter`'s reference implementation needs no sandbox — the same
+  simplification `ClaudeReviewerAdapter` documents versus `CodexCoderAdapter`.** Drafting a design
+  document from already-collected DB evidence is read-only; `ClaudeDocumentationAdapter`
+  (`packages/adapters-documentation`) calls its injected `DocumentationProvider`
+  (`HttpDocumentationProvider`, a plain-`fetch` OpenAI-compatible client, no vendor SDK) directly
+  from the `run-design-doc` task process — no container isolation to create or tear down.
+- **`DocumentationInput` (the shared, Phase-5-vintage adapter contract:
+  `projectId`/`planId`/`featureCount`/`correlationId`) stays narrow — the richer evidence bundle
+  (project name/description, feature summaries, merged-PR count) is supplied via
+  `ClaudeDocumentationAdapterOptions` constructor options instead**, mirroring
+  `ClaudeReviewerAdapter`'s identical "narrow shared input type, caller enriches via
+  constructor options" shape for `owner`/`repo`. `run-design-doc.ts`'s
+  `DocumentationAdapterFactory` therefore takes the evidence-derived fields as its own argument,
+  not `DocumentationInput` directly — the same "factory, not a no-argument constructed singleton"
+  pattern `CoderAdapterFactory`/`ReviewerAdapterFactory` already established, since a real
+  deployment serves multiple projects with different evidence per invocation.
+- **`collectDesignDocumentEvidence()` (`packages/core/src/design-doc/evidence.ts`) reads merged
+  pull requests from the already-tracked `pull_requests` mirror table, not a fresh live
+  `GitHubClient` call.** Every merged PR was already durably recorded by
+  `reconcileGithubState()`/`RecordMergedHandler` during execution — re-fetching from GitHub live
+  at design-document-generation time would only duplicate data this deployment already has, with
+  no new information. This is a deliberate simplification, not a missed integration: a live
+  `GitHubClient` call remains available to a future pass if a richer PR body/description turns out
+  to be needed evidence beyond what `pull_requests` already mirrors.
+- **`writeDesignDocumentSections()` (`packages/core/src/design-doc/write-sections.ts`) is a
+  non-command evidence writer, the same category as `insertReviewFindings()`/
+  `insertHumanApproval()`** — not a `CommandHandler`. It upserts on `design_document_sections`'s
+  own `UNIQUE(design_document_id, section_name)` constraint (`ON CONFLICT ... DO UPDATE`, not the
+  `DO NOTHING`-then-requery anti-pattern this document warns against elsewhere for
+  `AdapterRegistry.register()` — an `ON CONFLICT DO UPDATE` never aborts the enclosing transaction
+  the way a raw failed `INSERT` does in PostgreSQL, so this is a different, safe idempotency
+  shape), so a retried or regenerated call overwrites the prior content for that section rather
+  than erroring or duplicating rows.
+- **`run-design-doc` (19th canonical Trigger.dev task ID) is a separate, independently
+  scheduled/triggered task from every other project-lifecycle or execution task — never inlined**,
+  matching this document's established "never inline" rule. It was registered for real in
+  `triggerdev-tasks.ts` (`task({ id: 'run-design-doc', ... })`) in the same commit that added it to
+  `ALL_TASK_IDS`, not merely added to the ID list — the Phase 10 HIGH-1 mistake this document
+  documents elsewhere (a task added to `ALL_TASK_IDS` with a real `runImpl` but never actually
+  registered) was not repeated here, and `triggerdev.test.ts`'s existing static
+  task-registration-parity regression covers it for free.
+- **`run-design-doc.ts` deliberately does not route its `DocumentationAgentAdapter` invocation
+  through `AgentRunRecorder`** the way `run-coder.ts`/`run-review.ts` do for their own adapter
+  calls — no `agent_runs`/`agent_context_packs`/`cost_records` provenance row is written for a
+  design-document-generation run in this phase. This is a real, tracked scope trade-off (not an
+  oversight): the change is additive and would not alter this phase's public shape, but was
+  deprioritized in favor of a complete vertical slice through every other layer (migration →
+  handler → task → API → CLI/TUI/Web) within this phase's time budget. Tracked as issue #72, the
+  same "honestly-labeled gap" posture this document applies to issues #61/#66/#67.
+- **`documentationAdapterName` (the API/CLI/task payload field) is validation/provenance-only,
+  not real runtime adapter selection.** `run-design-doc.ts` resolves it via
+  `AdapterRegistry.resolve(AgentRole.DOCUMENTATION, ...)` — which throws for an unregistered name,
+  the same "registry resolve is not implementation selection" separation `run-coder.ts`/
+  `run-review.ts` already establish for `coderAdapterName`/`reviewerAdapterName` — but the actual
+  runtime instance always comes from `resolveDefaultDocumentationAdapterFactory()`, which always
+  constructs `ClaudeDocumentationAdapter` regardless of the name supplied. Acceptable today since
+  there is exactly one shipped `DocumentationAgentAdapter` reference implementation; real
+  multi-adapter selection (or an explicit rejection of non-default names) is tracked as issue #70.
+- **The Orchestrator API registers Phase 17's four human-actorKind handlers
+  (`generate-design-document`, `request-design-document-revision`, `regenerate-design-document`,
+  `approve-design-document`) for generic `/commands/{slug}` dispatch, and its four
+  system-actorKind handlers (`mark-implementation-complete`, `record-design-document-ready`,
+  `export-design-document`, `complete-project`) on the existing manual-replay system-key
+  allow-list** — the same split Phase 13 already established for every other handler family; no
+  new routing concept was introduced. `POST /commands/request-design-doc` is a ninth
+  operator-role-gated "enqueue" route (mirroring `request-coder-run`/`request-review`/
+  `recompute-merge-gate`'s exact `{triggerdevRunId, accepted}` response shape), since it also
+  corresponds to a whole Trigger.dev task orchestration, not a single synchronous command.
+  `GET /status`'s `project` row gained an additive `version` field (mirroring Phase 15's identical
+  addition to `workflowState.version`) — every project-lifecycle write command requires
+  `expectedVersion`, and there was previously no way to read the current `projects.version`
+  through the API.
+- **`minicoder design-doc`'s read-only default view moved to a hidden `design-doc view`
+  subcommand** (`{ isDefault: true, hidden: true }`), the exact `plan.ts`-established shape for
+  avoiding Commander's parent/subcommand `--project` flag collision (CLAUDE.md's Ink Text UI
+  Operational Constraints section already documents why: a flag declared on both a parent Command
+  and one of its subcommands binds to the parent, silently starving the subcommand's own
+  `requiredOption` check). The new `generate`/`regenerate`/`request-revision`/`approve`/
+  `request-run` subcommands, and the new `minicoder project` command group
+  (`mark-implementation-complete`/`validate-acceptance`/`complete`), are both HTTP-only against the
+  Orchestrator API — not direct DB dispatch — matching every other Phase 14 Ink Text UI command's
+  posture (`minicoder human`/`minicoder merge merge-if-ready` remain the two DB-direct CLI
+  surfaces from earlier phases; this phase did not add a third).
+- **The Web UI `/design-document` page's `generate`/`regenerate`/`request revision`/`approve`
+  buttons are now real `CommandButton`/Server Action dispatches**, closing the gap Phase 15 left
+  explicitly disabled ("Not available yet — Phase 17 scope"). `/adapters` remains the one other
+  page still carrying that disabled-button posture — no adapter-registration command exists
+  anywhere in this codebase yet, unrelated to this phase's scope.
+
+**Post-implementation review fixes:** this phase went through several PR review rounds; the
+individual fixes are folded into the bullets above (marked "PR review finding"/"PR review fix"
+inline) rather than listed separately, matching the depth of review this phase received. The one
+fix worth calling out on its own: **`TransactionOptions.isolationLevel: 'serializable'`**
+(`packages/core/src/persistence/types.ts`, `packages/persistence-postgres/src/client.ts`,
+`packages/persistence-sqlite/src/client.ts`) is new, general-purpose persistence-layer
+infrastructure added specifically to give `MarkImplementationCompleteHandler` a real (if
+explicitly bounded — see that handler's own doc comment) defense against Project Acceptance's
+cross-table TOCTOU race under PostgreSQL. `PostgresDbClient.transaction()` issues `SET
+TRANSACTION ISOLATION LEVEL SERIALIZABLE` when requested and translates SQLSTATE `40001` into a
+typed `SerializationFailureError` (mapped to a retryable `409 serialization-failure` problem
+response in `packages/api/src/errors.ts`); `SqliteDbClient` accepts the same option as a
+documented no-op. **This is intentionally not a complete fence**: PostgreSQL's SSI conflict
+detection only covers transactions that are themselves `SERIALIZABLE`, so it protects concurrent
+invocations of `MarkImplementationCompleteCommand` against each other, but does not retroactively
+protect against an acceptance-invalidating writer (e.g. `RecordCiFailedHandler`) that still runs
+at the default isolation level — closing that fully would mean every such writer across many
+already-shipped phases participating in the same fence, judged out of proportion for this fix
+given `MarkImplementationCompleteCommand` is a rare, `ADMIN`-gated, human/CI-attested terminal
+action, not a hot path. Documented as a real, tracked residual limitation, not silently assumed
+closed — an earlier revision of this same doc comment overclaimed complete protection before a PR
+review round caught the mistake. Tracked as issue #69.
 
 ## Cross-Dialect Testing (Mandatory)
 

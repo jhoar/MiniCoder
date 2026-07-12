@@ -17,6 +17,7 @@ export const ALL_TASK_IDS = [
   'export-plan',
   'export-backlog',
   'import-backlog',
+  'run-design-doc',
 ] as const;
 
 export type TaskId = (typeof ALL_TASK_IDS)[number];

@@ -81,6 +81,7 @@ jobs:
             'export-plan',
             'export-backlog',
             'import-backlog',
+            'run-design-doc',
           ];
           const missing = expected.filter(id => !ALL_TASK_IDS.includes(id));
           const unexpected = ALL_TASK_IDS.filter(id => !expected.includes(id));

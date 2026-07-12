@@ -33,3 +33,5 @@ export { runImpl as runGithubReconciliation } from './tasks/github-reconciliatio
 export { runImpl as runExportPlan } from './tasks/export-plan.js';
 export { runImpl as runExportBacklog } from './tasks/export-backlog.js';
 export { runImpl as runImportBacklog } from './tasks/import-backlog.js';
+export { runImpl as runRunDesignDoc } from './tasks/run-design-doc.js';
+export type { RunDesignDocDeps, DocumentationAdapterFactory } from './tasks/run-design-doc.js';

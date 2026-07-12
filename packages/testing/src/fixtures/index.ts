@@ -12,6 +12,7 @@ import { executionOrchestratorFixture } from './execution-orchestrator.js';
 import { coderAdapterRunFixture } from './coder-adapter-run.js';
 import { reviewFixLoopFixture } from './review-fix-loop.js';
 import { disagreementArbiterFixture } from './disagreement-arbiter.js';
+import { designDocumentLifecycleFixture } from './design-document-lifecycle.js';
 
 export const FIXTURE_REGISTRY: Map<FixtureName, Fixture> = new Map([
   ['planning-basic', planningBasicFixture],
@@ -27,6 +28,7 @@ export const FIXTURE_REGISTRY: Map<FixtureName, Fixture> = new Map([
   ['coder-adapter-run', coderAdapterRunFixture],
   ['review-fix-loop', reviewFixLoopFixture],
   ['disagreement-arbiter', disagreementArbiterFixture],
+  ['design-document-lifecycle', designDocumentLifecycleFixture],
 ]);
 
 export function getFixture(name: FixtureName): Fixture {

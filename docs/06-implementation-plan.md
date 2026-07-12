@@ -1937,7 +1937,9 @@ commands are safe and audited; private chain-of-thought is not stored.
   read-model/API/core functions they would call are fully built and tested; only the additional UI
   surface and default automatic scheduling were out of scope for this pass's time budget.
 
-## Phase 17 — Final Design Document Generator
+## Phase 17 — Final Design Document Generator ✓
+
+> **Status: Complete** (2026-07-12)
 
 Deliver design-document tables, design-decision records, the `DocumentationAgentAdapter`, the Design
 Document Generator, the Workflow Layer design-document task, the final-document review workflow,
@@ -1954,6 +1956,124 @@ Acceptance: Project Acceptance Validation passes before `implementation_complete
 only after implementation completion; all 13 sections are present; the document is generated from
 database and GitHub evidence; a human can approve or request revision; the project reaches
 `project_complete` only after approval.
+
+**Delivered modules:**
+
+- **`PROJECT_LIFECYCLE_MATRIX` + 7 command handlers** (`packages/core/src/commands/handlers/
+project/`) — `MarkImplementationCompleteHandler` (system, `active -> implementation_complete`,
+  gated by `evaluateProjectAcceptance()`), `GenerateDesignDocumentHandler` (operator,
+  `implementation_complete -> design_document_generating`, creates the fresh `design_documents` +
+  `artifact_exports` rows this generation cycle writes into),
+  `RecordDesignDocumentReadyHandler` (system, `design_document_generating ->
+design_document_ready_for_review`, guards on the referenced `artifact_exports` row already being
+  `exported`), `RequestDesignDocumentRevisionHandler`/`ApproveDesignDocumentHandler` (approver, the
+  two exits from `design_document_ready_for_review`), `RegenerateDesignDocumentHandler` (operator,
+  `design_document_revision_requested -> design_document_generating`, mirrors
+  `GenerateDesignDocumentHandler` — prior sections/decisions stay as historical audit record, not
+  overwritten in place), and `CompleteProjectHandler` (system, the terminal
+  `design_document_approved -> project_complete`). Every idempotency key follows this codebase's
+  `{command}:{projectId}:{expectedVersion}` per-occurrence-discriminator convention from the start
+  (no retrofit needed, unlike several earlier phases' handlers).
+- **`evaluateProjectAcceptance()`** (`packages/core/src/project/acceptance.ts`) — a DB-driven,
+  `runDoctorChecks()`-shaped evaluator (all features `merged`/`skipped`, no open
+  `human_required`/`blocked` runs, no unresolved `blocking` review findings, no stuck
+  outbox/inbox, no failed artifact exports) plus an honest `externalChecksNotVerified` list (full
+  test suite, migration validation, build, lint, security scan) — the CI-only checks docs/01
+  §13.1 also requires, which a core command handler cannot itself run without a major layering
+  violation. `GET /project-acceptance` and `minicoder project validate-acceptance` expose it for
+  inspection before attempting `mark-implementation-complete`.
+- **`@minicoder/adapters-documentation`** — the reference `DocumentationAgentAdapter`
+  implementation (`ClaudeDocumentationAdapter`), mirroring `@minicoder/adapters-reviewer`'s exact
+  shape: sandbox-free (drafting is read-only), a single injected `DocumentationProvider` seam,
+  `HttpDocumentationProvider` the one shipped plain-`fetch` OpenAI-compatible implementation, no
+  vendor SDK. Added to the root `package.json`'s ordered typecheck/`build:web` chains ahead of
+  `triggerdev`, matching every prior adapter package's precedent.
+- **Design Document Generator** (`packages/core/src/design-doc/`) —
+  `collectDesignDocumentEvidence()` (project info, feature list, merged PRs via the already-tracked
+  `pull_requests` mirror table rather than a fresh live `GitHubClient` call, `design_decisions`,
+  `glossary_terms`), `generateDesignDocumentSections()` (drives the injected
+  `DocumentationAgentAdapter`, normalizes into the canonical 13-section order via
+  `DESIGN_DOCUMENT_SECTION_NAMES`), `writeDesignDocumentSections()` (a non-command evidence writer,
+  the same category as `insertReviewFindings()`, upserting on `design_document_sections`'s own
+  `UNIQUE(design_document_id, section_name)` constraint), and `renderDesignDocumentMarkdown()`
+  (the `final-design-document.md` renderer, folding in structured `design_decisions`/
+  `glossary_terms` tables alongside the adapter's narrative prose).
+- **`run-design-doc`** (19th canonical Trigger.dev task ID) — a separate, independently
+  triggered task from every other project-lifecycle/execution task (never inlined, matching this
+  codebase's established rule): collects evidence, invokes `DocumentationAgentAdapter`, writes
+  sections, dispatches `ExportDesignDocumentCommand`, then `RecordDesignDocumentReadyCommand`.
+  Registered for real in `triggerdev-tasks.ts` (not just added to `ALL_TASK_IDS`) from the start,
+  and covered by the existing static task-registration regression in `triggerdev.test.ts` — the
+  Phase 10 HIGH-1 mistake this document warns about was not repeated.
+- **`ExportDesignDocumentHandler`** — drives the pre-existing `artifact_exports` row (created by
+  `GenerateDesignDocumentHandler`/`RegenerateDesignDocumentHandler`) through the
+  `ARTIFACT_EXPORT_MATRIX`'s `pending -> generating -> exported` states, mirroring
+  `ExportBacklogHandler`'s exact two-step `assertValid` shape.
+- **API surface** — 4 human-actorKind handlers registered for generic `/commands/{slug}` dispatch
+  (`generate-design-document`, `request-design-document-revision`, `regenerate-design-document`,
+  `approve-design-document`); 4 system-actorKind handlers added to the manual-replay allow-list
+  (`mark-implementation-complete`, `record-design-document-ready`, `export-design-document`,
+  `complete-project`); a dedicated `POST /commands/request-design-doc` enqueue route (mirrors
+  `request-coder-run`/`request-review`/`recompute-merge-gate`'s exact shape, operator-role-gated);
+  `GET /project-acceptance` (a plain pure-DB read); `GET /status`'s `project` row gained an
+  additive `version` field (mirroring Phase 15's identical addition to `workflowState`) since every
+  project-lifecycle write command requires `expectedVersion`. OpenAPI spec updated to match; the
+  `onRoute` conformance hook (and its parity regression test) still passes.
+- **CLI** — `minicoder design-doc {generate,regenerate,request-revision,approve,request-run}` (the
+  read-only default view is now a hidden `design-doc view` subcommand, matching `plan.ts`'s
+  established `isDefault`/`hidden` sibling-subcommand shape to avoid the parent/subcommand
+  `--project` collision) and a new `minicoder project {mark-implementation-complete,
+validate-acceptance,complete}` command group — both API-based (not direct DB dispatch), matching
+  every other Phase 14 Ink Text UI command's HTTP-only posture.
+- **Web UI** — `/design-document`'s previously-disabled "Not available yet" buttons now dispatch
+  real Server Actions (`generateDesignDocumentAction`/`regenerateDesignDocumentAction`/
+  `requestDesignDocumentRevisionAction`/`approveDesignDocumentAction`), following the exact
+  `CommandButton`/`runCommandAction`/`newIdempotencyKey()` pattern every other mutating Web UI page
+  already uses. `/adapters` remains the one other page still carrying the disabled-button posture
+  (no adapter-registration command exists anywhere yet — unrelated to this phase).
+- **Tests** — unit tests for every new handler via a full-chain integration test
+  (`packages/testing/src/scenarios/design-document-lifecycle.ts` + its matching fixture), driving
+  `active -> implementation_complete -> design_document_generating -> ready_for_review ->
+revision_requested -> generating -> ready_for_review -> approved -> project_complete` against the
+  real handlers and the real `run-design-doc` task (via `MockTriggerRunner`, injecting
+  `MockDocumentationAdapter`) — distinct from the pre-existing `final-design-document` scenario,
+  which exercises the unrelated `export-plan`/`export-backlog` tasks and was left untouched.
+- **No new migration in the initial implementation.** `projects.state`/`.version`,
+  `design_documents`, `design_document_sections`, `design_decisions`, `glossary_terms`, and
+  `artifact_exports` all existed since the Phase 1 43-table initial schema with every column the
+  initial implementation needed — confirmed by inspection before writing any handler, per this
+  phase's own instructions. `minicoder db validate` passed against a fresh SQLite migrate with no
+  changes required at that point. **Migration 0014** (`artifact_export_design_document_id`) was
+  added during PR review (jhoar/MiniCoder#68): a nullable `artifact_exports.design_document_id`
+  column durably binding an artifact export to the `design_documents` row it was rendered from,
+  closing a replay-safety gap `ExportDesignDocumentHandler`/`RecordDesignDocumentReadyHandler`
+  could not otherwise close (see CLAUDE.md's Final Design Document Generator Operational
+  Constraints section for the full writeup).
+- **Descoped from this pass** (explicitly, not silently dropped, each tracked as a GitHub issue):
+  - `AgentRunRecorder` provenance (`agent_runs`/`agent_context_packs`/`cost_records`) for the
+    `DocumentationAgentAdapter` invocation inside `run-design-doc.ts` — the task calls the adapter
+    directly rather than through the recorder wrapper `run-coder.ts`/`run-review.ts` use for their
+    own adapter calls. Adding it is additive and doesn't change this phase's public shape, but the
+    review-cycle-driven cost-tracking/redaction wiring `AgentRunRecorder` provides was judged lower
+    priority than a working end-to-end vertical slice through every layer (migration → handler →
+    task → API → CLI/TUI/Web) within this phase's time budget. Tracked as issue #72.
+  - `documentationAdapterName` is validation/provenance-only, not real multi-adapter runtime
+    selection — there is exactly one shipped `DocumentationAgentAdapter` reference implementation
+    today. Tracked as issue #70.
+  - No backfill/repair path for a legacy (pre-migration-0014) `NULL`-bound
+    `artifact_exports.design_document_id` row — both export/ready handlers fail closed on such a
+    row rather than silently accepting it. Tracked as issue #71.
+  - Project Acceptance's terminal transition (`MarkImplementationCompleteHandler`, hardened
+    substantially through PR review — a `NOT EXISTS`-guarded atomic `UPDATE` plus PostgreSQL
+    `SERIALIZABLE` isolation with bounded retry) is not a complete system-wide concurrency
+    invariant: it fully protects concurrent invocations of the completion command against each
+    other, but does not retroactively protect against a concurrent acceptance-invalidating writer
+    (e.g. a CI-failure handler) still running at the default isolation level. Judged acceptable
+    given the command is a rare, `ADMIN`-gated, human/CI-attested terminal action. Tracked as
+    issue #69.
+  - A live-Postgres run of `packages/migrations/src/runner.test.ts`'s Postgres-gated suites was not
+    performed in this implementation/review session (no reachable PostgreSQL instance) — the
+    SQLite path was fully verified at every stage, including after migration 0014 was added.
 
 ## Phase 18 — Future Extensions
 

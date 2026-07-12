@@ -43,7 +43,7 @@ describe('CLI status command', () => {
       'fetch',
       fakeFetch({
         '/status': {
-          project: { id: 'proj1', name: 'Test Project', state: 'active' },
+          project: { id: 'proj1', name: 'Test Project', state: 'active', version: 1 },
           workflowState: { automation_state: 'running', active_feature_run_id: null, version: 3 },
           pendingOutboxCount: 0,
         },
@@ -67,7 +67,7 @@ describe('CLI status command', () => {
       fakeFetch(
         {
           '/status': {
-            project: { id: 'proj1', name: 'Test Project', state: 'active' },
+            project: { id: 'proj1', name: 'Test Project', state: 'active', version: 1 },
             workflowState: { automation_state: 'running', active_feature_run_id: null, version: 1 },
             pendingOutboxCount: 0,
           },

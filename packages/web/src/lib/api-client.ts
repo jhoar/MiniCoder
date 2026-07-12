@@ -69,7 +69,7 @@ export interface WhoamiResponse {
 }
 
 export interface ProjectStatus {
-  project: { id: string; name: string; state: string } | null;
+  project: { id: string; name: string; state: string; version: number } | null;
   workflowState: {
     automation_state: string;
     active_feature_run_id: string | null;
@@ -556,6 +556,81 @@ export class ApiClient {
     return this.post('/commands/resume-automation', { projectId, expectedVersion }, idempotencyKey);
   }
 
+  // Phase 17: project-lifecycle / final design document commands.
+
+  markImplementationComplete(
+    projectId: string,
+    expectedVersion: number,
+    externalChecksEvidence: string,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/mark-implementation-complete',
+      { projectId, expectedVersion, externalChecksEvidence },
+      idempotencyKey,
+    );
+  }
+
+  generateDesignDocument(
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/generate-design-document',
+      { projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  regenerateDesignDocument(
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/regenerate-design-document',
+      { projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  requestDesignDocumentRevision(
+    projectId: string,
+    expectedVersion: number,
+    designDocumentId: string,
+    notes: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/request-design-document-revision',
+      { projectId, expectedVersion, designDocumentId, notes },
+      idempotencyKey,
+    );
+  }
+
+  approveDesignDocument(
+    projectId: string,
+    expectedVersion: number,
+    designDocumentId: string,
+    notes: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/approve-design-document',
+      { projectId, expectedVersion, designDocumentId, notes },
+      idempotencyKey,
+    );
+  }
+
+  completeProject(
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post('/commands/complete-project', { projectId, expectedVersion }, idempotencyKey);
+  }
+
   // ---- Dedicated routes ----
 
   mergeIfReady(
@@ -607,6 +682,15 @@ export class ApiClient {
     idempotencyKey: string,
   ): Promise<TriggeredRunResponse> {
     return this.post('/commands/recompute-merge-gate', payload, idempotencyKey);
+  }
+
+  /** Enqueues the `run-design-doc` Trigger.dev task (drafts sections, exports
+   * final-design-document.md, records the document ready). */
+  requestDesignDoc(
+    payload: { projectId: string; documentationAdapterName: string },
+    idempotencyKey: string,
+  ): Promise<TriggeredRunResponse> {
+    return this.post('/commands/request-design-doc', payload, idempotencyKey);
   }
 
   reconcile(

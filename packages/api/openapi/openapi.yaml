@@ -183,6 +183,13 @@ paths:
       requestBody:
         content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
       responses: { '202': { description: Enqueued } }
+  /commands/request-design-doc:
+    post:
+      operationId: requestDesignDoc
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
   /commands/validate:
     post:
       operationId: diagnosticsValidate
@@ -244,6 +251,12 @@ paths:
         - $ref: '#/components/parameters/cursor'
         - $ref: '#/components/parameters/limit'
       responses: { '200': { description: OK } }
+  /project-acceptance:
+    get:
+      operationId: getProjectAcceptance
+      parameters:
+        - $ref: '#/components/parameters/projectIdQueryRequired'
+      responses: { '200': { description: OK }, '400': { description: Missing projectId } }
   /specification-inputs:
     get:
       operationId: listSpecificationInputs

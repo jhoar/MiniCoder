@@ -18,6 +18,10 @@ function fakeTaskTriggerClient(): TaskTriggerClient & { calls: unknown[] } {
       calls.push({ task: 'run-merge-gate', payload });
       return { triggerdevRunId: 'run-merge-gate-1' };
     },
+    triggerRunDesignDoc: async (payload) => {
+      calls.push({ task: 'run-design-doc', payload });
+      return { triggerdevRunId: 'run-design-doc-1' };
+    },
   };
 }
 
@@ -108,11 +112,30 @@ describe('task-trigger enqueue routes', () => {
     expect(client.calls[0]).toMatchObject({ task: 'run-merge-gate' });
   });
 
+  it('POST /commands/request-design-doc calls the injected client', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-design-doc',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-design-doc-1',
+      },
+      payload: { projectId: 'proj-1', documentationAdapterName: 'ClaudeDocumentationAdapter' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(client.calls[0]).toMatchObject({ task: 'run-design-doc' });
+  });
+
   it.each([
     ['request-coder-run', { coderAdapterName: 'CodexCoderAdapter' }],
     ['request-review', { reviewerAdapterName: 'ClaudeReviewerAdapter' }],
     ['request-fixes', { reviewerAdapterName: 'ClaudeReviewerAdapter' }],
     ['recompute-merge-gate', {}],
+    ['request-design-doc', { documentationAdapterName: 'ClaudeDocumentationAdapter' }],
   ])(
     'rejects a viewer-role key from calling POST /commands/%s (finding 2)',
     async (route, extraFields) => {

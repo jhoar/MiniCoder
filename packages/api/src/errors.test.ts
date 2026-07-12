@@ -5,6 +5,7 @@ import {
   TransitionError,
   UserRole,
   GithubMergeRejectedError,
+  SerializationFailureError,
 } from '@minicoder/core';
 import {
   toProblemDetails,
@@ -82,6 +83,16 @@ describe('toProblemDetails', () => {
     const err = new GithubMergeRejectedError('mystery', 'unknown', false);
     const { status } = toProblemDetails(err, INSTANCE);
     expect(status).toBe(502);
+  });
+
+  it('maps SerializationFailureError to a retryable 409, without leaking the raw driver error', () => {
+    const { status, body } = toProblemDetails(
+      new SerializationFailureError(new Error('SQLSTATE 40001 secret driver detail')),
+      INSTANCE,
+    );
+    expect(status).toBe(409);
+    expect(body.type).toBe('serialization-failure');
+    expect(body.detail).not.toContain('secret driver detail');
   });
 
   it('maps an unrecognized error to a redacted 500 that never echoes the raw message', () => {

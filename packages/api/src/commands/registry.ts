@@ -44,6 +44,14 @@ import {
   GenerateImplementationPlanHandler,
   GenerateFeatureBacklogHandler,
   ValidateBacklogHandler,
+  GenerateDesignDocumentHandler,
+  RequestDesignDocumentRevisionHandler,
+  RegenerateDesignDocumentHandler,
+  ApproveDesignDocumentHandler,
+  MarkImplementationCompleteHandler,
+  RecordDesignDocumentReadyHandler,
+  ExportDesignDocumentHandler,
+  CompleteProjectHandler,
 } from '@minicoder/core';
 
 export function buildCommandRegistry(): CommandRegistry {
@@ -70,6 +78,12 @@ export function buildCommandRegistry(): CommandRegistry {
   registry.register(new ResumeAutomationHandler());
   registry.register(new ApproveBudgetOverrideHandler());
 
+  // Phase 17: human-actorKind project-lifecycle/design-document handlers.
+  registry.register(new GenerateDesignDocumentHandler());
+  registry.register(new RequestDesignDocumentRevisionHandler());
+  registry.register(new RegenerateDesignDocumentHandler());
+  registry.register(new ApproveDesignDocumentHandler());
+
   // System-actorKind handlers, reachable only via a system-kind API key (manual replay).
   // AssessPlanningReadinessHandler is deliberately excluded: unlike the other system handlers,
   // its constructor requires a live PlannerAgentAdapter instance (registry, recorder, adapter,
@@ -79,6 +93,12 @@ export function buildCommandRegistry(): CommandRegistry {
   registry.register(new GenerateImplementationPlanHandler());
   registry.register(new GenerateFeatureBacklogHandler());
   registry.register(new ValidateBacklogHandler());
+  // Phase 17: system-actorKind project-lifecycle handlers, for manual replay of a stuck
+  // system-owned transition (same posture as the three handlers above).
+  registry.register(new MarkImplementationCompleteHandler());
+  registry.register(new RecordDesignDocumentReadyHandler());
+  registry.register(new ExportDesignDocumentHandler());
+  registry.register(new CompleteProjectHandler());
 
   return registry;
 }

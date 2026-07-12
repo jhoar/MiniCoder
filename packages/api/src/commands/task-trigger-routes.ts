@@ -55,6 +55,12 @@ export interface TaskTriggerClient {
     correlationId: string;
     idempotencyKey: string;
   }): Promise<TriggeredRun>;
+  triggerRunDesignDoc(payload: {
+    projectId: string;
+    documentationAdapterName: string;
+    correlationId: string;
+    idempotencyKey: string;
+  }): Promise<TriggeredRun>;
 }
 
 export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
@@ -69,6 +75,7 @@ export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
     triggerRunCoder: () => fail('request-coder-run'),
     triggerRunReview: () => fail('request-review'),
     triggerRunMergeGate: () => fail('recompute-merge-gate'),
+    triggerRunDesignDoc: () => fail('request-design-doc'),
   };
 }
 
@@ -170,6 +177,29 @@ export function registerTaskTriggerRoutes(app: FastifyInstance, deps: TaskTrigge
       const run = await deps.taskTriggerClient.triggerRunMergeGate({
         projectId,
         featureRunId,
+        correlationId: request.actor!.correlationId,
+        idempotencyKey,
+      });
+      return reply.code(202).send({ triggerdevRunId: run.triggerdevRunId, accepted: true });
+    },
+  );
+
+  // Phase 17: enqueues `run-design-doc` (drafts sections via DocumentationAgentAdapter, exports
+  // final-design-document.md, records the document ready) — same "enqueue route" shape as the
+  // three routes above, since this is also a whole Trigger.dev task orchestration, not a single
+  // synchronous command.
+  app.post<{ Body: { projectId?: string; documentationAdapterName?: string } }>(
+    '/commands/request-design-doc',
+    async (request, reply) => {
+      requireRole(request, UserRole.OPERATOR, 'request-design-doc');
+      const { projectId, documentationAdapterName } = request.body ?? {};
+      if (!projectId || !documentationAdapterName) {
+        throw new RequestValidationError('projectId and documentationAdapterName are required');
+      }
+      const idempotencyKey = readIdempotencyKey(request.headers['idempotency-key']);
+      const run = await deps.taskTriggerClient.triggerRunDesignDoc({
+        projectId,
+        documentationAdapterName,
         correlationId: request.actor!.correlationId,
         idempotencyKey,
       });
