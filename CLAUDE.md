@@ -2393,7 +2393,7 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   to anything, and silently allowing it through would just reopen the same replay ambiguity for
   that row. A caller wanting to export/ready such a legacy row must first backfill its
   `design_document_id` directly (no backfill migration/repair command was built for this — it is
-  real, undocumented-elsewhere future work, not silently assumed unnecessary).
+  real, tracked future work, not silently assumed unnecessary; tracked as issue #71).
 - **`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`) is deliberately
   DB-knowable-only, not a literal implementation of docs/01 §13.1's full checklist.** A core
   command handler cannot itself shell out to `pnpm test`/`pnpm build`/lint/security-scan without a
@@ -2533,8 +2533,17 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   design-document-generation run in this phase. This is a real, tracked scope trade-off (not an
   oversight): the change is additive and would not alter this phase's public shape, but was
   deprioritized in favor of a complete vertical slice through every other layer (migration →
-  handler → task → API → CLI/TUI/Web) within this phase's time budget. Tracked as future work, the
+  handler → task → API → CLI/TUI/Web) within this phase's time budget. Tracked as issue #72, the
   same "honestly-labeled gap" posture this document applies to issues #61/#66/#67.
+- **`documentationAdapterName` (the API/CLI/task payload field) is validation/provenance-only,
+  not real runtime adapter selection.** `run-design-doc.ts` resolves it via
+  `AdapterRegistry.resolve(AgentRole.DOCUMENTATION, ...)` — which throws for an unregistered name,
+  the same "registry resolve is not implementation selection" separation `run-coder.ts`/
+  `run-review.ts` already establish for `coderAdapterName`/`reviewerAdapterName` — but the actual
+  runtime instance always comes from `resolveDefaultDocumentationAdapterFactory()`, which always
+  constructs `ClaudeDocumentationAdapter` regardless of the name supplied. Acceptable today since
+  there is exactly one shipped `DocumentationAgentAdapter` reference implementation; real
+  multi-adapter selection (or an explicit rejection of non-default names) is tracked as issue #70.
 - **The Orchestrator API registers Phase 17's four human-actorKind handlers
   (`generate-design-document`, `request-design-document-revision`, `regenerate-design-document`,
   `approve-design-document`) for generic `/commands/{slug}` dispatch, and its four
@@ -2587,7 +2596,7 @@ already-shipped phases participating in the same fence, judged out of proportion
 given `MarkImplementationCompleteCommand` is a rare, `ADMIN`-gated, human/CI-attested terminal
 action, not a hot path. Documented as a real, tracked residual limitation, not silently assumed
 closed — an earlier revision of this same doc comment overclaimed complete protection before a PR
-review round caught the mistake.
+review round caught the mistake. Tracked as issue #69.
 
 ## Cross-Dialect Testing (Mandatory)
 

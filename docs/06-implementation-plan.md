@@ -2038,23 +2038,42 @@ revision_requested -> generating -> ready_for_review -> approved -> project_comp
   real handlers and the real `run-design-doc` task (via `MockTriggerRunner`, injecting
   `MockDocumentationAdapter`) — distinct from the pre-existing `final-design-document` scenario,
   which exercises the unrelated `export-plan`/`export-backlog` tasks and was left untouched.
-- **No new migration.** `projects.state`/`.version`, `design_documents`, `design_document_sections`,
-  `design_decisions`, `glossary_terms`, and `artifact_exports` all existed since the Phase 1
-  43-table initial schema with every column this phase needed — confirmed by inspection before
-  writing any handler, per this phase's own instructions. `minicoder db validate` passes against a
-  fresh SQLite migrate with no changes required.
-- **Descoped from this pass** (explicitly, not silently dropped): `AgentRunRecorder` provenance
-  (`agent_runs`/`agent_context_packs`/`cost_records`) for the `DocumentationAgentAdapter`
-  invocation inside `run-design-doc.ts` — the task calls the adapter directly rather than through
-  the recorder wrapper `run-coder.ts`/`run-review.ts` use for their own adapter calls. This is a
-  real, tracked gap (not an oversight): adding it is additive and doesn't change this phase's
-  public shape, but the review-cycle-driven cost-tracking/redaction wiring `AgentRunRecorder`
-  provides was judged lower priority than a working end-to-end vertical slice through every layer
-  (migration → handler → task → API → CLI/TUI/Web) within this phase's time budget. A live-Postgres
-  run of `packages/migrations/src/runner.test.ts`'s Postgres-gated suites was not performed in this
-  implementation session (no reachable PostgreSQL instance) — the SQLite path was fully verified;
-  since no new migration was added, the Postgres schema is unaffected and the existing Phase 1
-  cross-dialect coverage already exercises it.
+- **No new migration in the initial implementation.** `projects.state`/`.version`,
+  `design_documents`, `design_document_sections`, `design_decisions`, `glossary_terms`, and
+  `artifact_exports` all existed since the Phase 1 43-table initial schema with every column the
+  initial implementation needed — confirmed by inspection before writing any handler, per this
+  phase's own instructions. `minicoder db validate` passed against a fresh SQLite migrate with no
+  changes required at that point. **Migration 0014** (`artifact_export_design_document_id`) was
+  added during PR review (jhoar/MiniCoder#68): a nullable `artifact_exports.design_document_id`
+  column durably binding an artifact export to the `design_documents` row it was rendered from,
+  closing a replay-safety gap `ExportDesignDocumentHandler`/`RecordDesignDocumentReadyHandler`
+  could not otherwise close (see CLAUDE.md's Final Design Document Generator Operational
+  Constraints section for the full writeup).
+- **Descoped from this pass** (explicitly, not silently dropped, each tracked as a GitHub issue):
+  - `AgentRunRecorder` provenance (`agent_runs`/`agent_context_packs`/`cost_records`) for the
+    `DocumentationAgentAdapter` invocation inside `run-design-doc.ts` — the task calls the adapter
+    directly rather than through the recorder wrapper `run-coder.ts`/`run-review.ts` use for their
+    own adapter calls. Adding it is additive and doesn't change this phase's public shape, but the
+    review-cycle-driven cost-tracking/redaction wiring `AgentRunRecorder` provides was judged lower
+    priority than a working end-to-end vertical slice through every layer (migration → handler →
+    task → API → CLI/TUI/Web) within this phase's time budget. Tracked as issue #72.
+  - `documentationAdapterName` is validation/provenance-only, not real multi-adapter runtime
+    selection — there is exactly one shipped `DocumentationAgentAdapter` reference implementation
+    today. Tracked as issue #70.
+  - No backfill/repair path for a legacy (pre-migration-0014) `NULL`-bound
+    `artifact_exports.design_document_id` row — both export/ready handlers fail closed on such a
+    row rather than silently accepting it. Tracked as issue #71.
+  - Project Acceptance's terminal transition (`MarkImplementationCompleteHandler`, hardened
+    substantially through PR review — a `NOT EXISTS`-guarded atomic `UPDATE` plus PostgreSQL
+    `SERIALIZABLE` isolation with bounded retry) is not a complete system-wide concurrency
+    invariant: it fully protects concurrent invocations of the completion command against each
+    other, but does not retroactively protect against a concurrent acceptance-invalidating writer
+    (e.g. a CI-failure handler) still running at the default isolation level. Judged acceptable
+    given the command is a rare, `ADMIN`-gated, human/CI-attested terminal action. Tracked as
+    issue #69.
+  - A live-Postgres run of `packages/migrations/src/runner.test.ts`'s Postgres-gated suites was not
+    performed in this implementation/review session (no reachable PostgreSQL instance) — the
+    SQLite path was fully verified at every stage, including after migration 0014 was added.
 
 ## Phase 18 — Future Extensions
 
