@@ -81,27 +81,15 @@ export class ExportDesignDocumentHandler implements CommandHandler<
           detail: `artifact_exports ${artifactExportId} not found for project ${projectId}`,
         });
       }
-      if (artifact.state === ArtifactExportState.EXPORTED) {
-        // Idempotent re-export: already exported, no mutation, no error — matches this handler's
-        // own idempotency-key claim/fulfill pattern for a replayed dispatch.
-        const result: CommandResult<ArtifactExportState> = {
-          commandId: envelope.commandId,
-          accepted: true,
-          resultingState: ArtifactExportState.EXPORTED,
-          emittedEventIds: [],
-        };
-        await fulfillIdempotencyKey(tx, claim.claimId, result);
-        return result;
-      }
-      if (artifact.state === ArtifactExportState.FAILED) {
-        throw new CommandError({
-          type: 'artifact-export-failed',
-          title: 'Design document artifact export previously failed',
-          status: 409,
-          detail: `artifact_exports ${artifactExportId} is in 'failed' state and cannot be re-exported by this command`,
-        });
-      }
-
+      // Document ownership and section-completeness are validated BEFORE the already-exported
+      // idempotent-return and failed-state-rejection branches below — not after, as an earlier
+      // revision of this handler did. Validating only on the "not yet exported" path let a
+      // manual/system replay (this handler is on the generic-dispatch system-replay allow-list)
+      // pass an already-exported artifact from the same project together with a different or
+      // incomplete `designDocumentId` and receive a clean idempotent success with no ownership/
+      // completeness check ever running — a real data-integrity gap found in PR review, since
+      // `RecordDesignDocumentReadyCommand` trusts this handler's success to mean the referenced
+      // document was actually the one rendered into the artifact.
       const docRows = await tx.query<DesignDocumentRow>(
         `SELECT id FROM design_documents WHERE id = ? AND project_id = ?`,
         [designDocumentId, projectId],
@@ -114,12 +102,6 @@ export class ExportDesignDocumentHandler implements CommandHandler<
           detail: `design_documents ${designDocumentId} not found for project ${projectId}`,
         });
       }
-
-      const projectRows = await tx.query<{ name: string }>(
-        `SELECT name FROM projects WHERE id = ?`,
-        [projectId],
-      );
-      const projectName = projectRows[0]?.name ?? projectId;
 
       const sectionRows = await tx.query<{
         section_name: string;
@@ -142,6 +124,34 @@ export class ExportDesignDocumentHandler implements CommandHandler<
           detail: `design_documents ${designDocumentId} is missing or has blank content for: ${missingOrBlank.join(', ')}`,
         });
       }
+
+      if (artifact.state === ArtifactExportState.EXPORTED) {
+        // Idempotent re-export: already exported, ownership/completeness re-validated above, no
+        // mutation, no error — matches this handler's own idempotency-key claim/fulfill pattern
+        // for a replayed dispatch.
+        const result: CommandResult<ArtifactExportState> = {
+          commandId: envelope.commandId,
+          accepted: true,
+          resultingState: ArtifactExportState.EXPORTED,
+          emittedEventIds: [],
+        };
+        await fulfillIdempotencyKey(tx, claim.claimId, result);
+        return result;
+      }
+      if (artifact.state === ArtifactExportState.FAILED) {
+        throw new CommandError({
+          type: 'artifact-export-failed',
+          title: 'Design document artifact export previously failed',
+          status: 409,
+          detail: `artifact_exports ${artifactExportId} is in 'failed' state and cannot be re-exported by this command`,
+        });
+      }
+
+      const projectRows = await tx.query<{ name: string }>(
+        `SELECT name FROM projects WHERE id = ?`,
+        [projectId],
+      );
+      const projectName = projectRows[0]?.name ?? projectId;
 
       const decisionRows = await tx.query<{
         title: string;

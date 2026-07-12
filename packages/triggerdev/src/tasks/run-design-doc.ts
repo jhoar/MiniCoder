@@ -11,10 +11,16 @@ import {
   writeDesignDocumentSections,
 } from '@minicoder/core';
 import type { CommandEnvelope, DbClient, DocumentationAgentAdapter } from '@minicoder/core';
+import { WorkflowLockManager, LockConflictError } from '@minicoder/workflow';
 import type { RunDesignDocPayload } from './types.js';
 import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 import { requireNonBlankEnvVar } from './env.js';
+
+/** Resource key for the single-flight generation-cycle lock (see the `runImpl` doc comment). */
+function designDocGenerationLockKey(projectId: string): string {
+  return `design-doc-generation:${projectId}`;
+}
 
 export type { RunDesignDocPayload };
 
@@ -133,6 +139,20 @@ interface PlanRow {
  * what happens next" posture `run-coder.ts` already establishes for an adapter failure leaving a
  * feature run at `coding`. An operator can inspect the draft sections directly and either retry
  * generation (once the underlying provider/config issue is fixed) or manually intervene.
+ *
+ * Single-flight per project: after the no-op state/row gates below, this task acquires a
+ * `WorkflowLockManager` lock on `design-doc-generation:{projectId}` (mirroring
+ * `execution-lane:{projectId}`'s shape, but a distinct resource — design-document generation is
+ * project-lifecycle-scoped, not feature-execution-scoped, so it must not contend with or be
+ * blocked by an unrelated in-flight feature-execution lock) and holds it for the entire adapter
+ * call, section write, export, and record-ready sequence. This closes a real race (found in PR
+ * review): the Web UI's "Retry generation" affordance and a scheduled/duplicate invocation could
+ * otherwise both pass the initial no-op gates, both invoke the adapter, and the slower call could
+ * overwrite `design_document_sections` — or even export a `requiresRevision: true` result — after
+ * the faster call had already recorded the document ready. A conflicting concurrent invocation
+ * (`LockConflictError`) is treated as an expected, non-fatal "another run is already in flight"
+ * condition and returns a clean no-op, the same "transient race -> false, don't throw" posture
+ * `start-next-feature.ts`/`github-reconciliation.ts` already establish for their own locks.
  */
 export async function runImpl(
   payload: RunDesignDocPayload,
@@ -163,6 +183,58 @@ export async function runImpl(
   if (!designDocumentId || !artifactExportId) {
     return { projectId, generated: false, designDocumentId, artifactExportId };
   }
+
+  const lockManager = new WorkflowLockManager(db);
+  let lock;
+  try {
+    lock = await lockManager.acquire(projectId, designDocGenerationLockKey(projectId), {
+      holderId: `run-design-doc:${correlationId}`,
+      ttlMs: 10 * 60 * 1000,
+    });
+  } catch (err) {
+    if (err instanceof LockConflictError) {
+      // Another generation cycle for this project is already in flight — a routine, expected
+      // condition (e.g. a duplicate Web UI retry click), not a failure.
+      return { projectId, generated: false, designDocumentId, artifactExportId };
+    }
+    throw err;
+  }
+
+  try {
+    return await generateAndRecord({
+      db,
+      projectId,
+      correlationId,
+      documentationAdapterName,
+      designDocumentId,
+      artifactExportId,
+      deps,
+    });
+  } finally {
+    await lockManager.release(lock);
+  }
+}
+
+interface GenerateAndRecordArgs {
+  db: DbClient;
+  projectId: string;
+  correlationId: string;
+  documentationAdapterName: string;
+  designDocumentId: string;
+  artifactExportId: string;
+  deps: RunDesignDocDeps;
+}
+
+async function generateAndRecord(args: GenerateAndRecordArgs): Promise<RunDesignDocResult> {
+  const {
+    db,
+    projectId,
+    correlationId,
+    documentationAdapterName,
+    designDocumentId,
+    artifactExportId,
+    deps,
+  } = args;
 
   // Adapter-name validation happens after the no-op state/row-existence gates above (not before,
   // as an earlier revision of this task did) — a harmless replay for a project already past
