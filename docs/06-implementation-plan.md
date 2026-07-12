@@ -1932,10 +1932,10 @@ commands are safe and audited; private chain-of-thought is not stored.
   column needed.
 - **Descoped from this pass** (explicitly, not silently dropped): a dedicated `/timeline` or
   `/budget-report` Web UI page (the existing `/costs`/`/agent-runs`/`features/[id]` pages are
-  unchanged) and a scheduled/automatic caller for `exportWorkflowEventsToOtlp()`. Both are real,
-  tracked future work — the read-model/API/core functions they would call are fully built and
-  tested; only the additional UI surface and default automatic scheduling were out of scope for
-  this pass's time budget.
+  unchanged — tracked as issue #66) and a scheduled/automatic caller for
+  `exportWorkflowEventsToOtlp()` (tracked as issue #67). Both are real, tracked future work — the
+  read-model/API/core functions they would call are fully built and tested; only the additional UI
+  surface and default automatic scheduling were out of scope for this pass's time budget.
 
 ## Phase 17 — Final Design Document Generator
 

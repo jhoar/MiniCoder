@@ -2289,6 +2289,16 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   reintroduce the same ambiguous-bare-column problem `listHumanRequiredItems()`'s two-step-query
   pattern already exists to avoid (CLAUDE.md's Ink Text UI Operational Constraints) — this is that
   same pattern generalized to more source tables, not a new one.
+- \*\*`GET /feature-runs/:id/timeline`'s access contract is feature-run-ID-scoped, not
+  project-ownership-checked, matching every other Phase 13/14/15 read route's posture under the
+  shared static-API-key auth model (see "Auth is a static, env-config-driven API-key map" in the
+  Orchestrator API Operational Constraints section above) — any caller holding a valid API key of
+  any role can read any feature run's timeline, the same as e.g. `GET /agent-runs`. This is a
+  documented, not accidental, consequence of the current single-shared-key trust model, flagged as
+  a PR #65 re-review watch item, not a bug: if/when project- or user-scoped auth ships (the
+  Hosted-mode OAuth/SSO work already deferred elsewhere in this document), this route should gain a
+  project-ownership check joined through `feature_requests`, the same as any other read route would
+  need at that point.
 - **`getBudgetReport()` (`packages/api/src/read-models/budget-report.ts`) is a plain `GROUP BY`
   aggregation, not a cursor-paginated listing** — its one `LEFT JOIN` (`cost_records` to
   `agent_runs`, for the by-role breakdown) is safe because every output column is aliased/derived
@@ -2331,11 +2341,12 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
 - **No scheduled/automatic caller for `exportWorkflowEventsToOtlp()` is wired in Phase 16** — it
   is a library function a deployment can call from its own cron/task if it opts in, matching the
   phase's own "optional" framing verbatim. Do not add a default Trigger.dev task calling this
-  without discussing the resulting always-on network dependency first.
+  without discussing the resulting always-on network dependency first. Tracked as issue #67.
 - **No new Web UI page was added for the timeline or budget-report views in Phase 16** — the
   existing `/costs`/`/agent-runs`/`features/[id]` Web UI pages are unchanged. This is real,
   documented future work (like issue #61's unwired `TaskTriggerClient`), not a silently dropped
   requirement; the read-model/API/core functions backing a future page are fully built and tested.
+  Tracked as issue #66.
 
 ## Cross-Dialect Testing (Mandatory)
 
