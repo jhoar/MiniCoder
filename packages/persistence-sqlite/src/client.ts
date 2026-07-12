@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { DbClient, TxClient } from '@minicoder/core';
+import type { DbClient, TxClient, TransactionOptions } from '@minicoder/core';
 import { RollbackFailedError } from '@minicoder/core';
 
 const TX_EXPIRED_MSG = 'TxClient has expired: the transaction has already ended.';
@@ -67,7 +67,11 @@ export class SqliteDbClient implements DbClient {
   // the async callback awaits. better-sqlite3's db.transaction() commits when
   // its synchronous wrapper returns — before any awaited work completes — so
   // that pattern is not safe for async callbacks.
-  async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+  async transaction<T>(fn: (tx: TxClient) => Promise<T>, _opts?: TransactionOptions): Promise<T> {
+    // `_opts.isolationLevel === 'serializable'` is a deliberate no-op here — see
+    // `TransactionOptions`'s doc comment in `@minicoder/core`: `better-sqlite3`'s synchronous,
+    // single-writer, whole-database-locked transaction model already provides full
+    // serializability for a single-process connection.
     if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error('Nested transactions are not supported.');
     let rollbackRequired = false;

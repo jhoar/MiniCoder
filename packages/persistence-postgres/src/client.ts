@@ -1,6 +1,17 @@
 import type { PoolClient } from 'pg';
-import type { DbClient, TxClient } from '@minicoder/core';
-import { RollbackFailedError } from '@minicoder/core';
+import type { DbClient, TxClient, TransactionOptions } from '@minicoder/core';
+import { RollbackFailedError, SerializationFailureError } from '@minicoder/core';
+
+const POSTGRES_SERIALIZATION_FAILURE_SQLSTATE = '40001';
+
+function isSerializationFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === POSTGRES_SERIALIZATION_FAILURE_SQLSTATE
+  );
+}
 
 const TX_EXPIRED_MSG = 'TxClient has expired: the transaction has already ended.';
 
@@ -67,7 +78,7 @@ export class PostgresDbClient implements DbClient {
     return result.rowCount ?? 0;
   }
 
-  async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+  async transaction<T>(fn: (tx: TxClient) => Promise<T>, opts?: TransactionOptions): Promise<T> {
     if (this.dead) throw new Error(DEAD_MSG);
     if (this.inTransaction) throw new Error('Nested transactions are not supported.');
     // Flag is set BEFORE awaiting BEGIN so no concurrent outer operation can
@@ -78,11 +89,26 @@ export class PostgresDbClient implements DbClient {
     try {
       await this.client.query('BEGIN');
       rollbackRequired = true;
+      if (opts?.isolationLevel === 'serializable') {
+        await this.client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+      }
       const result = await fn(tx);
-      await this.client.query('COMMIT');
+      try {
+        await this.client.query('COMMIT');
+      } catch (commitErr) {
+        // A serializable-isolation conflict can surface at COMMIT time (not just on an
+        // individual statement) — translate it to a typed, caller-recognizable error rather
+        // than a raw `pg` error with an opaque SQLSTATE.
+        if (isSerializationFailure(commitErr)) {
+          rollbackRequired = false; // COMMIT failing already ended the transaction server-side
+          throw new SerializationFailureError(commitErr);
+        }
+        throw commitErr;
+      }
       rollbackRequired = false;
       return result;
     } catch (err) {
+      const translated = isSerializationFailure(err) ? new SerializationFailureError(err) : err;
       if (rollbackRequired) {
         try {
           await this.client.query('ROLLBACK');
@@ -96,9 +122,9 @@ export class PostgresDbClient implements DbClient {
           } catch {
             // release itself failing is ignored; the connection is gone either way
           }
-          throw new RollbackFailedError(err, rollbackErr);
+          throw new RollbackFailedError(translated, rollbackErr);
         }
-      } else {
+      } else if (!(translated instanceof SerializationFailureError)) {
         // BEGIN itself failed — transport may have left connection state unknown.
         // Discard the connection so the pool doesn't hand it to another caller.
         this.dead = true;
@@ -108,7 +134,7 @@ export class PostgresDbClient implements DbClient {
           // ignore
         }
       }
-      throw err;
+      throw translated;
     } finally {
       this.inTransaction = false;
       tx.invalidate();

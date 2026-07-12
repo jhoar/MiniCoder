@@ -3,7 +3,7 @@ import { ProjectState, UserRole } from '../../../domain/states.js';
 import { StateTransitionValidator } from '../../../statemachine/validator.js';
 import { PROJECT_LIFECYCLE_MATRIX } from '../../../statemachine/machines/project-lifecycle.js';
 import { assertVersion, nextVersion } from '../../../persistence/optimistic.js';
-import { OptimisticLockError } from '../../../persistence/types.js';
+import { OptimisticLockError, SerializationFailureError } from '../../../persistence/types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
 import { CommandError } from '../../types.js';
@@ -34,6 +34,10 @@ export type MarkImplementationCompletePayload = z.infer<
 
 const validator = new StateTransitionValidator(PROJECT_LIFECYCLE_MATRIX, 'project-lifecycle');
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+/** Bounded retry count for a `SERIALIZABLE`-isolation conflict (PostgreSQL SQLSTATE `40001`) — a
+ * rare event even under real contention, so a small bound is enough; each retry re-runs the whole
+ * transaction function from scratch against fresh state. */
+const MAX_SERIALIZATION_RETRIES = 3;
 
 interface ProjectRow {
   id: string;
@@ -70,6 +74,25 @@ interface ProjectRow {
  * `SELECT`-based `evaluateProjectAcceptance()` call above stays — it is what produces a fast,
  * readable rejection message on the common "acceptance already fails" path — but it is no longer
  * the sole enforcement of the predicate; the guarded `UPDATE` is.
+ *
+ * The guarded `UPDATE` closes the "stale read before the update statement" case, but under plain
+ * PostgreSQL `READ COMMITTED` it does not, by itself, keep the acceptance predicate stable through
+ * to `COMMIT`: a fully independent concurrent transaction committing an acceptance-invalidating
+ * write (to `feature_runs`/`review_findings`/`outbox_events`/`inbox_events`/`artifact_exports`)
+ * in the window between this transaction's `UPDATE` and its own `COMMIT` is not blocked by
+ * anything the guarded `UPDATE` does (PR review finding — a materially deeper point than the
+ * "stale read" case the guarded `UPDATE` above already fixes). Closed by running this entire
+ * transaction at PostgreSQL `SERIALIZABLE` isolation (`TransactionOptions.isolationLevel`):
+ * PostgreSQL's serializable-snapshot-isolation (SSI) machinery automatically detects a dangerous
+ * read/write conflict against ANY concurrent transaction that touches rows this transaction read
+ * (the acceptance-predicate tables) — no explicit lock, fence, or cooperation from those other
+ * writers is required. A conflict surfaces as a `SerializationFailureError` at `COMMIT` (or,
+ * occasionally, at an earlier statement); `execute()` retries the whole transaction function up
+ * to `MAX_SERIALIZATION_RETRIES` times on that error, which is safe because a rolled-back
+ * transaction leaves no partial state (including the `idempotency_keys` claim) for the retry to
+ * collide with. On the SQLite persistence backend this isolation request is a documented no-op
+ * (see `TransactionOptions`'s doc comment) — its single-writer model already provides the
+ * equivalent guarantee, so no retry loop is ever actually exercised there.
  */
 export class MarkImplementationCompleteHandler implements CommandHandler<
   MarkImplementationCompletePayload,
@@ -97,47 +120,75 @@ export class MarkImplementationCompleteHandler implements CommandHandler<
       });
     }
 
-    return db.transaction(async (tx) => {
-      const claim = await claimIdempotencyKey<ProjectState>(
-        tx,
-        envelope.idempotencyKey,
-        this.idempotencyScope,
-        IDEMPOTENCY_TTL_MS,
-      );
-      if (!claim.owned) return claim.result;
-
-      const acceptance = await evaluateProjectAcceptance(tx, projectId);
-      if (!acceptance.passed) {
-        throw new CommandError({
-          type: 'project-acceptance-failed',
-          title: 'Project Acceptance Validation failed',
-          status: 409,
-          detail: `Project ${projectId} does not pass Project Acceptance Validation: ${acceptance.checks
-            .filter((c) => !c.passed)
-            .map((c) => c.name)
-            .join(', ')}`,
-        });
+    for (let attempt = 1; attempt <= MAX_SERIALIZATION_RETRIES; attempt++) {
+      try {
+        return await this.runTransaction(
+          envelope,
+          db,
+          projectId,
+          expectedVersion,
+          externalChecksEvidence,
+        );
+      } catch (err) {
+        if (err instanceof SerializationFailureError && attempt < MAX_SERIALIZATION_RETRIES) {
+          continue;
+        }
+        throw err;
       }
+    }
+    // Unreachable: the loop above always either returns or throws.
+    throw new Error('unreachable');
+  }
 
-      const rows = await tx.query<ProjectRow>(
-        `SELECT id, state, version FROM projects WHERE id = ?`,
-        [projectId],
-      );
-      const project = rows[0];
-      if (!project) {
-        throw new CommandError({
-          type: 'not-found',
-          title: 'Project not found',
-          status: 404,
-          detail: `Project ${projectId} not found`,
-        });
-      }
-      assertVersion('projects', projectId, project, expectedVersion);
-      validator.assertValid(project.state as ProjectState, ProjectState.IMPLEMENTATION_COMPLETE);
+  private async runTransaction(
+    envelope: CommandEnvelope<MarkImplementationCompletePayload>,
+    db: DbClient,
+    projectId: string,
+    expectedVersion: number,
+    externalChecksEvidence: string,
+  ): Promise<CommandResult<ProjectState>> {
+    return db.transaction(
+      async (tx) => {
+        const claim = await claimIdempotencyKey<ProjectState>(
+          tx,
+          envelope.idempotencyKey,
+          this.idempotencyScope,
+          IDEMPOTENCY_TTL_MS,
+        );
+        if (!claim.owned) return claim.result;
 
-      const now = isoNow();
-      const affected = await tx.executeAffected(
-        `UPDATE projects SET state = ?, version = ?, updated_at = ?
+        const acceptance = await evaluateProjectAcceptance(tx, projectId);
+        if (!acceptance.passed) {
+          throw new CommandError({
+            type: 'project-acceptance-failed',
+            title: 'Project Acceptance Validation failed',
+            status: 409,
+            detail: `Project ${projectId} does not pass Project Acceptance Validation: ${acceptance.checks
+              .filter((c) => !c.passed)
+              .map((c) => c.name)
+              .join(', ')}`,
+          });
+        }
+
+        const rows = await tx.query<ProjectRow>(
+          `SELECT id, state, version FROM projects WHERE id = ?`,
+          [projectId],
+        );
+        const project = rows[0];
+        if (!project) {
+          throw new CommandError({
+            type: 'not-found',
+            title: 'Project not found',
+            status: 404,
+            detail: `Project ${projectId} not found`,
+          });
+        }
+        assertVersion('projects', projectId, project, expectedVersion);
+        validator.assertValid(project.state as ProjectState, ProjectState.IMPLEMENTATION_COMPLETE);
+
+        const now = isoNow();
+        const affected = await tx.executeAffected(
+          `UPDATE projects SET state = ?, version = ?, updated_at = ?
          WHERE id = ? AND version = ?
            AND NOT EXISTS (
              SELECT 1 FROM feature_requests freq
@@ -165,77 +216,79 @@ export class MarkImplementationCompleteHandler implements CommandHandler<
            AND NOT EXISTS (
              SELECT 1 FROM artifact_exports WHERE project_id = ? AND state = 'failed'
            )`,
-        [
-          ProjectState.IMPLEMENTATION_COMPLETE,
-          nextVersion(project.version),
-          now,
-          projectId,
-          expectedVersion,
-          projectId,
-          projectId,
-          projectId,
-          projectId,
-        ],
-      );
-      if (affected === 0) {
-        // Disambiguate: a stale version (a genuine optimistic-lock conflict) vs. an acceptance
-        // predicate that changed underneath between the SELECT-based check above and this UPDATE
-        // (the race this guard exists to close) — the same two-step pattern
-        // `SelectFeatureHandler` already uses for its own compare-and-swap.
-        const refreshed = await tx.query<ProjectRow>(
-          `SELECT id, state, version FROM projects WHERE id = ?`,
-          [projectId],
-        );
-        if (!refreshed[0] || refreshed[0].version !== expectedVersion) {
-          throw new OptimisticLockError(
-            'projects',
+          [
+            ProjectState.IMPLEMENTATION_COMPLETE,
+            nextVersion(project.version),
+            now,
             projectId,
             expectedVersion,
-            refreshed[0]?.version ?? -1,
+            projectId,
+            projectId,
+            projectId,
+            projectId,
+          ],
+        );
+        if (affected === 0) {
+          // Disambiguate: a stale version (a genuine optimistic-lock conflict) vs. an acceptance
+          // predicate that changed underneath between the SELECT-based check above and this UPDATE
+          // (the race this guard exists to close) — the same two-step pattern
+          // `SelectFeatureHandler` already uses for its own compare-and-swap.
+          const refreshed = await tx.query<ProjectRow>(
+            `SELECT id, state, version FROM projects WHERE id = ?`,
+            [projectId],
           );
+          if (!refreshed[0] || refreshed[0].version !== expectedVersion) {
+            throw new OptimisticLockError(
+              'projects',
+              projectId,
+              expectedVersion,
+              refreshed[0]?.version ?? -1,
+            );
+          }
+          const recheck = await evaluateProjectAcceptance(tx, projectId);
+          throw new CommandError({
+            type: 'project-acceptance-failed',
+            title: 'Project Acceptance Validation failed',
+            status: 409,
+            detail: `Project ${projectId} no longer passes Project Acceptance Validation (changed concurrently): ${recheck.checks
+              .filter((c) => !c.passed)
+              .map((c) => c.name)
+              .join(', ')}`,
+          });
         }
-        const recheck = await evaluateProjectAcceptance(tx, projectId);
-        throw new CommandError({
-          type: 'project-acceptance-failed',
-          title: 'Project Acceptance Validation failed',
-          status: 409,
-          detail: `Project ${projectId} no longer passes Project Acceptance Validation (changed concurrently): ${recheck.checks
-            .filter((c) => !c.passed)
-            .map((c) => c.name)
-            .join(', ')}`,
+
+        await insertHumanApproval(tx, {
+          projectId,
+          contextType: 'project_acceptance_external_checks',
+          decision: 'approved',
+          actor: envelope.actor.id,
+          actorRole: envelope.actor.role,
+          notes: externalChecksEvidence,
         });
-      }
 
-      await insertHumanApproval(tx, {
-        projectId,
-        contextType: 'project_acceptance_external_checks',
-        decision: 'approved',
-        actor: envelope.actor.id,
-        actorRole: envelope.actor.role,
-        notes: externalChecksEvidence,
-      });
+        const eventId = await writeWorkflowEvent(tx, {
+          projectId,
+          eventType: 'project.implementation_complete',
+          fromState: ProjectState.ACTIVE,
+          toState: ProjectState.IMPLEMENTATION_COMPLETE,
+          actorId: envelope.actor.id,
+          correlationId: envelope.correlationId,
+        });
+        await writeOutboxEvent(tx, {
+          eventType: 'project.implementation_complete',
+          payload: { projectId },
+        });
 
-      const eventId = await writeWorkflowEvent(tx, {
-        projectId,
-        eventType: 'project.implementation_complete',
-        fromState: ProjectState.ACTIVE,
-        toState: ProjectState.IMPLEMENTATION_COMPLETE,
-        actorId: envelope.actor.id,
-        correlationId: envelope.correlationId,
-      });
-      await writeOutboxEvent(tx, {
-        eventType: 'project.implementation_complete',
-        payload: { projectId },
-      });
-
-      const result: CommandResult<ProjectState> = {
-        commandId: envelope.commandId,
-        accepted: true,
-        resultingState: ProjectState.IMPLEMENTATION_COMPLETE,
-        emittedEventIds: [eventId],
-      };
-      await fulfillIdempotencyKey(tx, claim.claimId, result);
-      return result;
-    });
+        const result: CommandResult<ProjectState> = {
+          commandId: envelope.commandId,
+          accepted: true,
+          resultingState: ProjectState.IMPLEMENTATION_COMPLETE,
+          emittedEventIds: [eventId],
+        };
+        await fulfillIdempotencyKey(tx, claim.claimId, result);
+        return result;
+      },
+      { isolationLevel: 'serializable' },
+    );
   }
 }
