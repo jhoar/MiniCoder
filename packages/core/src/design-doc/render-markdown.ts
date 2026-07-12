@@ -29,6 +29,13 @@ export interface GlossaryTermRow {
  * followed by a structured table rendered directly from `design_decisions`/`glossary_terms`, so
  * the exported document carries both the adapter's narrative and the exact structured audit rows.
  */
+/** Escapes a value for use inside a single Markdown table cell: pipes (column separator) and
+ * newlines (row separator) both corrupt a table if left raw. Applied to every cell, not just the
+ * free-text ones, since any column here can carry user- or model-controlled text. */
+function escapeTableCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r\n|\r|\n/g, ' ');
+}
+
 export function renderDesignDocumentMarkdown(opts: {
   projectName: string;
   sections: DesignDocumentSectionRow[];
@@ -44,7 +51,9 @@ export function renderDesignDocumentMarkdown(opts: {
     if (sectionName === 'Design Decisions' && opts.designDecisions.length > 0) {
       lines.push('| Title | Status | Decision |', '| --- | --- | --- |');
       for (const d of opts.designDecisions) {
-        lines.push(`| ${d.title} | ${d.status} | ${d.decision.replace(/\|/g, '\\|')} |`);
+        lines.push(
+          `| ${escapeTableCell(d.title)} | ${escapeTableCell(d.status)} | ${escapeTableCell(d.decision)} |`,
+        );
       }
       lines.push('');
     }
@@ -52,7 +61,7 @@ export function renderDesignDocumentMarkdown(opts: {
     if (sectionName === 'Glossary' && opts.glossaryTerms.length > 0) {
       lines.push('| Term | Definition |', '| --- | --- |');
       for (const g of opts.glossaryTerms) {
-        lines.push(`| ${g.term} | ${g.definition.replace(/\|/g, '\\|')} |`);
+        lines.push(`| ${escapeTableCell(g.term)} | ${escapeTableCell(g.definition)} |`);
       }
       lines.push('');
     }

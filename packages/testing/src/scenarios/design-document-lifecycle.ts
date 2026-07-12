@@ -1,5 +1,7 @@
 import {
   TransactionalCommandExecutor,
+  AdapterRegistry,
+  AgentRole,
   MarkImplementationCompleteHandler,
   GenerateDesignDocumentHandler,
   RequestDesignDocumentRevisionHandler,
@@ -87,6 +89,15 @@ export const designDocumentLifecycleScenario: Scenario = {
     const { db, projectId } = ctx;
     const correlationId = `corr-design-doc-lifecycle-${projectId}`;
     const executor = new TransactionalCommandExecutor(db);
+
+    // run-design-doc.ts fails fast (UnknownAdapterError) on an unregistered documentationAdapterName
+    // — register the mock the same way review-fix-loop.ts registers MockReviewerAdapter.
+    await new AdapterRegistry(db).register({
+      role: AgentRole.DOCUMENTATION,
+      name: 'MockDocumentationAdapter',
+      implementation: '@minicoder/testing:MockDocumentationAdapter',
+      capabilities: ['can_generate_design_document'],
+    });
     const operator = {
       id: 'operator-1',
       role: 'operator' as const,

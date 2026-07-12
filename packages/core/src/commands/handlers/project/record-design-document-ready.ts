@@ -39,6 +39,11 @@ interface ArtifactExportRow {
   state: string;
 }
 
+interface DesignDocumentRow {
+  id: string;
+  state: string;
+}
+
 /**
  * `design_document_generating -> design_document_ready_for_review` (system actor). Called by the
  * `run-design-doc` Trigger.dev task after `DocumentationAgentAdapter` has produced all 13 sections
@@ -93,7 +98,7 @@ export class RecordDesignDocumentReadyHandler implements CommandHandler<
       );
 
       const artifactRows = await tx.query<ArtifactExportRow>(
-        `SELECT id, state FROM artifact_exports WHERE id = ? AND project_id = ?`,
+        `SELECT id, state FROM artifact_exports WHERE id = ? AND project_id = ? AND artifact_type = 'design_document'`,
         [artifactExportId, projectId],
       );
       const artifact = artifactRows[0];
@@ -103,6 +108,28 @@ export class RecordDesignDocumentReadyHandler implements CommandHandler<
           title: 'Design document artifact not yet exported',
           status: 409,
           detail: `artifact_exports ${artifactExportId} is not in 'exported' state`,
+        });
+      }
+
+      const docRows = await tx.query<DesignDocumentRow>(
+        `SELECT id, state FROM design_documents WHERE id = ? AND project_id = ?`,
+        [designDocumentId, projectId],
+      );
+      const designDocument = docRows[0];
+      if (!designDocument) {
+        throw new CommandError({
+          type: 'not-found',
+          title: 'Design document not found',
+          status: 404,
+          detail: `design_documents ${designDocumentId} not found for project ${projectId}`,
+        });
+      }
+      if (designDocument.state !== 'draft') {
+        throw new CommandError({
+          type: 'design-document-not-generating',
+          title: 'Design document is not in the generating state',
+          status: 409,
+          detail: `design_documents ${designDocumentId} is at state '${designDocument.state}', not 'draft'`,
         });
       }
 
@@ -121,10 +148,19 @@ export class RecordDesignDocumentReadyHandler implements CommandHandler<
         throw new OptimisticLockError('projects', projectId, expectedVersion, -1);
       }
 
-      await tx.executeAffected(
-        `UPDATE design_documents SET state = 'ready_for_review', version = version + 1, updated_at = ? WHERE id = ? AND project_id = ?`,
+      const docAffected = await tx.executeAffected(
+        `UPDATE design_documents SET state = 'ready_for_review', version = version + 1, updated_at = ?
+         WHERE id = ? AND project_id = ? AND state = 'draft'`,
         [now, designDocumentId, projectId],
       );
+      if (docAffected === 0) {
+        throw new CommandError({
+          type: 'design-document-not-generating',
+          title: 'Design document is not in the generating state',
+          status: 409,
+          detail: `design_documents ${designDocumentId} was not in 'draft' state at update time`,
+        });
+      }
 
       const eventId = await writeWorkflowEvent(tx, {
         projectId,

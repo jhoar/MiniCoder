@@ -64,18 +64,22 @@ export async function evaluateProjectAcceptance(
 ): Promise<ProjectAcceptanceResult> {
   const checks: ProjectAcceptanceCheck[] = [];
 
-  const nonTerminalRuns = await db.query<CountRow>(
-    `SELECT fr.id, fr.current_execution_state
-     FROM feature_runs fr
-     JOIN feature_requests freq ON fr.feature_request_id = freq.id
-     WHERE freq.project_id = ? AND fr.current_execution_state NOT IN ('merged', 'skipped')`,
+  // Starts FROM feature_requests (not feature_runs) so an approved/activatable feature that
+  // somehow never got a feature_runs row at all (e.g. activation partially failed) is caught as
+  // non-terminal too, not silently invisible to a query that only ever looks at existing runs.
+  const nonTerminalFeatures = await db.query<CountRow>(
+    `SELECT freq.id, fr.current_execution_state
+     FROM feature_requests freq
+     LEFT JOIN feature_runs fr ON fr.feature_request_id = freq.id
+     WHERE freq.project_id = ? AND freq.kind = 'feature'
+       AND (fr.id IS NULL OR fr.current_execution_state NOT IN ('merged', 'skipped'))`,
     [projectId],
   );
   checks.push({
     name: 'all_features_terminal',
-    passed: nonTerminalRuns.length === 0,
-    count: nonTerminalRuns.length,
-    details: nonTerminalRuns,
+    passed: nonTerminalFeatures.length === 0,
+    count: nonTerminalFeatures.length,
+    details: nonTerminalFeatures,
   });
 
   const openEscalations = await db.query<CountRow>(

@@ -50,14 +50,22 @@ export async function generateDesignDocumentSections(
   });
 
   const bySectionName = new Map(output.sections.map((s) => [s.sectionName, s.content]));
-  const sections = DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName) => ({
-    sectionName,
-    content: bySectionName.get(sectionName) ?? `(no content generated for ${sectionName})`,
-  }));
+  let hasMissingSection = false;
+  const sections = DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName) => {
+    const content = bySectionName.get(sectionName);
+    if (content === undefined || content.trim().length === 0) {
+      hasMissingSection = true;
+      return { sectionName, content: `(no content generated for ${sectionName})` };
+    }
+    return { sectionName, content };
+  });
 
   return {
     documentId: output.documentId,
     sections,
-    requiresRevision: output.requiresRevision,
+    // A section the adapter didn't return (or returned empty) is a generation defect, not a
+    // silently-acceptable placeholder — force requiresRevision so an incomplete document doesn't
+    // pass through RecordDesignDocumentReadyCommand looking like a clean success.
+    requiresRevision: output.requiresRevision || hasMissingSection,
   };
 }

@@ -50,13 +50,21 @@ Server-Action-based command dispatch with per-submission idempotency keys, and a
 `docs/05-ui-specification.md` §5 routes (dashboard, planning, clarification, features, feature
 detail, pull-request detail, agent runs, findings, disagreements, costs, budgets, artifacts,
 adapters, design document, human-required, state health, settings), with the design-document and
-adapters pages explicitly read-only pending backend commands that don't exist yet (Phase 15); and
-the Observability, Cost Forecasting, and Recovery implementation — the workflow timeline / agent-run
+adapters pages explicitly read-only pending backend commands that don't exist yet (Phase 15); the
+Observability, Cost Forecasting, and Recovery implementation — the workflow timeline / agent-run
 trace view (`GET /feature-runs/:id/timeline`, `minicoder runs --timeline`), prospective budget
 forecasting wired as an opt-in pre-flight check into `run-coder`/`run-review`, the budget report
 read model (`GET /budget-report`, `minicoder costs --report`), two new `state doctor` checks
 (`code_pushed_no_pull_request`, `secret_leak_scan`), and an optional, fully env-gated,
-hand-rolled-`fetch` OpenTelemetry Logs export (Phase 16). Specification documents live under
+hand-rolled-`fetch` OpenTelemetry Logs export (Phase 16); and the Final Design Document Generator
+implementation — the seven `PROJECT_LIFECYCLE_MATRIX` command handlers driving `active ->
+implementation_complete -> design_document_generating -> design_document_ready_for_review ->
+{design_document_revision_requested -> design_document_generating, design_document_approved ->
+project_complete}`, the DB-only Project Acceptance Validation evaluator, the
+`DocumentationAgentAdapter` reference implementation (`packages/adapters-documentation`), the
+Design Document Generator and `final-design-document.md` export, the `run-design-doc` Trigger.dev
+task, and the now-live `/design-document` Web UI actions (previously disabled pending these
+commands) (Phase 17). Specification documents live under
 `docs/`.
 
 **Deployment note:** `packages/web` holds one server-side Orchestrator API credential shared by

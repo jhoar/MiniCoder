@@ -76,6 +76,26 @@ export class ExportDesignDocumentHandler implements CommandHandler<
           detail: `artifact_exports ${artifactExportId} not found for project ${projectId}`,
         });
       }
+      if (artifact.state === ArtifactExportState.EXPORTED) {
+        // Idempotent re-export: already exported, no mutation, no error — matches this handler's
+        // own idempotency-key claim/fulfill pattern for a replayed dispatch.
+        const result: CommandResult<ArtifactExportState> = {
+          commandId: envelope.commandId,
+          accepted: true,
+          resultingState: ArtifactExportState.EXPORTED,
+          emittedEventIds: [],
+        };
+        await fulfillIdempotencyKey(tx, claim.claimId, result);
+        return result;
+      }
+      if (artifact.state === ArtifactExportState.FAILED) {
+        throw new CommandError({
+          type: 'artifact-export-failed',
+          title: 'Design document artifact export previously failed',
+          status: 409,
+          detail: `artifact_exports ${artifactExportId} is in 'failed' state and cannot be re-exported by this command`,
+        });
+      }
 
       const projectRows = await tx.query<{ name: string }>(
         `SELECT name FROM projects WHERE id = ?`,
@@ -142,10 +162,26 @@ export class ExportDesignDocumentHandler implements CommandHandler<
 
       validator.assertValid(ArtifactExportState.GENERATING, ArtifactExportState.EXPORTED);
       const exportedAt = isoNow();
-      await tx.executeAffected(
-        `UPDATE artifact_exports SET state = ?, content = ?, exported_at = ?, updated_at = ? WHERE id = ?`,
-        [ArtifactExportState.EXPORTED, markdown, exportedAt, exportedAt, artifactExportId],
+      const exportAffected = await tx.executeAffected(
+        `UPDATE artifact_exports SET state = ?, content = ?, exported_at = ?, updated_at = ?
+         WHERE id = ? AND state = ?`,
+        [
+          ArtifactExportState.EXPORTED,
+          markdown,
+          exportedAt,
+          exportedAt,
+          artifactExportId,
+          ArtifactExportState.GENERATING,
+        ],
       );
+      if (exportAffected === 0) {
+        throw new CommandError({
+          type: 'artifact-export-not-generating',
+          title: 'Design document artifact export is no longer in the generating state',
+          status: 409,
+          detail: `artifact_exports ${artifactExportId} was not in 'generating' state at update time`,
+        });
+      }
 
       const eventId = await writeWorkflowEvent(tx, {
         projectId,

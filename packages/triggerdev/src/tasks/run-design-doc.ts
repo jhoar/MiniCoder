@@ -1,5 +1,7 @@
 import {
   ProjectState,
+  AgentRole,
+  AdapterRegistry,
   ExportDesignDocumentHandler,
   RecordDesignDocumentReadyHandler,
   TransactionalCommandExecutor,
@@ -123,7 +125,12 @@ export async function runImpl(
   db: DbClient,
   deps: RunDesignDocDeps = {},
 ): Promise<RunDesignDocResult> {
-  const { projectId, correlationId } = payload;
+  const { projectId, correlationId, documentationAdapterName } = payload;
+
+  // Fail fast on an unregistered/unknown adapter name rather than silently ignoring the caller's
+  // selection and always resolving the environment default — `registry.resolve()` throws
+  // `UnknownAdapterError` for a name with no active `agent_adapters` row.
+  await new AdapterRegistry(db).resolve(AgentRole.DOCUMENTATION, documentationAdapterName);
 
   const projectRows = await db.query<ProjectRow>(
     `SELECT id, name, state, version FROM projects WHERE id = ?`,

@@ -35,6 +35,11 @@ interface ProjectRow {
   version: number;
 }
 
+interface DesignDocumentRow {
+  id: string;
+  state: string;
+}
+
 /** `design_document_ready_for_review -> design_document_revision_requested` (approver actor). */
 export class RequestDesignDocumentRevisionHandler implements CommandHandler<
   RequestDesignDocumentRevisionPayload,
@@ -79,6 +84,28 @@ export class RequestDesignDocumentRevisionHandler implements CommandHandler<
         ProjectState.DESIGN_DOCUMENT_REVISION_REQUESTED,
       );
 
+      const docRows = await tx.query<DesignDocumentRow>(
+        `SELECT id, state FROM design_documents WHERE id = ? AND project_id = ?`,
+        [designDocumentId, projectId],
+      );
+      const designDocument = docRows[0];
+      if (!designDocument) {
+        throw new CommandError({
+          type: 'not-found',
+          title: 'Design document not found',
+          status: 404,
+          detail: `design_documents ${designDocumentId} not found for project ${projectId}`,
+        });
+      }
+      if (designDocument.state !== 'ready_for_review') {
+        throw new CommandError({
+          type: 'design-document-not-ready',
+          title: 'Design document is not ready for review',
+          status: 409,
+          detail: `design_documents ${designDocumentId} is at state '${designDocument.state}', not 'ready_for_review'`,
+        });
+      }
+
       const now = isoNow();
       const affected = await tx.executeAffected(
         `UPDATE projects SET state = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?`,
@@ -92,6 +119,20 @@ export class RequestDesignDocumentRevisionHandler implements CommandHandler<
       );
       if (affected === 0) {
         throw new OptimisticLockError('projects', projectId, expectedVersion, -1);
+      }
+
+      const docAffected = await tx.executeAffected(
+        `UPDATE design_documents SET state = 'revision_requested', version = version + 1, updated_at = ?
+         WHERE id = ? AND project_id = ? AND state = 'ready_for_review'`,
+        [now, designDocumentId, projectId],
+      );
+      if (docAffected === 0) {
+        throw new CommandError({
+          type: 'design-document-not-ready',
+          title: 'Design document is not ready for review',
+          status: 409,
+          detail: `design_documents ${designDocumentId} was not in 'ready_for_review' state at update time`,
+        });
       }
 
       await insertHumanApproval(tx, {

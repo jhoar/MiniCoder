@@ -683,6 +683,15 @@ export class ApiClient {
     return this.post('/commands/recompute-merge-gate', payload, idempotencyKey);
   }
 
+  /** Enqueues the `run-design-doc` Trigger.dev task (drafts sections, exports
+   * final-design-document.md, records the document ready). */
+  requestDesignDoc(
+    payload: { projectId: string; documentationAdapterName: string },
+    idempotencyKey: string,
+  ): Promise<TriggeredRunResponse> {
+    return this.post('/commands/request-design-doc', payload, idempotencyKey);
+  }
+
   reconcile(
     payload: { projectId?: string; all?: boolean },
     idempotencyKey: string,
