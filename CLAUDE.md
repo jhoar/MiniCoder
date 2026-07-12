@@ -2566,6 +2566,29 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   page still carrying that disabled-button posture — no adapter-registration command exists
   anywhere in this codebase yet, unrelated to this phase's scope.
 
+**Post-implementation review fixes:** this phase went through several PR review rounds; the
+individual fixes are folded into the bullets above (marked "PR review finding"/"PR review fix"
+inline) rather than listed separately, matching the depth of review this phase received. The one
+fix worth calling out on its own: **`TransactionOptions.isolationLevel: 'serializable'`**
+(`packages/core/src/persistence/types.ts`, `packages/persistence-postgres/src/client.ts`,
+`packages/persistence-sqlite/src/client.ts`) is new, general-purpose persistence-layer
+infrastructure added specifically to give `MarkImplementationCompleteHandler` a real (if
+explicitly bounded — see that handler's own doc comment) defense against Project Acceptance's
+cross-table TOCTOU race under PostgreSQL. `PostgresDbClient.transaction()` issues `SET
+TRANSACTION ISOLATION LEVEL SERIALIZABLE` when requested and translates SQLSTATE `40001` into a
+typed `SerializationFailureError` (mapped to a retryable `409 serialization-failure` problem
+response in `packages/api/src/errors.ts`); `SqliteDbClient` accepts the same option as a
+documented no-op. **This is intentionally not a complete fence**: PostgreSQL's SSI conflict
+detection only covers transactions that are themselves `SERIALIZABLE`, so it protects concurrent
+invocations of `MarkImplementationCompleteCommand` against each other, but does not retroactively
+protect against an acceptance-invalidating writer (e.g. `RecordCiFailedHandler`) that still runs
+at the default isolation level — closing that fully would mean every such writer across many
+already-shipped phases participating in the same fence, judged out of proportion for this fix
+given `MarkImplementationCompleteCommand` is a rare, `ADMIN`-gated, human/CI-attested terminal
+action, not a hot path. Documented as a real, tracked residual limitation, not silently assumed
+closed — an earlier revision of this same doc comment overclaimed complete protection before a PR
+review round caught the mistake.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

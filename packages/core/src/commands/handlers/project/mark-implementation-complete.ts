@@ -81,18 +81,38 @@ interface ProjectRow {
  * write (to `feature_runs`/`review_findings`/`outbox_events`/`inbox_events`/`artifact_exports`)
  * in the window between this transaction's `UPDATE` and its own `COMMIT` is not blocked by
  * anything the guarded `UPDATE` does (PR review finding — a materially deeper point than the
- * "stale read" case the guarded `UPDATE` above already fixes). Closed by running this entire
+ * "stale read" case the guarded `UPDATE` above already fixes). Narrowed by running this entire
  * transaction at PostgreSQL `SERIALIZABLE` isolation (`TransactionOptions.isolationLevel`):
- * PostgreSQL's serializable-snapshot-isolation (SSI) machinery automatically detects a dangerous
- * read/write conflict against ANY concurrent transaction that touches rows this transaction read
- * (the acceptance-predicate tables) — no explicit lock, fence, or cooperation from those other
- * writers is required. A conflict surfaces as a `SerializationFailureError` at `COMMIT` (or,
- * occasionally, at an earlier statement); `execute()` retries the whole transaction function up
- * to `MAX_SERIALIZATION_RETRIES` times on that error, which is safe because a rolled-back
+ * PostgreSQL's serializable-snapshot-isolation (SSI) machinery detects a dangerous read/write
+ * conflict against any OTHER transaction that is ALSO running at `SERIALIZABLE` and touches the
+ * same rows. A conflict surfaces as a `SerializationFailureError` at `COMMIT` (or, occasionally,
+ * at an earlier statement); `execute()` retries the whole transaction function up to
+ * `MAX_SERIALIZATION_RETRIES` times on that error, which is safe because a rolled-back
  * transaction leaves no partial state (including the `idempotency_keys` claim) for the retry to
- * collide with. On the SQLite persistence backend this isolation request is a documented no-op
- * (see `TransactionOptions`'s doc comment) — its single-writer model already provides the
- * equivalent guarantee, so no retry loop is ever actually exercised there.
+ * collide with.
+ *
+ * **This is a real, but explicitly bounded, improvement — not a complete commit-time fence
+ * (correction of an earlier, overstated claim in this same doc comment, PR review round 2 on this
+ * exact point).** PostgreSQL's SSI dependency tracking only covers transactions that are
+ * themselves `SERIALIZABLE`; it does not retroactively protect against a concurrent
+ * acceptance-invalidating writer (e.g. `RecordCiFailedHandler`, a review-finding writer) that
+ * still runs at the default isolation level, since PostgreSQL does not treat one transaction's
+ * `SERIALIZABLE` request as a wall-clock lock against non-participating writers. Closing that
+ * gap fully would require every acceptance-invalidating writer across this codebase to
+ * participate in the same fence/lock — a cross-cutting change spanning many already-shipped
+ * handlers across many phases, out of proportion for this fix. What this change DOES
+ * concretely guarantee: (1) two concurrent invocations of `MarkImplementationCompleteCommand`
+ * itself can never both succeed against inconsistent acceptance state — SSI fully protects
+ * transactions against each other when they're all `SERIALIZABLE`, which every invocation of
+ * this handler is; (2) the "stale read" window the guarded `UPDATE` already closed stays closed.
+ * The remaining, accepted residual risk — a non-serializable writer committing an
+ * acceptance-invalidating change in the narrow window between this transaction's `UPDATE` and its
+ * own `COMMIT` — is judged acceptable given `MarkImplementationCompleteCommand` is a rare,
+ * `ADMIN`-gated, human/CI-attested, one-time-per-project terminal action, not a hot path; a full
+ * fix is real, tracked future work, not silently assumed unnecessary. On the SQLite persistence
+ * backend this isolation request is a documented no-op (see `TransactionOptions`'s doc comment)
+ * — its single-writer model already provides the equivalent guarantee, so no retry loop is ever
+ * actually exercised there.
  */
 export class MarkImplementationCompleteHandler implements CommandHandler<
   MarkImplementationCompletePayload,

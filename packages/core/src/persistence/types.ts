@@ -7,16 +7,21 @@ export interface TxClient {
 }
 
 export interface TransactionOptions {
-  /** `'serializable'` requests PostgreSQL's `SERIALIZABLE` isolation (SSI) for this transaction —
-   * PostgreSQL's serializable-snapshot-isolation machinery then automatically detects a
-   * dangerous read/write conflict against ANY concurrent transaction touching the rows this
-   * transaction read, without requiring those other transactions to acquire any explicit lock or
-   * participate in any shared fence. On conflict, one of the two transactions fails at `COMMIT`
-   * with a `SerializationFailureError`; the caller is expected to retry the whole transaction
-   * function from scratch (which naturally re-reads current state). A no-op on the SQLite
-   * persistence backend — its synchronous, single-writer, whole-database-locked transaction model
-   * already provides full serializability for a single-process connection, so there is no weaker
-   * isolation level to escape from. */
+  /** `'serializable'` requests PostgreSQL's `SERIALIZABLE` isolation (SSI) for this transaction.
+   * PostgreSQL's serializable-snapshot-isolation machinery detects a dangerous read/write
+   * conflict between this transaction and any OTHER transaction that is ALSO running at
+   * `SERIALIZABLE` and touches the same rows — it does NOT protect against a concurrent writer
+   * running at a weaker isolation level (the default), since that writer never participates in
+   * SSI's dependency tracking at all. Requesting `'serializable'` on only one side of an
+   * interaction is a real, meaningful safety improvement for races AMONG invocations of that same
+   * transaction, but is not by itself a guarantee against every possible concurrent writer unless
+   * those writers also opt into `SERIALIZABLE` (see `MarkImplementationCompleteHandler`'s doc
+   * comment for a worked example of this exact tradeoff). On conflict, one of the participating
+   * transactions fails at `COMMIT` with a `SerializationFailureError`; the caller is expected to
+   * retry the whole transaction function from scratch (which naturally re-reads current state). A
+   * no-op on the SQLite persistence backend — its synchronous, single-writer, whole-database-locked
+   * transaction model already provides full serializability for a single-process connection, so
+   * there is no weaker isolation level to escape from. */
   isolationLevel?: 'serializable';
 }
 

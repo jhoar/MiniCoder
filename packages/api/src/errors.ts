@@ -9,6 +9,7 @@ import {
   CommandError,
   TransitionError,
   GithubMergeRejectedError,
+  SerializationFailureError,
   type ProblemDetail,
 } from '@minicoder/core';
 
@@ -129,6 +130,21 @@ export function toProblemDetails(err: unknown, instance: string): ProblemRespons
       'request-in-progress',
       'Request already in progress',
       err.message,
+      instance,
+    );
+  }
+  if (err instanceof SerializationFailureError) {
+    // A bounded SERIALIZABLE-isolation retry (e.g. `MarkImplementationCompleteHandler`)
+    // exhausted its retry budget under real concurrent contention — this is a transient
+    // conflict, not a genuine failure, so the client should retry the request rather than see it
+    // as an opaque internal error (the raw driver error is logged server-side only, same
+    // no-leaking-internals posture as the generic 500 fallback below).
+    console.error(`[api] serialization failure (retries exhausted) at ${instance}:`, err);
+    return problem(
+      409,
+      'serialization-failure',
+      'Concurrent write conflict',
+      'The request could not complete due to a concurrent write conflict after retrying; retry the request.',
       instance,
     );
   }
