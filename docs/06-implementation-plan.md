@@ -1753,11 +1753,15 @@ costs,artifacts,adapters,design-doc,pause,resume}.ts` — one Commander command 
      version through the API at all.
      All four are documented in `packages/api/openapi/openapi.yaml` (required by the `onRoute`
      spec-drift-detection hook) and covered by new tests in `routes/reads/reads.test.ts`.
-- **Deliberately left unfixed:** `minicoder api serve` still doesn't wire a real `TaskTriggerClient`
-  into `buildApp()` (a pre-existing Phase 13 gap — `request-coder-run`/`request-review`/
-  `request-fixes`/`recompute-merge-gate` fail against a server started this way). None of docs/05
-  §4's Text UI commands need these endpoints, so fixing this was out of scope for this phase.
-  Tracked as issue #61.
+- **Closed by issue #61 (post-Phase-14): `minicoder api serve` now wires a real
+  `TaskTriggerClient`.** This was a pre-existing Phase 13 gap — `request-coder-run`/
+  `request-review`/`request-fixes`/`recompute-merge-gate`/`request-design-doc` failed against a
+  server started via `minicoder api serve`, since none of docs/05 §4's Text UI commands needed
+  these endpoints and fixing this was correctly kept out of Phase 14's scope. Closed via
+  `packages/api/src/default-task-trigger-client.ts`'s `resolveDefaultTaskTriggerClient()`, which
+  `server.ts` now passes to `buildApp()` — see CLAUDE.md's Orchestrator API Operational
+  Constraints section for the full rationale (Trigger.dev *runtime* API only, not the
+  *management* API; lazy `TRIGGER_SECRET_KEY` validation).
 - **Recorded, not fixed (post-implementation review watch item):** `@minicoder/tui`'s single
   barrel export mixes HTTP client/config concerns with Ink presentation concerns — see CLAUDE.md's
   Ink Text UI Operational Constraints section. Tracked as issue #60.
@@ -2069,31 +2073,57 @@ revision_requested -> generating -> ready_for_review -> approved -> project_comp
   closing a replay-safety gap `ExportDesignDocumentHandler`/`RecordDesignDocumentReadyHandler`
   could not otherwise close (see CLAUDE.md's Final Design Document Generator Operational
   Constraints section for the full writeup).
-- **Descoped from this pass** (explicitly, not silently dropped, each tracked as a GitHub issue):
-  - `AgentRunRecorder` provenance (`agent_runs`/`agent_context_packs`/`cost_records`) for the
-    `DocumentationAgentAdapter` invocation inside `run-design-doc.ts` — the task calls the adapter
-    directly rather than through the recorder wrapper `run-coder.ts`/`run-review.ts` use for their
-    own adapter calls. Adding it is additive and doesn't change this phase's public shape, but the
-    review-cycle-driven cost-tracking/redaction wiring `AgentRunRecorder` provides was judged lower
-    priority than a working end-to-end vertical slice through every layer (migration → handler →
-    task → API → CLI/TUI/Web) within this phase's time budget. Tracked as issue #72.
-  - `documentationAdapterName` is validation/provenance-only, not real multi-adapter runtime
-    selection — there is exactly one shipped `DocumentationAgentAdapter` reference implementation
-    today. Tracked as issue #70.
+- **Descoped from this pass** (explicitly, not silently dropped, each tracked as a GitHub issue —
+  issues #69, #70, and #72 below have since been closed, see the write-up after this list):
+  - ~~`AgentRunRecorder` provenance (`agent_runs`/`agent_context_packs`/`cost_records`) for the
+    `DocumentationAgentAdapter` invocation inside `run-design-doc.ts`~~ — **closed by issue #72.**
+  - ~~`documentationAdapterName` is validation/provenance-only, not real multi-adapter runtime
+    selection~~ — **closed by issue #70** (explicit rejection of a non-default name on the default
+    adapter-factory path; real multi-adapter selection remains future work until a second
+    `DocumentationAgentAdapter` implementation exists).
   - No backfill/repair path for a legacy (pre-migration-0014) `NULL`-bound
     `artifact_exports.design_document_id` row — both export/ready handlers fail closed on such a
-    row rather than silently accepting it. Tracked as issue #71.
-  - Project Acceptance's terminal transition (`MarkImplementationCompleteHandler`, hardened
-    substantially through PR review — a `NOT EXISTS`-guarded atomic `UPDATE` plus PostgreSQL
-    `SERIALIZABLE` isolation with bounded retry) is not a complete system-wide concurrency
-    invariant: it fully protects concurrent invocations of the completion command against each
-    other, but does not retroactively protect against a concurrent acceptance-invalidating writer
-    (e.g. a CI-failure handler) still running at the default isolation level. Judged acceptable
-    given the command is a rare, `ADMIN`-gated, human/CI-attested terminal action. Tracked as
-    issue #69.
+    row rather than silently accepting it. Tracked as issue #71 (still open).
+  - ~~Project Acceptance's terminal transition... is not a complete system-wide concurrency
+    invariant~~ — **closed by issue #69** ("accept and monitor": a new `state doctor` check,
+    `project_acceptance_violated`, rather than a full cross-cutting fence — the residual limitation
+    itself was judged acceptable to keep, not eliminated; see the write-up below).
   - A live-Postgres run of `packages/migrations/src/runner.test.ts`'s Postgres-gated suites was not
     performed in this implementation/review session (no reachable PostgreSQL instance) — the
     SQLite path was fully verified at every stage, including after migration 0014 was added.
+
+**Issues #69, #70, #72 follow-up (closed, post-Phase-17):**
+
+- **#72**: `run-design-doc.ts` now wraps its `DocumentationAgentAdapter.run()` call in
+  `AgentRunRecorder.record()`, writing `agent_runs`/`agent_context_packs`/`cost_records` rows for
+  every real generation invocation, the same as `run-coder.ts`/`run-review.ts` already do for their
+  own adapter calls. `packages/core/src/design-doc/generator.ts` gained two new exports —
+  `buildDocumentationInput()` and `normalizeDocumentationOutput()` — split out of
+  `generateDesignDocumentSections()` (which is unchanged and still composes both) so the task can
+  route the actual adapter invocation through the recorder while reusing the same
+  input-building/output-normalizing logic. Cost is computed via a new
+  `DOCUMENTATION_PRICE_PER_1K_{INPUT,OUTPUT}_TOKENS` env-var pair (independent from the Coder
+  role's `CODE_GEN_PRICE_PER_1K_*` pair), and `promptTemplateVersion` defaults to
+  `documentation-v1` (env-overridable via `DOCUMENTATION_PROMPT_TEMPLATE_VERSION`). No
+  `featureRunId`/`featureRequestId` is passed, since design-document generation is project-scoped
+  — the written `cost_records` row gets `scope='project'`.
+- **#70**: a new `DEFAULT_DOCUMENTATION_ADAPTER_NAME` constant
+  (`'ClaudeDocumentationAdapter'`, matching `packages/web/src/app/design-document/actions.ts`'s own
+  identical hardcoded constant) is checked only on the *default* (non-injected)
+  `documentationAdapterFactory` path — a caller-supplied `documentationAdapterName` that doesn't
+  match it now throws a clear, actionable error instead of silently running
+  `ClaudeDocumentationAdapter` under a different registered name. A caller injecting its own
+  factory (every current test) is unaffected, since it also controls the name it registered under.
+- **#69**: rather than making every acceptance-invalidating writer participate in a shared
+  concurrency fence (judged out of proportion, per the issue's own framing, for a rare,
+  `ADMIN`-gated, one-time-per-project action), the resolution is "accept and monitor" — a new,
+  always-on, pure-DB `project_acceptance_violated` `state doctor` check
+  (`packages/api/src/read-models/diagnostics.ts`) re-evaluates `evaluateProjectAcceptance()` against
+  every project already past the acceptance gate (any `projects.state` after `active`) and flags
+  one whose current state would now fail. The secondary "should the stuck-outbox/inbox sub-check
+  stay global-scope" question is resolved as "keep as-is" — it already matches `state doctor`'s own
+  `stuck_outbox`/`stuck_inbox` checks' identical global-scope posture (those tables carry no
+  `project_id` column), not a new trade-off introduced by this fix.
 
 ## Phase 18 — Future Extensions
 

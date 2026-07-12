@@ -1715,14 +1715,33 @@ displayName?}`; `ApiKeyProvider` hashes each key with SHA-256 at boot and never 
   handler or task of its own — `StartFixingCommand` lives inside `run-review.ts`'s own
   `changes_requested -> fixing` decision chain — so it is served by re-triggering `request-review`,
   not a new task.
-- **No default Trigger.dev SDK client is constructed for the enqueue routes.** `TaskTriggerClient`
-  must be injected at server startup (`app.ts`'s `BuildAppOptions.taskTriggerClient`); the
-  unconfigured default (`unconfiguredTaskTriggerClient()`) throws a fail-fast, actionable error
-  only when one of these routes is actually invoked. This mirrors the established "no default
-  PlannerAgentAdapter/ArbiterAgentAdapter, inject only" posture for capabilities with no shipped
-  reference wiring at this layer — it was a deliberate choice to avoid importing
-  `packages/triggerdev/src/triggerdev-tasks.ts` (which calls `task()` for all 18 canonical tasks at
-  module load, a real Trigger.dev-runtime side effect) directly into the API process.
+- **`buildApp()` itself still takes an optional, injected `TaskTriggerClient`** (`app.ts`'s
+  `BuildAppOptions.taskTriggerClient`), falling back to `unconfiguredTaskTriggerClient()` — a
+  fail-fast, actionable error thrown only when one of the enqueue routes is actually invoked — when
+  none is supplied. This mirrors the established "no default PlannerAgentAdapter/
+  ArbiterAgentAdapter, inject only" posture for capabilities with no shipped reference wiring at
+  this layer, and is still exactly what every route-level test in
+  `packages/api/src/commands/task-trigger-routes.test.ts` injects. **Issue #61 (closed):**
+  `minicoder api serve` (`packages/api/src/server.ts`) itself no longer relies on that fallback in
+  production — it now calls `resolveDefaultTaskTriggerClient()`
+  (`packages/api/src/default-task-trigger-client.ts`) and passes the result as
+  `BuildAppOptions.taskTriggerClient`, so a real deployment's `request-coder-run`/`request-review`/
+  `request-fixes`/`recompute-merge-gate`/`request-design-doc` routes are functional by default. The
+  resolver talks to the Trigger.dev *runtime* API only (`tasks.trigger(id, payload, options)` from
+  `@trigger.dev/sdk/v3`, authenticated via `TRIGGER_SECRET_KEY`/`TRIGGER_API_URL`) — deliberately
+  **not** the Trigger.dev *management* API (`list-runs`/`inspect-run`/`cancel-run`/etc., which
+  remains out of scope and stubbed in `packages/cli/src/commands/trigger.ts`, per this document's
+  own "Trigger.dev _management_-API client... is explicitly out of scope" note above). Triggering
+  by task ID does **not** require importing the real `Task` object, so
+  `default-task-trigger-client.ts` still never imports
+  `packages/triggerdev/src/triggerdev-tasks.ts` (which calls `task()` for all 19 canonical tasks at
+  module load, a real Trigger.dev-runtime registration side effect this process must not trigger)
+  — the avoid-importing-that-module rationale this bullet originally documented is unchanged, only
+  now backed by a real resolver instead of a permanent gap. `TRIGGER_SECRET_KEY` is validated lazily
+  (inside the per-call `triggerTask()` helper, not at `resolve...()`/server-startup time), so a
+  deployment that never calls these five routes is unaffected by a missing Trigger.dev credential —
+  the same "fail only when actually used" contract `unconfiguredTaskTriggerClient()` already
+  established.
 - **`generate final design document` / `approve final design document` (docs/01 §9) are not
   built.** No core command handler exists for either yet — the Design Document Generator is Phase
   17 scope. Building a route with no command behind it would violate this phase's own "API
@@ -2546,23 +2565,48 @@ observability.ts`'s `export-otel` subcommand is a one-shot CLI invocation, meant
   documents elsewhere (a task added to `ALL_TASK_IDS` with a real `runImpl` but never actually
   registered) was not repeated here, and `triggerdev.test.ts`'s existing static
   task-registration-parity regression covers it for free.
-- **`run-design-doc.ts` deliberately does not route its `DocumentationAgentAdapter` invocation
-  through `AgentRunRecorder`** the way `run-coder.ts`/`run-review.ts` do for their own adapter
-  calls — no `agent_runs`/`agent_context_packs`/`cost_records` provenance row is written for a
-  design-document-generation run in this phase. This is a real, tracked scope trade-off (not an
-  oversight): the change is additive and would not alter this phase's public shape, but was
-  deprioritized in favor of a complete vertical slice through every other layer (migration →
-  handler → task → API → CLI/TUI/Web) within this phase's time budget. Tracked as issue #72, the
-  same "honestly-labeled gap" posture this document applies to issues #61/#66/#67.
-- **`documentationAdapterName` (the API/CLI/task payload field) is validation/provenance-only,
-  not real runtime adapter selection.** `run-design-doc.ts` resolves it via
-  `AdapterRegistry.resolve(AgentRole.DOCUMENTATION, ...)` — which throws for an unregistered name,
-  the same "registry resolve is not implementation selection" separation `run-coder.ts`/
-  `run-review.ts` already establish for `coderAdapterName`/`reviewerAdapterName` — but the actual
-  runtime instance always comes from `resolveDefaultDocumentationAdapterFactory()`, which always
-  constructs `ClaudeDocumentationAdapter` regardless of the name supplied. Acceptable today since
-  there is exactly one shipped `DocumentationAgentAdapter` reference implementation; real
-  multi-adapter selection (or an explicit rejection of non-default names) is tracked as issue #70.
+- **Issue #72 (closed): `run-design-doc.ts` now routes its `DocumentationAgentAdapter` invocation
+  through `AgentRunRecorder`**, the same way `run-coder.ts`/`run-review.ts` do for their own
+  adapter calls. `packages/core/src/design-doc/generator.ts`'s
+  `generateDesignDocumentSections()` was split into `buildDocumentationInput()` (evidence →
+  `DocumentationInput`) and `normalizeDocumentationOutput()` (raw `DocumentationOutput` → the
+  gap-filled 13-section result, the placeholder-substitution/`requiresRevision` logic that used to
+  live inline) — `generateDesignDocumentSections()` itself is unchanged and still calls both in
+  sequence for any caller that doesn't need `AgentRunRecorder` wrapping. `run-design-doc.ts` calls
+  `buildDocumentationInput()`, wraps the adapter call in `recorder.record({...}, () =>
+adapter.run(documentationInput))` (`role: AgentRole.DOCUMENTATION`, `capabilitiesUsed:
+['can_generate_design_document']`, a `contextPack` of the built input, and a `costExtractor`
+  mirroring `run-coder.ts`'s `computeCostUsd()` shape exactly — a new, independently-configurable
+  `DOCUMENTATION_PRICE_PER_1K_{INPUT,OUTPUT}_TOKENS` env-var pair, not a reuse of the Coder role's
+  `CODE_GEN_PRICE_PER_1K_*` pair, since the two roles can reasonably run against different-priced
+  models even when both default to the same `CODE_GEN_*` endpoint), then calls
+  `normalizeDocumentationOutput()` on the recorded result. `promptTemplateVersion` uses a new
+  `documentation-v1` default (env-overridable via `DOCUMENTATION_PROMPT_TEMPLATE_VERSION`, with the
+  same blank-value-falls-back-to-default treatment `run-coder.ts`'s `resolvePromptTemplateVersion()`
+  already established). No `featureRunId`/`featureRequestId` is passed to `recorder.record()` —
+  design-document generation is project-scoped, not feature-scoped, so the written `cost_records`
+  row gets `scope='project'` (matching `AgentRunRecorder`'s existing "absent `featureRequestId` →
+  project scope" rule), exactly as this bullet previously anticipated a future pass would do.
+- **Issue #70 (closed): `documentationAdapterName` is still validation/provenance-only, but the
+  *default* adapter-factory path now rejects a mismatched name instead of silently ignoring it.**
+  `run-design-doc.ts` still resolves `documentationAdapterName` via
+  `AdapterRegistry.resolve(AgentRole.DOCUMENTATION, ...)` for validation/provenance (unchanged —
+  this is still not the same lookup as runtime implementation selection, the same separation
+  `run-coder.ts`/`run-review.ts` establish for `coderAdapterName`/`reviewerAdapterName`). The fix
+  is option 2 from the issue (explicit rejection, not full multi-adapter selection — building real
+  selection remains out of scope until a second `DocumentationAgentAdapter` implementation actually
+  exists): a new `DEFAULT_DOCUMENTATION_ADAPTER_NAME` constant (`'ClaudeDocumentationAdapter'`,
+  matching the Web UI's own identical hardcoded constant in
+  `packages/web/src/app/design-document/actions.ts` — the two are not unified into one shared
+  export because the Web UI package deliberately carries no runtime dependency on
+  `@minicoder/triggerdev`/`@minicoder/core` for a one-line string). The check applies **only** on
+  the default (non-injected) `documentationAdapterFactory` path: when no factory is injected and
+  `documentationAdapterName !== DEFAULT_DOCUMENTATION_ADAPTER_NAME`, the task throws a clear,
+  actionable error instead of silently running `ClaudeDocumentationAdapter` under a different
+  registered name. A caller that injects its own `documentationAdapterFactory` (every current test)
+  also controls the name it registered that adapter under, so there is no silent
+  name/implementation mismatch for that path to catch — the guard is deliberately scoped to the one
+  path where the mismatch was real.
 - **The Orchestrator API registers Phase 17's four human-actorKind handlers
   (`generate-design-document`, `request-design-document-revision`, `regenerate-design-document`,
   `approve-design-document`) for generic `/commands/{slug}` dispatch, and its four
@@ -2615,7 +2659,32 @@ already-shipped phases participating in the same fence, judged out of proportion
 given `MarkImplementationCompleteCommand` is a rare, `ADMIN`-gated, human/CI-attested terminal
 action, not a hot path. Documented as a real, tracked residual limitation, not silently assumed
 closed — an earlier revision of this same doc comment overclaimed complete protection before a PR
-review round caught the mistake. Tracked as issue #69.
+review round caught the mistake.
+
+**Issue #69 (closed): "accept and monitor," not a full cross-cutting fence.** The residual
+limitation above is real and was never eliminated — every acceptance-invalidating writer other
+than `MarkImplementationCompleteCommand` itself still runs at the default isolation level, and
+making all of them participate in a shared fence (or adding a PostgreSQL-only trigger/constraint)
+was judged out of proportion for a rare, `ADMIN`-gated, one-time-per-project action, exactly as
+this section's own residual-limitation note already argued. The resolution: a new, always-on, pure-
+DB `project_acceptance_violated` `state doctor` check
+(`packages/api/src/read-models/diagnostics.ts`'s `runDoctorChecks()`) re-runs
+`evaluateProjectAcceptance()` against every project that has already passed the acceptance gate
+(any `projects.state` after `active` — `implementation_complete` through `project_complete`) and
+flags one whose *current* state would now fail acceptance. This is the same "pure DB query, no
+external dependency, always part of `runDoctorChecks()`" contract every other check in that
+function already follows (unlike the separately opt-in, GitHub-credential-requiring
+`checkPrDiscoveryDivergence()`) — a rare violation surfaces on the next `state doctor`/`minicoder
+state doctor` run (or `GET /commands/doctor` for an operator-or-above API key) instead of silently
+persisting forever with no operational visibility. `autoClearable: false`/`manuallyRepairable: false`
+(like `secret_leak_scan`): a hit is an audit finding requiring human investigation of which writer
+raced the fence, not a state this doctor check can itself safely repair. **The secondary
+outbox/inbox-scope question is resolved as "keep as-is, documented":** `evaluateProjectAcceptance()`'s
+own stuck-outbox/inbox sub-check remains global (those tables carry no `project_id` column to scope
+by), matching `runDoctorChecks()`'s own `stuck_outbox`/`stuck_inbox` checks' identical global-scope
+posture — an unrelated project's stuck queue entries can affect this check's verdict for *this*
+project, the same pre-existing, intentional trade-off `state doctor` already accepts elsewhere, not
+a new gap this fix introduces.
 
 ## Cross-Dialect Testing (Mandatory)
 

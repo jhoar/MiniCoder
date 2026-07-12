@@ -1241,9 +1241,11 @@ replay of the first.
   docs/06's Phase 17 write-up and CLAUDE.md's Final Design Document Generator Operational
   Constraints.)
 - The TUI has no command surface for `request-coder-run`/`request-review`/`request-fixes`/
-  `recompute-merge-gate` — `minicoder api serve` doesn't wire a real `TaskTriggerClient` into
-  `buildApp()` either (a pre-existing Phase 13 gap), and none of docs/05 §4's Text UI commands need
-  it, so this was deliberately left unfixed rather than expanding this phase's scope.
+  `recompute-merge-gate` — that remains true, though the underlying gap this bullet originally
+  flagged (`minicoder api serve` not wiring a real `TaskTriggerClient` into `buildApp()`) was
+  closed by issue #61: `server.ts` now calls `resolveDefaultTaskTriggerClient()` by default. None
+  of docs/05 §4's Text UI commands invoke these four routes, so adding TUI command surface for them
+  remains out of scope here — a separate question from whether the routes work at all.
 
 ---
 

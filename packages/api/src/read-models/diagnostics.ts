@@ -9,9 +9,22 @@
  * HTTP API (see CLAUDE.md's Orchestrator API Operational Constraints).
  */
 import type { DbClient, GitHubClient } from '@minicoder/core';
-import { FEATURE_EXECUTION_MATRIX, defaultRedactor } from '@minicoder/core';
+import { FEATURE_EXECUTION_MATRIX, ProjectState, defaultRedactor } from '@minicoder/core';
 import type { FeatureExecutionState } from '@minicoder/core';
+import { evaluateProjectAcceptance } from '@minicoder/core';
 import { branchNameFor } from '@minicoder/adapters-coder';
+
+// Issue #69: every project-lifecycle state reachable only after a project has passed the
+// `active -> implementation_complete` acceptance gate at least once. Used by the
+// `project_acceptance_violated` doctor check below to find candidate projects worth re-evaluating.
+const POST_ACCEPTANCE_PROJECT_STATES: readonly string[] = [
+  ProjectState.IMPLEMENTATION_COMPLETE,
+  ProjectState.DESIGN_DOCUMENT_GENERATING,
+  ProjectState.DESIGN_DOCUMENT_READY_FOR_REVIEW,
+  ProjectState.DESIGN_DOCUMENT_REVISION_REQUESTED,
+  ProjectState.DESIGN_DOCUMENT_APPROVED,
+  ProjectState.PROJECT_COMPLETE,
+];
 
 const KNOWN_FEATURE_STATES = new Set<string>(
   FEATURE_EXECUTION_MATRIX.flatMap((row) => [row.fromState, row.toState]),
@@ -295,6 +308,46 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
     manuallyRepairable: false,
     count: secretHits.length,
     details: secretHits,
+  });
+
+  // Issue #69: `MarkImplementationCompleteHandler`'s `SERIALIZABLE`-isolation fence only protects
+  // against concurrent invocations of `MarkImplementationCompleteCommand` itself — every other
+  // acceptance-invalidating writer (RecordCiFailedHandler, RecordChangesRequestedHandler, review-
+  // finding writers, artifact-export failure handlers, etc.) still runs at the default isolation
+  // level and does not participate in that fence. The "accept and monitor" resolution recorded on
+  // issue #69 (rather than making every such writer participate in a shared cross-cutting fence,
+  // judged out of proportion for a rare, ADMIN-gated, one-time-per-project action): re-run
+  // evaluateProjectAcceptance() against every project that has already passed the acceptance gate
+  // (any state past `active`) and flag one whose acceptance would now fail — catching a rare
+  // violation after the fact rather than trying to make it structurally impossible.
+  const postAcceptanceProjectFilter = projectId ? `AND id = ?` : '';
+  const postAcceptanceProjectParams = projectId ? [projectId] : [];
+  const postAcceptanceProjects = await db.query<{ id: string }>(
+    `SELECT id FROM projects WHERE state IN (${POST_ACCEPTANCE_PROJECT_STATES.map(() => '?').join(', ')}) ${postAcceptanceProjectFilter}`,
+    [...POST_ACCEPTANCE_PROJECT_STATES, ...postAcceptanceProjectParams],
+  );
+  const acceptanceViolations: Array<{
+    projectId: string;
+    failedChecks: Array<{ name: string; count: number }>;
+  }> = [];
+  for (const project of postAcceptanceProjects) {
+    const result = await evaluateProjectAcceptance(db, project.id);
+    if (!result.passed) {
+      acceptanceViolations.push({
+        projectId: project.id,
+        failedChecks: result.checks
+          .filter((c) => !c.passed)
+          .map((c) => ({ name: c.name, count: c.count })),
+      });
+    }
+  }
+  checks.push({
+    name: 'project_acceptance_violated',
+    severity: acceptanceViolations.length > 0 ? 'error' : 'ok',
+    autoClearable: false,
+    manuallyRepairable: false,
+    count: acceptanceViolations.length,
+    details: acceptanceViolations,
   });
 
   const hasErrors = checks.some((c) => c.severity === 'error');

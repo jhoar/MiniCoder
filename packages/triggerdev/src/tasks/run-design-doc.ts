@@ -2,12 +2,14 @@ import {
   ProjectState,
   AgentRole,
   AdapterRegistry,
+  AgentRunRecorder,
   ExportDesignDocumentHandler,
   RecordDesignDocumentReadyHandler,
   TransactionalCommandExecutor,
   generateId,
   collectDesignDocumentEvidence,
-  generateDesignDocumentSections,
+  buildDocumentationInput,
+  normalizeDocumentationOutput,
   writeDesignDocumentSections,
 } from '@minicoder/core';
 import type { CommandEnvelope, DbClient, DocumentationAgentAdapter } from '@minicoder/core';
@@ -55,6 +57,28 @@ export type DocumentationAdapterFactory = (opts: {
   mergedPullRequestCount: number;
 }) => Promise<DocumentationAgentAdapter>;
 
+/**
+ * Issue #70: `resolveDefaultDocumentationAdapterFactory()` below always constructs
+ * `ClaudeDocumentationAdapter`, regardless of what `documentationAdapterName` the caller supplied
+ * — `AdapterRegistry.resolve()` (in `generateAndRecord` below) was, and remains, validation/
+ * provenance-only, the same "registry resolve is not implementation selection" separation
+ * `run-coder.ts`/`run-review.ts` establish for `coderAdapterName`/`reviewerAdapterName`. There is
+ * exactly one shipped `DocumentationAgentAdapter` reference implementation today, so silently
+ * running it under a caller-supplied name that didn't match was a real (if narrow) surprise risk:
+ * a caller requesting a not-yet-built second implementation by name would silently get
+ * `ClaudeDocumentationAdapter` instead of an actionable error. Fixed per the issue's option 2
+ * (explicit rejection, not full multi-adapter selection — real multi-adapter selection is out of
+ * scope until a second implementation actually exists): this constant must match the caller-facing
+ * default `documentationAdapterName` (`packages/web/src/app/design-document/actions.ts`'s own
+ * identical constant; the two are not unified into one shared export solely because the Web UI
+ * package deliberately carries no runtime dependency on `@minicoder/triggerdev`/`@minicoder/core`
+ * for a one-line string). This check only applies on the *default* (non-injected) factory path —
+ * see the call site in `generateAndRecord` — a caller that injects its own
+ * `documentationAdapterFactory` (every current test) also controls the name it registers under, so
+ * there is no silent mismatch for that path to catch.
+ */
+export const DEFAULT_DOCUMENTATION_ADAPTER_NAME = 'ClaudeDocumentationAdapter';
+
 /** Constructs the real reference `ClaudeDocumentationAdapter` from env config — reuses the same
  * `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` env vars the Coder/Reviewer/Planner/
  * Arbiter default resolvers already use, mirroring that exact pattern. */
@@ -86,6 +110,58 @@ function resolveDefaultDocumentationAdapterFactory(): DocumentationAdapterFactor
       ...opts,
     });
   };
+}
+
+// Issue #72: the same simplification `run-coder.ts` already documents — a configurable per-1K-
+// token price rather than real per-model pricing tables (Phase 16 observability scope) — applied
+// to the Documentation role. Defaults match run-coder.ts's own gpt-4o-mini-class approximation;
+// override via env for the configured provider/model.
+const DEFAULT_PRICE_PER_1K_INPUT_TOKENS = 0.00015;
+const DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS = 0.0006;
+
+const DOCUMENTATION_PROMPT_TEMPLATE_VERSION = 'documentation-v1';
+
+/** Mirrors `run-coder.ts`'s `resolvePromptTemplateVersion()` exactly — a blank/whitespace-only
+ * override must not silently degrade run provenance to an empty string. */
+function resolvePromptTemplateVersion(): string {
+  const raw = process.env['DOCUMENTATION_PROMPT_TEMPLATE_VERSION'];
+  if (raw === undefined) return DOCUMENTATION_PROMPT_TEMPLATE_VERSION;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : DOCUMENTATION_PROMPT_TEMPLATE_VERSION;
+}
+
+/** Mirrors `run-coder.ts`'s `parsePriceEnvVar()` exactly — a malformed, negative, non-finite, or
+ * blank/whitespace-only pricing env var must never silently poison a persisted `cost_records` row. */
+function parsePriceEnvVar(envVarName: string, fallback: number): number {
+  const raw = process.env[envVarName];
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    // eslint-disable-next-line no-console
+    console.error(`run-design-doc: ${envVarName} is set but blank; falling back to ${fallback}`);
+    return fallback;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `run-design-doc: ${envVarName}="${raw}" is not a finite, non-negative number; falling back to ${fallback}`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
+function computeCostUsd(inputTokens: number, outputTokens: number): number {
+  const pricePerKInput = parsePriceEnvVar(
+    'DOCUMENTATION_PRICE_PER_1K_INPUT_TOKENS',
+    DEFAULT_PRICE_PER_1K_INPUT_TOKENS,
+  );
+  const pricePerKOutput = parsePriceEnvVar(
+    'DOCUMENTATION_PRICE_PER_1K_OUTPUT_TOKENS',
+    DEFAULT_PRICE_PER_1K_OUTPUT_TOKENS,
+  );
+  return (inputTokens / 1000) * pricePerKInput + (outputTokens / 1000) * pricePerKOutput;
 }
 
 export interface RunDesignDocDeps {
@@ -124,11 +200,11 @@ interface PlanRow {
  * (`RecordDesignDocumentReadyCommand`) — moving the project to
  * `design_document_ready_for_review`.
  *
- * Deliberately does **not** write `agent_runs`/`agent_context_packs`/`cost_records` provenance via
- * `AgentRunRecorder` the way `run-coder.ts`/`run-review.ts` do for their adapter invocations —
- * a real, documented scope trade-off for this phase (see CLAUDE.md's Final Design Document
- * Generator Operational Constraints), not an oversight; a future pass can add it without changing
- * this task's public shape.
+ * Writes `agent_runs`/`agent_context_packs`/`cost_records` provenance via `AgentRunRecorder`
+ * (issue #72) the same way `run-coder.ts`/`run-review.ts` do for their own adapter invocations —
+ * this was a documented, deliberate scope trade-off when this task first shipped (a complete
+ * vertical slice through every other layer took priority within that phase's time budget), closed
+ * here rather than left open indefinitely.
  *
  * If the adapter reports `requiresRevision: true` (a required section came back missing/blank in
  * its raw output — see `ClaudeDocumentationAdapter`/`generateDesignDocumentSections`), this task
@@ -284,18 +360,18 @@ async function generateAndRecord(args: GenerateAndRecordArgs): Promise<RunDesign
   // selection and always resolving the environment default — `registry.resolve()` throws
   // `UnknownAdapterError` for a name with no active `agent_adapters` row.
   //
-  // NOTE: this resolves the `agent_adapters` DB record only (for validation/provenance), not a
-  // runtime implementation — the same "registry resolve is not implementation selection"
-  // separation `run-coder.ts`/`run-review.ts` already establish for `coderAdapterName`/
-  // `reviewerAdapterName` (CLAUDE.md's Reference Coder Adapter Operational Constraints: "these are
-  // not the same lookup"). The actual runtime instance always comes from the injected
-  // `documentationAdapterFactory` below (or, absent one, `resolveDefaultDocumentationAdapterFactory()`,
-  // which always constructs `ClaudeDocumentationAdapter`). There is exactly one shipped
-  // `DocumentationAgentAdapter` reference implementation today — supporting a caller-selectable
-  // choice among multiple registered implementations is real future work (the same class of gap
-  // `run-coder.ts`'s `CoderAdapterFactory` doc comment already flags), not something this
-  // validation call was ever meant to provide.
-  await new AdapterRegistry(db).resolve(AgentRole.DOCUMENTATION, documentationAdapterName);
+  // NOTE: this resolves the `agent_adapters` DB record for both validation and (issue #72)
+  // `AgentRunRecorder` provenance — it is still not, by itself, runtime implementation selection,
+  // the same "registry resolve is not implementation selection" separation `run-coder.ts`/
+  // `run-review.ts` already establish for `coderAdapterName`/`reviewerAdapterName` (CLAUDE.md's
+  // Reference Coder Adapter Operational Constraints: "these are not the same lookup"). The actual
+  // runtime instance always comes from the injected `documentationAdapterFactory` below (or,
+  // absent one, `resolveDefaultDocumentationAdapterFactory()`, which always constructs
+  // `ClaudeDocumentationAdapter` — see `DEFAULT_DOCUMENTATION_ADAPTER_NAME`'s doc comment (issue
+  // #70) for why the *default* path additionally rejects a caller-supplied name that doesn't match
+  // it, rather than silently running the default under a different name).
+  const registry = new AdapterRegistry(db);
+  const adapterRecord = await registry.resolve(AgentRole.DOCUMENTATION, documentationAdapterName);
 
   const evidence = await collectDesignDocumentEvidence(db, projectId);
   const planRows = await db.query<PlanRow>(
@@ -304,19 +380,63 @@ async function generateAndRecord(args: GenerateAndRecordArgs): Promise<RunDesign
   );
   const planId = planRows[0]?.id ?? '';
 
-  const documentationAdapterFactory =
-    deps.documentationAdapterFactory ?? resolveDefaultDocumentationAdapterFactory();
-  const adapter = await documentationAdapterFactory({
-    projectName: evidence.project.name,
-    projectDescription: evidence.project.description,
-    featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
-    mergedPullRequestCount: evidence.mergedPullRequests.length,
-  });
+  let adapter: DocumentationAgentAdapter;
+  if (deps.documentationAdapterFactory) {
+    adapter = await deps.documentationAdapterFactory({
+      projectName: evidence.project.name,
+      projectDescription: evidence.project.description,
+      featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
+      mergedPullRequestCount: evidence.mergedPullRequests.length,
+    });
+  } else {
+    // Issue #70: only the *default* (non-injected) factory path is guarded — a caller injecting
+    // its own factory (every current test) also controls the name it registered that adapter
+    // under, so there is no silent name/implementation mismatch for this check to catch there.
+    if (documentationAdapterName !== DEFAULT_DOCUMENTATION_ADAPTER_NAME) {
+      throw new Error(
+        `run-design-doc: documentationAdapterName "${documentationAdapterName}" is not supported ` +
+          `by the default adapter resolver — only "${DEFAULT_DOCUMENTATION_ADAPTER_NAME}" is ` +
+          'currently implemented. Inject a documentationAdapterFactory (RunDesignDocDeps) to use ' +
+          'a different implementation.',
+      );
+    }
+    adapter = await resolveDefaultDocumentationAdapterFactory()({
+      projectName: evidence.project.name,
+      projectDescription: evidence.project.description,
+      featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
+      mergedPullRequestCount: evidence.mergedPullRequests.length,
+    });
+  }
 
-  const generated = await generateDesignDocumentSections(adapter, evidence, {
-    planId,
-    correlationId,
-  });
+  const documentationInput = buildDocumentationInput(evidence, { planId, correlationId });
+
+  const recorder = new AgentRunRecorder(db, registry);
+  const { output } = await recorder.record(
+    {
+      adapterId: adapterRecord.id,
+      role: AgentRole.DOCUMENTATION,
+      projectId,
+      input: documentationInput,
+      capabilitiesUsed: ['can_generate_design_document'],
+      contextPack: { content: documentationInput },
+      promptTemplateVersion: resolvePromptTemplateVersion(),
+      costExtractor: (outcome) => {
+        if (!outcome.ok) return null;
+        const out = outcome.output as { tokensUsed?: { input: number; output: number } };
+        if (!out.tokensUsed) return null;
+        return {
+          inputTokens: out.tokensUsed.input,
+          outputTokens: out.tokensUsed.output,
+          costUsd: computeCostUsd(out.tokensUsed.input, out.tokensUsed.output),
+          provider: process.env['CODE_GEN_PROVIDER_NAME'] ?? 'openai-compatible',
+          model: process.env['CODE_GEN_MODEL'],
+        };
+      },
+    },
+    () => adapter.run(documentationInput),
+  );
+
+  const generated = normalizeDocumentationOutput(output);
   await writeDesignDocumentSections(db, { designDocumentId, sections: generated.sections });
 
   if (generated.requiresRevision) {
