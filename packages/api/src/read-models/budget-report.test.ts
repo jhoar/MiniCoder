@@ -72,7 +72,12 @@ describe('getBudgetReport', () => {
     const projectId = 'proj-budget-report-2';
     await seedProject(db, projectId);
     const oldTs = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    await seedCostRecord(db, 'cr-old', { projectId, scope: 'project', amount: 100, recordedAt: oldTs });
+    await seedCostRecord(db, 'cr-old', {
+      projectId,
+      scope: 'project',
+      amount: 100,
+      recordedAt: oldTs,
+    });
     await seedCostRecord(db, 'cr-new', { projectId, scope: 'project', amount: 5 });
 
     const report = await getBudgetReport(db, { projectId, windowDays: 7 });

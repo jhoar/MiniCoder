@@ -270,6 +270,7 @@ export async function runImpl(
     scope: 'feature',
     correlationId,
     estimatedCostUsd: resolveEstimatedCostUsd('CODE_GEN_ESTIMATED_COST_USD'),
+    featureRunId,
   });
   if (!preflight.proceed) {
     return { projectId, featureRunId, pushed: false, prNumber: null };

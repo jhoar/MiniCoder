@@ -58,7 +58,11 @@ describe('getFeatureRunTimeline', () => {
 
     const timeline = await getFeatureRunTimeline(db, featureRunId);
     expect(timeline.featureRunId).toBe(featureRunId);
-    expect(timeline.entries.map((e) => e.kind)).toEqual(['workflow_event', 'agent_run', 'cost_record']);
+    expect(timeline.entries.map((e) => e.kind)).toEqual([
+      'workflow_event',
+      'agent_run',
+      'cost_record',
+    ]);
     // Chronological order
     const timestamps = timeline.entries.map((e) => e.timestamp);
     expect([...timestamps].sort()).toEqual(timestamps);

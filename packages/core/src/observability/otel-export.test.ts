@@ -32,9 +32,7 @@ describe('mapWorkflowEventsToOtlp', () => {
     const record = payload.resourceLogs[0]!.scopeLogs[0]!.logRecords[0]!;
     expect(record.body.stringValue).toBe('feature.selected');
     expect(record.severityText).toBe('INFO');
-    const attrMap = Object.fromEntries(
-      record.attributes.map((a) => [a.key, a.value.stringValue]),
-    );
+    const attrMap = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
     expect(attrMap['minicoder.event_id']).toBe('evt-1');
     expect(attrMap['minicoder.project_id']).toBe('proj-1');
     expect(attrMap['minicoder.from_state']).toBe('approved_pending_execution');
@@ -108,6 +106,38 @@ describe('exportWorkflowEventsToOtlp', () => {
       'http://collector:4318/v1/logs',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  it('applies a request timeout via AbortSignal (post-merge review MEDIUM-3)', async () => {
+    const db = new FakeDb([event()]);
+    let sawSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      sawSignal = init.signal as AbortSignal;
+      return Promise.resolve({ ok: true, status: 200 });
+    });
+    await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      timeoutMs: 5,
+    });
+    expect(sawSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('surfaces an abort as a rejected promise when the collector never responds in time', async () => {
+    const db = new FakeDb([event()]);
+    const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      const signal = init.signal as AbortSignal;
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('The operation was aborted')));
+      });
+    });
+    await expect(
+      exportWorkflowEventsToOtlp(db, {
+        config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        timeoutMs: 5,
+      }),
+    ).rejects.toThrow(/aborted/);
   });
 
   it('throws when the collector returns a non-ok response', async () => {

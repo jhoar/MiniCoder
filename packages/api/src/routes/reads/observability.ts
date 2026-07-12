@@ -24,7 +24,7 @@ export function registerObservabilityReadRoutes(app: FastifyInstance, db: DbClie
       let parsedWindowDays: number | undefined;
       if (windowDays !== undefined) {
         parsedWindowDays = Number(windowDays);
-        if (!Number.isFinite(parsedWindowDays) || parsedWindowDays <= 0) {
+        if (!Number.isInteger(parsedWindowDays) || parsedWindowDays <= 0) {
           throw new RequestValidationError('windowDays must be a positive integer');
         }
       }

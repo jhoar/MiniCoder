@@ -60,10 +60,11 @@ async function groupBy(
     params.push(cutoff);
   }
   sql += ` GROUP BY ${column} ORDER BY totalAmount DESC`;
-  const rows = await db.query<{ key: string; totalAmount: number | string; recordCount: number | string }>(
-    sql,
-    params,
-  );
+  const rows = await db.query<{
+    key: string;
+    totalAmount: number | string;
+    recordCount: number | string;
+  }>(sql, params);
   return rows.map((r) => ({
     key: r.key,
     totalAmount: Number(r.totalAmount),
@@ -71,7 +72,10 @@ async function groupBy(
   }));
 }
 
-export async function getBudgetReport(db: DbClient, params: BudgetReportParams): Promise<BudgetReport> {
+export async function getBudgetReport(
+  db: DbClient,
+  params: BudgetReportParams,
+): Promise<BudgetReport> {
   const { projectId, windowDays } = params;
   const cutoff = windowCutoff(windowDays);
 

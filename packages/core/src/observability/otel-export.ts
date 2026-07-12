@@ -102,6 +102,11 @@ export interface ExportWorkflowEventsOptions {
   limit?: number;
   config?: ConfigBackend;
   fetchImpl?: typeof fetch;
+  /** Request timeout in milliseconds, applied via `AbortSignal.timeout()` — the same pattern
+   * `HttpPlanProvider`/`HttpArbiterProvider` use for their outbound LLM calls. Without this, a
+   * hung/unreachable collector could block a caller (e.g. a scheduled task) indefinitely.
+   * Defaults to 30s. */
+  timeoutMs?: number;
 }
 
 export interface ExportWorkflowEventsResult {
@@ -111,6 +116,7 @@ export interface ExportWorkflowEventsResult {
 }
 
 const DEFAULT_LIMIT = 200;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
  * No-ops (`{attempted: false, exportedCount: 0, lastEventId: null}`) unless
@@ -147,10 +153,12 @@ export async function exportWorkflowEventsToOtlp(
   const fetchImpl = opts.fetchImpl ?? fetch;
   const logsUrl = endpoint.trim().replace(/\/+$/, '') + '/v1/logs';
 
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const response = await fetchImpl(logsUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
     throw new Error(`exportWorkflowEventsToOtlp: OTLP collector returned ${response.status}`);

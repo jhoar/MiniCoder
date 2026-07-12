@@ -172,4 +172,17 @@ describe('read endpoints', () => {
     const body = JSON.parse(res.body);
     expect(body).toMatchObject({ projectId, totalAmount: 0, recordCount: 0 });
   });
+
+  // Post-merge PR review fix (LOW-1): windowDays is documented as `type: integer` in the OpenAPI
+  // spec; a decimal value must be rejected rather than silently accepted.
+  it('GET /budget-report rejects a non-integer windowDays', async () => {
+    const { app, db } = await buildTestApp();
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/budget-report?projectId=${projectId}&windowDays=1.5`,
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });

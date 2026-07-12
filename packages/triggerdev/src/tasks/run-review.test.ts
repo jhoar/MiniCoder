@@ -678,7 +678,8 @@ describe('run-review', () => {
         },
         db,
         {
-          reviewerAdapterFactory: async () => fakeReviewerAdapter({ decision: 'approved', findings: [] }),
+          reviewerAdapterFactory: async () =>
+            fakeReviewerAdapter({ decision: 'approved', findings: [] }),
           githubClientFactory: async () => fakeGithubClient(),
         },
       );
@@ -730,6 +731,75 @@ describe('run-review', () => {
         [PROJECT_ID],
       );
       expect(workflowState[0]?.automation_state).toBe('paused_budget_exceeded');
+    });
+
+    // Post-merge PR review fix (MEDIUM-1): the occurrence-marker short-circuit must run before
+    // the budget preflight, so a retry of an already-cleanly-reviewed commit never pauses
+    // automation for a budget breach that would only have applied to a real adapter invocation.
+    it('a retry for an already-reviewed commit short-circuits before the budget preflight, even with a configured hard-breach estimate', async () => {
+      const db = createTestDb();
+      insertTestProject(db, PROJECT_ID);
+      const { featureRunId } = await seedUnderReviewFeatureRun(db);
+      await registerReviewerAdapter(db);
+
+      let adapterInvocations = 0;
+      const deps: RunReviewDeps = {
+        reviewerAdapterFactory: async () => {
+          adapterInvocations += 1;
+          return fakeReviewerAdapter({ decision: 'approved', findings: [] });
+        },
+        githubClientFactory: async () => fakeGithubClient(),
+      };
+
+      const first = await runImpl(
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-preflight-retry',
+          idempotencyKey: 'idem-preflight-retry-first',
+          reviewerAdapterName: 'FakeReviewerAdapter',
+        },
+        db,
+        deps,
+      );
+      expect(first.decision).toBe('approved');
+      expect(adapterInvocations).toBe(1);
+
+      // Now configure a hard-breach estimate for the retry — if the preflight ran before the
+      // occurrence-marker check, this would pause automation even though no adapter call would
+      // ever happen for this already-reviewed commit.
+      process.env[ENV_VAR] = '50';
+      const frRows = await db.query<{ feature_request_id: string }>(
+        `SELECT feature_request_id FROM feature_runs WHERE id = ?`,
+        [featureRunId],
+      );
+      const featureRequestId = frRows[0]?.feature_request_id;
+      await db.execute(
+        `INSERT INTO budget_policies (id, project_id, scope, feature_request_id, currency, soft_limit, hard_limit, window_days, is_active, version, created_at, updated_at)
+         VALUES (?, ?, 'feature', ?, 'USD', NULL, 10, NULL, 1, 1, datetime('now'), datetime('now'))`,
+        [`policy-${featureRunId}-retry`, PROJECT_ID, featureRequestId],
+      );
+
+      const second = await runImpl(
+        {
+          projectId: PROJECT_ID,
+          featureRunId,
+          correlationId: 'corr-preflight-retry',
+          idempotencyKey: 'idem-preflight-retry-second',
+          reviewerAdapterName: 'FakeReviewerAdapter',
+        },
+        db,
+        deps,
+      );
+      expect(second.decision).toBe('approved');
+      expect(second.reviewed).toBe(false);
+      expect(adapterInvocations).toBe(1);
+
+      const workflowState = await db.query<{ automation_state: string }>(
+        `SELECT automation_state FROM workflow_states WHERE project_id = ?`,
+        [PROJECT_ID],
+      );
+      expect(workflowState[0]?.automation_state).toBe('running');
     });
   });
 });

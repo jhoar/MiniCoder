@@ -1426,16 +1426,16 @@ minicoder state doctor --project proj-1
 
 The doctor runs 8 checks:
 
-| Check                          | Severity | Auto-clearable       |
-| ------------------------------ | -------- | --------------------- |
-| `stale_locks`                  | error    | yes                    |
-| `stuck_outbox`                 | error    | yes                    |
-| `stuck_inbox`                  | error    | yes                    |
-| `orphaned_runs`                | error    | manually repairable    |
-| `triggerdev_mismatch`          | warning  | no (future phase)      |
-| `skipped_dependency`           | error    | manually repairable    |
-| `code_pushed_no_pull_request`  | warning  | manually repairable    |
-| `secret_leak_scan`             | error    | no (audit finding only)|
+| Check                         | Severity | Auto-clearable          |
+| ----------------------------- | -------- | ----------------------- |
+| `stale_locks`                 | error    | yes                     |
+| `stuck_outbox`                | error    | yes                     |
+| `stuck_inbox`                 | error    | yes                     |
+| `orphaned_runs`               | error    | manually repairable     |
+| `triggerdev_mismatch`         | warning  | no (future phase)       |
+| `skipped_dependency`          | error    | manually repairable     |
+| `code_pushed_no_pull_request` | warning  | manually repairable     |
+| `secret_leak_scan`            | error    | no (audit finding only) |
 
 `skipped_dependency` (issue #52) flags a feature run at `approved_pending_execution` whose
 `feature_dependencies` target has been transitioned to `skipped` — a state that can never satisfy

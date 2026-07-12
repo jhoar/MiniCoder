@@ -37,6 +37,10 @@ export interface BudgetPreflightParams {
   /** Parsed from the caller's own env var; `undefined` means "forecasting not configured" —
    * always proceeds. */
   estimatedCostUsd: number | undefined;
+  /** Phase 16 (post-merge PR review fix, MEDIUM-2): the feature run this pre-flight check is
+   * gating, attached to a recorded hard-breach `workflow_events` row so
+   * `GET /feature-runs/:id/timeline` can show why that feature run's adapter call was skipped. */
+  featureRunId: string;
 }
 
 export type BudgetPreflightResult =
@@ -66,7 +70,8 @@ export async function budgetPreflightCheck(
   db: DbClient,
   params: BudgetPreflightParams,
 ): Promise<BudgetPreflightResult> {
-  const { projectId, featureRequestId, scope, correlationId, estimatedCostUsd } = params;
+  const { projectId, featureRequestId, scope, correlationId, estimatedCostUsd, featureRunId } =
+    params;
   if (estimatedCostUsd === undefined) return { proceed: true };
 
   const forecast = await forecastBudget(db, {
@@ -85,10 +90,17 @@ export async function budgetPreflightCheck(
   );
   const workflowState = workflowStateRows[0];
   if (!workflowState) {
-    // No workflow_states row to gate automation_state against — nothing this check can safely
-    // record a breach against; fail open rather than block a run over a missing prerequisite row
-    // unrelated to the forecast itself.
-    return { proceed: true };
+    // A forecasted hard breach must never be waved through just because there is no
+    // workflow_states row to record the automation-pause transition against — the whole point of
+    // this check is to stop the (possibly expensive) adapter call, and that decision does not
+    // depend on whether the pause can also be durably recorded. Fail closed: block the call, but
+    // skip only the applyBudgetDecision() write (there is nothing to CAS against) and log so an
+    // operator can see the recording gap.
+    // eslint-disable-next-line no-console
+    console.error(
+      `budgetPreflightCheck: forecasted hard breach for project ${projectId} but no workflow_states row exists; blocking the call without recording the breach`,
+    );
+    return { proceed: false, outcome: 'hard_breach', projectedSpend: forecast.projectedSpend };
   }
 
   const evaluation: BudgetEvaluation = {
@@ -101,6 +113,7 @@ export async function budgetPreflightCheck(
     expectedVersion: workflowState.version,
     actor: systemActor(correlationId),
     correlationId,
+    featureRunId,
   });
 
   return { proceed: false, outcome: 'hard_breach', projectedSpend: forecast.projectedSpend };

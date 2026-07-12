@@ -20,6 +20,14 @@ export const RecordBudgetExceededPayloadSchema = z.object({
   breachedPolicyId: z.string(),
   currentSpend: z.number(),
   hardLimit: z.number(),
+  // Phase 16 (post-merge PR review fix, MEDIUM-2): optional — the automatic breach this handler
+  // records is project-scoped (workflow_states has no feature_run_id), but a caller that already
+  // knows which feature run's pre-flight forecast triggered the breach (budget-preflight.ts) can
+  // attribute the resulting workflow_events row to that feature run, so
+  // `GET /feature-runs/:id/timeline` can explain why that feature run's adapter call never
+  // happened. Omitted by every other caller (the Phase 8 retrospective post-hoc path has no
+  // single feature run to attribute a project-wide breach to).
+  featureRunId: z.string().min(1).optional(),
 });
 export type RecordBudgetExceededPayload = z.infer<typeof RecordBudgetExceededPayloadSchema>;
 
@@ -51,7 +59,7 @@ export class RecordBudgetExceededHandler implements CommandHandler<
     envelope: CommandEnvelope<RecordBudgetExceededPayload>,
     db: DbClient,
   ): Promise<CommandResult<AutomationState>> {
-    const { projectId, expectedVersion, breachedPolicyId, currentSpend, hardLimit } =
+    const { projectId, expectedVersion, breachedPolicyId, currentSpend, hardLimit, featureRunId } =
       envelope.payload;
     return db.transaction(async (tx) => {
       const claim = await claimIdempotencyKey<AutomationState>(
@@ -89,6 +97,7 @@ export class RecordBudgetExceededHandler implements CommandHandler<
 
       const eventId = await writeWorkflowEvent(tx, {
         projectId,
+        featureRunId,
         eventType: 'automation.budget_exceeded',
         fromState: AutomationState.RUNNING,
         toState: AutomationState.PAUSED_BUDGET_EXCEEDED,

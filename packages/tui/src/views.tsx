@@ -419,7 +419,10 @@ export function renderBudgetReportView(report: BudgetReport): React.ReactElement
         fields={[
           { label: 'Project', value: report.projectId },
           { label: 'Window (days)', value: report.windowDays ? String(report.windowDays) : 'all' },
-          { label: 'Total spend', value: `${report.totalAmount.toFixed(4)} (${report.recordCount} records)` },
+          {
+            label: 'Total spend',
+            value: `${report.totalAmount.toFixed(4)} (${report.recordCount} records)`,
+          },
         ]}
       />
       {renderBreakdown('By scope', report.byScope)}

@@ -1882,7 +1882,7 @@ commands are safe and audited; private chain-of-thought is not stored.
   than inventing a new top-level CLI token — added to `docs/00-glossary-and-terms.md` §5).
 - **Budget forecasting** — `packages/core/src/cost/forecast.ts`'s `forecastBudget()` is Phase 8's
   `evaluateBudget()`'s prospective counterpart: given a caller-supplied `estimatedCostUsd`, it
-  reports whether *current live spend + the estimate* would breach the active policy's soft/hard
+  reports whether _current live spend + the estimate_ would breach the active policy's soft/hard
   limits, using the identical query shape and hard-before-soft precedence — a pure evaluation
   function with no side effects, mirroring `evaluateBudget()`/`applyBudgetDecision()`'s own
   separation. Wired into `run-coder.ts`/`run-review.ts` as an opt-in pre-flight check

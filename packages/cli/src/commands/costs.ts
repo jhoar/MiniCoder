@@ -13,9 +13,7 @@ export function createCostsCommand(): Command {
     .option('--window-days <n>', 'Restrict --report to the trailing N days')
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
-      async (
-        opts: { project: string; report?: boolean; windowDays?: string } & JsonOption,
-      ) => {
+      async (opts: { project: string; report?: boolean; windowDays?: string } & JsonOption) => {
         const client = buildApiClient();
         if (opts.report) {
           await renderOrJson(

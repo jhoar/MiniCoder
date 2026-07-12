@@ -21,11 +21,23 @@ async function seedProjectWithWorkflowState(db: DbClient, featureRequestId: stri
      VALUES (?, ?, ?, 'FR-001', 'Feature', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
     [featureRequestId, `plan-${PROJECT_ID}`, PROJECT_ID],
   );
+  // A real feature_runs row — workflow_events.feature_run_id has a foreign key, so the Phase 16
+  // budget-preflight feature-run attribution (post-merge PR review fix, MEDIUM-2) needs a real
+  // row to reference, not just an opaque string.
+  await db.execute(
+    `INSERT OR IGNORE INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+     VALUES (?, ?, 1, 'coding', 1, datetime('now'), datetime('now'))`,
+    [featureRunId(featureRequestId), featureRequestId],
+  );
   await db.execute(
     `INSERT OR IGNORE INTO workflow_states (id, project_id, automation_state, version, created_at, updated_at)
      VALUES (?, ?, 'running', 1, datetime('now'), datetime('now'))`,
     [`ws-${PROJECT_ID}`, PROJECT_ID],
   );
+}
+
+function featureRunId(featureRequestId: string): string {
+  return `run-${featureRequestId}`;
 }
 
 async function seedBudgetPolicy(
@@ -76,6 +88,7 @@ describe('budgetPreflightCheck', () => {
       scope: 'feature',
       correlationId: 'corr-1',
       estimatedCostUsd: undefined,
+      featureRunId: 'fake-feature-run',
     });
     expect(result).toEqual({ proceed: true });
   });
@@ -91,6 +104,7 @@ describe('budgetPreflightCheck', () => {
       scope: 'feature',
       correlationId: 'corr-2',
       estimatedCostUsd: 1000,
+      featureRunId: 'fake-feature-run',
     });
     expect(result).toEqual({ proceed: true });
   });
@@ -107,6 +121,7 @@ describe('budgetPreflightCheck', () => {
       scope: 'feature',
       correlationId: 'corr-3',
       estimatedCostUsd: 5,
+      featureRunId: 'fake-feature-run',
     });
     expect(result).toEqual({ proceed: true });
   });
@@ -123,6 +138,7 @@ describe('budgetPreflightCheck', () => {
       scope: 'feature',
       correlationId: 'corr-4',
       estimatedCostUsd: 50,
+      featureRunId: featureRunId(featureRequestId),
     });
     expect(result.proceed).toBe(false);
     if (!result.proceed) {
@@ -130,17 +146,63 @@ describe('budgetPreflightCheck', () => {
       expect(result.projectedSpend).toBe(50);
     }
 
-    const events = await db.query<{ event_type: string }>(
-      `SELECT event_type FROM workflow_events WHERE project_id = ? ORDER BY occurred_at ASC`,
+    const events = await db.query<{ event_type: string; feature_run_id: string | null }>(
+      `SELECT event_type, feature_run_id FROM workflow_events WHERE project_id = ? ORDER BY occurred_at ASC`,
       [PROJECT_ID],
     );
-    expect(events.some((e) => e.event_type === 'automation.budget_exceeded')).toBe(true);
+    const breachEvent = events.find((e) => e.event_type === 'automation.budget_exceeded');
+    expect(breachEvent).toBeDefined();
+    // Post-merge PR review fix (MEDIUM-2): the breach event is attributed to the feature run
+    // whose pre-flight forecast triggered it, so GET /feature-runs/:id/timeline can explain it.
+    expect(breachEvent?.feature_run_id).toBe(featureRunId(featureRequestId));
 
     const workflowState = await db.query<{ automation_state: string }>(
       `SELECT automation_state FROM workflow_states WHERE project_id = ?`,
       [PROJECT_ID],
     );
     expect(workflowState[0]?.automation_state).toBe('paused_budget_exceeded');
+  });
+
+  it('fails closed (blocks) on a hard breach when no workflow_states row exists to record it', async () => {
+    const db = createTestDb() as unknown as DbClient;
+    const featureRequestId = 'fr-over-limit-no-workflow-state';
+    // Seed everything a normal call needs except the workflow_states row.
+    await db.execute(
+      `INSERT OR IGNORE INTO projects (id, name, state, version, created_at, updated_at)
+       VALUES (?, 'Test Project', 'active', 1, datetime('now'), datetime('now'))`,
+      [PROJECT_ID],
+    );
+    await db.execute(
+      `INSERT OR IGNORE INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [`plan-${PROJECT_ID}`, PROJECT_ID],
+    );
+    await db.execute(
+      `INSERT OR IGNORE INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Feature', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
+      [featureRequestId, `plan-${PROJECT_ID}`, PROJECT_ID],
+    );
+    await seedBudgetPolicy(db, featureRequestId, { hardLimit: 10 });
+
+    const result = await budgetPreflightCheck(db, {
+      projectId: PROJECT_ID,
+      featureRequestId,
+      scope: 'feature',
+      correlationId: 'corr-6',
+      estimatedCostUsd: 50,
+      featureRunId: 'fake-feature-run',
+    });
+    expect(result.proceed).toBe(false);
+    if (!result.proceed) {
+      expect(result.outcome).toBe('hard_breach');
+      expect(result.projectedSpend).toBe(50);
+    }
+
+    const workflowState = await db.query<{ automation_state: string }>(
+      `SELECT automation_state FROM workflow_states WHERE project_id = ?`,
+      [PROJECT_ID],
+    );
+    expect(workflowState).toEqual([]);
   });
 
   it('proceeds (fails open) when a forecasted soft breach is reported, not just ok', async () => {
@@ -155,6 +217,7 @@ describe('budgetPreflightCheck', () => {
       scope: 'feature',
       correlationId: 'corr-5',
       estimatedCostUsd: 30,
+      featureRunId: 'fake-feature-run',
     });
     expect(result).toEqual({ proceed: true });
   });
