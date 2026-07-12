@@ -1294,16 +1294,20 @@ unchanged — this is the default and requires no action.
 
 #### Procedure: Enable optional OpenTelemetry export
 
-Opt-in only — unset by default, and no scheduled caller is wired in this phase. To export
-`workflow_events` to a collector manually or from your own cron:
+Opt-in only — unset by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` in the environment, then invoke
+the exporter on whatever interval you want from your own external scheduler (cron, k8s CronJob,
+etc.) — deliberately **not** an always-on Trigger.dev task (issue #67):
 
-```ts
-import { exportWorkflowEventsToOtlp } from '@minicoder/core';
-await exportWorkflowEventsToOtlp(db, { sinceEventId: lastExportedId });
+```bash
+minicoder observability export-otel [--cursor-id <id>] [--limit <n>]
 ```
 
-No-ops with `{ attempted: false, ... }` unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set in the calling
-process's environment.
+Progress is tracked automatically across invocations via a durable cursor
+(`observability_export_cursors`), so each call resumes from the last successfully exported
+`workflow_events.id` — no need to track `lastExportedId` yourself. No-ops
+(`{ attempted: false, ... }`, cursor left untouched) unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+Calling `exportWorkflowEventsToOtlp()` directly from `@minicoder/core` remains available for a
+caller that wants to manage its own cursor instead of the CLI's.
 
 ---
 

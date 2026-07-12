@@ -49,6 +49,7 @@ export const EXPECTED_TABLES = [
   'pull_requests',
   'review_occurrence_markers',
   'adapter_revisions',
+  'observability_export_cursors',
 ] as const;
 
 export type TableName = (typeof EXPECTED_TABLES)[number];

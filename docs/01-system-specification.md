@@ -449,8 +449,12 @@ private chain-of-thought/secret material was not accidentally persisted un-redac
 `packages/core/src/observability/otel-export.ts`'s `exportWorkflowEventsToOtlp()` maps
 `workflow_events` rows to OTLP Logs JSON and POSTs them to a configured
 `OTEL_EXPORTER_OTLP_ENDPOINT` via plain `fetch` (no `@opentelemetry/*` SDK dependency, which ships
-ESM-only). Fully opt-in and a no-op when the endpoint is not configured; no default
-scheduled/automatic caller is wired in this phase.
+ESM-only). Fully opt-in and a no-op when the endpoint is not configured. **Scheduled caller
+(issue #67, implemented):** `minicoder observability export-otel` — a one-shot CLI command, not an
+always-on Trigger.dev task, per the explicit "no always-on network dependency" decision recorded
+on that issue. A deployment's own external scheduler (cron, k8s CronJob, etc.) invokes it on
+whatever interval it wants; progress is tracked across invocations via a durable cursor
+(`observability_export_cursors`, migration 0015) rather than in-process state.
 
 ### 5.13 Orchestrator API
 

@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.13
-> Last-updated: 2026-07-11
+> Version: 1.0.14
+> Last-updated: 2026-07-12
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -579,6 +579,12 @@ minicoder design-doc regenerate --project <id> --yes                          # 
 minicoder design-doc request-revision --project <id> --document <id> --yes [--notes <text>]  # -> design_document_revision_requested (approver+)
 minicoder design-doc approve --project <id> --document <id> --yes [--notes <text>]           # -> design_document_approved (approver+)
 minicoder design-doc request-run --project <id> --documentation-adapter <name> # enqueues run-design-doc (drafts sections, exports final-design-document.md)
+
+# Observability export (issue #67; optional, DB-direct — not the Ink Text UI's API-only surface)
+minicoder observability export-otel [--cursor-id <id>] [--limit <n>]  # exports workflow_events to
+  # OTEL_EXPORTER_OTLP_ENDPOINT if configured (no-ops otherwise); resumes from a durable cursor
+  # (observability_export_cursors); intended for invocation by an external scheduler (cron, k8s
+  # CronJob) rather than an always-on Trigger.dev task
 
 # Next.js Web UI (Phase 15; browser-based, API-only — see 05-ui-specification.md §5 for the full
 # 17-route list). Not a CLI surface — `packages/web`'s Next.js server process reads the same

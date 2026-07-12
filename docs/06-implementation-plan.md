@@ -1926,16 +1926,36 @@ commands are safe and audited; private chain-of-thought is not stored.
   reconstructing spans this schema has no parent/child data for. No caller wires this into a
   scheduled task in this phase — it is a library function an operator/deployment can call from
   their own cron/task if they opt in, matching "optional" in the phase's own acceptance wording.
+  **Closed by issue #67** (post-Phase-16, see below): a `minicoder observability export-otel` CLI
+  command now calls it, invoked by an external scheduler rather than a new always-on Trigger.dev
+  task.
 - **No new migration** — every table this phase reads (`workflow_events`, `agent_runs`,
   `agent_tool_operations`, `agent_context_packs`, `review_findings`, `coder_responses`,
   `pull_requests`, `cost_records`, `human_approvals`, `budget_policies`) already existed with every
-  column needed.
+  column needed. (Issue #67's follow-up did add one migration — `0015_observability_export_cursors`
+  — see below.)
 - **Descoped from this pass** (explicitly, not silently dropped): a dedicated `/timeline` or
   `/budget-report` Web UI page (the existing `/costs`/`/agent-runs`/`features/[id]` pages are
   unchanged — tracked as issue #66) and a scheduled/automatic caller for
-  `exportWorkflowEventsToOtlp()` (tracked as issue #67). Both are real, tracked future work — the
-  read-model/API/core functions they would call are fully built and tested; only the additional UI
-  surface and default automatic scheduling were out of scope for this pass's time budget.
+  `exportWorkflowEventsToOtlp()` (tracked as issue #67, closed below). Issue #66 remains real,
+  tracked future work — the read-model/API/core functions it would call are fully built and
+  tested; only the additional UI surface was out of scope for this pass's time budget.
+
+**Issue #67 follow-up (closed): `minicoder observability export-otel`.** The design decision
+(recorded on the issue, per CLAUDE.md's explicit "discuss an always-on network dependency first"
+instruction) was a one-shot CLI command, not a scheduled Trigger.dev task — a deployment's own
+external scheduler (cron, k8s CronJob, etc.) invokes it on whatever interval it wants, so the
+exporter never becomes a required, always-on dependency for any deployment that doesn't opt in.
+Migration `0015_observability_export_cursors` adds a small, single-row-per-export-target table
+(`observability_export_cursors`) so a stateless CLI process can resume from the last successfully
+exported `workflow_events.id` across invocations — `packages/core/src/observability/
+export-cursor.ts`'s `getObservabilityExportCursor()`/`setObservabilityExportCursor()`, upserting
+via `ON CONFLICT ... DO UPDATE` (the same safe idempotent-write shape
+`writeDesignDocumentSections()` already established, not the `DO NOTHING`-then-requery
+anti-pattern documented elsewhere). The command itself (`packages/cli/src/commands/
+observability.ts`) reads the cursor, calls `exportWorkflowEventsToOtlp()`, and advances the cursor
+only when at least one event was actually exported — a no-op run (endpoint unset, or nothing new
+to export) never touches the cursor row.
 
 ## Phase 17 — Final Design Document Generator ✓
 

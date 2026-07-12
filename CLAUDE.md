@@ -2354,10 +2354,29 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   `packages/core` deliberately: an OTLP collector endpoint is an open, vendor-neutral wire format,
   not an LLM/DB provider the "provider-SDK-free core" rule targets — do not read this as
   precedent for adding other vendor HTTP clients directly into core.
-- **No scheduled/automatic caller for `exportWorkflowEventsToOtlp()` is wired in Phase 16** — it
-  is a library function a deployment can call from its own cron/task if it opts in, matching the
-  phase's own "optional" framing verbatim. Do not add a default Trigger.dev task calling this
-  without discussing the resulting always-on network dependency first. Tracked as issue #67.
+- **Issue #67 (closed): `minicoder observability export-otel` is the scheduled/automatic caller
+  for `exportWorkflowEventsToOtlp()`.** Phase 16 shipped the exporter itself as a library function
+  only, deliberately not wired to any caller — CLAUDE.md's own note warned against adding a
+  default Trigger.dev task without first discussing the resulting always-on network dependency.
+  That discussion's outcome: **no Trigger.dev task at all** — `packages/cli/src/commands/
+observability.ts`'s `export-otel` subcommand is a one-shot CLI invocation, meant to be called by a
+  deployment's own external scheduler (cron, k8s CronJob, etc.) on whatever interval it chooses.
+  This keeps the exporter's own env-gated, opt-in-only posture intact: a deployment that never
+  configures `OTEL_EXPORTER_OTLP_ENDPOINT` and never wires up an external scheduler is completely
+  unaffected — there is still no default, no always-on background process, and no new required
+  dependency for any existing deployment. Progress is tracked in a new, dedicated
+  `observability_export_cursors` table (migration `0015_observability_export_cursors`) rather than
+  in-process state, since a one-shot CLI process has nothing to carry state across invocations —
+  `packages/core/src/observability/export-cursor.ts`'s `getObservabilityExportCursor()`/
+  `setObservabilityExportCursor()` upsert via `ON CONFLICT ... DO UPDATE`, the same safe
+  idempotent-write shape `writeDesignDocumentSections()` already established (never the
+  `DO NOTHING`-then-requery anti-pattern `AdapterRegistry.register()`'s own doc comment warns
+  against). The cursor table is a single row per export target (`id` is a caller-chosen target
+  name, e.g. `workflow_events_otlp` — the CLI's default `--cursor-id`), not a column on an existing
+  table, since it tracks an export target rather than a domain entity — a future second export
+  target gets its own row with no schema change. The CLI command only advances the cursor when
+  `exportWorkflowEventsToOtlp()` actually exported at least one event; an unconfigured-endpoint
+  no-op or an empty batch leaves the cursor untouched.
 - **No new Web UI page was added for the timeline or budget-report views in Phase 16** — the
   existing `/costs`/`/agent-runs`/`features/[id]` Web UI pages are unchanged. This is real,
   documented future work (like issue #61's unwired `TaskTriggerClient`), not a silently dropped
