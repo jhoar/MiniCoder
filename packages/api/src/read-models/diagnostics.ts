@@ -44,6 +44,14 @@ const PUSHED_NO_PR_THRESHOLD_MS = 30 * 60 * 1000;
 // defense-in-depth audit (docs/07 "private chain-of-thought is never stored"), not a replacement
 // for AgentRunRecorder's own write-time redaction.
 const SECRET_SCAN_SAMPLE_SIZE = 50;
+// PR #73 review fix (MEDIUM-4): the project_acceptance_violated check (issue #69) evaluates
+// evaluateProjectAcceptance() once per candidate project, and each evaluation runs several
+// queries -- an unbounded global sweep would become an N*M query cost as the number of
+// post-acceptance projects grows. Bounded to the most-recently-updated projects first (an
+// unaccepted-then-since-invalidated project is most likely to be a recent one), the same
+// "bounded sample, not a full sweep" posture SECRET_SCAN_SAMPLE_SIZE already establishes for this
+// function. Irrelevant when the caller passes --project (at most one row either way).
+const PROJECT_ACCEPTANCE_SWEEP_LIMIT = 50;
 
 function agoIso(ms: number): string {
   return new Date(Date.now() - ms).toISOString();
@@ -323,8 +331,13 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
   const postAcceptanceProjectFilter = projectId ? `AND id = ?` : '';
   const postAcceptanceProjectParams = projectId ? [projectId] : [];
   const postAcceptanceProjects = await db.query<{ id: string }>(
-    `SELECT id FROM projects WHERE state IN (${POST_ACCEPTANCE_PROJECT_STATES.map(() => '?').join(', ')}) ${postAcceptanceProjectFilter}`,
-    [...POST_ACCEPTANCE_PROJECT_STATES, ...postAcceptanceProjectParams],
+    `SELECT id FROM projects WHERE state IN (${POST_ACCEPTANCE_PROJECT_STATES.map(() => '?').join(', ')}) ${postAcceptanceProjectFilter}
+     ORDER BY updated_at DESC LIMIT ?`,
+    [
+      ...POST_ACCEPTANCE_PROJECT_STATES,
+      ...postAcceptanceProjectParams,
+      PROJECT_ACCEPTANCE_SWEEP_LIMIT,
+    ],
   );
   const acceptanceViolations: Array<{
     projectId: string;

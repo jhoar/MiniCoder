@@ -94,10 +94,9 @@ export function mapWorkflowEventsToOtlp(events: WorkflowEventRow[]): OtlpLogsPay
 }
 
 export interface ExportWorkflowEventsOptions {
-  /** Only export events with `id > sinceEventId` (a simple, monotonically-increasing-enough
-   * cursor for a bounded batch — `generateId()`'s `${Date.now()}-${random}` shape sorts
-   * chronologically enough for this purpose; callers wanting exact ordering should track
-   * `occurred_at` themselves). Omit to export the most recent batch unconditionally. */
+  /** Only export events with `id > sinceEventId` — a simple, per-call keyset cursor for a bounded
+   * batch. Omit to export the oldest still-eligible batch unconditionally (see
+   * `safetyMarginMs` below for why "oldest" is bounded, not "most recent"). */
   sinceEventId?: string;
   limit?: number;
   config?: ConfigBackend;
@@ -107,6 +106,24 @@ export interface ExportWorkflowEventsOptions {
    * hung/unreachable collector could block a caller (e.g. a scheduled task) indefinitely.
    * Defaults to 30s. */
   timeoutMs?: number;
+  /**
+   * PR #73 review fix (MEDIUM-1): `id` is `generateId()`'s `${Date.now()}-${random}` shape, which
+   * sorts chronologically close to insertion order but is **not** a safe commit-order cursor on
+   * its own. Two concurrent transactions can generate ids A < B (A's `Date.now()` prefix earlier)
+   * but commit in the opposite order (B commits first); if a caller's cursor advances to B before
+   * A ever becomes visible, a plain `id > cursor` query would never return A once it does commit
+   * — a silently dropped event. `safetyMarginMs` closes this: only events whose `occurred_at` is
+   * at least this far in the past are eligible for export (or for advancing the cursor past), so
+   * any transaction slower than the margin has had time to commit before its row's id range is
+   * ever considered "settled." Defaults to 2 minutes — generous relative to a normal DB
+   * transaction, tunable per deployment via this option. This does not eliminate the class of bug
+   * entirely (a transaction slower than the margin could still be missed), but it converts an
+   * unbounded race into one bounded by a caller-tunable, generous margin — the same "at-least-once
+   * with a bounded staleness window" posture already accepted for this exporter (docs/01 §5.12).
+   */
+  safetyMarginMs?: number;
+  /** Injectable clock for `safetyMarginMs` bound calculations — test seam only. */
+  now?: () => Date;
 }
 
 export interface ExportWorkflowEventsResult {
@@ -117,6 +134,7 @@ export interface ExportWorkflowEventsResult {
 
 const DEFAULT_LIMIT = 200;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_SAFETY_MARGIN_MS = 2 * 60 * 1000;
 
 /**
  * No-ops (`{attempted: false, exportedCount: 0, lastEventId: null}`) unless
@@ -134,11 +152,16 @@ export async function exportWorkflowEventsToOtlp(
   }
 
   const limit = opts.limit ?? DEFAULT_LIMIT;
+  const safetyMarginMs = opts.safetyMarginMs ?? DEFAULT_SAFETY_MARGIN_MS;
+  const now = opts.now ?? (() => new Date());
+  const watermark = new Date(now().getTime() - safetyMarginMs).toISOString();
+
   const params: unknown[] = [];
   let sql = `SELECT id, feature_run_id, project_id, event_type, from_state, to_state, actor, occurred_at
-             FROM workflow_events`;
+             FROM workflow_events WHERE occurred_at <= ?`;
+  params.push(watermark);
   if (opts.sinceEventId) {
-    sql += ` WHERE id > ?`;
+    sql += ` AND id > ?`;
     params.push(opts.sinceEventId);
   }
   sql += ` ORDER BY id ASC LIMIT ?`;

@@ -1727,9 +1727,9 @@ displayName?}`; `ApiKeyProvider` hashes each key with SHA-256 at boot and never 
   (`packages/api/src/default-task-trigger-client.ts`) and passes the result as
   `BuildAppOptions.taskTriggerClient`, so a real deployment's `request-coder-run`/`request-review`/
   `request-fixes`/`recompute-merge-gate`/`request-design-doc` routes are functional by default. The
-  resolver talks to the Trigger.dev *runtime* API only (`tasks.trigger(id, payload, options)` from
+  resolver talks to the Trigger.dev _runtime_ API only (`tasks.trigger(id, payload, options)` from
   `@trigger.dev/sdk/v3`, authenticated via `TRIGGER_SECRET_KEY`/`TRIGGER_API_URL`) — deliberately
-  **not** the Trigger.dev *management* API (`list-runs`/`inspect-run`/`cancel-run`/etc., which
+  **not** the Trigger.dev _management_ API (`list-runs`/`inspect-run`/`cancel-run`/etc., which
   remains out of scope and stubbed in `packages/cli/src/commands/trigger.ts`, per this document's
   own "Trigger.dev _management_-API client... is explicitly out of scope" note above). Triggering
   by task ID does **not** require importing the real `Task` object, so
@@ -1737,11 +1737,22 @@ displayName?}`; `ApiKeyProvider` hashes each key with SHA-256 at boot and never 
   `packages/triggerdev/src/triggerdev-tasks.ts` (which calls `task()` for all 19 canonical tasks at
   module load, a real Trigger.dev-runtime registration side effect this process must not trigger)
   — the avoid-importing-that-module rationale this bullet originally documented is unchanged, only
-  now backed by a real resolver instead of a permanent gap. `TRIGGER_SECRET_KEY` is validated lazily
-  (inside the per-call `triggerTask()` helper, not at `resolve...()`/server-startup time), so a
-  deployment that never calls these five routes is unaffected by a missing Trigger.dev credential —
-  the same "fail only when actually used" contract `unconfiguredTaskTriggerClient()` already
-  established.
+  now backed by a real resolver instead of a permanent gap. `TRIGGER_SECRET_KEY` **and**
+  `TRIGGER_API_URL` are both validated lazily (inside the per-call `triggerTask()` helper, not at
+  `resolve...()`/server-startup time), so a deployment that never calls these five routes is
+  unaffected by missing Trigger.dev credentials — the same "fail only when actually used" contract
+  `unconfiguredTaskTriggerClient()` already established. **PR #73 review fix (MEDIUM-2):**
+  `TRIGGER_API_URL` was originally left to the SDK's own ambient env-var pickup, which silently
+  falls back to Trigger.dev Cloud's hosted API URL when unset — a real risk for a self-hosted
+  deployment, since CLAUDE.md's own "Trigger.dev execution backend is a separate axis from the
+  state store" decision names self-host single-node as the _default_ backend and frames Cloud as
+  a separate, explicit security/compliance choice (payloads leave the deployment's trust
+  boundary). Fixed by requiring `TRIGGER_API_URL` explicitly and passing both it and
+  `TRIGGER_SECRET_KEY` to `@trigger.dev/sdk/v3`'s `configure({baseURL, accessToken})` by value at
+  each call, rather than relying on the SDK reading `process.env` itself — the actual configured
+  target is now visible and testable at this call site. `taskId` is also now typed as
+  `@minicoder/triggerdev`'s `TaskId` (not a bare `string`), and a regression test asserts every
+  triggered task id is a member of the canonical `ALL_TASK_IDS` list (PR #73 review fix, LOW-3).
 - **`generate final design document` / `approve final design document` (docs/01 §9) are not
   built.** No core command handler exists for either yet — the Design Document Generator is Phase
   17 scope. Building a route with no command behind it would violate this phase's own "API
@@ -2396,6 +2407,19 @@ observability.ts`'s `export-otel` subcommand is a one-shot CLI invocation, meant
   target gets its own row with no schema change. The CLI command only advances the cursor when
   `exportWorkflowEventsToOtlp()` actually exported at least one event; an unconfigured-endpoint
   no-op or an empty batch leaves the cursor untouched.
+- **PR #73 review fix (MEDIUM-1): `exportWorkflowEventsToOtlp()`'s cursor was not commit-order
+  safe.** `generateId()`'s `${Date.now()}-${random}` shape sorts chronologically close to
+  insertion order but is not a safe commit-order cursor: two concurrent transactions can generate
+  ids A < B but commit in the opposite order, and a plain `id > cursor` query that already
+  advanced past B would never return A once it commits — a silently dropped event. Fixed with a
+  `safetyMarginMs` bound (default 2 minutes, tunable via `ExportWorkflowEventsOptions`): only
+  events whose `occurred_at` is at least that far in the past are ever exported or allowed to
+  advance the cursor, giving any slower concurrent transaction time to commit before its id range
+  is considered "settled." Does not eliminate the class of bug entirely (a transaction slower than
+  the margin could still be missed) but converts an unbounded race into one bounded by a
+  caller-tunable, generous margin — the same "at-least-once with a bounded staleness window"
+  posture already accepted for this exporter. Regression-tested in `otel-export.test.ts` with an
+  injectable clock (`now` option).
 - **Issue #66 (closed): the Web UI now surfaces both the Phase 16 timeline and budget-report read
   models.** `packages/web/src/lib/api-client.ts` gained `getFeatureRunTimeline(featureRunId)` and
   `getBudgetReport(projectId, windowDays?)`, mirroring `packages/tui/src/client/api-client.ts`'s
@@ -2416,7 +2440,13 @@ observability.ts`'s `export-otel` subcommand is a one-shot CLI invocation, meant
   exposed-API-key convention every other Phase 15 page already establishes — no new pattern
   introduced. `web-e2e.integration.test.ts` gained two regression tests proving both new
   `ApiClient` methods round-trip over real HTTP against a live `buildApp()` instance, not just
-  against a fake `fetchImpl`.
+  against a fake `fetchImpl`. **PR #73 review fix (LOW-2):** `/costs`'s `windowDays` query param
+  originally passed a bare `Number.isFinite()` check straight through to `getBudgetReport()` — a
+  manually-edited URL (`?windowDays=0`, a negative value, or a decimal) turned the page into an
+  API error. Fixed with `lib/parse-window-days.ts`'s `parseWindowDays()` (positive-integer-or-
+  `undefined`, mirroring the API/CLI's own validation), extracted to its own module specifically
+  so it's unit-testable — Server Component pages in this package have no unit-test harness of
+  their own.
 
 ## Final Design Document Generator Operational Constraints (`packages/core/src/{project,design-doc}/`, `packages/core/src/commands/handlers/project/`, `packages/adapters-documentation/`, `packages/triggerdev/src/tasks/run-design-doc.ts`)
 
@@ -2603,8 +2633,16 @@ adapter.run(documentationInput))` (`role: AgentRole.DOCUMENTATION`, `capabilitie
   design-document generation is project-scoped, not feature-scoped, so the written `cost_records`
   row gets `scope='project'` (matching `AgentRunRecorder`'s existing "absent `featureRequestId` →
   project scope" rule), exactly as this bullet previously anticipated a future pass would do.
+  **PR #73 review fix (MEDIUM-3):** the recorded `agent_context_packs` content originally held only
+  `documentationInput` (the narrow `projectId`/`planId`/`featureCount`/`correlationId` contract) —
+  but `ClaudeDocumentationAdapter` is also constructed with `projectName`/`projectDescription`/
+  `featureSummaries`/`mergedPullRequestCount` (`adapterEvidence`), which it does send to the
+  provider. A generated design document could not be fully reconstructed from provenance alone.
+  Fixed by building `adapterEvidence` once and passing it to both adapter construction and the
+  recorded context pack (`content: { documentationInput, adapterEvidence }`) — the same
+  "documented, then structurally proven" gap-closing this document applies elsewhere.
 - **Issue #70 (closed): `documentationAdapterName` is still validation/provenance-only, but the
-  *default* adapter-factory path now rejects a mismatched name instead of silently ignoring it.**
+  _default_ adapter-factory path now rejects a mismatched name instead of silently ignoring it.**
   `run-design-doc.ts` still resolves `documentationAdapterName` via
   `AdapterRegistry.resolve(AgentRole.DOCUMENTATION, ...)` for validation/provenance (unchanged —
   this is still not the same lookup as runtime implementation selection, the same separation
@@ -2687,7 +2725,7 @@ DB `project_acceptance_violated` `state doctor` check
 (`packages/api/src/read-models/diagnostics.ts`'s `runDoctorChecks()`) re-runs
 `evaluateProjectAcceptance()` against every project that has already passed the acceptance gate
 (any `projects.state` after `active` — `implementation_complete` through `project_complete`) and
-flags one whose *current* state would now fail acceptance. This is the same "pure DB query, no
+flags one whose _current_ state would now fail acceptance. This is the same "pure DB query, no
 external dependency, always part of `runDoctorChecks()`" contract every other check in that
 function already follows (unlike the separately opt-in, GitHub-credential-requiring
 `checkPrDiscoveryDivergence()`) — a rare violation surfaces on the next `state doctor`/`minicoder
@@ -2698,9 +2736,17 @@ raced the fence, not a state this doctor check can itself safely repair. **The s
 outbox/inbox-scope question is resolved as "keep as-is, documented":** `evaluateProjectAcceptance()`'s
 own stuck-outbox/inbox sub-check remains global (those tables carry no `project_id` column to scope
 by), matching `runDoctorChecks()`'s own `stuck_outbox`/`stuck_inbox` checks' identical global-scope
-posture — an unrelated project's stuck queue entries can affect this check's verdict for *this*
+posture — an unrelated project's stuck queue entries can affect this check's verdict for _this_
 project, the same pre-existing, intentional trade-off `state doctor` already accepts elsewhere, not
 a new gap this fix introduces.
+
+**PR #73 review fix (MEDIUM-4): the sweep is bounded, not unbounded.** `runDoctorChecks()`
+originally evaluated `evaluateProjectAcceptance()` (itself several queries) against every
+post-acceptance project with no limit — an N×M query cost as the number of accepted projects
+grows, risky for an always-on diagnostic endpoint. Fixed with `PROJECT_ACCEPTANCE_SWEEP_LIMIT`
+(50, `ORDER BY updated_at DESC LIMIT`), the same "bounded sample, not a full-table scan" posture
+`SECRET_SCAN_SAMPLE_SIZE` already establishes elsewhere in this file — irrelevant when the caller
+passes `--project` (at most one row either way).
 
 ## Cross-Dialect Testing (Mandatory)
 

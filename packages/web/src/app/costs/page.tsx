@@ -2,6 +2,7 @@ import type { ReactElement } from 'react';
 import type { BudgetBreakdownRow } from '@minicoder/api';
 import { getApiClient } from '../../lib/api-server';
 import { resolveProjectId } from '../../lib/project';
+import { parseWindowDays } from '../../lib/parse-window-days';
 import { ProjectSwitcher } from '../../components/project-switcher';
 import { KeyValue } from '../../components/key-value';
 import { Table } from '../../components/table';
@@ -41,14 +42,11 @@ export default async function CostsPage({
   const client = getApiClient();
   const params = await searchParams;
   const projectId = await resolveProjectId(searchParams);
-  const windowDays = params.windowDays ? Number(params.windowDays) : undefined;
+  const windowDays = parseWindowDays(params.windowDays);
   const [projects, costs, report] = await Promise.all([
     client.listProjects({ limit: '100' }),
     client.listCostRecords(projectId, { limit: '100' }),
-    client.getBudgetReport(
-      projectId,
-      windowDays !== undefined && Number.isFinite(windowDays) ? windowDays : undefined,
-    ),
+    client.getBudgetReport(projectId, windowDays),
   ]);
 
   const total = costs.items.reduce((sum, row) => sum + row.amount, 0);

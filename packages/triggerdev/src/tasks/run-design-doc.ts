@@ -380,14 +380,23 @@ async function generateAndRecord(args: GenerateAndRecordArgs): Promise<RunDesign
   );
   const planId = planRows[0]?.id ?? '';
 
+  // PR #73 review fix (MEDIUM-3): built once and reused for both adapter construction and the
+  // recorded context pack below — this is the full evidence bundle the documentation adapter
+  // actually sends to the provider (`ClaudeDocumentationAdapterOptions`), not just the narrow
+  // `DocumentationInput` contract. Previously only `documentationInput` was recorded, so a
+  // generated design document could not be fully reconstructed from `agent_context_packs` alone:
+  // `projectName`/`projectDescription`/`featureSummaries`/`mergedPullRequestCount` were used to
+  // drive the LLM call but never persisted as provenance.
+  const adapterEvidence = {
+    projectName: evidence.project.name,
+    projectDescription: evidence.project.description,
+    featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
+    mergedPullRequestCount: evidence.mergedPullRequests.length,
+  };
+
   let adapter: DocumentationAgentAdapter;
   if (deps.documentationAdapterFactory) {
-    adapter = await deps.documentationAdapterFactory({
-      projectName: evidence.project.name,
-      projectDescription: evidence.project.description,
-      featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
-      mergedPullRequestCount: evidence.mergedPullRequests.length,
-    });
+    adapter = await deps.documentationAdapterFactory(adapterEvidence);
   } else {
     // Issue #70: only the *default* (non-injected) factory path is guarded — a caller injecting
     // its own factory (every current test) also controls the name it registered that adapter
@@ -400,12 +409,7 @@ async function generateAndRecord(args: GenerateAndRecordArgs): Promise<RunDesign
           'a different implementation.',
       );
     }
-    adapter = await resolveDefaultDocumentationAdapterFactory()({
-      projectName: evidence.project.name,
-      projectDescription: evidence.project.description,
-      featureSummaries: evidence.features.map((f) => `${f.frId}: ${f.title}`),
-      mergedPullRequestCount: evidence.mergedPullRequests.length,
-    });
+    adapter = await resolveDefaultDocumentationAdapterFactory()(adapterEvidence);
   }
 
   const documentationInput = buildDocumentationInput(evidence, { planId, correlationId });
@@ -418,7 +422,7 @@ async function generateAndRecord(args: GenerateAndRecordArgs): Promise<RunDesign
       projectId,
       input: documentationInput,
       capabilitiesUsed: ['can_generate_design_document'],
-      contextPack: { content: documentationInput },
+      contextPack: { content: { documentationInput, adapterEvidence } },
       promptTemplateVersion: resolvePromptTemplateVersion(),
       costExtractor: (outcome) => {
         if (!outcome.ok) return null;

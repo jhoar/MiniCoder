@@ -177,11 +177,28 @@ describe('runImpl (run-design-doc)', () => {
       expect(runRows[0]?.prompt_template_version).toBe('documentation-v1');
       expect(runRows[0]?.feature_run_id).toBeNull();
 
-      const contextPackRows = await db.query<{ id: string }>(
-        `SELECT id FROM agent_context_packs WHERE agent_run_id = ?`,
+      const contextPackRows = await db.query<{ id: string; content: string }>(
+        `SELECT id, content FROM agent_context_packs WHERE agent_run_id = ?`,
         [runRows[0]!.id],
       );
       expect(contextPackRows.length).toBeGreaterThanOrEqual(1);
+      // PR #73 review fix (MEDIUM-3): the recorded context pack must include the full evidence
+      // bundle the adapter was actually constructed with (project name/description, feature
+      // summaries, merged PR count) -- not just the narrow DocumentationInput -- so a generated
+      // design document's provenance is fully reconstructable from agent_context_packs alone.
+      const parsed = JSON.parse(contextPackRows[0]!.content) as {
+        documentationInput: { projectId: string; planId: string; featureCount: number };
+        adapterEvidence: {
+          projectName: string;
+          projectDescription: string | null;
+          featureSummaries: string[];
+          mergedPullRequestCount: number;
+        };
+      };
+      expect(parsed.documentationInput.projectId).toBe(PROJECT_ID);
+      expect(parsed.adapterEvidence.projectName).toBe('Test Project');
+      expect(parsed.adapterEvidence).toHaveProperty('featureSummaries');
+      expect(parsed.adapterEvidence).toHaveProperty('mergedPullRequestCount');
     });
 
     it('writes a cost_records row scoped to the project when the adapter reports token usage', async () => {

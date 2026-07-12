@@ -29,8 +29,14 @@ function makeFakeDb(events: WorkflowEventRow[]) {
           : []) as unknown as T[];
       }
       if (sql.includes('FROM workflow_events')) {
-        const sinceId = sql.includes('WHERE id > ?') ? (params[0] as string) : undefined;
-        const filtered = sinceId ? events.filter((e) => e.id > sinceId) : events;
+        // Mirrors exportWorkflowEventsToOtlp()'s real param order: [watermark, sinceEventId?,
+        // limit] — sinceEventId is present only when the query includes `AND id > ?` (the
+        // safety-margin fix, PR #73 review MEDIUM-1, always includes the watermark bound).
+        const hasSinceId = sql.includes('AND id > ?');
+        const watermark = params[0] as string;
+        const sinceId = hasSinceId ? (params[1] as string) : undefined;
+        let filtered = events.filter((e) => e.occurred_at <= watermark);
+        if (sinceId) filtered = filtered.filter((e) => e.id > sinceId);
         return filtered as unknown as T[];
       }
       throw new Error(`unexpected query: ${sql}`);
@@ -142,6 +148,26 @@ describe('CLI observability export-otel command', () => {
       'export-otel',
       '--limit',
       '0',
+    ]);
+
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    expect(errSpy.mock.calls.join(' ')).toMatch(/--limit/);
+  });
+
+  // PR #73 review fix (LOW-1): the error message says "positive integer," but the check only
+  // verified finite/positive — a decimal silently passed through.
+  it('rejects a non-integer --limit', async () => {
+    fakeDb = makeFakeDb([event()]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'observability',
+      'export-otel',
+      '--limit',
+      '1.5',
     ]);
 
     expect(process.exitCode).toBe(1);

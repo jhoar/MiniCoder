@@ -34,7 +34,9 @@ export function createObservabilityCommand(): Command {
       try {
         const sinceEventId = await getObservabilityExportCursor(db, opts.cursorId);
         const limit = opts.limit ? Number(opts.limit) : undefined;
-        if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+        // PR #73 review fix (LOW-1): the error message already said "positive integer" — the
+        // check only verified finite/positive, so e.g. --limit 1.5 silently passed through.
+        if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
           console.error('Error: --limit must be a positive integer.');
           process.exitCode = 1;
           return;

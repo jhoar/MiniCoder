@@ -162,3 +162,87 @@ describe('exportWorkflowEventsToOtlp', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+/** Unlike `FakeDb` above (which ignores its query entirely — fine for the tests above, which
+ * don't depend on filtering), this one actually applies the `occurred_at <= ?` / `id > ?` /
+ * `ORDER BY id ASC LIMIT ?` clauses `exportWorkflowEventsToOtlp()` builds, so the safety-margin
+ * regression below can prove the real filtering behavior, not just that some rows were returned. */
+class FilteringFakeDb implements DbClient {
+  constructor(private readonly rows: WorkflowEventRow[]) {}
+  async query<T = Record<string, unknown>>(_sql: string, params: unknown[] = []): Promise<T[]> {
+    const [watermark, sinceEventId, limit] =
+      params.length === 3
+        ? (params as [string, string, number])
+        : [params[0] as string, undefined, params[1] as number];
+    let filtered = this.rows.filter((r) => r.occurred_at <= watermark);
+    if (sinceEventId) filtered = filtered.filter((r) => r.id > sinceEventId);
+    filtered = [...filtered].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return filtered.slice(0, limit) as unknown as T[];
+  }
+  async execute(): Promise<void> {}
+  async executeAffected(): Promise<number> {
+    return 0;
+  }
+  async transaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+    return fn(this);
+  }
+  async close(): Promise<void> {}
+}
+
+describe('exportWorkflowEventsToOtlp: safety-margin cursor fix (PR #73 review, MEDIUM-1)', () => {
+  it('excludes an event more recent than the safety margin, even if its id sorts after an eligible one', async () => {
+    const fixedNow = new Date('2026-01-01T00:10:00.000Z');
+    const db = new FilteringFakeDb([
+      // 'evt-old' is eligible (8 minutes old); 'evt-recent' is not (30 seconds old) despite
+      // sorting after 'evt-old' lexically -- the exact shape of the bug this margin closes: a
+      // slow transaction generating a lower id could still be in flight when a naive
+      // `id > cursor` cursor would otherwise consider this range fully settled.
+      event({ id: 'evt-old', occurred_at: '2026-01-01T00:02:00.000Z' }),
+      event({ id: 'evt-recent', occurred_at: '2026-01-01T00:09:30.000Z' }),
+    ]);
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const result = await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => fixedNow,
+    });
+    expect(result).toEqual({ attempted: true, exportedCount: 1, lastEventId: 'evt-old' });
+  });
+
+  it('includes the previously-too-recent event once it falls outside the margin on a later call', async () => {
+    const db = new FilteringFakeDb([
+      event({ id: 'evt-old', occurred_at: '2026-01-01T00:02:00.000Z' }),
+      event({ id: 'evt-recent', occurred_at: '2026-01-01T00:09:30.000Z' }),
+    ]);
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+
+    const first = await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => new Date('2026-01-01T00:10:00.000Z'),
+    });
+    expect(first.lastEventId).toBe('evt-old');
+
+    const second = await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sinceEventId: first.lastEventId ?? undefined,
+      now: () => new Date('2026-01-01T00:20:00.000Z'), // 10 minutes later: past the margin now
+    });
+    expect(second).toEqual({ attempted: true, exportedCount: 1, lastEventId: 'evt-recent' });
+  });
+
+  it('respects a caller-supplied safetyMarginMs override', async () => {
+    const db = new FilteringFakeDb([
+      event({ id: 'evt-1', occurred_at: '2026-01-01T00:09:45.000Z' }),
+    ]);
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const result = await exportWorkflowEventsToOtlp(db, {
+      config: new FakeConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => new Date('2026-01-01T00:10:00.000Z'),
+      safetyMarginMs: 10_000, // 10s margin -- 15s-old event is eligible
+    });
+    expect(result.exportedCount).toBe(1);
+  });
+});

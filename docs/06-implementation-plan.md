@@ -1760,8 +1760,8 @@ costs,artifacts,adapters,design-doc,pause,resume}.ts` — one Commander command 
   these endpoints and fixing this was correctly kept out of Phase 14's scope. Closed via
   `packages/api/src/default-task-trigger-client.ts`'s `resolveDefaultTaskTriggerClient()`, which
   `server.ts` now passes to `buildApp()` — see CLAUDE.md's Orchestrator API Operational
-  Constraints section for the full rationale (Trigger.dev *runtime* API only, not the
-  *management* API; lazy `TRIGGER_SECRET_KEY` validation).
+  Constraints section for the full rationale (Trigger.dev _runtime_ API only, not the
+  _management_ API; lazy `TRIGGER_SECRET_KEY` validation).
 - **Recorded, not fixed (post-implementation review watch item):** `@minicoder/tui`'s single
   barrel export mixes HTTP client/config concerns with Ink presentation concerns — see CLAUDE.md's
   Ink Text UI Operational Constraints section. Tracked as issue #60.
@@ -2121,7 +2121,7 @@ revision_requested -> generating -> ready_for_review -> approved -> project_comp
   — the written `cost_records` row gets `scope='project'`.
 - **#70**: a new `DEFAULT_DOCUMENTATION_ADAPTER_NAME` constant
   (`'ClaudeDocumentationAdapter'`, matching `packages/web/src/app/design-document/actions.ts`'s own
-  identical hardcoded constant) is checked only on the *default* (non-injected)
+  identical hardcoded constant) is checked only on the _default_ (non-injected)
   `documentationAdapterFactory` path — a caller-supplied `documentationAdapterName` that doesn't
   match it now throws a clear, actionable error instead of silently running
   `ClaudeDocumentationAdapter` under a different registered name. A caller injecting its own
