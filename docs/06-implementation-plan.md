@@ -1938,12 +1938,24 @@ commands are safe and audited; private chain-of-thought is not stored.
   `pull_requests`, `cost_records`, `human_approvals`, `budget_policies`) already existed with every
   column needed. (Issue #67's follow-up did add one migration — `0015_observability_export_cursors`
   — see below.)
-- **Descoped from this pass** (explicitly, not silently dropped): a dedicated `/timeline` or
-  `/budget-report` Web UI page (the existing `/costs`/`/agent-runs`/`features/[id]` pages are
-  unchanged — tracked as issue #66) and a scheduled/automatic caller for
-  `exportWorkflowEventsToOtlp()` (tracked as issue #67, closed below). Issue #66 remains real,
-  tracked future work — the read-model/API/core functions it would call are fully built and
-  tested; only the additional UI surface was out of scope for this pass's time budget.
+- **Descoped from this pass, both since closed** (explicitly, not silently dropped): a dedicated
+  Web UI surface for the timeline/budget-report read models (issue #66, closed below — no separate
+  `/timeline`/`/budget-report` route was added; both were folded into the existing
+  `/features/[id]`/`/costs` pages instead) and a scheduled/automatic caller for
+  `exportWorkflowEventsToOtlp()` (issue #67, closed below).
+
+**Issue #66 follow-up (closed): the Web UI's `/features/[id]` and `/costs` pages now surface both
+read models.** `packages/web/src/lib/api-client.ts` gained `getFeatureRunTimeline()`/
+`getBudgetReport()`, mirroring the TUI client's identical methods and reusing
+`@minicoder/api`'s existing `BudgetReport`/`FeatureRunTimeline`/`BudgetBreakdownRow` types (no
+duplicated type definitions). `/features/[id]` gained a "Timeline" section (a merged, three-column
+timestamp/kind/summary view) below its existing per-table sections; `/costs` gained a "Budget
+report" section (breakdown tables by scope/feature/provider/model/role, with a plain GET-form
+window-days control needing no client JS) below its existing raw `cost_records` table. Both are
+additive — no existing section was removed or replaced, since the merged/aggregate views serve a
+different purpose than the granular per-table sections already there. Two new end-to-end
+regression tests in `web-e2e.integration.test.ts` prove both new `ApiClient` methods round-trip
+over real HTTP against a live `buildApp()` instance.
 
 **Issue #67 follow-up (closed): `minicoder observability export-otel`.** The design decision
 (recorded on the issue, per CLAUDE.md's explicit "discuss an always-on network dependency first"

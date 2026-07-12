@@ -2396,11 +2396,27 @@ observability.ts`'s `export-otel` subcommand is a one-shot CLI invocation, meant
   target gets its own row with no schema change. The CLI command only advances the cursor when
   `exportWorkflowEventsToOtlp()` actually exported at least one event; an unconfigured-endpoint
   no-op or an empty batch leaves the cursor untouched.
-- **No new Web UI page was added for the timeline or budget-report views in Phase 16** — the
-  existing `/costs`/`/agent-runs`/`features/[id]` Web UI pages are unchanged. This is real,
-  documented future work (like issue #61's unwired `TaskTriggerClient`), not a silently dropped
-  requirement; the read-model/API/core functions backing a future page are fully built and tested.
-  Tracked as issue #66.
+- **Issue #66 (closed): the Web UI now surfaces both the Phase 16 timeline and budget-report read
+  models.** `packages/web/src/lib/api-client.ts` gained `getFeatureRunTimeline(featureRunId)` and
+  `getBudgetReport(projectId, windowDays?)`, mirroring `packages/tui/src/client/api-client.ts`'s
+  identical methods exactly (same endpoints, same query-param shape) and importing their
+  `BudgetReport`/`FeatureRunTimeline`/`BudgetBreakdownRow` types straight from `@minicoder/api` —
+  no new type definitions duplicated in the Web UI package. `/features/[id]`'s existing
+  Promise.all fetch gained a `getFeatureRunTimeline(latestRun.id)` call, rendered as a new
+  "Timeline" section (a plain three-column timestamp/kind/summary table) below the page's existing
+  per-table sections (workflow events, agent runs, findings, etc.) — this is an additive merged
+  view, not a replacement for those sections, since they carry different detail/action affordances
+  the merged timeline doesn't. `/costs` gained a "Budget report" section below its existing raw
+  `cost_records` table, rendering `byScope`/`byFeature`/`byProvider`/`byModel`/`byRole` breakdowns
+  in a responsive grid of small tables, with a plain `<form method="get">` window-days control
+  (no client JS needed — a GET form re-renders the Server Component with a new
+  `?windowDays=<n>` query param, the same pattern `ProjectSwitcher`'s query-param-driven URL
+  already establishes, just without needing a Client Component since no client-side interactivity
+  beyond navigation is required here). Both follow the existing server-only `ApiClient`/no-client-
+  exposed-API-key convention every other Phase 15 page already establishes — no new pattern
+  introduced. `web-e2e.integration.test.ts` gained two regression tests proving both new
+  `ApiClient` methods round-trip over real HTTP against a live `buildApp()` instance, not just
+  against a fake `fetchImpl`.
 
 ## Final Design Document Generator Operational Constraints (`packages/core/src/{project,design-doc}/`, `packages/core/src/commands/handlers/project/`, `packages/adapters-documentation/`, `packages/triggerdev/src/tasks/run-design-doc.ts`)
 

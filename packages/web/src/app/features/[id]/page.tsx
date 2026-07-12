@@ -28,6 +28,7 @@ export default async function FeatureDetailPage({
     mergeGateEvaluations,
     workflowEvents,
     triggerdevRuns,
+    timeline,
   ] = latestRun
     ? await Promise.all([
         fetchLinkedPullRequest(client, latestRun.id),
@@ -37,6 +38,7 @@ export default async function FeatureDetailPage({
         client.listMergeGateEvaluations(latestRun.id, { limit: '10' }),
         client.listWorkflowEvents({ featureRunId: latestRun.id }, { limit: '20' }),
         client.listTriggerdevRuns({ featureRunId: latestRun.id }, { limit: '10' }),
+        client.getFeatureRunTimeline(latestRun.id),
       ])
     : [
         null,
@@ -46,6 +48,7 @@ export default async function FeatureDetailPage({
         { items: [] },
         { items: [] },
         { items: [] },
+        null,
       ];
 
   return (
@@ -227,6 +230,25 @@ export default async function FeatureDetailPage({
               ]}
             />
           </section>
+
+          {timeline && (
+            <section>
+              <h2>Timeline</h2>
+              <p style={{ color: '#64748b', fontSize: '0.85rem' }}>
+                Merged chronological history — workflow events, agent runs, review findings, coder
+                responses, pull-request activity, cost records, and human approvals for this run.
+              </p>
+              <Table
+                rows={timeline.entries.map((entry, index) => ({ ...entry, index }))}
+                rowKey={(row) => `${row.timestamp}-${row.kind}-${row.index}`}
+                columns={[
+                  { key: 'timestamp', header: 'Timestamp', render: (row) => row.timestamp },
+                  { key: 'kind', header: 'Kind', render: (row) => row.kind },
+                  { key: 'summary', header: 'Summary', render: (row) => row.summary },
+                ]}
+              />
+            </section>
+          )}
         </>
       )}
     </div>
