@@ -23,6 +23,10 @@ export interface RunDesignDocResult {
   generated: boolean;
   designDocumentId: string | null;
   artifactExportId: string | null;
+  /** True when the adapter reported one or more required sections as missing/blank in its raw
+   * output. When true, `generated` sections were still written (for operator visibility) but
+   * export/record-ready were deliberately skipped — see the `runImpl` doc comment. */
+  requiresRevision?: boolean;
 }
 
 const exportDesignDocumentHandler = new ExportDesignDocumentHandler();
@@ -119,6 +123,16 @@ interface PlanRow {
  * a real, documented scope trade-off for this phase (see CLAUDE.md's Final Design Document
  * Generator Operational Constraints), not an oversight; a future pass can add it without changing
  * this task's public shape.
+ *
+ * If the adapter reports `requiresRevision: true` (a required section came back missing/blank in
+ * its raw output — see `ClaudeDocumentationAdapter`/`generateDesignDocumentSections`), this task
+ * still writes the (partially-placeholder) sections for operator visibility but deliberately does
+ * **not** export or record-ready: an incomplete draft must never silently reach
+ * `design_document_ready_for_review` looking like a clean success. The project is left at
+ * `design_document_generating` with no in-flight run — the same "handler exists, caller decides
+ * what happens next" posture `run-coder.ts` already establishes for an adapter failure leaving a
+ * feature run at `coding`. An operator can inspect the draft sections directly and either retry
+ * generation (once the underlying provider/config issue is fixed) or manually intervene.
  */
 export async function runImpl(
   payload: RunDesignDocPayload,
@@ -126,11 +140,6 @@ export async function runImpl(
   deps: RunDesignDocDeps = {},
 ): Promise<RunDesignDocResult> {
   const { projectId, correlationId, documentationAdapterName } = payload;
-
-  // Fail fast on an unregistered/unknown adapter name rather than silently ignoring the caller's
-  // selection and always resolving the environment default — `registry.resolve()` throws
-  // `UnknownAdapterError` for a name with no active `agent_adapters` row.
-  await new AdapterRegistry(db).resolve(AgentRole.DOCUMENTATION, documentationAdapterName);
 
   const projectRows = await db.query<ProjectRow>(
     `SELECT id, name, state, version FROM projects WHERE id = ?`,
@@ -155,6 +164,28 @@ export async function runImpl(
     return { projectId, generated: false, designDocumentId, artifactExportId };
   }
 
+  // Adapter-name validation happens after the no-op state/row-existence gates above (not before,
+  // as an earlier revision of this task did) — a harmless replay for a project already past
+  // `design_document_generating` (or with no pending rows) must return a clean no-op even if the
+  // registry entry for `documentationAdapterName` has since been deactivated/renamed, mirroring
+  // how `run-coder.ts`/`run-review.ts` gate on run/project state before resolving their adapter.
+  // Fail fast on an unregistered/unknown adapter name rather than silently ignoring the caller's
+  // selection and always resolving the environment default — `registry.resolve()` throws
+  // `UnknownAdapterError` for a name with no active `agent_adapters` row.
+  //
+  // NOTE: this resolves the `agent_adapters` DB record only (for validation/provenance), not a
+  // runtime implementation — the same "registry resolve is not implementation selection"
+  // separation `run-coder.ts`/`run-review.ts` already establish for `coderAdapterName`/
+  // `reviewerAdapterName` (CLAUDE.md's Reference Coder Adapter Operational Constraints: "these are
+  // not the same lookup"). The actual runtime instance always comes from the injected
+  // `documentationAdapterFactory` below (or, absent one, `resolveDefaultDocumentationAdapterFactory()`,
+  // which always constructs `ClaudeDocumentationAdapter`). There is exactly one shipped
+  // `DocumentationAgentAdapter` reference implementation today — supporting a caller-selectable
+  // choice among multiple registered implementations is real future work (the same class of gap
+  // `run-coder.ts`'s `CoderAdapterFactory` doc comment already flags), not something this
+  // validation call was ever meant to provide.
+  await new AdapterRegistry(db).resolve(AgentRole.DOCUMENTATION, documentationAdapterName);
+
   const evidence = await collectDesignDocumentEvidence(db, projectId);
   const planRows = await db.query<PlanRow>(
     `SELECT id FROM implementation_plans WHERE project_id = ? AND state = 'activated_for_execution' ORDER BY created_at DESC LIMIT 1`,
@@ -176,6 +207,16 @@ export async function runImpl(
     correlationId,
   });
   await writeDesignDocumentSections(db, { designDocumentId, sections: generated.sections });
+
+  if (generated.requiresRevision) {
+    return {
+      projectId,
+      generated: false,
+      designDocumentId,
+      artifactExportId,
+      requiresRevision: true,
+    };
+  }
 
   const executor = new TransactionalCommandExecutor(db);
   const actor = systemActor(correlationId);

@@ -13,6 +13,7 @@ import {
   fulfillIdempotencyKey,
 } from '../../helpers.js';
 import { renderDesignDocumentMarkdown } from '../../../design-doc/render-markdown.js';
+import { DESIGN_DOCUMENT_SECTION_NAMES } from '../../../design-doc/generator.js';
 
 export const ExportDesignDocumentPayloadSchema = z.object({
   projectId: z.string(),
@@ -27,6 +28,10 @@ const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 interface ArtifactExportRow {
   id: string;
   state: string;
+}
+
+interface DesignDocumentRow {
+  id: string;
 }
 
 /**
@@ -97,6 +102,19 @@ export class ExportDesignDocumentHandler implements CommandHandler<
         });
       }
 
+      const docRows = await tx.query<DesignDocumentRow>(
+        `SELECT id FROM design_documents WHERE id = ? AND project_id = ?`,
+        [designDocumentId, projectId],
+      );
+      if (!docRows[0]) {
+        throw new CommandError({
+          type: 'not-found',
+          title: 'Design document not found',
+          status: 404,
+          detail: `design_documents ${designDocumentId} not found for project ${projectId}`,
+        });
+      }
+
       const projectRows = await tx.query<{ name: string }>(
         `SELECT name FROM projects WHERE id = ?`,
         [projectId],
@@ -111,12 +129,17 @@ export class ExportDesignDocumentHandler implements CommandHandler<
         `SELECT section_name, content, order_index FROM design_document_sections WHERE design_document_id = ? ORDER BY order_index ASC`,
         [designDocumentId],
       );
-      if (sectionRows.length === 0) {
+      const sectionNamesPresent = new Set(sectionRows.map((s) => s.section_name));
+      const missingOrBlank = DESIGN_DOCUMENT_SECTION_NAMES.filter((name) => {
+        const row = sectionRows.find((s) => s.section_name === name);
+        return !sectionNamesPresent.has(name) || !row?.content || row.content.trim().length === 0;
+      });
+      if (missingOrBlank.length > 0) {
         throw new CommandError({
-          type: 'no-sections',
-          title: 'No design document sections to export',
+          type: 'incomplete-sections',
+          title: 'Design document sections are incomplete',
           status: 409,
-          detail: `design_documents ${designDocumentId} has no sections generated yet`,
+          detail: `design_documents ${designDocumentId} is missing or has blank content for: ${missingOrBlank.join(', ')}`,
         });
       }
 

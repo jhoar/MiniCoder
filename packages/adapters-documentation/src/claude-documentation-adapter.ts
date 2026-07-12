@@ -44,15 +44,25 @@ export class ClaudeDocumentationAdapter implements DocumentationAgentAdapter {
     });
 
     const bySectionName = new Map(result.sections.map((s) => [s.sectionName, s.content]));
-    const sections = DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName) => ({
-      sectionName,
-      content: bySectionName.get(sectionName) ?? `(no content drafted for ${sectionName})`,
-    }));
+    let missingOrBlank = false;
+    const sections = DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName) => {
+      const content = bySectionName.get(sectionName);
+      if (content === undefined || content.trim().length === 0) {
+        missingOrBlank = true;
+        return { sectionName, content: `(no content drafted for ${sectionName})` };
+      }
+      return { sectionName, content };
+    });
 
     return {
       documentId: generateId(),
       sections,
-      requiresRevision: false,
+      // Detected against the RAW provider output, before the placeholder substitution above —
+      // a placeholder is never itself blank, so checking the post-substitution `sections` array
+      // here would always report false. A caller (the generator, run-design-doc.ts) must not
+      // treat a `requiresRevision: false` normalized output as proof every section was really
+      // drafted by the model.
+      requiresRevision: missingOrBlank,
       tokensUsed: result.tokensUsed,
     };
   }

@@ -66,6 +66,23 @@ export async function regenerateDesignDocumentAction(
   return enqueueResult.ok ? lifecycleResult : enqueueResult;
 }
 
+/** Enqueue-only retry for a project already at `design_document_generating` (e.g. because a
+ * prior `generateDesignDocumentAction`/`regenerateDesignDocumentAction` call's lifecycle command
+ * succeeded but its `request-design-doc` enqueue failed) — deliberately does NOT re-dispatch the
+ * lifecycle command, since the project is already in the target state and re-dispatching would
+ * just hit `PROJECT_LIFECYCLE_MATRIX`'s guard. Surfaced as a visible retry affordance rather than
+ * leaving an operator with no Web UI path back from a partial failure. */
+export async function requestDesignDocAction(projectId: string): Promise<ActionResult<unknown>> {
+  const result = await runCommandAction(() =>
+    getApiClient().requestDesignDoc(
+      { projectId, documentationAdapterName: DEFAULT_DOCUMENTATION_ADAPTER_NAME },
+      newIdempotencyKey(),
+    ),
+  );
+  revalidatePath('/design-document');
+  return result;
+}
+
 export async function requestDesignDocumentRevisionAction(
   projectId: string,
   expectedVersion: number,

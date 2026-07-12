@@ -2,7 +2,11 @@
 
 import type { ReactElement } from 'react';
 import { CommandButton } from '../../components/command-button';
-import { generateDesignDocumentAction, regenerateDesignDocumentAction } from './actions';
+import {
+  generateDesignDocumentAction,
+  regenerateDesignDocumentAction,
+  requestDesignDocAction,
+} from './actions';
 
 export function GenerateDesignDocumentActions({
   projectId,
@@ -30,6 +34,16 @@ export function GenerateDesignDocumentActions({
         requiredRole="operator"
         confirmMessage="Start regenerating the final design document?"
         action={() => regenerateDesignDocumentAction(projectId, projectVersion)}
+      />
+    );
+  }
+  if (projectState === 'design_document_generating') {
+    return (
+      <CommandButton
+        label="Retry generation"
+        requiredRole="operator"
+        confirmMessage="Re-enqueue design document generation? Use this if a prior attempt did not complete."
+        action={() => requestDesignDocAction(projectId)}
       />
     );
   }
