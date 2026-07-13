@@ -1,4 +1,8 @@
-import type { DocumentationAgentAdapter, DocumentationOutput } from '../adapters/types.js';
+import type {
+  DocumentationAgentAdapter,
+  DocumentationInput,
+  DocumentationOutput,
+} from '../adapters/types.js';
 import type { DesignDocumentEvidence } from './evidence.js';
 
 /** The 13 required sections, exact names and order (docs/01 §13.2). Do not rename or reorder —
@@ -42,28 +46,33 @@ export interface GenerateDesignDocumentSectionsResult {
   readonly requiresRevision: boolean;
 }
 
-/**
- * Drives `DocumentationAgentAdapter.run()` with DB-collected evidence folded into the input. The
- * adapter contract (`DocumentationInput`, Phase 5-vintage) only carries `projectId`/`planId`/
- * `featureCount`/`correlationId` — it does not carry the full evidence bundle as structured
- * fields, mirroring how `CoderInput`/`ReviewerInput` also stay narrow and let the adapter itself
- * (or, for the reference implementation, `packages/adapters-documentation`) assemble a richer
- * prompt from a real evidence-fetch call of its own. This function's job is narrower: it is the
- * one call site every caller (the `run-design-doc` task, tests) goes through, so evidence
- * collection and adapter invocation are not duplicated per caller.
- */
-export async function generateDesignDocumentSections(
-  adapter: DocumentationAgentAdapter,
+/** Builds the narrow `DocumentationInput` (Phase 5-vintage adapter contract — `projectId`/
+ * `planId`/`featureCount`/`correlationId` only) from DB-collected evidence. Split out from
+ * `generateDesignDocumentSections()` (issue #72) so a caller that needs to route the adapter
+ * invocation through `AgentRunRecorder` (which wraps a `() => Promise<Output>` thunk directly,
+ * the same shape `run-coder.ts`/`run-review.ts` already use) can build the input once and pass it
+ * to both the recorder and `normalizeDocumentationOutput()` below, without duplicating the
+ * evidence-to-input mapping. */
+export function buildDocumentationInput(
   evidence: DesignDocumentEvidence,
   opts: { planId: string; correlationId: string },
-): Promise<GenerateDesignDocumentSectionsResult> {
-  const output: DocumentationOutput = await adapter.run({
+): DocumentationInput {
+  return {
     projectId: evidence.project.id,
     planId: opts.planId,
     featureCount: evidence.features.length,
     correlationId: opts.correlationId,
-  });
+  };
+}
 
+/** Normalizes a raw `DocumentationOutput` into the full, gap-filled 13-section result — the
+ * placeholder-substitution and `requiresRevision` logic `generateDesignDocumentSections()` used to
+ * perform inline, extracted (issue #72) so it can run *after* an already-invoked adapter call
+ * (e.g. one wrapped by `AgentRunRecorder.record()`) instead of only as part of invoking the
+ * adapter itself. */
+export function normalizeDocumentationOutput(
+  output: DocumentationOutput,
+): GenerateDesignDocumentSectionsResult {
   const bySectionName = new Map(output.sections.map((s) => [s.sectionName, s.content]));
   let hasMissingSection = false;
   const sections = DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName) => {
@@ -83,4 +92,30 @@ export async function generateDesignDocumentSections(
     // pass through RecordDesignDocumentReadyCommand looking like a clean success.
     requiresRevision: output.requiresRevision || hasMissingSection,
   };
+}
+
+/**
+ * Drives `DocumentationAgentAdapter.run()` with DB-collected evidence folded into the input. The
+ * adapter contract (`DocumentationInput`, Phase 5-vintage) only carries `projectId`/`planId`/
+ * `featureCount`/`correlationId` — it does not carry the full evidence bundle as structured
+ * fields, mirroring how `CoderInput`/`ReviewerInput` also stay narrow and let the adapter itself
+ * (or, for the reference implementation, `packages/adapters-documentation`) assemble a richer
+ * prompt from a real evidence-fetch call of its own. This function's job is narrower: it is the
+ * one call site every caller (tests, or a caller with no need for `AgentRunRecorder` provenance)
+ * goes through, so evidence collection and adapter invocation are not duplicated per caller.
+ *
+ * `run-design-doc.ts` no longer calls this directly (issue #72) — it calls
+ * `buildDocumentationInput()`, wraps the adapter invocation in `AgentRunRecorder.record()` itself
+ * (for `agent_runs`/`agent_context_packs`/`cost_records` provenance), and then calls
+ * `normalizeDocumentationOutput()` on the recorded result. This function is kept as the
+ * simpler adapter+evidence-in, sections-out entry point for any caller that doesn't need that
+ * provenance wrapping (and remains exactly what it always was, unchanged).
+ */
+export async function generateDesignDocumentSections(
+  adapter: DocumentationAgentAdapter,
+  evidence: DesignDocumentEvidence,
+  opts: { planId: string; correlationId: string },
+): Promise<GenerateDesignDocumentSectionsResult> {
+  const output: DocumentationOutput = await adapter.run(buildDocumentationInput(evidence, opts));
+  return normalizeDocumentationOutput(output);
 }

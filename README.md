@@ -7,7 +7,7 @@ implementation backlog, then orchestrates feature-branch development, pull reque
 reviews, fixes, merge gates, and final design documentation. It is designed to be auditable,
 deterministic, cost-aware, safe, and fully testable without human intervention.
 
-This repository contains the **Phase 1–16 implementation** of MiniCoder — the monorepo skeleton,
+This repository contains the **Phase 1–17 implementation** of MiniCoder — the monorepo skeleton,
 persistence abstraction (SQLite + PostgreSQL), initial schema, migration tooling,
 config/secrets backends, database lifecycle CLI, and CI (Phase 1); full state-machine / command
 layer, transactional idempotent commands, outbox/inbox dispatching, workflow locks, and local auth
@@ -40,7 +40,9 @@ Fastify-based HTTP API exposing read models, dispatching existing core commands 
 a dedicated `merge-if-ready` route, and Trigger.dev task-enqueue routes), mounting the GitHub webhook
 receiver, and publishing a hand-authored OpenAPI 3.1 contract with route-registration-time
 conformance enforcement — a static API-key auth model, claim-first HTTP route idempotency for
-routes spanning an external side effect, and `minicoder api serve` (Phase 13); the Ink Text UI
+routes spanning an external side effect, and `minicoder api serve` (which wires a real default
+`TaskTriggerClient` via Trigger.dev's runtime `tasks.trigger()` API, so the task-enqueue routes are
+functional out of the box) (Phase 13); the Ink Text UI
 implementation — the `@minicoder/tui` package and its fourteen `minicoder {status,plan,
 clarification,features,active,runs,findings,disagreements,costs,artifacts,adapters,design-doc,
 pause,resume}` CLI commands, all calling the Orchestrator API over HTTP only (Phase 14); and the
@@ -52,18 +54,24 @@ detail, pull-request detail, agent runs, findings, disagreements, costs, budgets
 adapters, design document, human-required, state health, settings), with the design-document and
 adapters pages explicitly read-only pending backend commands that don't exist yet (Phase 15); the
 Observability, Cost Forecasting, and Recovery implementation — the workflow timeline / agent-run
-trace view (`GET /feature-runs/:id/timeline`, `minicoder runs --timeline`), prospective budget
-forecasting wired as an opt-in pre-flight check into `run-coder`/`run-review`, the budget report
-read model (`GET /budget-report`, `minicoder costs --report`), two new `state doctor` checks
-(`code_pushed_no_pull_request`, `secret_leak_scan`), and an optional, fully env-gated,
-hand-rolled-`fetch` OpenTelemetry Logs export (Phase 16); and the Final Design Document Generator
-implementation — the seven `PROJECT_LIFECYCLE_MATRIX` command handlers driving `active ->
-implementation_complete -> design_document_generating -> design_document_ready_for_review ->
-{design_document_revision_requested -> design_document_generating, design_document_approved ->
-project_complete}`, the DB-only Project Acceptance Validation evaluator, the
-`DocumentationAgentAdapter` reference implementation (`packages/adapters-documentation`), the
-Design Document Generator and `final-design-document.md` export, the `run-design-doc` Trigger.dev
-task, and the now-live `/design-document` Web UI actions (previously disabled pending these
+trace view (`GET /feature-runs/:id/timeline`, `minicoder runs --timeline`, and now surfaced in the
+Web UI's `/features/[id]` page), prospective budget forecasting wired as an opt-in pre-flight check
+into `run-coder`/`run-review`, the budget report read model (`GET /budget-report`,
+`minicoder costs --report`, and the Web UI's `/costs` page), a `project_acceptance_violated`
+`state doctor` check plus `code_pushed_no_pull_request`/`secret_leak_scan`, and an optional, fully
+env-gated, hand-rolled-`fetch` OpenTelemetry Logs export driven by the one-shot
+`minicoder observability export-otel` CLI command (invoked by a deployment's own external
+scheduler — deliberately not an always-on Trigger.dev task) (Phase 16); and the Final Design
+Document Generator implementation — the seven `PROJECT_LIFECYCLE_MATRIX` command handlers driving
+`active -> implementation_complete -> design_document_generating ->
+design_document_ready_for_review -> {design_document_revision_requested ->
+design_document_generating, design_document_approved -> project_complete}`, the DB-only Project
+Acceptance Validation evaluator, the `DocumentationAgentAdapter` reference implementation
+(`packages/adapters-documentation`, with `AgentRunRecorder` provenance for every generation run),
+the Design Document Generator and `final-design-document.md` export, the `run-design-doc`
+Trigger.dev task, the `minicoder design-doc {generate,regenerate,request-revision,approve,
+request-run}`/`minicoder project {mark-implementation-complete,validate-acceptance,complete}` CLI
+commands, and the now-live `/design-document` Web UI actions (previously disabled pending these
 commands) (Phase 17). Specification documents live under
 `docs/`.
 

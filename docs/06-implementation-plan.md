@@ -1753,11 +1753,15 @@ costs,artifacts,adapters,design-doc,pause,resume}.ts` — one Commander command 
      version through the API at all.
      All four are documented in `packages/api/openapi/openapi.yaml` (required by the `onRoute`
      spec-drift-detection hook) and covered by new tests in `routes/reads/reads.test.ts`.
-- **Deliberately left unfixed:** `minicoder api serve` still doesn't wire a real `TaskTriggerClient`
-  into `buildApp()` (a pre-existing Phase 13 gap — `request-coder-run`/`request-review`/
-  `request-fixes`/`recompute-merge-gate` fail against a server started this way). None of docs/05
-  §4's Text UI commands need these endpoints, so fixing this was out of scope for this phase.
-  Tracked as issue #61.
+- **Closed by issue #61 (post-Phase-14): `minicoder api serve` now wires a real
+  `TaskTriggerClient`.** This was a pre-existing Phase 13 gap — `request-coder-run`/
+  `request-review`/`request-fixes`/`recompute-merge-gate`/`request-design-doc` failed against a
+  server started via `minicoder api serve`, since none of docs/05 §4's Text UI commands needed
+  these endpoints and fixing this was correctly kept out of Phase 14's scope. Closed via
+  `packages/api/src/default-task-trigger-client.ts`'s `resolveDefaultTaskTriggerClient()`, which
+  `server.ts` now passes to `buildApp()` — see CLAUDE.md's Orchestrator API Operational
+  Constraints section for the full rationale (Trigger.dev _runtime_ API only, not the
+  _management_ API; lazy `TRIGGER_SECRET_KEY` validation).
 - **Recorded, not fixed (post-implementation review watch item):** `@minicoder/tui`'s single
   barrel export mixes HTTP client/config concerns with Ink presentation concerns — see CLAUDE.md's
   Ink Text UI Operational Constraints section. Tracked as issue #60.
@@ -1926,16 +1930,48 @@ commands are safe and audited; private chain-of-thought is not stored.
   reconstructing spans this schema has no parent/child data for. No caller wires this into a
   scheduled task in this phase — it is a library function an operator/deployment can call from
   their own cron/task if they opt in, matching "optional" in the phase's own acceptance wording.
+  **Closed by issue #67** (post-Phase-16, see below): a `minicoder observability export-otel` CLI
+  command now calls it, invoked by an external scheduler rather than a new always-on Trigger.dev
+  task.
 - **No new migration** — every table this phase reads (`workflow_events`, `agent_runs`,
   `agent_tool_operations`, `agent_context_packs`, `review_findings`, `coder_responses`,
   `pull_requests`, `cost_records`, `human_approvals`, `budget_policies`) already existed with every
-  column needed.
-- **Descoped from this pass** (explicitly, not silently dropped): a dedicated `/timeline` or
-  `/budget-report` Web UI page (the existing `/costs`/`/agent-runs`/`features/[id]` pages are
-  unchanged — tracked as issue #66) and a scheduled/automatic caller for
-  `exportWorkflowEventsToOtlp()` (tracked as issue #67). Both are real, tracked future work — the
-  read-model/API/core functions they would call are fully built and tested; only the additional UI
-  surface and default automatic scheduling were out of scope for this pass's time budget.
+  column needed. (Issue #67's follow-up did add one migration — `0015_observability_export_cursors`
+  — see below.)
+- **Descoped from this pass, both since closed** (explicitly, not silently dropped): a dedicated
+  Web UI surface for the timeline/budget-report read models (issue #66, closed below — no separate
+  `/timeline`/`/budget-report` route was added; both were folded into the existing
+  `/features/[id]`/`/costs` pages instead) and a scheduled/automatic caller for
+  `exportWorkflowEventsToOtlp()` (issue #67, closed below).
+
+**Issue #66 follow-up (closed): the Web UI's `/features/[id]` and `/costs` pages now surface both
+read models.** `packages/web/src/lib/api-client.ts` gained `getFeatureRunTimeline()`/
+`getBudgetReport()`, mirroring the TUI client's identical methods and reusing
+`@minicoder/api`'s existing `BudgetReport`/`FeatureRunTimeline`/`BudgetBreakdownRow` types (no
+duplicated type definitions). `/features/[id]` gained a "Timeline" section (a merged, three-column
+timestamp/kind/summary view) below its existing per-table sections; `/costs` gained a "Budget
+report" section (breakdown tables by scope/feature/provider/model/role, with a plain GET-form
+window-days control needing no client JS) below its existing raw `cost_records` table. Both are
+additive — no existing section was removed or replaced, since the merged/aggregate views serve a
+different purpose than the granular per-table sections already there. Two new end-to-end
+regression tests in `web-e2e.integration.test.ts` prove both new `ApiClient` methods round-trip
+over real HTTP against a live `buildApp()` instance.
+
+**Issue #67 follow-up (closed): `minicoder observability export-otel`.** The design decision
+(recorded on the issue, per CLAUDE.md's explicit "discuss an always-on network dependency first"
+instruction) was a one-shot CLI command, not a scheduled Trigger.dev task — a deployment's own
+external scheduler (cron, k8s CronJob, etc.) invokes it on whatever interval it wants, so the
+exporter never becomes a required, always-on dependency for any deployment that doesn't opt in.
+Migration `0015_observability_export_cursors` adds a small, single-row-per-export-target table
+(`observability_export_cursors`) so a stateless CLI process can resume from the last successfully
+exported `workflow_events.id` across invocations — `packages/core/src/observability/
+export-cursor.ts`'s `getObservabilityExportCursor()`/`setObservabilityExportCursor()`, upserting
+via `ON CONFLICT ... DO UPDATE` (the same safe idempotent-write shape
+`writeDesignDocumentSections()` already established, not the `DO NOTHING`-then-requery
+anti-pattern documented elsewhere). The command itself (`packages/cli/src/commands/
+observability.ts`) reads the cursor, calls `exportWorkflowEventsToOtlp()`, and advances the cursor
+only when at least one event was actually exported — a no-op run (endpoint unset, or nothing new
+to export) never touches the cursor row.
 
 ## Phase 17 — Final Design Document Generator ✓
 
@@ -2049,31 +2085,57 @@ revision_requested -> generating -> ready_for_review -> approved -> project_comp
   closing a replay-safety gap `ExportDesignDocumentHandler`/`RecordDesignDocumentReadyHandler`
   could not otherwise close (see CLAUDE.md's Final Design Document Generator Operational
   Constraints section for the full writeup).
-- **Descoped from this pass** (explicitly, not silently dropped, each tracked as a GitHub issue):
-  - `AgentRunRecorder` provenance (`agent_runs`/`agent_context_packs`/`cost_records`) for the
-    `DocumentationAgentAdapter` invocation inside `run-design-doc.ts` — the task calls the adapter
-    directly rather than through the recorder wrapper `run-coder.ts`/`run-review.ts` use for their
-    own adapter calls. Adding it is additive and doesn't change this phase's public shape, but the
-    review-cycle-driven cost-tracking/redaction wiring `AgentRunRecorder` provides was judged lower
-    priority than a working end-to-end vertical slice through every layer (migration → handler →
-    task → API → CLI/TUI/Web) within this phase's time budget. Tracked as issue #72.
-  - `documentationAdapterName` is validation/provenance-only, not real multi-adapter runtime
-    selection — there is exactly one shipped `DocumentationAgentAdapter` reference implementation
-    today. Tracked as issue #70.
+- **Descoped from this pass** (explicitly, not silently dropped, each tracked as a GitHub issue —
+  issues #69, #70, and #72 below have since been closed, see the write-up after this list):
+  - ~~`AgentRunRecorder` provenance (`agent_runs`/`agent_context_packs`/`cost_records`) for the
+    `DocumentationAgentAdapter` invocation inside `run-design-doc.ts`~~ — **closed by issue #72.**
+  - ~~`documentationAdapterName` is validation/provenance-only, not real multi-adapter runtime
+    selection~~ — **closed by issue #70** (explicit rejection of a non-default name on the default
+    adapter-factory path; real multi-adapter selection remains future work until a second
+    `DocumentationAgentAdapter` implementation exists).
   - No backfill/repair path for a legacy (pre-migration-0014) `NULL`-bound
     `artifact_exports.design_document_id` row — both export/ready handlers fail closed on such a
-    row rather than silently accepting it. Tracked as issue #71.
-  - Project Acceptance's terminal transition (`MarkImplementationCompleteHandler`, hardened
-    substantially through PR review — a `NOT EXISTS`-guarded atomic `UPDATE` plus PostgreSQL
-    `SERIALIZABLE` isolation with bounded retry) is not a complete system-wide concurrency
-    invariant: it fully protects concurrent invocations of the completion command against each
-    other, but does not retroactively protect against a concurrent acceptance-invalidating writer
-    (e.g. a CI-failure handler) still running at the default isolation level. Judged acceptable
-    given the command is a rare, `ADMIN`-gated, human/CI-attested terminal action. Tracked as
-    issue #69.
+    row rather than silently accepting it. Tracked as issue #71 (still open).
+  - ~~Project Acceptance's terminal transition... is not a complete system-wide concurrency
+    invariant~~ — **closed by issue #69** ("accept and monitor": a new `state doctor` check,
+    `project_acceptance_violated`, rather than a full cross-cutting fence — the residual limitation
+    itself was judged acceptable to keep, not eliminated; see the write-up below).
   - A live-Postgres run of `packages/migrations/src/runner.test.ts`'s Postgres-gated suites was not
     performed in this implementation/review session (no reachable PostgreSQL instance) — the
     SQLite path was fully verified at every stage, including after migration 0014 was added.
+
+**Issues #69, #70, #72 follow-up (closed, post-Phase-17):**
+
+- **#72**: `run-design-doc.ts` now wraps its `DocumentationAgentAdapter.run()` call in
+  `AgentRunRecorder.record()`, writing `agent_runs`/`agent_context_packs`/`cost_records` rows for
+  every real generation invocation, the same as `run-coder.ts`/`run-review.ts` already do for their
+  own adapter calls. `packages/core/src/design-doc/generator.ts` gained two new exports —
+  `buildDocumentationInput()` and `normalizeDocumentationOutput()` — split out of
+  `generateDesignDocumentSections()` (which is unchanged and still composes both) so the task can
+  route the actual adapter invocation through the recorder while reusing the same
+  input-building/output-normalizing logic. Cost is computed via a new
+  `DOCUMENTATION_PRICE_PER_1K_{INPUT,OUTPUT}_TOKENS` env-var pair (independent from the Coder
+  role's `CODE_GEN_PRICE_PER_1K_*` pair), and `promptTemplateVersion` defaults to
+  `documentation-v1` (env-overridable via `DOCUMENTATION_PROMPT_TEMPLATE_VERSION`). No
+  `featureRunId`/`featureRequestId` is passed, since design-document generation is project-scoped
+  — the written `cost_records` row gets `scope='project'`.
+- **#70**: a new `DEFAULT_DOCUMENTATION_ADAPTER_NAME` constant
+  (`'ClaudeDocumentationAdapter'`, matching `packages/web/src/app/design-document/actions.ts`'s own
+  identical hardcoded constant) is checked only on the _default_ (non-injected)
+  `documentationAdapterFactory` path — a caller-supplied `documentationAdapterName` that doesn't
+  match it now throws a clear, actionable error instead of silently running
+  `ClaudeDocumentationAdapter` under a different registered name. A caller injecting its own
+  factory (every current test) is unaffected, since it also controls the name it registered under.
+- **#69**: rather than making every acceptance-invalidating writer participate in a shared
+  concurrency fence (judged out of proportion, per the issue's own framing, for a rare,
+  `ADMIN`-gated, one-time-per-project action), the resolution is "accept and monitor" — a new,
+  always-on, pure-DB `project_acceptance_violated` `state doctor` check
+  (`packages/api/src/read-models/diagnostics.ts`) re-evaluates `evaluateProjectAcceptance()` against
+  every project already past the acceptance gate (any `projects.state` after `active`) and flags
+  one whose current state would now fail. The secondary "should the stuck-outbox/inbox sub-check
+  stay global-scope" question is resolved as "keep as-is" — it already matches `state doctor`'s own
+  `stuck_outbox`/`stuck_inbox` checks' identical global-scope posture (those tables carry no
+  `project_id` column), not a new trade-off introduced by this fix.
 
 ## Phase 18 — Future Extensions
 

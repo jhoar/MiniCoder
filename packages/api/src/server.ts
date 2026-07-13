@@ -4,6 +4,7 @@
 import { createDbClientFromEnv } from '@minicoder/triggerdev';
 import { ApiKeyProvider } from './auth/api-key-provider.js';
 import { buildApp } from './app.js';
+import { resolveDefaultTaskTriggerClient } from './default-task-trigger-client.js';
 
 export interface ServeOptions {
   port: number;
@@ -21,6 +22,11 @@ export async function serve(opts: ServeOptions): Promise<string> {
   const previousSecret = process.env['GITHUB_WEBHOOK_SECRET_PREVIOUS'];
   const webhookSecrets = previousSecret ? [secret, previousSecret] : [secret];
 
-  const app = await buildApp({ db, apiKeyProvider, webhookSecrets });
+  const app = await buildApp({
+    db,
+    apiKeyProvider,
+    webhookSecrets,
+    taskTriggerClient: resolveDefaultTaskTriggerClient(),
+  });
   return app.listen({ port: opts.port, host: opts.host });
 }

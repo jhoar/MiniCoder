@@ -109,6 +109,9 @@ importers:
       '@minicoder/triggerdev':
         specifier: workspace:*
         version: link:../triggerdev
+      '@trigger.dev/sdk':
+        specifier: ^4.4.6
+        version: 4.4.6(zod@3.25.76)
       ajv:
         specifier: ^8.17.1
         version: 8.20.0

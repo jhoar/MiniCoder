@@ -445,12 +445,27 @@ check (`packages/api/src/read-models/diagnostics.ts`) samples recently-written
 (the same rule set the write-time `redact()` path already uses) as a defense-in-depth audit that
 private chain-of-thought/secret material was not accidentally persisted un-redacted.
 
+**Project Acceptance concurrency monitoring (Phase 17 follow-up, issue #69, implemented):**
+`state doctor`'s `project_acceptance_violated` check (`packages/api/src/read-models/
+diagnostics.ts`) re-evaluates §13.1's `evaluateProjectAcceptance()` against every project already
+past the `active -> implementation_complete` acceptance gate and flags one whose current state
+would now fail acceptance — the operational safeguard for the residual concurrency gap
+`MarkImplementationCompleteHandler`'s `SERIALIZABLE`-isolation fence does not close (that fence
+protects concurrent invocations of the completion command against each other, not against every
+other acceptance-invalidating writer, which was judged out of proportion to fully close for this
+rare, `ADMIN`-gated action — see CLAUDE.md's Final Design Document Generator Operational
+Constraints for the full writeup).
+
 **Optional OpenTelemetry-compatible export (Phase 16, implemented):**
 `packages/core/src/observability/otel-export.ts`'s `exportWorkflowEventsToOtlp()` maps
 `workflow_events` rows to OTLP Logs JSON and POSTs them to a configured
 `OTEL_EXPORTER_OTLP_ENDPOINT` via plain `fetch` (no `@opentelemetry/*` SDK dependency, which ships
-ESM-only). Fully opt-in and a no-op when the endpoint is not configured; no default
-scheduled/automatic caller is wired in this phase.
+ESM-only). Fully opt-in and a no-op when the endpoint is not configured. **Scheduled caller
+(issue #67, implemented):** `minicoder observability export-otel` — a one-shot CLI command, not an
+always-on Trigger.dev task, per the explicit "no always-on network dependency" decision recorded
+on that issue. A deployment's own external scheduler (cron, k8s CronJob, etc.) invokes it on
+whatever interval it wants; progress is tracked across invocations via a durable cursor
+(`observability_export_cursors`, migration 0015) rather than in-process state.
 
 ### 5.13 Orchestrator API
 

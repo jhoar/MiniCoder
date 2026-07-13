@@ -1,8 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import type { DbClient, DocumentationAgentAdapter, DocumentationOutput } from '@minicoder/core';
 import { ProjectState, AgentRole, AdapterRegistry, generateId } from '@minicoder/core';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
-import { runImpl, type DocumentationAdapterFactory } from './run-design-doc.js';
+import {
+  runImpl,
+  DEFAULT_DOCUMENTATION_ADAPTER_NAME,
+  type DocumentationAdapterFactory,
+} from './run-design-doc.js';
 
 const PROJECT_ID = 'proj-run-design-doc-001';
 
@@ -124,6 +128,236 @@ describe('runImpl (run-design-doc)', () => {
       [PROJECT_ID],
     );
     expect(projectRows[0]?.state).toBe(ProjectState.DESIGN_DOCUMENT_READY_FOR_REVIEW);
+  });
+
+  // Issue #72: run-design-doc now routes its adapter invocation through AgentRunRecorder.
+  describe('AgentRunRecorder provenance (issue #72)', () => {
+    afterEach(() => {
+      delete process.env['DOCUMENTATION_PRICE_PER_1K_INPUT_TOKENS'];
+      delete process.env['DOCUMENTATION_PRICE_PER_1K_OUTPUT_TOKENS'];
+      delete process.env['DOCUMENTATION_PROMPT_TEMPLATE_VERSION'];
+    });
+
+    it('writes an agent_runs row with resolved adapter provenance and an agent_context_packs row', async () => {
+      const db = createTestDb();
+      const { DESIGN_DOCUMENT_SECTION_NAMES } = await import('@minicoder/core');
+      await seedGeneratingProject(db);
+
+      await runImpl(
+        {
+          projectId: PROJECT_ID,
+          documentationAdapterName: 'FakeAdapter',
+          correlationId: 'corr-provenance',
+          idempotencyKey: 'idem-provenance',
+        },
+        db,
+        {
+          documentationAdapterFactory: fakeAdapterFactory({
+            documentId: 'doc-provenance',
+            sections: DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName: string) => ({
+              sectionName,
+              content: `content for ${sectionName}`,
+            })),
+            requiresRevision: false,
+          }),
+        },
+      );
+
+      const runRows = await db.query<{
+        id: string;
+        role: string;
+        adapter_name: string;
+        prompt_template_version: string | null;
+        project_id: string;
+        feature_run_id: string | null;
+      }>(`SELECT * FROM agent_runs WHERE project_id = ?`, [PROJECT_ID]);
+      expect(runRows).toHaveLength(1);
+      expect(runRows[0]?.role).toBe(AgentRole.DOCUMENTATION);
+      expect(runRows[0]?.adapter_name).toBe('FakeAdapter');
+      expect(runRows[0]?.prompt_template_version).toBe('documentation-v1');
+      expect(runRows[0]?.feature_run_id).toBeNull();
+
+      const contextPackRows = await db.query<{ id: string; content: string }>(
+        `SELECT id, content FROM agent_context_packs WHERE agent_run_id = ?`,
+        [runRows[0]!.id],
+      );
+      expect(contextPackRows.length).toBeGreaterThanOrEqual(1);
+      // PR #73 review fix (MEDIUM-3): the recorded context pack must include the full evidence
+      // bundle the adapter was actually constructed with (project name/description, feature
+      // summaries, merged PR count) -- not just the narrow DocumentationInput -- so a generated
+      // design document's provenance is fully reconstructable from agent_context_packs alone.
+      const parsed = JSON.parse(contextPackRows[0]!.content) as {
+        documentationInput: { projectId: string; planId: string; featureCount: number };
+        adapterEvidence: {
+          projectName: string;
+          projectDescription: string | null;
+          featureSummaries: string[];
+          mergedPullRequestCount: number;
+        };
+      };
+      expect(parsed.documentationInput.projectId).toBe(PROJECT_ID);
+      expect(parsed.adapterEvidence.projectName).toBe('Test Project');
+      expect(parsed.adapterEvidence).toHaveProperty('featureSummaries');
+      expect(parsed.adapterEvidence).toHaveProperty('mergedPullRequestCount');
+    });
+
+    // PR #73 review fix (round 2, LOW-1): a custom documentationAdapterFactory mutating its input
+    // must not corrupt the persisted provenance -- the recorded context pack must reflect the
+    // real evidence that was computed, not whatever the adapter mutated it into.
+    it('persists the original evidence even when a custom adapter factory mutates its input', async () => {
+      const db = createTestDb();
+      const { DESIGN_DOCUMENT_SECTION_NAMES } = await import('@minicoder/core');
+      await seedGeneratingProject(db);
+
+      const mutatingFactory: DocumentationAdapterFactory = async (opts) => {
+        expect(() => {
+          (opts as { projectName: string }).projectName = 'HACKED';
+        }).toThrow();
+        expect(() => {
+          (opts.featureSummaries as string[]).push('injected summary');
+        }).toThrow();
+        return {
+          role: 'DocumentationAgentAdapter',
+          async run() {
+            return {
+              documentId: 'doc-mutation',
+              sections: DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName: string) => ({
+                sectionName,
+                content: `content for ${sectionName}`,
+              })),
+              requiresRevision: false,
+            };
+          },
+        };
+      };
+
+      const runRows = await (async () => {
+        await runImpl(
+          {
+            projectId: PROJECT_ID,
+            documentationAdapterName: 'FakeAdapter',
+            correlationId: 'corr-mutation',
+            idempotencyKey: 'idem-mutation',
+          },
+          db,
+          { documentationAdapterFactory: mutatingFactory },
+        );
+        return db.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_id = ?`, [
+          PROJECT_ID,
+        ]);
+      })();
+
+      const contextPackRows = await db.query<{ content: string }>(
+        `SELECT content FROM agent_context_packs WHERE agent_run_id = ?`,
+        [runRows[0]!.id],
+      );
+      const parsed = JSON.parse(contextPackRows[0]!.content) as {
+        adapterEvidence: { projectName: string; featureSummaries: string[] };
+      };
+      expect(parsed.adapterEvidence.projectName).toBe('Test Project');
+      expect(parsed.adapterEvidence.featureSummaries).not.toContain('injected summary');
+    });
+
+    it('writes a cost_records row scoped to the project when the adapter reports token usage', async () => {
+      const db = createTestDb();
+      const { DESIGN_DOCUMENT_SECTION_NAMES } = await import('@minicoder/core');
+      await seedGeneratingProject(db);
+
+      const adapter: DocumentationAgentAdapter = {
+        role: 'DocumentationAgentAdapter',
+        async run() {
+          return {
+            documentId: 'doc-cost',
+            sections: DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName: string) => ({
+              sectionName,
+              content: `content for ${sectionName}`,
+            })),
+            requiresRevision: false,
+            tokensUsed: { input: 1000, output: 2000 },
+          } as DocumentationOutput & { tokensUsed: { input: number; output: number } };
+        },
+      };
+
+      await runImpl(
+        {
+          projectId: PROJECT_ID,
+          documentationAdapterName: 'FakeAdapter',
+          correlationId: 'corr-cost',
+          idempotencyKey: 'idem-cost',
+        },
+        db,
+        { documentationAdapterFactory: async () => adapter },
+      );
+
+      const costRows = await db.query<{ scope: string; project_id: string; amount: number }>(
+        `SELECT scope, project_id, amount FROM cost_records WHERE project_id = ?`,
+        [PROJECT_ID],
+      );
+      expect(costRows).toHaveLength(1);
+      expect(costRows[0]?.scope).toBe('project');
+      expect(costRows[0]?.amount).toBeGreaterThan(0);
+    });
+
+    it('does not write a cost_records row when the adapter reports no token usage', async () => {
+      const db = createTestDb();
+      const { DESIGN_DOCUMENT_SECTION_NAMES } = await import('@minicoder/core');
+      await seedGeneratingProject(db);
+
+      await runImpl(
+        {
+          projectId: PROJECT_ID,
+          documentationAdapterName: 'FakeAdapter',
+          correlationId: 'corr-no-cost',
+          idempotencyKey: 'idem-no-cost',
+        },
+        db,
+        {
+          documentationAdapterFactory: fakeAdapterFactory({
+            documentId: 'doc-no-cost',
+            sections: DESIGN_DOCUMENT_SECTION_NAMES.map((sectionName: string) => ({
+              sectionName,
+              content: `content for ${sectionName}`,
+            })),
+            requiresRevision: false,
+          }),
+        },
+      );
+
+      const costRows = await db.query<{ id: string }>(
+        `SELECT id FROM cost_records WHERE project_id = ?`,
+        [PROJECT_ID],
+      );
+      expect(costRows).toHaveLength(0);
+    });
+  });
+
+  // Issue #70: the default (non-injected) adapter factory path only supports
+  // DEFAULT_DOCUMENTATION_ADAPTER_NAME; a caller-injected factory (every test above) is exempt.
+  describe('default-factory adapter name guard (issue #70)', () => {
+    it('rejects a non-default documentationAdapterName when no factory is injected', async () => {
+      const db = createTestDb();
+      await seedGeneratingProject(db);
+
+      await expect(
+        runImpl(
+          {
+            projectId: PROJECT_ID,
+            documentationAdapterName: 'FakeAdapter',
+            correlationId: 'corr-reject',
+            idempotencyKey: 'idem-reject',
+          },
+          db,
+          {},
+        ),
+      ).rejects.toThrow(/FakeAdapter.*not supported/);
+    });
+
+    it('DEFAULT_DOCUMENTATION_ADAPTER_NAME matches the Web UI action constant', () => {
+      // No shared export exists across the @minicoder/web / @minicoder/triggerdev boundary
+      // (deliberately — see DEFAULT_DOCUMENTATION_ADAPTER_NAME's doc comment), so this pins the
+      // one hardcoded value that must stay in sync with packages/web/src/app/design-document/actions.ts.
+      expect(DEFAULT_DOCUMENTATION_ADAPTER_NAME).toBe('ClaudeDocumentationAdapter');
+    });
   });
 
   it('treats a concurrent invocation for the same project as a clean no-op instead of racing', async () => {

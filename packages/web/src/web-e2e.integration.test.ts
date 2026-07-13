@@ -24,6 +24,7 @@ async function startTestServer(): Promise<{
   app: FastifyInstance;
   baseUrl: string;
   projectId: string;
+  db: ReturnType<typeof createTestDb>;
 }> {
   const db = createTestDb();
   const projectId = generateId();
@@ -49,7 +50,7 @@ async function startTestServer(): Promise<{
     webhookSecrets: ['e2e-web-webhook-secret'],
   });
   const address = await app.listen({ port: 0, host: '127.0.0.1' });
-  return { app, baseUrl: address, projectId };
+  return { app, baseUrl: address, projectId, db };
 }
 
 describe('web e2e: ApiClient against a live Orchestrator API', () => {
@@ -99,5 +100,58 @@ describe('web e2e: ApiClient against a live Orchestrator API', () => {
     const client = new ApiClient({ baseUrl: started.baseUrl, apiKey: OPERATOR_KEY });
 
     await expect(client.getFeatureRun('does-not-exist')).rejects.toMatchObject({ status: 404 });
+  });
+
+  // Issue #66: the /costs page's Budget report section and the /features/[id] page's Timeline
+  // section both call these two methods — prove they round-trip over real HTTP, not just against
+  // a fake fetchImpl (api-client.test.ts already covers the fake-fetch shape).
+  it('fetches an empty budget report for a project with no cost records yet', async () => {
+    const started = await startTestServer();
+    app = started.app;
+    const client = new ApiClient({ baseUrl: started.baseUrl, apiKey: OPERATOR_KEY });
+
+    const report = await client.getBudgetReport(started.projectId);
+    expect(report).toMatchObject({
+      projectId: started.projectId,
+      windowDays: null,
+      totalAmount: 0,
+      recordCount: 0,
+    });
+    expect(report.byScope).toEqual([]);
+  });
+
+  it('fetches a feature-run timeline containing the recorded workflow events', async () => {
+    const started = await startTestServer();
+    app = started.app;
+    const client = new ApiClient({ baseUrl: started.baseUrl, apiKey: OPERATOR_KEY });
+
+    const featureRunId = generateId();
+    const now = new Date().toISOString();
+    const { db } = started;
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, ?, ?)`,
+      [`plan-${featureRunId}`, started.projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Feature', 'Description', 'feature', 1, 'approved', 0, 1, ?, ?)`,
+      [`fr-${featureRunId}`, `plan-${featureRunId}`, started.projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'coding', 1, ?, ?)`,
+      [featureRunId, `fr-${featureRunId}`, now, now],
+    );
+    await db.execute(
+      `INSERT INTO workflow_events (id, project_id, feature_run_id, event_type, from_state, to_state, actor, occurred_at, payload, payload_schema_version)
+       VALUES (?, ?, ?, 'feature.selected', 'approved_pending_execution', 'selected', 'system', ?, '{}', '1')`,
+      [generateId(), started.projectId, featureRunId, now],
+    );
+
+    const timeline = await client.getFeatureRunTimeline(featureRunId);
+    expect(timeline.featureRunId).toBe(featureRunId);
+    expect(timeline.entries).toHaveLength(1);
+    expect(timeline.entries[0]).toMatchObject({ kind: 'workflow_event' });
   });
 });
