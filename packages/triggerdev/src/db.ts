@@ -1,28 +1,35 @@
 import type { DbClient } from '@minicoder/core';
 
 /**
- * Probes the triggerdev_runs table to verify migrations have been applied.
+ * Probes triggerdev_runs and task_queue to verify migrations have been applied.
  * Called by createDbClientFromEnv() before returning the client so task containers
  * fail fast with an actionable message instead of a cryptic "no such table" error
- * deep inside linkRunToDb().
+ * deep inside linkRunToDb()/the task-queue worker.
+ *
+ * PR #75 review fix (MEDIUM-4): the original probe only checked triggerdev_runs — a status
+ * read-model that predates the task_queue table (migration 0017) — so a database migrated only
+ * up to an older revision could pass this check and still fail later, at first enqueue or first
+ * poll, with a much less actionable "no such table: task_queue" error.
  */
 export async function assertSchemaReady(db: DbClient): Promise<void> {
-  try {
-    await db.query('SELECT 1 FROM triggerdev_runs LIMIT 1', []);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (
-      msg.includes('no such table') || // SQLite
-      msg.includes('does not exist') // PostgreSQL: "relation ... does not exist"
-    ) {
-      throw new Error(
-        'triggerdev_runs table not found in the configured database. ' +
-          'Run migrations before starting tasks: minicoder db migrate\n' +
-          'For self-hosted task containers, set DB_DIALECT and DB_PATH (SQLite) or ' +
-          'DB_URL (PostgreSQL) to a migrated database.',
-      );
+  for (const table of ['triggerdev_runs', 'task_queue']) {
+    try {
+      await db.query(`SELECT 1 FROM ${table} LIMIT 1`, []);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (
+        msg.includes('no such table') || // SQLite
+        msg.includes('does not exist') // PostgreSQL: "relation ... does not exist"
+      ) {
+        throw new Error(
+          `${table} table not found in the configured database. ` +
+            'Run migrations before starting tasks: minicoder db migrate\n' +
+            'For self-hosted task containers, set DB_DIALECT and DB_PATH (SQLite) or ' +
+            'DB_URL (PostgreSQL) to a migrated database.',
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 }
 

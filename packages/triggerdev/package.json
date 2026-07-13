@@ -21,10 +21,12 @@
     "@minicoder/persistence-postgres": "workspace:*",
     "@minicoder/persistence-sqlite": "workspace:*",
     "@minicoder/workflow": "workspace:*",
+    "pg": "^8.12.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "*",
+    "@types/pg": "^8.11.6",
     "better-sqlite3": "*"
   }
 }

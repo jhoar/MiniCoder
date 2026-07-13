@@ -17,6 +17,14 @@ export class SqlitePersistenceBackend implements PersistenceBackend {
 
     // WAL mode for better concurrency
     db.pragma('journal_mode = WAL');
+    // PR #75 review fix (HIGH-2 follow-up): without an explicit busy_timeout, SQLite's default
+    // (0ms) makes a concurrent writer throw SQLITE_BUSY ("database is locked") immediately instead
+    // of waiting briefly for the current writer to finish — a real problem now that
+    // TaskQueueDispatcher opens many independent short-lived connections against the same file
+    // (one per claim attempt, one per claimed task's execution), any of which can legitimately
+    // contend for the write lock for a few milliseconds. 5s is generous enough to absorb that
+    // without masking a genuinely stuck writer.
+    db.pragma('busy_timeout = 5000');
 
     // Enforce foreign keys — SQLite disables them by default
     if (this.options.foreignKeys !== false) {

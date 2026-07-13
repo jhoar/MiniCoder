@@ -138,7 +138,7 @@ describe('Migration runner (SQLite)', () => {
 
   it('rollback removes the last migration and its record', () => {
     const count = applyMigrations(db);
-    expect(getExistingTables(db).length).toBe(52);
+    expect(getExistingTables(db).length).toBe(53);
 
     const rolled = rollbackLast(db);
     expect(rolled).not.toBeNull();
@@ -402,8 +402,8 @@ describe('SqliteDbClient.transaction()', () => {
 });
 
 describe('EXPECTED_TABLES list', () => {
-  it('contains 52 tables', () => {
-    expect(EXPECTED_TABLES.length).toBe(52);
+  it('contains 53 tables', () => {
+    expect(EXPECTED_TABLES.length).toBe(53);
   });
 
   it('includes all core workflow tables', () => {

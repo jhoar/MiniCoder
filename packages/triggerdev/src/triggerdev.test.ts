@@ -1702,6 +1702,26 @@ describe('assertSchemaReady', () => {
     await expect(assertSchemaReady(db)).rejects.toThrow('triggerdev_runs table not found');
     // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
   });
+
+  // PR #75 review fix (MEDIUM-4): a partially-migrated DB (has the older triggerdev_runs table,
+  // but not the newer task_queue table from migration 0017) previously passed this check and only
+  // failed later, at first enqueue/poll, with a much less actionable error.
+  it('throws with a clear message when triggerdev_runs exists but task_queue does not', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const { SqliteDbClient } = await import('@minicoder/persistence-sqlite');
+    const raw = new Database(':memory:');
+    raw.exec(`
+      CREATE TABLE triggerdev_runs (
+        id TEXT PRIMARY KEY,
+        triggerdev_run_id TEXT NOT NULL UNIQUE,
+        triggerdev_task_id TEXT NOT NULL,
+        triggerdev_status TEXT NOT NULL
+      )
+    `);
+    const db = new SqliteDbClient(raw);
+    await expect(assertSchemaReady(db)).rejects.toThrow('task_queue table not found');
+    // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
+  });
 });
 
 // ── ImportBacklogCommand dry-run validation gate (post-merge PR review MEDIUM-1) ──────────────

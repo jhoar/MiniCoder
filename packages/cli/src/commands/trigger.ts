@@ -236,8 +236,15 @@ export function createTriggerCommand(): Command {
         process.exitCode = 1;
         return;
       }
-      const systemEnv = process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? '';
-      if (!permitted.includes(systemEnv) && systemEnv !== '') {
+      // PR #75 review fix (HIGH-3): matches the stricter guardEnv() precedent already established
+      // in packages/cli/src/commands/{db,github}.ts for dev/test/CI-only destructive commands.
+      // An earlier revision special-cased an EMPTY systemEnv as "safe" (skipping this check
+      // entirely) — but this command performs a real `DELETE FROM task_queue` (unlike when this
+      // guard was first written, against a permanent `notImplemented()` stub that never touched
+      // the database), so unset APP_ENV/NODE_ENV must never be inferred as safe. Defaulting the
+      // unset case to 'production' (a value never in `permitted`) makes it fail closed instead.
+      const systemEnv = process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? 'production';
+      if (!permitted.includes(systemEnv)) {
         console.error(
           `Error: system env APP_ENV/NODE_ENV is '${systemEnv}' which is not safe. Reset blocked.`,
         );

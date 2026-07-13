@@ -51,6 +51,7 @@ export const EXPECTED_TABLES = [
   'adapter_revisions',
   'observability_export_cursors',
   'task_queue',
+  'task_concurrency_gates',
 ] as const;
 
 export type TableName = (typeof EXPECTED_TABLES)[number];

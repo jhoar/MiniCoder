@@ -150,6 +150,7 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     dbPath = createMigratedSqliteFile();
     process.env['DB_DIALECT'] = 'sqlite';
     process.env['DB_PATH'] = dbPath;
+    process.env['APP_ENV'] = 'test';
     insertTaskQueueRow(dbPath, 'tq-4', 'run-coder');
 
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -171,6 +172,30 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"deleted": 1');
     expect(queryTaskQueue(dbPath)).toHaveLength(0);
+  });
+
+  // PR #75 review fix (HIGH-3): unset APP_ENV/NODE_ENV must never be inferred as safe, since this
+  // command performs a real DELETE FROM task_queue.
+  it('reset-dev blocks when APP_ENV/NODE_ENV are both unset, even with --env test', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    insertTaskQueueRow(dbPath, 'tq-unset-env', 'run-coder');
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'reset-dev',
+      '--yes',
+      '--env',
+      'test',
+    ]);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    expect(errSpy.mock.calls.join(' ')).toMatch(/not safe/);
+    expect(queryTaskQueue(dbPath)).toHaveLength(1);
   });
 
   it('reset-dev blocks when APP_ENV is production, even with --env test', async () => {

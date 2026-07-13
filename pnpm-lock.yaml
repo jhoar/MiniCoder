@@ -337,6 +337,9 @@ importers:
       '@minicoder/workflow':
         specifier: workspace:*
         version: link:../workflow
+      pg:
+        specifier: ^8.12.0
+        version: 8.21.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -344,6 +347,9 @@ importers:
       '@types/better-sqlite3':
         specifier: '*'
         version: 7.6.13
+      '@types/pg':
+        specifier: ^8.11.6
+        version: 8.20.0
       better-sqlite3:
         specifier: '*'
         version: 9.6.0

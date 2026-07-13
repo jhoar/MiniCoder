@@ -17,6 +17,11 @@ function listMigrationFiles(): string[] {
 /** Creates a fully-migrated, file-backed SQLite DB — a `:memory:` DB can't be shared across the
  * separate connections `enqueueTask()` (inside the module under test) and this test's assertions
  * each open via `createDbClientFromEnv()`'s own `DB_PATH`-driven connection. */
+// `task_queue.project_id` carries a REFERENCES projects(id) foreign key (unchanged from migration
+// 0017's original shape), so every project id a test's payload uses must exist in `projects`
+// first — seeded here once, covering both ids used across this file's test cases.
+const SEEDED_PROJECT_IDS = ['proj-1', 'p'];
+
 function createMigratedSqliteFile(): string {
   const filePath = path.join(os.tmpdir(), `task-trigger-client-test-${crypto.randomUUID()}.db`);
   const raw = new Database(filePath);
@@ -25,6 +30,11 @@ function createMigratedSqliteFile(): string {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
     const withoutPragma = sql.replace(/^\s*PRAGMA\s+foreign_keys\s*=\s*ON\s*;\s*/im, '');
     raw.exec(withoutPragma);
+  }
+  for (const projectId of SEEDED_PROJECT_IDS) {
+    raw
+      .prepare(`INSERT INTO projects (id, name) VALUES (?, ?)`)
+      .run(projectId, `Test Project ${projectId}`);
   }
   raw.close();
   return filePath;
@@ -36,6 +46,7 @@ interface TaskQueueRow {
   payload: string;
   idempotency_key: string;
   status: string;
+  project_id: string | null;
 }
 
 function queryTaskQueue(filePath: string): TaskQueueRow[] {
@@ -78,6 +89,7 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
     expect(rows[0]!.task_id).toBe('run-coder');
     expect(rows[0]!.idempotency_key).toBe('idem-1');
     expect(rows[0]!.status).toBe('pending');
+    expect(rows[0]!.project_id).toBe('proj-1');
     expect(JSON.parse(rows[0]!.payload)).toEqual(payload);
   });
 
@@ -100,6 +112,37 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
 
     expect(second.triggerdevRunId).toBe(first.triggerdevRunId);
     expect(queryTaskQueue(dbPath)).toHaveLength(1);
+  });
+
+  // PR #75 review fix (MEDIUM-1): idempotency dedup is scoped to (task_id, idempotency_key), not
+  // idempotency_key alone — reusing the same key for a DIFFERENT task must enqueue a separate row,
+  // not silently return the unrelated first task's run id.
+  it('reusing the same idempotency key for a different task enqueues a separate row', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    const { resolveDefaultTaskTriggerClient } = await import('./default-task-trigger-client.js');
+    const client = resolveDefaultTaskTriggerClient();
+
+    const coderRun = await client.triggerRunCoder({
+      projectId: 'proj-1',
+      featureRunId: 'run-1',
+      coderAdapterName: 'CodexCoderAdapter',
+      correlationId: 'corr-1',
+      idempotencyKey: 'shared-key',
+    });
+    const reviewRun = await client.triggerRunReview({
+      projectId: 'proj-1',
+      featureRunId: 'run-1',
+      reviewerAdapterName: 'ClaudeReviewerAdapter',
+      correlationId: 'corr-1',
+      idempotencyKey: 'shared-key',
+    });
+
+    expect(reviewRun.triggerdevRunId).not.toBe(coderRun.triggerdevRunId);
+    const rows = queryTaskQueue(dbPath);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.task_id).sort()).toEqual(['run-coder', 'run-review']);
   });
 
   it('triggers run-review/run-merge-gate/run-design-doc by their exact canonical task IDs', async () => {

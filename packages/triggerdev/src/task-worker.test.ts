@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import type Database from 'better-sqlite3';
-import type { SqliteDbClient } from '@minicoder/persistence-sqlite';
+import Database from 'better-sqlite3';
+import type { DbClient } from '@minicoder/core';
+import { SqliteDbClient } from '@minicoder/persistence-sqlite';
 import { z } from 'zod';
 import { TaskQueueDispatcher } from './task-worker.js';
 import type { TaskDefinition } from './task-registry.js';
@@ -14,6 +15,18 @@ function setup(): void {
   db = createTestDb();
   raw = (db as unknown as { db: Database.Database }).db;
   insertTestProject(db);
+}
+
+/** A fresh `SqliteDbClient` wrapper per call, sharing the same underlying in-memory connection
+ * (`raw`) as the test's own `db` — genuinely separate connections aren't possible for a
+ * `:memory:` database, but each wrapper tracks its OWN `inTransaction` flag independently, so a
+ * claim-transaction on one wrapper never trips another concurrently-running wrapper's
+ * "cannot call X while a transaction is active" guard (confirmed necessary: a single shared
+ * wrapper instance across concurrent claim + task-execution calls reproduced exactly that error).
+ * Per this repo's SQLite Test Teardown Rule, never calls `.close()` (which would close the shared
+ * underlying connection out from under the test's own `db`/`raw`). */
+async function reuseSharedDb<T>(fn: (taskDb: DbClient) => Promise<T>): Promise<T> {
+  return fn(new SqliteDbClient(raw));
 }
 
 afterEach(() => {
@@ -60,48 +73,61 @@ describe('TaskQueueDispatcher', () => {
     setup();
     insertTaskQueueRow('tq-1', 'run-coder');
     const implFn = vi.fn().mockResolvedValue({ ok: true });
-    const dispatcher = new TaskQueueDispatcher(
-      db,
-      {},
-      new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
-    );
+    const dispatcher = new TaskQueueDispatcher(db, {
+      registry: new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
+      runWithTaskDb: reuseSharedDb,
+    });
 
     const result = await dispatcher.pollAndDispatch();
     expect(result.dispatched).toBe(1);
     expect(result.failed).toBe(0);
     expect(implFn).toHaveBeenCalledOnce();
 
-    const row = raw.prepare('SELECT status FROM task_queue WHERE id = ?').get('tq-1') as {
+    const row = raw.prepare('SELECT status, error FROM task_queue WHERE id = ?').get('tq-1') as {
       status: string;
+      error: string | null;
     };
     expect(row.status).toBe('succeeded');
+    expect(row.error).toBeNull();
   });
 
-  it('increments attempts and sets next_retry_at on impl failure', async () => {
+  it('increments attempts, sets next_retry_at, and persists a redacted error summary on impl failure', async () => {
     setup();
     insertTaskQueueRow('tq-2', 'run-coder');
-    const implFn = vi.fn().mockRejectedValue(new Error('boom'));
-    const dispatcher = new TaskQueueDispatcher(
-      db,
-      { baseBackoffMs: 1000 },
-      new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
-    );
+    const implFn = vi
+      .fn()
+      .mockRejectedValue(new Error('boom: Authorization: Bearer super-secret-value-should-be-redacted'));
+    const dispatcher = new TaskQueueDispatcher(db, {
+      baseBackoffMs: 1000,
+      registry: new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
+      runWithTaskDb: reuseSharedDb,
+    });
 
     const result = await dispatcher.pollAndDispatch();
     expect(result.failed).toBe(1);
 
     const row = raw
-      .prepare('SELECT status, attempts, next_retry_at FROM task_queue WHERE id = ?')
-      .get('tq-2') as { status: string; attempts: number; next_retry_at: string };
+      .prepare('SELECT status, attempts, next_retry_at, error FROM task_queue WHERE id = ?')
+      .get('tq-2') as {
+      status: string;
+      attempts: number;
+      next_retry_at: string;
+      error: string | null;
+    };
     expect(row.status).toBe('failed');
     expect(row.attempts).toBe(1);
     expect(row.next_retry_at).toBeTruthy();
+    expect(row.error).toContain('boom');
+    expect(row.error).not.toContain('super-secret-value-should-be-redacted');
   });
 
   it('requeues rows with an unregistered task_id for later retry, without incrementing attempts', async () => {
     setup();
     insertTaskQueueRow('tq-3', 'some-removed-task');
-    const dispatcher = new TaskQueueDispatcher(db, {}, new Map());
+    const dispatcher = new TaskQueueDispatcher(db, {
+      registry: new Map(),
+      runWithTaskDb: reuseSharedDb,
+    });
 
     const result = await dispatcher.pollAndDispatch();
     expect(result.dispatched).toBe(0);
@@ -119,11 +145,11 @@ describe('TaskQueueDispatcher', () => {
     setup();
     insertTaskQueueRow('tq-4', 'run-coder', { status: 'failed', attempts: 3 });
     const implFn = vi.fn().mockResolvedValue({ ok: true });
-    const dispatcher = new TaskQueueDispatcher(
-      db,
-      { maxAttempts: 3 },
-      new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
-    );
+    const dispatcher = new TaskQueueDispatcher(db, {
+      maxAttempts: 3,
+      registry: new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
+      runWithTaskDb: reuseSharedDb,
+    });
 
     await dispatcher.pollAndDispatch();
     expect(implFn).not.toHaveBeenCalled();
@@ -136,11 +162,11 @@ describe('TaskQueueDispatcher', () => {
       .prepare(`UPDATE task_queue SET updated_at = datetime('now', '-1 hour') WHERE id = ?`)
       .run('tq-5');
     const implFn = vi.fn().mockResolvedValue({ ok: true });
-    const dispatcher = new TaskQueueDispatcher(
-      db,
-      { staleClaimMs: 1000 },
-      new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
-    );
+    const dispatcher = new TaskQueueDispatcher(db, {
+      staleClaimMs: 1000,
+      registry: new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
+      runWithTaskDb: reuseSharedDb,
+    });
 
     const result = await dispatcher.pollAndDispatch();
     expect(result.dispatched).toBe(1);
@@ -161,11 +187,11 @@ describe('TaskQueueDispatcher', () => {
       concurrent--;
       return { ok: true };
     });
-    const dispatcher = new TaskQueueDispatcher(
-      db,
-      { batchSize: 10 },
-      new Map([['ingest-specification', fakeDefinition('ingest-specification', 2, implFn)]]),
-    );
+    const dispatcher = new TaskQueueDispatcher(db, {
+      batchSize: 10,
+      registry: new Map([['ingest-specification', fakeDefinition('ingest-specification', 2, implFn)]]),
+      runWithTaskDb: reuseSharedDb,
+    });
 
     const result = await dispatcher.pollAndDispatch();
     // Only 2 of the 3 pending rows were within the concurrency-2 cap this tick; the third stays
@@ -184,3 +210,17 @@ describe('TaskQueueDispatcher', () => {
     expect(() => new TaskQueueDispatcher(db, { staleClaimMs: NaN })).toThrow(/staleClaimMs/);
   });
 });
+
+// PR #75 review fixes (HIGH-1 concurrent-transaction isolation, HIGH-2 cross-process concurrency
+// enforcement): both are verified in `task-worker-concurrency.postgres.test.ts`, gated by
+// `MINICODER_TEST_PG_URL`, NOT here. better-sqlite3 is a fully synchronous native binding on
+// Node's single thread — two genuinely separate `SqliteDbClient` connections to the same file
+// cannot truly overlap (confirmed empirically while building these tests: both a file-backed
+// multi-connection version of this test and a shared-connection/multiple-wrapper-instances version
+// either hit "database is locked" or a real SQLite "cannot start a transaction within a
+// transaction" error, since a single physical SQLite connection only ever supports one open
+// transaction regardless of how many `SqliteDbClient` wrapper instances address it). This is the
+// exact same finding already documented in
+// `packages/testing/src/execution-orchestrator-concurrency.postgres.test.ts`'s own doc comment.
+// PostgreSQL's client-server architecture has no such limitation, so that is where this repo's
+// established convention already puts genuine concurrent-connection regression tests.
