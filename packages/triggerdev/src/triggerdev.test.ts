@@ -1722,6 +1722,34 @@ describe('assertSchemaReady', () => {
     await expect(assertSchemaReady(db)).rejects.toThrow('task_queue table not found');
     // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
   });
+
+  // PR #75 round-2 review fix (HIGH-1, partial): task_concurrency_gates (added to migration 0017
+  // by the first review round's HIGH-2 fix) must be probed too — without this, a DB missing only
+  // that table would pass this check and fail later inside TaskQueueDispatcher's claim
+  // transaction, with a much less actionable raw SQL error.
+  it('throws with a clear message when task_queue exists but task_concurrency_gates does not', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const { SqliteDbClient } = await import('@minicoder/persistence-sqlite');
+    const raw = new Database(':memory:');
+    raw.exec(`
+      CREATE TABLE triggerdev_runs (
+        id TEXT PRIMARY KEY,
+        triggerdev_run_id TEXT NOT NULL UNIQUE,
+        triggerdev_task_id TEXT NOT NULL,
+        triggerdev_status TEXT NOT NULL
+      );
+      CREATE TABLE task_queue (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+      );
+    `);
+    const db = new SqliteDbClient(raw);
+    await expect(assertSchemaReady(db)).rejects.toThrow('task_concurrency_gates table not found');
+    // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
+  });
 });
 
 // ── ImportBacklogCommand dry-run validation gate (post-merge PR review MEDIUM-1) ──────────────

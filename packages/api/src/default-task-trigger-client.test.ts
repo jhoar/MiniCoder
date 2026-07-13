@@ -19,8 +19,8 @@ function listMigrationFiles(): string[] {
  * each open via `createDbClientFromEnv()`'s own `DB_PATH`-driven connection. */
 // `task_queue.project_id` carries a REFERENCES projects(id) foreign key (unchanged from migration
 // 0017's original shape), so every project id a test's payload uses must exist in `projects`
-// first — seeded here once, covering both ids used across this file's test cases.
-const SEEDED_PROJECT_IDS = ['proj-1', 'p'];
+// first — seeded here once, covering every id used across this file's test cases.
+const SEEDED_PROJECT_IDS = ['proj-1', 'p', 'proj-2'];
 
 function createMigratedSqliteFile(): string {
   const filePath = path.join(os.tmpdir(), `task-trigger-client-test-${crypto.randomUUID()}.db`);
@@ -112,6 +112,38 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
 
     expect(second.triggerdevRunId).toBe(first.triggerdevRunId);
     expect(queryTaskQueue(dbPath)).toHaveLength(1);
+  });
+
+  // PR #75 round-2 review fix (HIGH-2): idempotency dedup is scoped to
+  // (project_id, task_id, idempotency_key), not (task_id, idempotency_key) — reusing the same key
+  // for the SAME task but a DIFFERENT project must enqueue a separate row, not silently return the
+  // other project's unrelated run id.
+  it('reusing the same idempotency key for the same task in a different project enqueues a separate row', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    const { resolveDefaultTaskTriggerClient } = await import('./default-task-trigger-client.js');
+    const client = resolveDefaultTaskTriggerClient();
+
+    const project1Run = await client.triggerRunCoder({
+      projectId: 'proj-1',
+      featureRunId: 'run-1',
+      coderAdapterName: 'CodexCoderAdapter',
+      correlationId: 'corr-1',
+      idempotencyKey: 'cross-project-key',
+    });
+    const project2Run = await client.triggerRunCoder({
+      projectId: 'proj-2',
+      featureRunId: 'run-1',
+      coderAdapterName: 'CodexCoderAdapter',
+      correlationId: 'corr-1',
+      idempotencyKey: 'cross-project-key',
+    });
+
+    expect(project2Run.triggerdevRunId).not.toBe(project1Run.triggerdevRunId);
+    const rows = queryTaskQueue(dbPath);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.project_id).sort()).toEqual(['proj-1', 'proj-2']);
   });
 
   // PR #75 review fix (MEDIUM-1): idempotency dedup is scoped to (task_id, idempotency_key), not

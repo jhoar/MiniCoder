@@ -24,6 +24,9 @@ function createMigratedSqliteFile(): string {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
     raw.exec(sql.replace(/^\s*PRAGMA\s+foreign_keys\s*=\s*ON\s*;\s*/im, ''));
   }
+  // task_queue.project_id carries a REFERENCES projects(id) foreign key — seed the one project id
+  // every insertTaskQueueRow() call in this file uses.
+  raw.prepare(`INSERT INTO projects (id, name) VALUES ('proj-1', 'Test Project')`).run();
   raw.close();
   return filePath;
 }
@@ -38,8 +41,8 @@ function insertTaskQueueRow(
   const now = new Date().toISOString();
   raw
     .prepare(
-      `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, version, created_at, updated_at)
-       VALUES (?, ?, '{"projectId":"proj-1"}', ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
+       VALUES (?, ?, '{"projectId":"proj-1"}', ?, ?, ?, 'proj-1', 1, ?, ?)`,
     )
     .run(id, taskId, `idem-${id}`, opts.status ?? 'pending', opts.attempts ?? 0, now, now);
   raw.close();
@@ -146,6 +149,22 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     expect(replayed.attempts).toBe(0);
   });
 
+  // PR #75 round-2 review fix (MEDIUM-1): the original replay INSERT omitted project_id
+  // entirely, silently dropping project-scoping metadata from the replayed row.
+  it('replay-run preserves the source row project_id', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    insertTaskQueueRow(dbPath, 'tq-3b', 'run-review', { status: 'failed', attempts: 3 });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'replay-run', 'tq-3b']);
+
+    const rows = queryTaskQueue(dbPath);
+    const replayed = rows.find((r) => r.id !== 'tq-3b')!;
+    expect(replayed.project_id).toBe('proj-1');
+  });
+
   it('reset-dev refuses without --yes/--env, and clears task_queue when guarded correctly', async () => {
     dbPath = createMigratedSqliteFile();
     process.env['DB_DIALECT'] = 'sqlite';
@@ -217,6 +236,33 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
     expect(errSpy.mock.calls.join(' ')).toMatch(/not safe/);
+  });
+
+  // PR #75 round-2 review fix (MEDIUM-2): APP_ENV=development and --env test are each
+  // individually in the safe set, but disagree about which environment this actually is — a
+  // caller-supplied --env flag alone must never be able to reclassify a database running under a
+  // different deployment environment.
+  it('reset-dev blocks when --env does not match a set, individually-safe system env', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    process.env['APP_ENV'] = 'development';
+    insertTaskQueueRow(dbPath, 'tq-mismatch', 'run-coder');
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'reset-dev',
+      '--yes',
+      '--env',
+      'test',
+    ]);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    expect(errSpy.mock.calls.join(' ')).toMatch(/does not match the deployment environment/);
+    expect(queryTaskQueue(dbPath)).toHaveLength(1);
   });
 
   it('reconcile flags a task_queue row with no linked triggerdev_runs row', async () => {

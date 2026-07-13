@@ -13,7 +13,7 @@ CREATE TABLE task_queue (
   version          INTEGER     NOT NULL DEFAULT 1,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (task_id, idempotency_key)
+  UNIQUE (project_id, task_id, idempotency_key)
 );
 
 CREATE INDEX idx_task_queue_status_next_retry_at ON task_queue(status, next_retry_at);

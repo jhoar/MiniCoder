@@ -7,17 +7,34 @@
 -- this table is worker-owned queue state, `triggerdev_runs` stays status-history-owned.
 --
 -- `idempotency_key` dedup is the mechanism replacing Trigger.dev's server-side run dedup:
--- `INSERT ... ON CONFLICT(task_id, idempotency_key) DO NOTHING` then re-SELECT on conflict is the
--- same claim-first idiom `packages/api/src/route-idempotency.ts` already uses for route-level
--- idempotency. Uniqueness is scoped to `(task_id, idempotency_key)`, not `idempotency_key` alone
--- (PR #75 review fix, MEDIUM-1): a caller-supplied key is only meant to dedup retries of the SAME
--- logical task invocation. A bare global-uniqueness constraint meant reusing a key for a
--- DIFFERENT task silently returned the unrelated old row's id and skipped enqueuing the new task
--- entirely -- a real correctness bug, not just a naming nitpick.
+-- `INSERT ... ON CONFLICT(project_id, task_id, idempotency_key) DO NOTHING` then re-SELECT on
+-- conflict is the same claim-first idiom `packages/api/src/route-idempotency.ts` already uses for
+-- route-level idempotency. Uniqueness is scoped to `(project_id, task_id, idempotency_key)`, not
+-- `idempotency_key` alone (PR #75 review fix, MEDIUM-1: task_id; round-2 review fix, HIGH-2:
+-- project_id): a caller-supplied key is only meant to dedup retries of the SAME logical task
+-- invocation for the SAME project. A `(task_id, idempotency_key)`-only constraint still let two
+-- different PROJECTS enqueuing the same task with the same key collide -- the second project's
+-- enqueue would silently return the first project's unrelated row id instead of enqueuing its own
+-- task. Every canonical task payload extends `BasePayload`, which requires a non-optional
+-- `projectId: z.string()` (`packages/triggerdev/src/tasks/types.ts`), so every real row has a
+-- non-NULL `project_id` in practice -- this widening does not need a partial-index NULL-handling
+-- trick the way `agent_configurations`' two-index split does for a column NULL is a legitimate,
+-- common case for.
 --
 -- `linked_run_id` is a nullable forward reference to the `triggerdev_runs` row created once the
 -- worker claims this row and calls `linkRunToDb()` -- it stays NULL for a row that is still
 -- pending/never claimed.
+--
+-- PR #75 round-2 re-review (HIGH-1) suggested a new migration (e.g. 0018) for these fixes instead
+-- of editing 0017 in place, out of concern that a DB which already applied an earlier revision of
+-- this file would not receive the new column/constraint. This repo's own established convention
+-- (see CLAUDE.md's migration-editing-convention notes, and e.g. migration 0015's identical
+-- round-3 PR #73 fix) is that editing an UNMERGED migration in place is safe and expected --
+-- only a MERGED migration must never be edited in place. This PR has not merged, so no production
+-- deployment has ever applied a prior revision of 0017; the only affected case is a developer who
+-- checked out an earlier commit of THIS SAME PR, migrated, then pulled again mid-review -- a
+-- disposable dev/test/CI database in active development, not a compatibility gap that will ever
+-- exist post-merge. Once merged, this file is fixed at this shape forever.
 CREATE TABLE task_queue (
   id               TEXT    PRIMARY KEY,
   task_id          TEXT    NOT NULL,
@@ -32,7 +49,7 @@ CREATE TABLE task_queue (
   version          INTEGER NOT NULL DEFAULT 1,
   created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   updated_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-  UNIQUE (task_id, idempotency_key)
+  UNIQUE (project_id, task_id, idempotency_key)
 );
 
 -- Poll query shape: `status IN ('pending','failed') AND attempts < ? AND (next_retry_at IS NULL

@@ -3,15 +3,16 @@
  * `@trigger.dev/sdk/v3`'s `tasks.trigger()`. `minicoder tasks worker` (backed by
  * `TaskQueueDispatcher`) polls this table and executes the matching `runImpl`.
  *
- * `INSERT ... ON CONFLICT (task_id, idempotency_key) DO NOTHING`, falling back to a `SELECT` on
- * conflict, is the same claim-first idempotency idiom already used by
+ * `INSERT ... ON CONFLICT (project_id, task_id, idempotency_key) DO NOTHING`, falling back to a
+ * `SELECT` on conflict, is the same claim-first idempotency idiom already used by
  * `packages/api/src/route-idempotency.ts`'s `claimRouteIdempotencyKey()` — a repeated call with
- * the same `Idempotency-Key` for the SAME task returns the same `triggerdevRunId` without
- * enqueuing a duplicate row, replacing the dedup Trigger.dev previously provided server-side. The
- * conflict target is scoped to `(task_id, idempotency_key)`, not `idempotency_key` alone (PR #75
- * review fix, MEDIUM-1) — a bare global-uniqueness constraint meant reusing the same key for a
- * DIFFERENT task silently returned the unrelated old row's id and skipped enqueuing the new task
- * entirely.
+ * the same `Idempotency-Key` for the SAME task and project returns the same `triggerdevRunId`
+ * without enqueuing a duplicate row, replacing the dedup Trigger.dev previously provided
+ * server-side. The conflict target is scoped to `(project_id, task_id, idempotency_key)`, not
+ * `idempotency_key` alone (PR #75 review fix, MEDIUM-1: task_id; round-2 review fix, HIGH-2:
+ * project_id) — a bare global-uniqueness constraint meant reusing the same key for a DIFFERENT
+ * task, or the same task from a DIFFERENT project, silently returned the unrelated old row's id
+ * and skipped enqueuing the new task entirely.
  *
  * `triggerdevRunId` is kept as the field name on `TriggeredRun` (unchanged from the Trigger.dev
  * implementation this replaces): it is a public response field on five routes
@@ -39,15 +40,15 @@ async function enqueueTask(
       `INSERT INTO task_queue
          (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'pending', 0, ?, 1, ?, ?)
-       ON CONFLICT (task_id, idempotency_key) DO NOTHING`,
+       ON CONFLICT (project_id, task_id, idempotency_key) DO NOTHING`,
       [id, taskId, JSON.stringify(payload), idempotencyKey, payload.projectId, now, now],
     );
     if (inserted === 1) {
       return { triggerdevRunId: id };
     }
     const rows = await db.query<{ id: string }>(
-      `SELECT id FROM task_queue WHERE task_id = ? AND idempotency_key = ?`,
-      [taskId, idempotencyKey],
+      `SELECT id FROM task_queue WHERE project_id = ? AND task_id = ? AND idempotency_key = ?`,
+      [payload.projectId, taskId, idempotencyKey],
     );
     return { triggerdevRunId: rows[0]!.id };
   } finally {

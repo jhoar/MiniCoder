@@ -97,137 +97,146 @@ function poolRunWithTaskDb(pool: Pool) {
   };
 }
 
-describe.skipIf(!RUN_PG)('TaskQueueDispatcher genuine multi-connection concurrency (PostgreSQL)', () => {
-  let pool: Pool;
-  let seq = 0;
+describe.skipIf(!RUN_PG)(
+  'TaskQueueDispatcher genuine multi-connection concurrency (PostgreSQL)',
+  () => {
+    let pool: Pool;
+    let seq = 0;
 
-  beforeAll(async () => {
-    const adminPool = new Pool({ connectionString: TEST_PG_URL! });
-    await adminPool.query(`DROP SCHEMA IF EXISTS "${TEST_SCHEMA}" CASCADE`);
-    await adminPool.query(`CREATE SCHEMA "${TEST_SCHEMA}"`);
-    await adminPool.end();
+    beforeAll(async () => {
+      const adminPool = new Pool({ connectionString: TEST_PG_URL! });
+      await adminPool.query(`DROP SCHEMA IF EXISTS "${TEST_SCHEMA}" CASCADE`);
+      await adminPool.query(`CREATE SCHEMA "${TEST_SCHEMA}"`);
+      await adminPool.end();
 
-    const url = new URL(TEST_PG_URL!);
-    url.searchParams.set('options', `-c search_path="${TEST_SCHEMA}"`);
-    pool = new Pool({ connectionString: url.toString() });
+      const url = new URL(TEST_PG_URL!);
+      url.searchParams.set('options', `-c search_path="${TEST_SCHEMA}"`);
+      pool = new Pool({ connectionString: url.toString() });
 
-    await applyAllMigrations(pool);
-    // task_queue.project_id and triggerdev_runs.project_id both carry a REFERENCES projects(id)
-    // foreign key — seed the one project id every row in this suite uses.
-    await pool.query(`INSERT INTO projects (id, name) VALUES ($1, $2)`, [
-      'proj-pg-concurrency',
-      'PG Concurrency Test Project',
-    ]);
-  });
+      await applyAllMigrations(pool);
+      // task_queue.project_id and triggerdev_runs.project_id both carry a REFERENCES projects(id)
+      // foreign key — seed the one project id every row in this suite uses.
+      await pool.query(`INSERT INTO projects (id, name) VALUES ($1, $2)`, [
+        'proj-pg-concurrency',
+        'PG Concurrency Test Project',
+      ]);
+    });
 
-  afterAll(async () => {
-    await pool.end();
-    const adminPool = new Pool({ connectionString: TEST_PG_URL! });
-    await adminPool.query(`DROP SCHEMA IF EXISTS "${TEST_SCHEMA}" CASCADE`);
-    await adminPool.end();
-  });
+    afterAll(async () => {
+      await pool.end();
+      const adminPool = new Pool({ connectionString: TEST_PG_URL! });
+      await adminPool.query(`DROP SCHEMA IF EXISTS "${TEST_SCHEMA}" CASCADE`);
+      await adminPool.end();
+    });
 
-  async function insertTaskQueueRow(taskId: string): Promise<string> {
-    seq += 1;
-    const id = `tq-pg-${seq}-${Date.now()}`;
-    await pool.query(
-      `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, version, created_at, updated_at)
+    async function insertTaskQueueRow(taskId: string): Promise<string> {
+      seq += 1;
+      const id = `tq-pg-${seq}-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, version, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'pending', 0, 1, NOW(), NOW())`,
-      [id, taskId, JSON.stringify({ projectId: 'proj-pg-concurrency' }), `idem-${id}`],
-    );
-    return id;
-  }
-
-  async function countRows(status: string, taskId?: string): Promise<number> {
-    const result = taskId
-      ? await pool.query('SELECT COUNT(*) as count FROM task_queue WHERE status = $1 AND task_id = $2', [
-          status,
-          taskId,
-        ])
-      : await pool.query('SELECT COUNT(*) as count FROM task_queue WHERE status = $1', [status]);
-    return Number(result.rows[0].count);
-  }
-
-  it('runs two concurrently-claimed tasks that each open a real db.transaction() without conflict', async () => {
-    await insertTaskQueueRow('run-coder');
-    await insertTaskQueueRow('run-review');
-
-    const transactionalImpl = async (_payload: unknown, taskDb: DbClient) =>
-      taskDb.transaction(async (tx) => {
-        await new Promise((resolve) => setTimeout(resolve, 50)); // let the other task's impl overlap
-        await tx.execute('SELECT 1');
-        return { ok: true };
-      });
-
-    const bookkeepingClient = await pool.connect();
-    const bookkeepingDb = new PostgresDbClient(bookkeepingClient);
-    try {
-      const dispatcher = new TaskQueueDispatcher(bookkeepingDb, {
-        batchSize: 10,
-        registry: new Map<TaskId, TaskDefinition<unknown, unknown>>([
-          ['run-coder', fakeDefinition('run-coder', 1, transactionalImpl)],
-          ['run-review', fakeDefinition('run-review', 1, transactionalImpl)],
-        ]),
-        runWithTaskDb: poolRunWithTaskDb(pool),
-      });
-
-      const result = await dispatcher.pollAndDispatch();
-      expect(result.failed).toBe(0);
-      expect(result.dispatched).toBe(2);
-      expect(await countRows('succeeded')).toBeGreaterThanOrEqual(2);
-    } finally {
-      bookkeepingClient.release();
+        [id, taskId, JSON.stringify({ projectId: 'proj-pg-concurrency' }), `idem-${id}`],
+      );
+      return id;
     }
-  });
 
-  it('enforces per-task concurrency across two independent dispatcher instances sharing one DB', async () => {
-    await insertTaskQueueRow('run-merge-gate');
-    await insertTaskQueueRow('run-merge-gate');
+    async function countRows(status: string, taskId?: string): Promise<number> {
+      const result = taskId
+        ? await pool.query(
+            'SELECT COUNT(*) as count FROM task_queue WHERE status = $1 AND task_id = $2',
+            [status, taskId],
+          )
+        : await pool.query('SELECT COUNT(*) as count FROM task_queue WHERE status = $1', [status]);
+      return Number(result.rows[0].count);
+    }
 
-    let concurrent = 0;
-    let maxConcurrent = 0;
-    const slowImpl = async () => {
-      concurrent++;
-      maxConcurrent = Math.max(maxConcurrent, concurrent);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      concurrent--;
-      return { ok: true };
-    };
-    const registry = new Map<TaskId, TaskDefinition<unknown, unknown>>([
-      ['run-merge-gate', fakeDefinition('run-merge-gate', 1, slowImpl)],
-    ]);
+    it('runs two concurrently-claimed tasks that each open a real db.transaction() without conflict', async () => {
+      await insertTaskQueueRow('run-coder');
+      await insertTaskQueueRow('run-review');
 
-    const clientA = await pool.connect();
-    const clientB = await pool.connect();
-    const dbA = new PostgresDbClient(clientA);
-    const dbB = new PostgresDbClient(clientB);
-    try {
-      const dispatcherA = new TaskQueueDispatcher(dbA, { registry, runWithTaskDb: poolRunWithTaskDb(pool) });
-      const dispatcherB = new TaskQueueDispatcher(dbB, { registry, runWithTaskDb: poolRunWithTaskDb(pool) });
+      const transactionalImpl = async (_payload: unknown, taskDb: DbClient) =>
+        taskDb.transaction(async (tx) => {
+          await new Promise((resolve) => setTimeout(resolve, 50)); // let the other task's impl overlap
+          await tx.execute('SELECT 1');
+          return { ok: true };
+        });
 
-      // A real worker loops repeatedly; with concurrencyLimit: 1, one row is expected to stay
-      // `pending` on a given tick if the other is already `processing` on a concurrent tick, and
-      // only get claimed on a later tick once the first finishes. Loop each dispatcher (like two
-      // independent `minicoder tasks worker` processes polling on their own interval) until both
-      // rows are drained, tracking dispatched totals and the true cross-instance concurrency peak.
-      let totalDispatched = 0;
-      for (let i = 0; i < 20 && totalDispatched < 2; i++) {
-        const [resultA, resultB] = await Promise.all([
-          dispatcherA.pollAndDispatch(),
-          dispatcherB.pollAndDispatch(),
-        ]);
-        totalDispatched += resultA.dispatched + resultB.dispatched;
-        if (totalDispatched < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+      const bookkeepingClient = await pool.connect();
+      const bookkeepingDb = new PostgresDbClient(bookkeepingClient);
+      try {
+        const dispatcher = new TaskQueueDispatcher(bookkeepingDb, {
+          batchSize: 10,
+          registry: new Map<TaskId, TaskDefinition<unknown, unknown>>([
+            ['run-coder', fakeDefinition('run-coder', 1, transactionalImpl)],
+            ['run-review', fakeDefinition('run-review', 1, transactionalImpl)],
+          ]),
+          runWithTaskDb: poolRunWithTaskDb(pool),
+        });
+
+        const result = await dispatcher.pollAndDispatch();
+        expect(result.failed).toBe(0);
+        expect(result.dispatched).toBe(2);
+        expect(await countRows('succeeded')).toBeGreaterThanOrEqual(2);
+      } finally {
+        bookkeepingClient.release();
       }
+    });
 
-      // Across BOTH dispatcher instances, at most 1 row for this concurrencyLimit: 1 task ever ran
-      // at the same time — if the in-process-only `inFlight` map were the only guard, each
-      // dispatcher's own independent map would allow 1 each, i.e. 2 concurrently.
-      expect(maxConcurrent).toBeLessThanOrEqual(1);
-      expect(totalDispatched).toBe(2);
-    } finally {
-      clientA.release();
-      clientB.release();
-    }
-  });
-});
+    it('enforces per-task concurrency across two independent dispatcher instances sharing one DB', async () => {
+      await insertTaskQueueRow('run-merge-gate');
+      await insertTaskQueueRow('run-merge-gate');
+
+      let concurrent = 0;
+      let maxConcurrent = 0;
+      const slowImpl = async () => {
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        concurrent--;
+        return { ok: true };
+      };
+      const registry = new Map<TaskId, TaskDefinition<unknown, unknown>>([
+        ['run-merge-gate', fakeDefinition('run-merge-gate', 1, slowImpl)],
+      ]);
+
+      const clientA = await pool.connect();
+      const clientB = await pool.connect();
+      const dbA = new PostgresDbClient(clientA);
+      const dbB = new PostgresDbClient(clientB);
+      try {
+        const dispatcherA = new TaskQueueDispatcher(dbA, {
+          registry,
+          runWithTaskDb: poolRunWithTaskDb(pool),
+        });
+        const dispatcherB = new TaskQueueDispatcher(dbB, {
+          registry,
+          runWithTaskDb: poolRunWithTaskDb(pool),
+        });
+
+        // A real worker loops repeatedly; with concurrencyLimit: 1, one row is expected to stay
+        // `pending` on a given tick if the other is already `processing` on a concurrent tick, and
+        // only get claimed on a later tick once the first finishes. Loop each dispatcher (like two
+        // independent `minicoder tasks worker` processes polling on their own interval) until both
+        // rows are drained, tracking dispatched totals and the true cross-instance concurrency peak.
+        let totalDispatched = 0;
+        for (let i = 0; i < 20 && totalDispatched < 2; i++) {
+          const [resultA, resultB] = await Promise.all([
+            dispatcherA.pollAndDispatch(),
+            dispatcherB.pollAndDispatch(),
+          ]);
+          totalDispatched += resultA.dispatched + resultB.dispatched;
+          if (totalDispatched < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+
+        // Across BOTH dispatcher instances, at most 1 row for this concurrencyLimit: 1 task ever ran
+        // at the same time — if the in-process-only `inFlight` map were the only guard, each
+        // dispatcher's own independent map would allow 1 each, i.e. 2 concurrently.
+        expect(maxConcurrent).toBeLessThanOrEqual(1);
+        expect(totalDispatched).toBe(2);
+      } finally {
+        clientA.release();
+        clientB.release();
+      }
+    });
+  },
+);

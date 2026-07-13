@@ -10,9 +10,14 @@ import type { DbClient } from '@minicoder/core';
  * read-model that predates the task_queue table (migration 0017) — so a database migrated only
  * up to an older revision could pass this check and still fail later, at first enqueue or first
  * poll, with a much less actionable "no such table: task_queue" error.
+ *
+ * PR #75 round-2 review fix (HIGH-1, partial): also probes task_concurrency_gates (added to
+ * migration 0017 by the first review round's HIGH-2 fix) for the identical reason — without it,
+ * a database missing only that table would pass this check and fail later, inside
+ * TaskQueueDispatcher's claim transaction, with a much less actionable raw SQL error.
  */
 export async function assertSchemaReady(db: DbClient): Promise<void> {
-  for (const table of ['triggerdev_runs', 'task_queue']) {
+  for (const table of ['triggerdev_runs', 'task_queue', 'task_concurrency_gates']) {
     try {
       await db.query(`SELECT 1 FROM ${table} LIMIT 1`, []);
     } catch (err) {

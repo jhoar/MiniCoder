@@ -147,10 +147,11 @@ export function createTriggerCommand(): Command {
     .action(async (runId: string) => {
       const db = await createDbClientFromEnv();
       try {
-        const rows = await db.query<{ task_id: string; payload: string }>(
-          'SELECT task_id, payload FROM task_queue WHERE id = ?',
-          [runId],
-        );
+        const rows = await db.query<{
+          task_id: string;
+          payload: string;
+          project_id: string | null;
+        }>('SELECT task_id, payload, project_id FROM task_queue WHERE id = ?', [runId]);
         const source = rows[0];
         if (!source) {
           console.error(`Error: no task_queue row found for id '${runId}'`);
@@ -159,10 +160,22 @@ export function createTriggerCommand(): Command {
         }
         const newId = generateId();
         const now = isoNow();
+        // PR #75 review fix (round-2 MEDIUM-1): the original replay INSERT omitted project_id
+        // entirely, so a replayed row lost its project-scoping metadata — invisible to
+        // `trigger reconcile --project`/diagnostics that filter by it, even though the source row
+        // it was replayed from had one.
         await db.execute(
-          `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'pending', 0, 1, ?, ?)`,
-          [newId, source.task_id, source.payload, `replay-${runId}-${newId}`, now, now],
+          `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'pending', 0, ?, 1, ?, ?)`,
+          [
+            newId,
+            source.task_id,
+            source.payload,
+            `replay-${runId}-${newId}`,
+            source.project_id,
+            now,
+            now,
+          ],
         );
         console.log(
           JSON.stringify(
@@ -236,17 +249,34 @@ export function createTriggerCommand(): Command {
         process.exitCode = 1;
         return;
       }
-      // PR #75 review fix (HIGH-3): matches the stricter guardEnv() precedent already established
-      // in packages/cli/src/commands/{db,github}.ts for dev/test/CI-only destructive commands.
-      // An earlier revision special-cased an EMPTY systemEnv as "safe" (skipping this check
-      // entirely) — but this command performs a real `DELETE FROM task_queue` (unlike when this
-      // guard was first written, against a permanent `notImplemented()` stub that never touched
-      // the database), so unset APP_ENV/NODE_ENV must never be inferred as safe. Defaulting the
-      // unset case to 'production' (a value never in `permitted`) makes it fail closed instead.
-      const systemEnv = process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? 'production';
+      // PR #75 review fixes (HIGH-3, then round-2 MEDIUM-2): mirrors
+      // packages/migrations/src/runner.ts's `db reset` guard ordering exactly. (1) An unset
+      // system env can never be inferred as safe — this command performs a real
+      // `DELETE FROM task_queue`, so there is no permissive default. (2) A system env outside the
+      // safe set is blocked regardless of --env. (3) Once both are individually safe, --env must
+      // agree with the system env EXACTLY — round-2 MEDIUM-2 found that e.g.
+      // `APP_ENV=development --env test` passed both checks independently while silently
+      // disagreeing about which environment this actually is; a caller-supplied flag alone must
+      // never be able to reclassify a database running under a different deployment environment.
+      const systemEnv = process.env['APP_ENV'] ?? process.env['NODE_ENV'];
+      if (!systemEnv) {
+        console.error(
+          'Error: system env APP_ENV/NODE_ENV is unset, which is not safe. Reset blocked.',
+        );
+        process.exitCode = 1;
+        return;
+      }
       if (!permitted.includes(systemEnv)) {
         console.error(
           `Error: system env APP_ENV/NODE_ENV is '${systemEnv}' which is not safe. Reset blocked.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      if (systemEnv !== opts.env) {
+        console.error(
+          `Error: --env '${opts.env}' does not match the deployment environment '${systemEnv}' ` +
+            '(APP_ENV/NODE_ENV). The two must match exactly.',
         );
         process.exitCode = 1;
         return;

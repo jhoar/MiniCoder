@@ -96,7 +96,9 @@ describe('TaskQueueDispatcher', () => {
     insertTaskQueueRow('tq-2', 'run-coder');
     const implFn = vi
       .fn()
-      .mockRejectedValue(new Error('boom: Authorization: Bearer super-secret-value-should-be-redacted'));
+      .mockRejectedValue(
+        new Error('boom: Authorization: Bearer super-secret-value-should-be-redacted'),
+      );
     const dispatcher = new TaskQueueDispatcher(db, {
       baseBackoffMs: 1000,
       registry: new Map([['run-coder', fakeDefinition('run-coder', 1, implFn)]]),
@@ -189,7 +191,9 @@ describe('TaskQueueDispatcher', () => {
     });
     const dispatcher = new TaskQueueDispatcher(db, {
       batchSize: 10,
-      registry: new Map([['ingest-specification', fakeDefinition('ingest-specification', 2, implFn)]]),
+      registry: new Map([
+        ['ingest-specification', fakeDefinition('ingest-specification', 2, implFn)],
+      ]),
       runWithTaskDb: reuseSharedDb,
     });
 
