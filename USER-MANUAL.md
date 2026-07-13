@@ -88,6 +88,10 @@ If something goes wrong at any point, the feature can land in `human_required` (
 decide what happens next) or `blocked` (waiting on something else, usually another feature). A
 human can also `skip` a feature outright.
 
+`blocked` does **not** clear itself once the dependency merges — there is no automatic caller for
+that today. An operator must run `minicoder human unblock` once the upstream dependency is
+`merged`; it re-checks the dependency and rejects if it still isn't.
+
 **Automation** for a whole project can be `running`, `paused_by_operator` (you paused it), or
 paused because a cost budget was hit (`paused_budget_exceeded` / `waiting_for_budget_approval`).
 Only one feature is worked on at a time per project — this is deliberate, not a limitation.
@@ -124,7 +128,38 @@ minicoder db migrate
 minicoder db validate        # confirms every expected table/index exists
 ```
 
-### 3.3 Start the long-running processes
+### 3.3 Environment variables at a glance
+
+| Concern | Variable | Notes |
+| --- | --- | --- |
+| Database | `DB_DIALECT` | `sqlite` (default) or `postgres` |
+| Database (SQLite) | `DB_PATH` | Defaults to `./minicoder.db` |
+| Database (PostgreSQL) | `DB_URL` | Required when `DB_DIALECT=postgres` |
+| API auth (server) | `MINICODER_API_KEYS` | JSON array of `{key, id, role, actorKind, displayName?}` |
+| API auth (client/CLI/UI) | `MINICODER_API_KEY` | One raw key from the array above |
+| API location (client/CLI/UI) | `MINICODER_API_URL` | Defaults to `http://localhost:4000` |
+| GitHub | `GITHUB_TOKEN` | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-github` |
+| GitHub webhooks | `GITHUB_WEBHOOK_SECRET` | Required by both `minicoder github serve` and `minicoder api serve` |
+| GitHub webhooks (rotation) | `GITHUB_WEBHOOK_SECRET_PREVIOUS` | Optional, for secret rotation |
+| LLM provider | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL` | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters |
+| Observability (optional) | `OTEL_EXPORTER_OTLP_ENDPOINT` | If unset, `observability export-otel` is a no-op |
+| Web UI | (none new) | Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` as the CLI |
+
+### 3.4 Getting the `minicoder` binary on your PATH
+
+`pnpm install` alone does not put a `minicoder` executable directly on your shell's `PATH` — the
+CLI's `bin` entry points at a TypeScript source file run via a `tsx` shebang. From the repo root,
+use one of:
+
+```bash
+pnpm exec minicoder <command>            # resolves the workspace-linked bin
+pnpm --filter @minicoder/cli exec minicoder <command>
+```
+
+(A packaged/compiled distribution may expose `minicoder` directly — check your deployment's own
+install instructions if you're not running from a source checkout.)
+
+### 3.5 Start the long-running processes
 
 MiniCoder is a handful of independent, always-on processes plus a normal CLI. In a real deployment
 you run all of these (each in its own terminal, container, or service):
@@ -132,8 +167,15 @@ you run all of these (each in its own terminal, container, or service):
 ```bash
 minicoder api serve                 # the Orchestrator API — the UIs and most read commands need this
 minicoder tasks worker              # executes queued automation (coding, review, merge-gate, etc.)
-minicoder github serve              # receives GitHub webhooks (PR/CI/review events)
 ```
+
+**Webhook receiver — pick one, not both.** `minicoder api serve` already mounts
+`POST /webhooks/github` itself (and requires `GITHUB_WEBHOOK_SECRET` to start, exactly like the
+standalone receiver). `minicoder github serve` is a *second*, standalone Fastify process exposing
+the same route on its own port. Point your GitHub repository's webhook at whichever one you
+actually run — normally that's the API's own `/webhooks/github` (one fewer process to run), with
+`minicoder github serve` reserved for topologies that want the webhook receiver decoupled from the
+API process. Don't register the same GitHub webhook against both.
 
 Configure the API's key(s) via `MINICODER_API_KEYS` (a JSON array of
 `{key, id, role, actorKind, displayName?}` objects — this is the whole auth model, there's no
@@ -144,11 +186,21 @@ export MINICODER_API_URL=http://localhost:4000   # default if omitted
 export MINICODER_API_KEY=<one of the keys from MINICODER_API_KEYS>
 ```
 
-Configure the webhook receiver's `GITHUB_WEBHOOK_SECRET` (and point your repo's webhook at
-`http://<host>/webhooks/github`), and the coder/reviewer's `GITHUB_TOKEN` /
-`CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL`.
+Configure `GITHUB_WEBHOOK_SECRET` on whichever process receives the webhook, and the
+coder/reviewer's `GITHUB_TOKEN` / `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL`.
 
-### 3.4 Optional: the Text UI and Web UI
+**Adapter registry bootstrap.** Every adapter invocation (coder, reviewer, arbiter, planner,
+documentation) resolves its adapter name against the `AdapterRegistry` table for provenance —
+there is no CLI or API command to register an adapter (`minicoder adapters` is read-only). Your
+deployment needs its own one-time bootstrap step that calls `AdapterRegistry.register()` directly
+(e.g. a small setup script, run once against the database) for each adapter name you intend to
+reference — including the default `CodexCoderAdapter` / `ClaudeReviewerAdapter` /
+`ClaudeArbiterAdapter` / `GenericLLMPlannerAdapter` / `ClaudeDocumentationAdapter` reference
+implementations. This manual doesn't prescribe that script since it's deployment-specific; without
+it, any command that names an adapter (`design-doc request-run --documentation-adapter ...`, the
+`request-coder-run`/`request-review`/`request-design-doc` API routes) will fail to resolve it.
+
+### 3.6 Optional: the Text UI and Web UI
 
 Every `minicoder <noun>` command below (`status`, `plan`, `features`, ...) *is* the Text UI — no
 separate install. For the Web UI, run `packages/web`'s Next.js server (it reads the same
@@ -167,10 +219,10 @@ This walks through taking a specification all the way to a merged, documented pr
 Feed MiniCoder your spec (a plain-text/markdown description of what you want built). This kicks
 off a planner-adapter-backed readiness assessment.
 
-> Specification ingestion and the readiness assessment run automatically once triggered — this is
-> normally driven by your deployment's own intake path (e.g. the API's `ingest-specification`
-> flow) rather than a bare CLI flag; check with whoever set up your deployment for the exact
-> intake command if the CLI doesn't already have a project ID for you.
+> There's no dedicated `minicoder` CLI command for specification ingestion or plan
+> approval/activation — they're invoked through the Orchestrator API's generic command dispatch.
+> See [§5.0](#50-generic-api-command-dispatch-curl-examples) for working `curl` examples of every
+> step in this and the next section.
 
 Once ingested, check readiness and whether clarification is needed:
 
@@ -212,7 +264,9 @@ minicoder plan import-backlog backlog.md --project <project> --plan <planId> --a
 Submission for approval requires the backlog to have passed validation with no unresolved blocking
 gaps. Approving and activating a plan requires `approver`/`admin` — this is where the plan moves
 `draft → pending_approval → approved → activated_for_execution`, and every feature request becomes
-a feature run at `approved_pending_execution`.
+a feature run at `approved_pending_execution`. These three transitions
+(`submit-plan-for-approval`, `approve-plan`, `activate-plan`) are, again, generic API dispatch
+calls — see [§5.0](#50-generic-api-command-dispatch-curl-examples) for the exact `curl` invocations.
 
 ### Step 4 — Let automation run, and watch it work
 
@@ -266,7 +320,9 @@ minicoder human unblock --feature-run <id> --project <project> --actor <you> --n
 
 Also watch for a budget pause: if a project hits a soft/hard cost limit, it moves to
 `waiting_for_budget_approval`/`paused_budget_exceeded` and needs an approver override before
-automation continues (check `minicoder costs --project <project>` and `minicoder status`).
+automation continues (check `minicoder costs --project <project>` and `minicoder status`). The
+override itself is another generic API dispatch call, `approve-budget-override` — see
+[§5.0](#50-generic-api-command-dispatch-curl-examples) for the exact payload.
 
 ### Step 6 — Approve and execute merges
 
@@ -294,7 +350,9 @@ Steps 4–6 repeat automatically, one feature at a time, until every feature req
 Once every feature is merged (or skipped) and Project Acceptance Validation passes, mark
 implementation complete (you must also attest that CI-only checks — the full test suite, build,
 lint, security scan — have passed out-of-band, since MiniCoder's own database can't run those
-itself):
+itself). **This command, and `project complete` in Step 9, require a `system`-actorKind API key,
+not an ordinary approver key** — the underlying handlers are gated to system/admin credentials, so
+your `MINICODER_API_KEYS` entry for this step needs `"actorKind": "system"`:
 
 ```bash
 minicoder project validate-acceptance --project <project>          # preview, no transition
@@ -302,7 +360,10 @@ minicoder project mark-implementation-complete --project <project> \
   --evidence "CI run https://github.com/org/repo/actions/runs/123 all green" --yes
 ```
 
-Generate the design document, review it, and either send it back for changes or approve it:
+Generate the design document, review it, and either send it back for changes or approve it. The
+`--documentation-adapter` name (below, `ClaudeDocumentationAdapter`) must already be registered in
+your deployment's `AdapterRegistry` — see the bootstrap note in
+[§3.5](#35-start-the-long-running-processes):
 
 ```bash
 minicoder design-doc generate --project <project> --yes
@@ -340,6 +401,85 @@ Conventions used below:
   the colorized table view.
 - `<id>` placeholders are the IDs MiniCoder itself generates/returns; there's no fixed format to
   guess.
+
+### 5.0 Generic API command dispatch (curl examples)
+
+Several lifecycle steps in the walkthrough above (spec ingestion, clarification answers, plan
+submission/approval/activation, budget override) have **no dedicated CLI command** — they're
+reached through the Orchestrator API's generic dispatch route,
+`POST /commands/:commandSlug`, which every registered command handler is reachable through by a
+slugified version of its name (e.g. `IngestSpecificationCommand` → `ingest-specification`). Every
+call needs `Authorization: Bearer <MINICODER_API_KEY>` and a client-chosen `Idempotency-Key`
+header (any unique string per logical submission — reusing one replays the original result rather
+than re-running the command). `GET /commands` lists every slug currently registered.
+
+```bash
+# 1. Ingest a specification
+curl -X POST "$MINICODER_API_URL/commands/ingest-specification" \
+  -H "Authorization: Bearer $MINICODER_API_KEY" \
+  -H "Idempotency-Key: ingest-$(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"projectId":"<project>","content":"<the spec text>","contentType":"text/plain"}'
+
+# 2. Answer a clarification question (expectedQuestionVersion comes from
+#    `minicoder clarification --project <project> --json`)
+curl -X POST "$MINICODER_API_URL/commands/record-clarification-answer" \
+  -H "Authorization: Bearer $MINICODER_API_KEY" \
+  -H "Idempotency-Key: answer-$(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"clarificationQuestionId":"<qId>","clarificationSessionId":"<sessionId>","projectId":"<project>","answer":"<your answer>","expectedQuestionVersion":1}'
+
+# 3. Submit the plan for approval (expectedVersion comes from `minicoder plan --project <project> --json`)
+curl -X POST "$MINICODER_API_URL/commands/submit-plan-for-approval" \
+  -H "Authorization: Bearer $MINICODER_API_KEY" \
+  -H "Idempotency-Key: submit-$(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":0}'
+
+# 4. Approve the plan (requires an approver/admin-role key)
+curl -X POST "$MINICODER_API_URL/commands/approve-plan" \
+  -H "Authorization: Bearer $MINICODER_API_KEY" \
+  -H "Idempotency-Key: approve-$(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":1,"notes":"looks good"}'
+
+# 5. Activate the plan (requires an approver/admin-role key)
+curl -X POST "$MINICODER_API_URL/commands/activate-plan" \
+  -H "Authorization: Bearer $MINICODER_API_KEY" \
+  -H "Idempotency-Key: activate-$(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":2}'
+
+# 6. Approve a budget override (requires an approver/admin-role key; approvedBudgetPolicyId
+#    is required, not optional — it's the budget_policies row being overridden)
+curl -X POST "$MINICODER_API_URL/commands/approve-budget-override" \
+  -H "Authorization: Bearer $MINICODER_API_KEY" \
+  -H "Idempotency-Key: budget-override-$(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"projectId":"<project>","expectedVersion":5,"overrideReason":"approved extra spend for this sprint","approvedBudgetPolicyId":"<policyId>"}'
+```
+
+Every `expectedVersion`/`expectedQuestionVersion` value is an optimistic-concurrency check — fetch
+the current version first (via the corresponding read command's `--json` output) or the call
+rejects with a conflict.
+
+### 5.0.1 Task-enqueue API routes (no CLI equivalent)
+
+These five routes each enqueue a whole background task (coding, review, merge-gate recompute, or
+design-doc generation) rather than executing synchronously. All require an **operator**-role (or
+above) API key and a client-chosen `Idempotency-Key` header; all return `202 {triggerdevRunId,
+accepted: true}`.
+
+| Route | Required body fields |
+| --- | --- |
+| `POST /commands/request-coder-run` | `projectId`, `featureRunId`, `coderAdapterName` |
+| `POST /commands/request-review` | `projectId`, `featureRunId`, `reviewerAdapterName` (optional `arbiterAdapterName`) |
+| `POST /commands/request-fixes` | `projectId`, `featureRunId`, `reviewerAdapterName` (re-triggers the review task — there is no separate "fixes" task) |
+| `POST /commands/recompute-merge-gate` | `projectId`, `featureRunId` |
+| `POST /commands/request-design-doc` | `projectId`, `documentationAdapterName` |
+
+Every `...AdapterName` field must already exist in the `AdapterRegistry` — see the adapter registry
+bootstrap note in [§3.5](#35-start-the-long-running-processes).
 
 ### 5.1 Database lifecycle — `minicoder db ...` (DB)
 
@@ -441,15 +581,18 @@ Starts the Fastify API everything else in this table depends on. `--port` (defau
 | `regenerate` | `design_document_revision_requested → design_document_generating` | operator+ | `--project`, `--yes` (required) |
 | `request-revision` | `design_document_ready_for_review → design_document_revision_requested` | approver+ | `--project`, `--document` (required), `--notes`, `--yes` (required) |
 | `approve` | `design_document_ready_for_review → design_document_approved` | approver+ | `--project`, `--document` (required), `--notes`, `--yes` (required) |
-| `request-run` | Enqueues the drafting task (calls the `DocumentationAgentAdapter`, exports `final-design-document.md`). | operator+ | `--project`, `--documentation-adapter <name>` (required) |
+| `request-run` | Enqueues the drafting task (calls the `DocumentationAgentAdapter`, exports `final-design-document.md`). | operator+ | `--project`, `--documentation-adapter <name>` (required; must already be registered in `AdapterRegistry` — see [§3.5](#35-start-the-long-running-processes)) |
 
 ### 5.8 Project lifecycle — `minicoder project ...` (API)
 
-| Subcommand | Transitions | Key flags |
-| --- | --- | --- |
-| `mark-implementation-complete` | `active → implementation_complete` (Project Acceptance Validation must pass) | `--project` (required), `--evidence <text>` (required — your attestation that CI-only checks passed), `--yes` (required) |
-| `validate-acceptance` | (read-only) previews Project Acceptance Validation | `--project` (required) |
-| `complete` | `design_document_approved → project_complete` | `--project` (required), `--yes` (required) |
+`mark-implementation-complete` and `complete` require a **`system`-actorKind** API key (not an
+ordinary human `approver`/`admin` key) — their command handlers are gated to system credentials.
+
+| Subcommand | Transitions | Role/kind needed | Key flags |
+| --- | --- | --- | --- |
+| `mark-implementation-complete` | `active → implementation_complete` (Project Acceptance Validation must pass) | system-kind | `--project` (required), `--evidence <text>` (required — your attestation that CI-only checks passed), `--yes` (required) |
+| `validate-acceptance` | (read-only) previews Project Acceptance Validation | any | `--project` (required) |
+| `complete` | `design_document_approved → project_complete` | system-kind | `--project` (required), `--yes` (required) |
 
 ### 5.9 Automation control — `minicoder pause` / `minicoder resume` (API, operator+)
 
@@ -502,7 +645,7 @@ k8s CronJob), not run continuously. `--cursor-id <id>` (default `workflow_events
 | `unit` | Fast unit tests only. |
 | `integration` | `*.integration.test.ts` files against a real DB. |
 | `system` | Every end-to-end scenario. |
-| `scenario <name>` | One named scenario (e.g. `planning-basic`, `review-loop`, `merge-gate`, `disagreement-arbiter`, `final-design-document`). |
+| `scenario <name>` | One named scenario (e.g. `planning-basic`, `review-loop`, `merge-gate`, `disagreement-arbiter`, `design-document-lifecycle` — the more complete end-to-end Phase 17 scenario, exercising the full project-lifecycle/design-doc flow). |
 
 ---
 
@@ -532,9 +675,12 @@ Run `minicoder merge finalize-if-github-merged --feature-run <id> --project <pro
 `minicoder state reconcile --project <project>` (or `--all` for a global sweep, which also clears
 stuck queue entries).
 
-**You need to roll back a bad `state repair` or `db reset` accidentally in flight.**
-You can't skip the guard — that's intentional. Re-run with `--dry-run` first, read the preview
-carefully, and only `--apply` with the token it gives you.
+**You're about to run a destructive `state repair --apply` or `db reset --apply`.**
+Neither can be undone once applied, and neither has a bypass — that's intentional. Always run the
+matching `--dry-run` first, read the preview carefully, and only proceed to `--apply` with the
+token it gives you. For `db reset` specifically, take a real backup first
+(`minicoder db snapshot --output <path>`) and pass `--backup-verified`, so a bad reset is
+recoverable by restoring the snapshot rather than by rolling back the reset itself.
 
 **Costs are climbing faster than expected.**
 `minicoder costs --project <project> --report` for the breakdown by feature/provider/model/role;
