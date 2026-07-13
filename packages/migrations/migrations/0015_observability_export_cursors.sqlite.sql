@@ -20,6 +20,19 @@
 -- as a tiebreaker for same-timestamp rows) gives exportWorkflowEventsToOtlp() a real, dialect-
 -- portable keyset-pagination cursor: `occurred_at > last_occurred_at OR (occurred_at =
 -- last_occurred_at AND id > last_event_id)`.
+--
+-- PR #73 review round 3 (LOW-2, watched, not fixed): this column was added by editing migration
+-- 0015 in place (adding `last_occurred_at` to the same CREATE TABLE) rather than as a new
+-- migration -- deliberate, since this migration was still unmerged/pre-release at the time (see
+-- CLAUDE.md's precedent for "editing an unmerged migration in place is safe; a merged one is
+-- not"). Any environment that already applied an EARLIER revision of this exact migration file
+-- (i.e. only pulled this branch mid-review, before this column existed) will not automatically
+-- gain `last_occurred_at` -- `getObservabilityExportCursor()` treats a row missing it as "no
+-- cursor" and the next `export-otel` run re-exports from the beginning (a one-time, harmless
+-- re-export under this exporter's existing at-least-once contract, not data loss). This is
+-- accepted as a pre-merge-only concern, not a real upgrade path: once this PR merges, migration
+-- 0015 is fixed forever at this shape, and no deployment will ever have applied an earlier
+-- revision of it.
 CREATE TABLE observability_export_cursors (
   id                TEXT PRIMARY KEY,
   last_event_id     TEXT,

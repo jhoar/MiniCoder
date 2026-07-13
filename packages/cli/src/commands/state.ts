@@ -384,11 +384,28 @@ export function createStateCommand(): Command {
                 orphanedParams,
               );
 
+              // PR #73 review fix (round 3, MEDIUM-1): both writes below used the SQL keyword
+              // `CURRENT_TIMESTAMP` rather than a bound `isoNow()` parameter. On SQLite,
+              // `CURRENT_TIMESTAMP` produces `'YYYY-MM-DD HH:MM:SS'` (a space separator, no
+              // fractional seconds, no `Z`) — a different text format than every other writer in
+              // this codebase, which all use `isoNow()`'s `'YYYY-MM-DDTHH:MM:SS.sssZ'` (matching
+              // the schema's own `strftime('%Y-%m-%dT%H:%M:%SZ', 'now')` column default). Because
+              // SQLite orders TEXT columns lexically and the space character (0x20) sorts before
+              // 'T' (0x54), a `state repair`-inserted `workflow_events` row could sort *before* an
+              // ISO-formatted row that actually occurred earlier the same day — directly breaking
+              // `exportWorkflowEventsToOtlp()`'s `ORDER BY occurred_at ASC, id ASC` composite
+              // cursor (round 2's MEDIUM-2 fix), which assumes every `occurred_at` value is in the
+              // same sortable format. PostgreSQL's `TIMESTAMPTZ` column type isn't affected (it
+              // compares as a real timestamp regardless of the literal used to write it), but the
+              // inconsistency was worth closing at the source for both dialects rather than
+              // depending on SQLite/PostgreSQL happening to diverge safely.
+              const repairTimestamp = isoNow();
+
               for (const run of orphanedRuns) {
                 await tx.execute(
-                  `UPDATE feature_runs SET current_execution_state = 'human_required', ended_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                  `UPDATE feature_runs SET current_execution_state = 'human_required', ended_at = ?, updated_at = ?
                    WHERE id = ?`,
-                  [run.id],
+                  [repairTimestamp, repairTimestamp, run.id],
                 );
                 repairs.push({
                   type: 'orphaned_run',
@@ -399,11 +416,13 @@ export function createStateCommand(): Command {
               if (repairs.length > 0) {
                 await tx.execute(
                   `INSERT INTO workflow_events (id, project_id, event_type, from_state, to_state, actor, payload, payload_schema_version, occurred_at, created_at)
-                   VALUES (?, ?, 'state.repaired', NULL, NULL, 'operator', ?, '1.0', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                   VALUES (?, ?, 'state.repaired', NULL, NULL, 'operator', ?, '1.0', ?, ?)`,
                   [
                     crypto.randomUUID(),
                     opts.project,
-                    JSON.stringify({ repairs, appliedAt: isoNow() }),
+                    JSON.stringify({ repairs, appliedAt: repairTimestamp }),
+                    repairTimestamp,
+                    repairTimestamp,
                   ],
                 );
               }

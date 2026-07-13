@@ -2444,6 +2444,41 @@ observability.ts`'s `export-otel` subcommand is a one-shot CLI invocation, meant
   cursor" rather than a malformed resume. Regression-tested in `otel-export.test.ts` and
   `observability.test.ts` (CLI) with a UUID-keyed event followed by an ordinary one that sorts
   lower by id but later by `occurred_at`.
+- **PR #73 review fix (round 3, MEDIUM-1): `state repair --apply` wrote `occurred_at`/`created_at`
+  in a different text format than every other writer, breaking the round-2 composite cursor.**
+  `packages/cli/src/commands/state.ts`'s repair-apply transaction used the raw SQL keyword
+  `CURRENT_TIMESTAMP` for `workflow_events.occurred_at`/`.created_at` and
+  `feature_runs.ended_at`/`.updated_at`, instead of a bound `isoNow()` parameter like every other
+  writer in this codebase. On SQLite, `CURRENT_TIMESTAMP` produces `'YYYY-MM-DD HH:MM:SS'` (a
+  space separator, no fractional seconds, no `Z`) — a different text shape than
+  `isoNow()`'s/the schema's own default's `'YYYY-MM-DDTHH:MM:SS.sssZ'`. Since SQLite compares TEXT
+  columns lexically and the space character (`0x20`) sorts before `'T'` (`0x54`), a
+  `state repair`-inserted event could sort _before_ an ISO-formatted event that actually occurred
+  earlier the same day — directly undermining round 2's `ORDER BY occurred_at ASC, id ASC`
+  composite cursor, which assumes every `occurred_at` value shares one sortable format. Fixed by
+  binding a single `isoNow()` value to all four columns instead of using the SQL keyword (harmless
+  on PostgreSQL either way, since `TIMESTAMPTZ` compares as a real timestamp regardless of the
+  literal used to write it — this was a SQLite-only correctness gap). No new automated regression
+  was added for this specific code path: `state repair --apply` has no existing unit-test harness
+  in this codebase (it requires mocking a real filesystem-based confirmation-token round trip),
+  and building one from scratch was judged disproportionate to this formatting fix — the change
+  itself is mechanical (replacing a SQL keyword with the same `isoNow()` binding already used
+  20+ times elsewhere in this exact file) and verified by full typecheck + code inspection.
+- **PR #73 review fix (round 3, LOW-1): added `idx_workflow_events_occurred_at_id`** (migration
+  `0016`, a genuinely new migration — unlike 0015, migration 0001's existing single-column
+  `idx_workflow_events_occurred_at` index predates this PR and must never be edited in place) —
+  the round-2 composite cursor's `WHERE occurred_at <= ? [AND ...] ORDER BY occurred_at ASC, id
+ASC` access pattern had no matching index, fine at small scale but avoidable scan/sort work as
+  `workflow_events` grows. Additive only; the existing single-column index is untouched and still
+  serves every other `occurred_at`-only query (e.g. `state doctor`).
+- **PR #73 review fix (round 3, LOW-2, watched not fixed): migration 0015's in-place edit has a
+  narrow pre-merge-only compatibility gap.** Documented directly in the migration file: an
+  environment that applied an earlier revision of migration 0015 (i.e. pulled this branch
+  mid-review, before `last_occurred_at` existed) won't automatically gain the column, and
+  `getObservabilityExportCursor()` treats the resulting partial row as "no cursor" — a one-time,
+  harmless re-export from the beginning under this exporter's existing at-least-once contract, not
+  data loss. Accepted as pre-merge-only: once this PR merges, migration 0015 is fixed at this
+  shape forever, and no deployment will ever apply an earlier revision of it again.
 - **Issue #66 (closed): the Web UI now surfaces both the Phase 16 timeline and budget-report read
   models.** `packages/web/src/lib/api-client.ts` gained `getFeatureRunTimeline(featureRunId)` and
   `getBudgetReport(projectId, windowDays?)`, mirroring `packages/tui/src/client/api-client.ts`'s
