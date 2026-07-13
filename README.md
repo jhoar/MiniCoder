@@ -75,6 +75,17 @@ commands, and the now-live `/design-document` Web UI actions (previously disable
 commands) (Phase 17). Specification documents live under
 `docs/`.
 
+**Trigger.dev replacement:** the Workflow Layer's execution backend (previously Trigger.dev, a
+9-service self-hosted Docker Compose stack) has been replaced by an in-repo, DB-backed task queue —
+`packages/triggerdev/src/task-registry.ts`'s `TASK_REGISTRY` + `task-worker.ts`'s
+`TaskQueueDispatcher`, driven by the new `minicoder tasks worker`/`minicoder tasks drain` CLI
+commands, with `minicoder trigger`'s subcommands now real DB-backed operations instead of
+permanent stubs. All 19 canonical tasks, the public API response shape, and the `GET
+/triggerdev-runs` read model are unchanged; `infra/docker-compose.triggerdev.yml` and
+`.github/workflows/trigger-deploy.yml` are removed, and the `@trigger.dev/sdk` dependency is gone
+from the codebase. See CLAUDE.md's "Task Worker Operational Constraints" section for the full
+design.
+
 **Deployment note:** `packages/web` holds one server-side Orchestrator API credential shared by
 every browser visitor — there is no per-end-user session/auth layer yet. Deploy it only on a
 trusted/internal network (VPN, internal load balancer, or an authenticating reverse proxy) until
@@ -84,16 +95,16 @@ real end-user auth ships; see `docs/07-security-and-secrets.md` §4.
 
 The authoritative specification lives entirely under [`docs/`](docs/). Read in order:
 
-| Document                                                                                         | Purpose                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md)                                 | Single source of truth for the state machines/tokens, agent roles, user/auth roles, adapter names, identifiers, deployment profiles + backend tiers, the CLI surface, and the locked tech stack. |
-| [`docs/01-system-specification.md`](docs/01-system-specification.md)                             | Canonical architecture: scope, principles, subsystems, data design, API conventions, merge policy + gate evidence, and Project Acceptance Validation.                                            |
-| [`docs/02-bootstrap-planner-clarification.md`](docs/02-bootstrap-planner-clarification.md)       | Bootstrap Planner, readiness assessment, the Clarification Workflow, and the discovery backlog.                                                                                                  |
-| [`docs/03-agent-adapter-architecture.md`](docs/03-agent-adapter-architecture.md)                 | Vendor-neutral agent adapter roles, capabilities, conformance, and the Adapter Execution Contract (workspaces, I/O schemas, retries, error taxonomy).                                            |
-| [`docs/04-testing-validation-state-lifecycle.md`](docs/04-testing-validation-state-lifecycle.md) | Automated testing (incl. cross-dialect), validation, state-lifecycle tooling, and operations runbooks.                                                                                           |
-| [`docs/05-ui-specification.md`](docs/05-ui-specification.md)                                     | Ink Text UI and Next.js Web UI, including state-health and admin views.                                                                                                                          |
-| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md)                               | The single canonical 18-phase implementation plan, with per-phase acceptance criteria and a global Definition of Done.                                                                           |
-| [`docs/07-security-and-secrets.md`](docs/07-security-and-secrets.md)                             | Security and secrets: secret backend, GitHub App auth, workspace sandboxing/egress, payload hygiene/residency, prompt-injection, untrusted code.                                                 |
+| Document                                                                                         | Purpose                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md)                                 | Single source of truth for the state machines/tokens, agent roles, user/auth roles, adapter names, identifiers, deployment profiles, the CLI surface, and the locked tech stack. |
+| [`docs/01-system-specification.md`](docs/01-system-specification.md)                             | Canonical architecture: scope, principles, subsystems, data design, API conventions, merge policy + gate evidence, and Project Acceptance Validation.                            |
+| [`docs/02-bootstrap-planner-clarification.md`](docs/02-bootstrap-planner-clarification.md)       | Bootstrap Planner, readiness assessment, the Clarification Workflow, and the discovery backlog.                                                                                  |
+| [`docs/03-agent-adapter-architecture.md`](docs/03-agent-adapter-architecture.md)                 | Vendor-neutral agent adapter roles, capabilities, conformance, and the Adapter Execution Contract (workspaces, I/O schemas, retries, error taxonomy).                            |
+| [`docs/04-testing-validation-state-lifecycle.md`](docs/04-testing-validation-state-lifecycle.md) | Automated testing (incl. cross-dialect), validation, state-lifecycle tooling, and operations runbooks.                                                                           |
+| [`docs/05-ui-specification.md`](docs/05-ui-specification.md)                                     | Ink Text UI and Next.js Web UI, including state-health and admin views.                                                                                                          |
+| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md)                               | The single canonical 18-phase implementation plan, with per-phase acceptance criteria and a global Definition of Done.                                                           |
+| [`docs/07-security-and-secrets.md`](docs/07-security-and-secrets.md)                             | Security and secrets: secret backend, GitHub App auth, workspace sandboxing/egress, payload hygiene/residency, prompt-injection, untrusted code.                                 |
 
 ## Precedence Rule
 
@@ -115,10 +126,12 @@ history.
 
 - **Database-authoritative state** behind a persistence abstraction — **one architecture, two state
   stores**: SQLite (local/single-node) and PostgreSQL (hosted/team).
-- **Workflow Layer** for durable workflow execution (implemented by Trigger.dev); tasks are thin,
-  idempotent wrappers over Orchestrator Core commands. The execution backend is a separate axis with
-  three drop-in tiers — **self-host single-node (default)**, self-host HA cluster, and Trigger.dev
-  Cloud — swappable without architectural change.
+- **Workflow Layer** for durable workflow execution — an in-repo, DB-backed task queue
+  (`packages/triggerdev/`, formerly implemented on Trigger.dev; see the "Trigger.dev replacement"
+  note below); tasks are thin, idempotent wrappers over Orchestrator Core commands. There is no
+  separate deployment-tier axis to choose: `minicoder tasks worker` processes poll the same
+  database the rest of the deployment already uses, so scaling is "run more worker processes,"
+  not a backend choice.
 - **GitHub** is repository truth; **webhooks are primary**, scheduled reconciliation is the
   fallback.
 - **Sequential execution is a policy** (locks/lanes with fencing tokens), not a schema limitation.

@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.31
-> Last-updated: 2026-07-11
+> Version: 1.0.32
+> Last-updated: 2026-07-13
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -108,6 +108,14 @@ fitness tests fail the build on any violated invariant; stale-fence writes are r
   doctor, reconcile, export-diagnostics, repair)
 
 ## Phase 3 — Workflow Layer Harness
+
+**Superseded (Trigger.dev removed):** the Trigger.dev-based Workflow Layer harness this phase
+originally delivered has been replaced by an in-repo, DB-backed task queue
+(`packages/triggerdev/src/task-registry.ts` + `task-worker.ts`, driven by `minicoder tasks
+worker`) — no external service, no Docker Compose stack, no `@trigger.dev/sdk` dependency. See
+CLAUDE.md's "Task Worker Operational Constraints" section for the current design. The text below
+is left as-is because it accurately describes what Phase 3 originally built; do not follow it
+against a current deployment.
 
 Deliver Trigger.dev project setup with **self-hosted single-node as the default backend** (Docker
 Compose: 9-service v4 execution stack — init, Postgres, Redis, Electric, webapp, registry, MinIO,

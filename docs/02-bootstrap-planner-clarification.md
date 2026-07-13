@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_bootstrap_planner_clarification_specification.md,
 > minicoder_bootstrap_planner_clarification_specification_testing_updated.md
-> Version: 1.0.0
-> Last-updated: 2026-06-12
+> Version: 1.0.1
+> Last-updated: 2026-07-13
 
 Terms and state names are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md).
 
@@ -20,8 +20,9 @@ export/import.
 
 ```text
 MiniCoder database (SQLite local / PostgreSQL hosted) = authoritative planning and backlog state.
-Workflow Layer       = durable execution of planning and clarification workflows
-                       (implemented by Trigger.dev).
+Workflow Layer       = durable execution of planning and clarification workflows (implemented by
+                       an in-repo, DB-backed task queue — `packages/triggerdev/`, formerly
+                       Trigger.dev).
 plan.md / backlog.md = optional generated/importable artifacts, never runtime state.
 Execution Orchestrator = reads approved feature requests from the database.
 ```

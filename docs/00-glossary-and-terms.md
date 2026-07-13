@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.0.14
-> Last-updated: 2026-07-12
+> Version: 1.1.0
+> Last-updated: 2026-07-13
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -24,7 +24,7 @@ Subsystem names:
 - MiniCoder Clarification Workflow
 - MiniCoder Execution Orchestrator
 - MiniCoder Agent Adapter Architecture
-- MiniCoder Workflow Layer (implemented by Trigger.dev)
+- MiniCoder Workflow Layer (implemented by an in-repo DB-backed task queue, `packages/triggerdev/` — formerly Trigger.dev)
 - MiniCoder GitHub Integration
 - MiniCoder Orchestrator API
 - MiniCoder Text UI
@@ -43,9 +43,9 @@ GitHub             = authoritative repository, branch, commit, PR, review, CI/ch
                      conversation, mergeability, and merge state.
 GitHub webhooks    = PRIMARY source for external GitHub changes.
 Scheduled reconciliation = fallback/repair mechanism.
-Workflow Layer     = durable workflow execution (tasks, retries, queues, schedules, waitpoints,
-                     resumability); implemented by Trigger.dev, which is authoritative only for
-                     task-execution run metadata (correlated via run IDs).
+Workflow Layer     = durable workflow execution (tasks, retries, a polling queue); implemented by
+                     an in-repo DB-backed task queue (formerly Trigger.dev), which is authoritative
+                     only for task-execution run metadata (correlated via run IDs).
 Orchestrator Core  = state machine, command handlers, policy checks, merge gates, database writes,
                      idempotency, and reconciliation.
 Orchestrator API   = the only supported access path for the UIs.
@@ -359,7 +359,7 @@ those records:
 ```text
 agent_run_state       : queued | running | succeeded | failed | cancelled
 workflow_run_state    : queued | running | waiting | succeeded | failed | cancelled
-                        (correlated to Trigger.dev run status; see triggerdev_runs)
+                        (correlated to task-queue run status; see triggerdev_runs)
 pr_review_state       : none | pending | commented | changes_requested | approved | dismissed
                         (mirrors GitHub review status; GitHub remains authoritative)
 artifact_export_state : pending | generating | exported | stale | failed
@@ -375,8 +375,9 @@ feature branch suffix `minicoder/FR-<n>` (see `01-system-specification.md` §5.7
 
 ### 3.12 Workflow Layer task IDs (exact strings — no drift permitted)
 
-These are the canonical Trigger.dev task identifiers registered in `packages/triggerdev/src/triggerdev-tasks.ts`
-and exported via `ALL_TASK_IDS`. They are used verbatim as both the task `id` field and in
+These are the canonical task identifiers registered in `packages/triggerdev/src/task-registry.ts`'s
+`TASK_REGISTRY` (formerly `triggerdev-tasks.ts`'s `task({ id: ... })` calls) and exported via
+`ALL_TASK_IDS`. They are used verbatim as both the task `id` field and in
 `triggerdev_runs.triggerdev_task_id`. No renaming, abbreviation, or alternative spelling is permitted.
 
 **Phase 3 initial subset** (shipped with Phase 3):
@@ -496,7 +497,9 @@ minicoder db validate
 minicoder db diff
 minicoder db status
 
-# Trigger.dev lifecycle
+# Workflow Layer / task-queue lifecycle (formerly "Trigger.dev lifecycle" — Trigger.dev has been
+# replaced by an in-repo DB-backed task queue; see CLAUDE.md's "Task Worker Operational
+# Constraints" section)
 minicoder trigger deploy
 minicoder trigger list-runs
 minicoder trigger inspect-run
@@ -506,6 +509,8 @@ minicoder trigger drain-queue
 minicoder trigger reset-dev
 minicoder trigger validate
 minicoder trigger reconcile
+minicoder tasks worker [--poll-interval-ms <ms>] [--batch-size <n>] [--stale-claim-ms <ms>]  # long-running: polls task_queue and executes claimed tasks until terminated
+minicoder tasks drain [--timeout-ms <ms>] [--poll-interval-ms <ms>]                          # one-shot: waits for task_queue to empty (CI/test use)
 
 # Workflow / state lifecycle
 minicoder state inspect
@@ -584,7 +589,7 @@ minicoder design-doc request-run --project <id> --documentation-adapter <name> #
 minicoder observability export-otel [--cursor-id <id>] [--limit <n>]  # exports workflow_events to
   # OTEL_EXPORTER_OTLP_ENDPOINT if configured (no-ops otherwise); resumes from a durable cursor
   # (observability_export_cursors); intended for invocation by an external scheduler (cron, k8s
-  # CronJob) rather than an always-on Trigger.dev task
+  # CronJob) rather than an always-on Workflow Layer task
 
 # Next.js Web UI (Phase 15; browser-based, API-only — see 05-ui-specification.md §5 for the full
 # 17-route list). Not a CLI surface — `packages/web`'s Next.js server process reads the same
@@ -627,29 +632,29 @@ is mandatory for both `--dry-run` and `--apply`.
 
 ## 6. Deployment Profiles
 
-Deployment has **two independent axes**: the **state store** and the **Trigger.dev execution
-backend**. Either can be chosen without architectural change, because the persistence abstraction
-and the thin, idempotent task wrappers isolate these choices from domain logic.
+Deployment has one primary axis: the **state store**. The Workflow Layer execution backend
+(`packages/triggerdev/`) is an in-repo, DB-backed task queue with no external service and no
+separate deployment-tier decision — it reads/writes the same database the rest of the deployment
+already uses, so there is nothing to choose beyond "how many `minicoder tasks worker` processes to
+run." **Superseded, kept for historical context:** this subsystem was originally built on
+Trigger.dev, which did have a genuine second deployment axis (self-host single-node vs. self-host
+HA cluster vs. Trigger.dev Cloud) — that entire axis is gone along with the Trigger.dev dependency.
 
 ### 6.1 State store
 
 - **Local / Single-Node** — SQLite on local disk; local API; local TUI; optional local Web UI.
 - **Hosted / Team** — PostgreSQL; hosted API; Web UI; GitHub OAuth; GitHub webhooks.
 
-### 6.2 Trigger.dev execution backend (default: self-host single-node)
+### 6.2 Workflow Layer execution: `minicoder tasks worker`
 
-- **Self-host, single-node (DEFAULT)** — Trigger.dev webapp + Postgres + Redis + worker on one host
-  (Docker Compose). Low availability (single point of failure); simplest to operate; keeps task
-  payloads inside the user's boundary. Pairs naturally with the local/single-node state store.
-- **Self-host, HA cluster (option)** — clustered Postgres/Redis and multiple workers for redundancy
-  and scale. Same SDK and task contracts; an infrastructure/ops change only.
-- **Trigger.dev Cloud (option)** — managed SaaS; no infrastructure to run (payloads leave the
-  user's boundary; see `07-security-and-secrets.md` §6a).
-
-All three tiers expose the same SDK, task contracts, queues, schedules, waitpoints, and run
-metadata. **Switching backends is a deployment/configuration decision** — except that moving
-payloads outside the boundary (Cloud) is also a **security/compliance** decision for deployments
-with data-residency constraints (see `07-security-and-secrets.md` §6a).
+- **Single process (default)** — one `minicoder tasks worker` process polling `task_queue` against
+  the same database the API/CLI use. Pairs naturally with either state-store profile.
+- **Multiple processes (scale option)** — run additional `minicoder tasks worker` processes against
+  the same database to increase throughput; `TaskQueueDispatcher`'s atomic optimistic-lock claim
+  (`UPDATE ... WHERE status IN (...) AND version = ?`) makes concurrent workers safe by
+  construction, the same guarantee `packages/workflow`'s `OutboxDispatcher` already relies on for
+  outbox/inbox draining. There is no Cloud/hosted-SaaS option and no payload-boundary question:
+  task payloads never leave the deployment's own database.
 
 ---
 
@@ -664,7 +669,7 @@ Hosted/team DB:    PostgreSQL
 Validation:        Zod
 Testing:           Vitest
 GitHub API:        Octokit
-Workflow execution: Trigger.dev
+Workflow execution: In-repo DB-backed task queue (packages/triggerdev/) — formerly Trigger.dev
 API framework:     Fastify
 Text UI:           Ink
 Web UI:            React / Next.js

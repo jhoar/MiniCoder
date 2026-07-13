@@ -50,6 +50,7 @@ export const EXPECTED_TABLES = [
   'review_occurrence_markers',
   'adapter_revisions',
   'observability_export_cursors',
+  'task_queue',
 ] as const;
 
 export type TableName = (typeof EXPECTED_TABLES)[number];

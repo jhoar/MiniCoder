@@ -1,4 +1,3 @@
-export * from './config.js';
 export * from './db.js';
 export * from './metadata.js';
 export * from './mock-runner.js';
@@ -6,6 +5,8 @@ export * from './task-ids.js';
 export * from './tasks/types.js';
 export * from './tasks/actor.js';
 export * from './tasks/env.js';
+export * from './task-registry.js';
+export * from './task-worker.js';
 
 // Task run implementations (SDK-free, directly testable)
 export { runImpl as runIngestSpecification } from './tasks/ingest-specification.js';

@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.0.5
-> Last-updated: 2026-07-11
+> Version: 1.1.0
+> Last-updated: 2026-07-13
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) and are authoritative there.
@@ -46,13 +46,13 @@ system." The implementation is phased, but the architecture is fixed.
 ```text
 MiniCoder database = authoritative planning, backlog, workflow, testing, review, event,
                      agent-run, cost, artifact, and design-document state.
-Workflow Layer     = durable workflow execution (tasks, retries, queues, schedules,
-                     waitpoints, resumability); implemented by Trigger.dev.
+Workflow Layer     = durable workflow execution (tasks, retries, a polling queue); implemented by
+                     an in-repo, DB-backed task queue (formerly Trigger.dev).
 GitHub             = authoritative repository, branch, commit, PR, review, CI/check,
                      conversation, mergeability, and merge state.
 GitHub webhooks    = primary source for external GitHub changes.
 Scheduled reconciliation = fallback/repair mechanism.
-GitHub Actions     = CI, tests, build validation, and deployment of Trigger.dev tasks.
+GitHub Actions     = CI, tests, and build validation.
 Orchestrator Core  = state machine, command handlers, policy checks, merge gates, database
                      writes, idempotency, and reconciliation.
 Orchestrator API   = safe command and query interface.
@@ -67,21 +67,23 @@ State lifecycle tooling = required for database, Workflow Layer, GitHub simulati
                      artifacts, and diagnostics.
 ```
 
-The state store and the Trigger.dev execution backend are independent deployment axes (see §14 and
-[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §6). The default Trigger.dev backend is
-**self-hosted single-node**; HA-cluster self-hosting and Trigger.dev Cloud are drop-in options.
+The state store is the sole deployment axis (see §14 and
+[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §6) — the Workflow Layer execution backend
+is an in-repo, DB-backed task queue (`minicoder tasks worker`) with no separate deployment tier of
+its own; it reads/writes whichever database the profile below already uses.
 
 ### 3.1 Local / Single-Node Profile
 
 - SQLite on local disk.
-- Trigger.dev backend: default self-hosted single-node (see §14).
+- Workflow Layer: one `minicoder tasks worker` process against the same SQLite file (see §14).
 - GitHub repository.
 - Local API, local TUI, optional local Web UI.
 
 ### 3.2 Hosted / Team Profile
 
 - PostgreSQL.
-- Trigger.dev backend: self-hosted single-node, self-hosted HA cluster, or Cloud (see §14).
+- Workflow Layer: one or more `minicoder tasks worker` processes against the same PostgreSQL
+  database (see §14).
 - Hosted API, Web UI.
 - GitHub OAuth (or equivalent) and GitHub webhooks.
 
@@ -100,13 +102,13 @@ No runtime orchestration logic shall depend on parsing `backlog.md`.
 
 ### 4.2 Workflow Layer From the Start
 
-MiniCoder uses a durable Workflow Layer (implemented by Trigger.dev) from the early implementation
-phases. The Workflow Layer owns durable task execution, retries, queues, schedules, waitpoints, and
-resumable long-running workflows. It does **not** own domain state, state-machine rules,
-merge policy, agent contracts, business logic, or GitHub truth. Workflow Layer tasks are thin,
-idempotent wrappers that call Orchestrator Core commands. Because of this, the execution backend
-(self-hosted single-node by default, self-hosted HA cluster, or Cloud) is a deployment choice;
-switching between backends requires no architectural change (see §14).
+MiniCoder uses a durable Workflow Layer from the early implementation phases — an in-repo,
+DB-backed task queue (`packages/triggerdev/`; formerly implemented on Trigger.dev, see §14). The
+Workflow Layer owns durable task execution and retries via a polling queue. It does **not** own
+domain state, state-machine rules, merge policy, agent contracts, business logic, or GitHub truth.
+Workflow Layer tasks are thin, idempotent wrappers that call Orchestrator Core commands. Because of
+this, running additional `minicoder tasks worker` processes against the same database is purely an
+operational/scaling decision; it requires no architectural change (see §14).
 
 ### 4.3 GitHub as Repository Truth (webhook-driven)
 
@@ -184,12 +186,13 @@ implementation-complete detection.
 
 ### 5.5 Workflow Layer
 
-The Workflow Layer (implemented by Trigger.dev) executes durable workflows and idempotent tasks.
-Task families include planning readiness assessment, clarification, plan generation, backlog
-activation, start next feature, coder run, reviewer run, review/fix loop, disagreement resolution,
-merge gate, GitHub reconciliation, webhook inbox processing, artifact export, cost recalculation,
-and final design document generation. Workflow Layer run IDs and run metadata (Trigger.dev run
-metadata) are correlated to database workflow events and agent runs.
+The Workflow Layer (an in-repo, DB-backed task queue — `packages/triggerdev/`, formerly
+implemented on Trigger.dev) executes durable workflows and idempotent tasks. Task families include
+planning readiness assessment, clarification, plan generation, backlog activation, start next
+feature, coder run, reviewer run, review/fix loop, disagreement resolution, merge gate, GitHub
+reconciliation, webhook inbox processing, artifact export, cost recalculation, and final design
+document generation. Workflow Layer run IDs and run metadata are correlated to database workflow
+events and agent runs.
 
 ### 5.6 Agent Adapter Architecture
 
@@ -292,7 +295,7 @@ branchName, state?)` lists PRs whose head matches a given branch, filtered by st
 - **Reconciliation algorithm:** `reconcileGithubState()` (`packages/core/src/github/reconcile.ts`)
   is the single implementation both the webhook-triggered inbox handlers
   (`packages/github/src/inbox-handlers.ts`) and the scheduled fallback
-  (`github-reconciliation` Trigger.dev task) call — they can never diverge in behavior. Given an
+  (`github-reconciliation` Workflow Layer task) call — they can never diverge in behavior. Given an
   already-fetched `ObservedPullRequestState` (core never calls GitHub directly — the caller fetches
   via `GitHubClient` first, keeping Orchestrator Core provider-SDK-free), it:
   1. Escalates to `human_required` (`EscalateToHumanCommand`) when the PR closed without merging
@@ -462,7 +465,7 @@ Constraints for the full writeup).
 `OTEL_EXPORTER_OTLP_ENDPOINT` via plain `fetch` (no `@opentelemetry/*` SDK dependency, which ships
 ESM-only). Fully opt-in and a no-op when the endpoint is not configured. **Scheduled caller
 (issue #67, implemented):** `minicoder observability export-otel` — a one-shot CLI command, not an
-always-on Trigger.dev task, per the explicit "no always-on network dependency" decision recorded
+always-on Workflow Layer task, per the explicit "no always-on network dependency" decision recorded
 on that issue. A deployment's own external scheduler (cron, k8s CronJob, etc.) invokes it on
 whatever interval it wants; progress is tracked across invocations via a durable cursor
 (`observability_export_cursors`, migration 0015) rather than in-process state.
@@ -514,7 +517,7 @@ insufficient under multi-worker (HA-cluster) backends: it prevents a paused, exp
 from resuming and writing after a new holder has acquired the lock (zombie double-act).
 
 **Outbox/inbox draining.** The **default** drainer is a dedicated **scheduled Workflow Layer sweep**
-(a Trigger.dev scheduled task) that polls pending records with a **deterministic backoff** and
+(a periodically-invoked Workflow Layer task) that polls pending records with a **deterministic backoff** and
 dispatches them with at-least-once delivery and idempotent handling; a persistent background worker
 is an allowed alternative. Draining **must not** rely on database write-ahead-log (WAL) tailing or
 other engine-specific change streams, to stay portable across SQLite and PostgreSQL. This preserves
@@ -613,7 +616,7 @@ The Orchestrator API exposes read endpoints, command endpoints, and webhook endp
 clarification sessions, implementation plans, features, active feature, GitHub links, pull
 requests, review findings, disagreements, agent runs, workflow events, policy decisions, costs,
 budgets, artifacts, design documents, agent adapters, agent configuration, status, and **state
-health / diagnostics** (state-doctor results, failed outbox/inbox events, stuck Trigger.dev runs,
+health / diagnostics** (state-doctor results, failed outbox/inbox events, stuck task-queue runs,
 stale workflow locks, test/scenario results, environment mode).
 
 **Command endpoint groups:** ingest specification, assess planning readiness, start clarification,
@@ -652,7 +655,7 @@ dispatch a `human`-actorKind command handler on behalf of an authenticated opera
 session. A small allow-list of `system`-actorKind command handlers is additionally reachable
 through the same generic dispatch route, but only via a distinct `system`-kind API credential
 (never a human session's key) — these exist solely for manually replaying a stuck system-owned
-transition (e.g. after a failed Trigger.dev task), not as a normal operator action. A future UI
+transition (e.g. after a failed Workflow Layer task), not as a normal operator action. A future UI
 (Phase 14/15) should only ever surface the `human`-actorKind commands as clickable operator
 actions; `CLAUDE.md`'s Orchestrator API Operational Constraints lists the exact allow-list.
 
@@ -736,7 +739,7 @@ merge attempt.
 
 **The real GitHub merge** is performed by `GitHubClient.mergePullRequest()` (Phase 12), invoked
 only by `minicoder merge merge-if-ready` (an approver/admin-initiated CLI action — the same
-"synchronous, no Trigger.dev task needed" shape as `minicoder human ...`) after
+"synchronous, no Workflow Layer task needed" shape as `minicoder human ...`) after
 `MergeIfReadyCommand` re-gates and transitions to `merge_ready`. A rejection is classified via
 `GithubMergeRejectedError.reason`/`.autoClearable`: GitHub's 409 (the PR's head moved since the
 gate re-evaluated) is `sha_mismatch`/auto-clearable and drives `RecordMergeFailedCommand` +
@@ -749,7 +752,7 @@ as-is rather than misclassified as a merge-gate rejection.
 **The `minicoder/review-gate` status check** (§5.7's glossary reference) is published by
 `publishMergeGateStatusCheck()` — the first production caller of
 `GitHubClient.publishStatusCheck()`, which existed unwritten since Phase 7. It is published after
-every gate evaluation: by the `run-merge-gate` Trigger.dev task (the operator-triggered "recompute
+every gate evaluation: by the `run-merge-gate` Workflow Layer task (the operator-triggered "recompute
 merge gate" action, docs/00 §4.4) following `RecordApprovedByPolicyCommand`, and by
 `minicoder merge merge-if-ready` following its own re-evaluation. A status-check publish failure
 is logged and swallowed, never thrown — the state transition (or lack of one) is already durably
@@ -816,24 +819,25 @@ Responsibility split:
 
 ## 14. Deployment Model
 
-One architecture, with two independent deployment axes — the **state store** and the **Trigger.dev
-execution backend** — each chosen without architectural change.
+One architecture, with one deployment axis — the **state store**. The Workflow Layer execution
+backend (`packages/triggerdev/`) is an in-repo, DB-backed task queue with no external service and
+no separate deployment tier: it reads/writes the same database the rest of the deployment already
+uses.
+
+**Superseded, kept for historical context:** this system previously ran the Workflow Layer on
+Trigger.dev, which did introduce a genuine second deployment axis (self-host single-node vs.
+self-host HA cluster vs. Trigger.dev Cloud, with Cloud also being a security/compliance decision
+since payloads left the user's boundary — see [`07-security-and-secrets.md`](07-security-and-secrets.md)
+§6a). Trigger.dev has been removed; that axis and its Cloud/self-host distinction no longer exist.
 
 **State store:** SQLite (local/single-node) or PostgreSQL (hosted/team), per §3.1–§3.2.
 
-**Trigger.dev execution backend** (three swappable tiers):
-
-- **Self-host, single-node — DEFAULT.** Trigger.dev webapp + Postgres + Redis + worker on one host
-  (Docker Compose). Low availability / single point of failure; simplest to operate; keeps task
-  payloads inside the user's boundary.
-- **Self-host, HA cluster — option.** Clustered Postgres/Redis and multiple workers for redundancy
-  and scale; an infrastructure/ops change only.
-- **Trigger.dev Cloud — option.** Managed SaaS; no infrastructure to run (task payloads leave the
-  user's boundary — a security/compliance decision, not merely deployment config; see
-  [`07-security-and-secrets.md`](07-security-and-secrets.md) §6a).
-
-All tiers share the same SDK, task contracts, queues, schedules, waitpoints, and run metadata, so
-switching backends is a deployment/configuration decision, not an architecture change.
+**Workflow Layer execution:** one or more `minicoder tasks worker` processes polling `task_queue`
+against that same database. Running additional worker processes against the same database is the
+only scaling lever — `TaskQueueDispatcher`'s atomic optimistic-lock claim makes concurrent workers
+safe by construction, the same guarantee `OutboxDispatcher` already relies on for outbox/inbox
+draining. Task payloads never leave the deployment's own database, so there is no payload-boundary
+question analogous to the old Cloud tier.
 
 ## 15. Security
 
@@ -854,5 +858,5 @@ The locked technology stack is defined in [`00-glossary-and-terms.md`](00-glossa
 
 Explicitly deferred future extensions: parallel feature execution, multi-SCM support, multiple
 active repositories, advanced enterprise RBAC, PDF/DOCX export, and a plugin marketplace. These are
-future features, not alternate initial architectures. (The Trigger.dev execution backend is a
-deployment axis, not a deferred extension — see §14.)
+future features, not alternate initial architectures. (The Workflow Layer execution backend has no
+separate deployment axis — see §14.)
