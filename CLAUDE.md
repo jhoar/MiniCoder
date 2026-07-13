@@ -2075,13 +2075,15 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   discriminator" rule for `PauseAutomationCommand`/`ResumeAutomationCommand` in the Execution
   Orchestrator section above — the CLI, as the caller, is what actually supplies that
   discriminator here, since neither command had a real production caller before this phase).
-- **Deliberately left unfixed: `minicoder api serve` still does not wire a real `TaskTriggerClient`
-  into `buildApp()`.** `packages/api/src/server.ts`'s `serve()` never constructs or injects one, so
-  `request-coder-run`/`request-review`/`request-fixes`/`recompute-merge-gate` fail with a fail-fast
-  "no TaskTriggerClient configured" error against any server started via `minicoder api serve` —
-  a real, pre-existing Phase 13 gap. None of docs/05 §4's fourteen Text UI commands need these
-  endpoints, so wiring a default `TaskTriggerClient` was out of scope for this phase; fixing it
-  remains real, tracked future work, not silently dropped — see issue #61.
+- **Issue #61 (closed, post-Phase-14): `minicoder api serve` now wires a real `TaskTriggerClient`
+  into `buildApp()`.** At the time this phase shipped, `packages/api/src/server.ts`'s `serve()`
+  never constructed or injected one, so `request-coder-run`/`request-review`/`request-fixes`/
+  `recompute-merge-gate` failed with a fail-fast "no TaskTriggerClient configured" error against
+  any server started via `minicoder api serve` — a real, pre-existing Phase 13 gap. None of
+  docs/05 §4's fourteen Text UI commands need these endpoints, so wiring a default
+  `TaskTriggerClient` was correctly out of scope for this phase; it was later closed via
+  `packages/api/src/default-task-trigger-client.ts`'s `resolveDefaultTaskTriggerClient()` — see
+  the Orchestrator API Operational Constraints section above for the full writeup.
 - **The end-to-end integration test (`packages/tui/src/tui-e2e.integration.test.ts`) boots the
   real `buildApp()` against a throwaway in-memory SQLite DB and drives `ApiClient` against it over
   genuine HTTP** (`app.listen({ port: 0 })`, not `app.inject()`) — this is the phase's "runnable
