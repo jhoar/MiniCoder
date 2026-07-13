@@ -83,8 +83,13 @@ commands, with `minicoder trigger`'s subcommands now real DB-backed operations i
 permanent stubs. All 19 canonical tasks, the public API response shape, and the `GET
 /triggerdev-runs` read model are unchanged; `infra/docker-compose.triggerdev.yml` and
 `.github/workflows/trigger-deploy.yml` are removed, and the `@trigger.dev/sdk` dependency is gone
-from the codebase. See CLAUDE.md's "Task Worker Operational Constraints" section for the full
-design.
+from the codebase. Three PR review rounds hardened the initial implementation: genuine
+cross-process per-task concurrency enforcement (a `task_concurrency_gates` table, not just an
+in-process counter), per-task isolated DB connections (a shared connection previously broke
+concurrent `db.transaction()` calls), project-scoped idempotency
+(`(project_id, task_id, idempotency_key)`), and stricter `trigger reset-dev` environment-matching
+guards. See CLAUDE.md's "Task Worker Operational Constraints" section for the full design and
+review history.
 
 **Deployment note:** `packages/web` holds one server-side Orchestrator API credential shared by
 every browser visitor — there is no per-end-user session/auth layer yet. Deploy it only on a

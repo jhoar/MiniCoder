@@ -326,11 +326,16 @@ every such reference as describing what was true at the time, not the current im
 - **`task_queue` table (migration 0017), not a repurposing of `triggerdev_runs`.**
   `triggerdev_runs` (migration 0001) stays a stable status _read-model_ — `GET /triggerdev-runs`,
   the Text UI, and the Web UI all still read it unchanged. `task_queue` is the new
-  queue-mechanics table: `task_id`, `payload` (JSON), `idempotency_key` (UNIQUE — the dedup
-  mechanism, replacing Trigger.dev's server-side run dedup), `status`
-  (`pending|processing|succeeded|failed`), `attempts`, `next_retry_at`, `project_id`,
+  queue-mechanics table: `task_id`, `payload` (JSON), `idempotency_key` (part of a composite
+  `UNIQUE (project_id, task_id, idempotency_key)` — the dedup mechanism, replacing Trigger.dev's
+  server-side run dedup; see the round-1/round-2 review-fix bullets below for how this scope was
+  arrived at), `status` (`pending|processing|succeeded|failed`), `attempts`, `next_retry_at`,
+  `project_id` (nullable at the schema level, but always populated for a real row — every
+  canonical task payload extends `BasePayload`, which requires a non-optional `projectId`),
   `linked_run_id` (a best-effort back-reference to the `triggerdev_runs` row the worker links once
-  it claims the row), `version`.
+  it claims the row), `error` (a redacted, length-capped failure summary — see MEDIUM-3 below),
+  `version`. `task_concurrency_gates` (a lockable one-column-per-`task_id` anchor table, see HIGH-2
+  below) is additive, worker-internal state with no read-model consumer.
 - **`packages/triggerdev/src/task-registry.ts`'s `TASK_REGISTRY`** replaces
   `triggerdev-tasks.ts`'s 19 `task({ id, queue, retry, run })` calls (deleted) with a plain,
   SDK-free `ReadonlyMap<TaskId, TaskDefinition>` — `{ taskId, concurrencyLimit, schema, impl }` per
@@ -385,6 +390,110 @@ every such reference as describing what was true at the time, not the current im
   9-service Docker Compose stack (`infra/docker-compose.triggerdev.yml`, removed) and CI deploy
   workflow (`.github/workflows/trigger-deploy.yml`, removed). Scaling is "run more
   `minicoder tasks worker` processes against the same database," not a deployment-tier decision.
+
+**Post-implementation review fixes (round 1 — PR #75):**
+
+- **HIGH-1 (`TaskQueueDispatcher` ran multiple concurrently-claimed tasks through one shared
+  `DbClient`).** A `DbClient` wrapper (`SqliteDbClient`/`PostgresDbClient`) tracks its own
+  `inTransaction` flag per instance — one in-flight task calling `db.transaction()` (as
+  `run-coder.ts`/`run-review.ts`/etc. routinely do via `TransactionalCommandExecutor`) broke every
+  other concurrently-running task sharing that same instance with a `Cannot call DbClient.X() while
+a transaction is active` error, reproduced empirically against a real workload. Fixed with a new
+  `runWithTaskDb` factory (`TaskQueueDispatcherOptions.runWithTaskDb`, defaulting to
+  `defaultRunWithTaskDb` — a fresh `createDbClientFromEnv()` connection per call) — both the claim
+  transaction (`attemptClaim()`) and each claimed task's execution (`runOne()`'s call into
+  `runRegisteredTask()`) now run on their own connection, never the dispatcher's own bookkeeping
+  `db`. Verified against genuinely separate PostgreSQL connections (not just SQLite, which cannot
+  prove this — see the next bullet) in a new
+  `packages/triggerdev/src/task-worker-concurrency.postgres.test.ts`.
+- **HIGH-2 (per-task-id `concurrencyLimit` was enforced only via one process's in-memory
+  counter).** The doc's own "scaling is running more `minicoder tasks worker` processes" claim was
+  false in practice: two separate worker processes each maintain their own independent in-process
+  map, so two processes could each independently believe they were within a `concurrencyLimit: 1`
+  budget and both claim a row for the same task, running two copies concurrently. Fixed with
+  `task_concurrency_gates` (migration 0017) — one lazily-created anchor row per `task_id` — and a
+  new `attemptClaim()` transaction that takes a portable cross-dialect row lock
+  (`UPDATE task_concurrency_gates SET task_id = task_id WHERE task_id = ?` — a real row lock under
+  PostgreSQL; SQLite's coarser whole-database write lock, which is still correct since SQLite has
+  only one writer anyway) before reading the live `processing`-count and claiming. Verified against
+  two independent `TaskQueueDispatcher` instances (simulating two separate worker processes) sharing
+  one real PostgreSQL database in the same new test file.
+- **HIGH-3 (`trigger reset-dev` inferred an unset `APP_ENV`/`NODE_ENV` as safe).** The original
+  guard only blocked a non-empty, non-permitted system env — an unset one (the default in a
+  misconfigured production shell) fell through and let `--yes --env <anything-permitted>` proceed
+  to a real `DELETE FROM task_queue`. Fixed by defaulting the unset case to a value guaranteed to
+  fail the permitted-values check, matching `db reset`'s own hard-production-reject-on-unknown
+  posture. (Hardened further in round 3 below — this fix alone was still incomplete.)
+- **MEDIUM-1 (idempotency dedup was globally unique on `idempotency_key` alone).** Reusing the same
+  key for a _different_ task silently returned the unrelated first task's row id and skipped
+  enqueuing the new task entirely. Fixed by scoping the unique constraint and lookup to
+  `(task_id, idempotency_key)`. (Widened again in round 2 below to include `project_id`.)
+- **MEDIUM-2 (`task_queue.project_id` was never populated by the API enqueue path).** Fixed by
+  persisting `payload.projectId` into the column on insert — every canonical task payload's shared
+  `BasePayload` already requires this field, so no caller needed to change.
+- **MEDIUM-3 (a failed task's `error` column was always left `NULL`).** The dispatcher caught and
+  discarded the exception. Fixed with `summarizeError()` — redacts the message/stack via
+  `defaultRedactor.redact()` (the same `SecretRedactor` `AgentRunRecorder`'s context-pack writer
+  uses) and caps it at 2000 characters before persisting.
+- **MEDIUM-4 (`assertSchemaReady()` only probed `triggerdev_runs`).** A database migrated only up
+  to an older revision (missing `task_queue`, migration 0017) passed this startup check and only
+  failed later, at first enqueue/poll, with a much less actionable "no such table" error. Fixed by
+  probing `task_queue` too. (Extended again in round 2 below to also probe
+  `task_concurrency_gates`.)
+
+**Post-implementation review fixes (round 2 — PR #75 re-review):**
+
+- **HIGH-1 (partial — `assertSchemaReady()` still didn't probe `task_concurrency_gates`, and a new
+  migration was suggested instead of editing 0017 in place).** Fixed the probe gap directly. On the
+  "add a new migration `0018`" recommendation: declined, and documented why directly in migration
+  0017's own header comment — this PR had not merged, and this repo's own established convention
+  (e.g. migration 0015's identical situation in PR #73) is that editing an _unmerged_ migration in
+  place is safe and expected; only a _merged_ migration must never be edited again. No production
+  deployment has ever applied a prior revision of 0017 since it has never shipped.
+- **HIGH-2 (idempotency was still not project-scoped).** Two different projects enqueuing the same
+  task with the same idempotency key collided: the second project's enqueue silently returned the
+  first project's unrelated row id. Fixed by widening the unique constraint/lookup from
+  `(task_id, idempotency_key)` to `(project_id, task_id, idempotency_key)` — safe without a
+  partial-index NULL-handling trick (cf. `agent_configurations`' two-index split) since every real
+  row has a non-NULL `project_id` per `BasePayload`'s required field.
+- **MEDIUM-1 (`trigger replay-run` dropped `project_id`).** The replay `INSERT` selected and wrote
+  only `task_id`/`payload`, so a replayed row lost its project-scoping metadata even though the
+  source row it was replayed from had one. Fixed by selecting and carrying `project_id` through.
+- **MEDIUM-2 (`trigger reset-dev`'s round-1 fix still let a mismatched `--env` through).**
+  `APP_ENV=development --env test` are each individually in the safe set but disagree about which
+  environment this actually is — the round-1 fix didn't check agreement, only permitted-set
+  membership. Fixed by requiring the system env (once known-safe) to match `--env` exactly,
+  mirroring `db reset`'s own guard.
+- **LOW-1**: reformatting fixes for `pnpm format:check`.
+
+**Post-implementation review fixes (round 3 — PR #75 re-review):**
+
+- **HIGH-1 (`trigger reset-dev`'s env check used `APP_ENV ?? NODE_ENV`, a short-circuit that never
+  inspected `NODE_ENV` once `APP_ENV` was set).** `APP_ENV=development NODE_ENV=production
+minicoder trigger reset-dev --yes --env development` passed cleanly, since `NODE_ENV=production`
+  was never looked at — a real gap in a destructive command's safety guard. Fixed by checking both
+  vars independently (each that IS set must individually be in the safe set), requiring them to
+  agree with each other when both are set, and only then requiring `--env` to match the single
+  agreed-upon system env exactly. **Watch, not fixed:** `packages/migrations/src/runner.ts`'s `db
+reset` guard uses the identical `APP_ENV ?? NODE_ENV` short-circuit and has the same latent gap —
+  out of scope for this PR (pre-existing code this PR never touched), tracked as issue #76 rather
+  than silently left undocumented.
+- **LOW-1 (the Postgres concurrency test's `task_queue` inserts omitted `project_id` on the row
+  itself, only embedding it in the JSON payload).** Weakened that suite's coverage of the real FK
+  and the `(project_id, task_id, idempotency_key)` composite unique index. Fixed by populating the
+  column directly.
+
+**Remaining watch items (accepted, not fixed, per reviewer agreement):**
+
+- **`task_queue.project_id` remains nullable at the schema level.** Every real production/API/CLI
+  path populates it (enforced structurally by `BasePayload`'s required `projectId` field for the
+  enqueue path; `replay-run` now carries it through), so this is a defense-in-depth gap, not an
+  observed one — tightening it to `NOT NULL` would also need to reconcile with existing raw-SQL
+  test fixtures/CLI paths (`trigger cancel-run`, direct test inserts) that don't always set it.
+  Tracked as issue #77 rather than silently assumed safe.
+- **Migration 0017 was edited in place three times while unmerged.** Accepted per this repo's own
+  documented pre-merge-editing convention (see HIGH-1/round 2 above) — fixed at its final shape
+  once this PR merges, per that same convention.
 
 ## Agent Adapter Operational Constraints (`packages/core/src/adapters/`, `packages/testing/src/conformance/`)
 
