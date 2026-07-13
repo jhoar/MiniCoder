@@ -132,10 +132,20 @@ describe.skipIf(!RUN_PG)(
     async function insertTaskQueueRow(taskId: string): Promise<string> {
       seq += 1;
       const id = `tq-pg-${seq}-${Date.now()}`;
+      // PR #75 round-3 review fix (LOW-1): project_id must be populated on the row itself, not
+      // just embedded in the JSON payload -- the column carries a REFERENCES projects(id) foreign
+      // key, and omitting it here weakened this suite's coverage of that real constraint plus the
+      // (project_id, task_id, idempotency_key) composite unique index this file also exercises.
       await pool.query(
-        `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, version, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'pending', 0, 1, NOW(), NOW())`,
-        [id, taskId, JSON.stringify({ projectId: 'proj-pg-concurrency' }), `idem-${id}`],
+        `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'pending', 0, $5, 1, NOW(), NOW())`,
+        [
+          id,
+          taskId,
+          JSON.stringify({ projectId: 'proj-pg-concurrency' }),
+          `idem-${id}`,
+          'proj-pg-concurrency',
+        ],
       );
       return id;
     }

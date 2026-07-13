@@ -238,6 +238,59 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     expect(errSpy.mock.calls.join(' ')).toMatch(/not safe/);
   });
 
+  // PR #75 round-3 review fix (HIGH-1): a plain `APP_ENV ?? NODE_ENV` short-circuit never even
+  // inspects NODE_ENV once APP_ENV is set — APP_ENV=development, NODE_ENV=production must still be
+  // blocked, since NODE_ENV=production is unsafe regardless of what APP_ENV says.
+  it('reset-dev blocks when APP_ENV is safe but NODE_ENV disagrees and is unsafe', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    process.env['APP_ENV'] = 'development';
+    process.env['NODE_ENV'] = 'production';
+    insertTaskQueueRow(dbPath, 'tq-conflict', 'run-coder');
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'reset-dev',
+      '--yes',
+      '--env',
+      'development',
+    ]);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    expect(errSpy.mock.calls.join(' ')).toMatch(/not safe/);
+    expect(queryTaskQueue(dbPath)).toHaveLength(1);
+  });
+
+  // Both APP_ENV and NODE_ENV are individually safe values, but disagree with each other — must
+  // still be blocked even though neither is outside the permitted set on its own.
+  it('reset-dev blocks when APP_ENV and NODE_ENV are both safe but disagree', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    process.env['APP_ENV'] = 'development';
+    process.env['NODE_ENV'] = 'test';
+    insertTaskQueueRow(dbPath, 'tq-conflict2', 'run-coder');
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'reset-dev',
+      '--yes',
+      '--env',
+      'development',
+    ]);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    expect(errSpy.mock.calls.join(' ')).toMatch(/disagree/);
+    expect(queryTaskQueue(dbPath)).toHaveLength(1);
+  });
+
   // PR #75 round-2 review fix (MEDIUM-2): APP_ENV=development and --env test are each
   // individually in the safe set, but disagree about which environment this actually is — a
   // caller-supplied --env flag alone must never be able to reclassify a database running under a

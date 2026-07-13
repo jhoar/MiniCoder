@@ -249,30 +249,49 @@ export function createTriggerCommand(): Command {
         process.exitCode = 1;
         return;
       }
-      // PR #75 review fixes (HIGH-3, then round-2 MEDIUM-2): mirrors
-      // packages/migrations/src/runner.ts's `db reset` guard ordering exactly. (1) An unset
-      // system env can never be inferred as safe — this command performs a real
-      // `DELETE FROM task_queue`, so there is no permissive default. (2) A system env outside the
-      // safe set is blocked regardless of --env. (3) Once both are individually safe, --env must
-      // agree with the system env EXACTLY — round-2 MEDIUM-2 found that e.g.
-      // `APP_ENV=development --env test` passed both checks independently while silently
-      // disagreeing about which environment this actually is; a caller-supplied flag alone must
-      // never be able to reclassify a database running under a different deployment environment.
-      const systemEnv = process.env['APP_ENV'] ?? process.env['NODE_ENV'];
-      if (!systemEnv) {
+      // PR #75 review fixes (HIGH-3, round-2 MEDIUM-2, round-3 HIGH-1): mirrors
+      // packages/migrations/src/runner.ts's `db reset` guard ordering, hardened one step further.
+      // (1) An unset system env can never be inferred as safe — this command performs a real
+      // `DELETE FROM task_queue`, so there is no permissive default. (2) Each of APP_ENV/NODE_ENV
+      // that IS set must individually be in the safe set, checked independently — round-3 HIGH-1
+      // found that a plain `APP_ENV ?? NODE_ENV` short-circuit (the same pattern this comment
+      // previously described, and the same pattern `db reset`'s own guard still uses) never even
+      // looks at NODE_ENV once APP_ENV is set, so `APP_ENV=development NODE_ENV=production` passed
+      // cleanly: NODE_ENV=production was simply never inspected. (3) If both are set, they must
+      // agree with each other — two different, individually-safe values disagreeing about which
+      // environment this actually is is itself unsafe. (4) Once a single, agreed-upon system env is
+      // established, --env must match it EXACTLY (round-2 MEDIUM-2) — a caller-supplied flag alone
+      // must never be able to reclassify a database running under a different deployment
+      // environment.
+      const appEnv = process.env['APP_ENV'];
+      const nodeEnv = process.env['NODE_ENV'];
+      if (!appEnv && !nodeEnv) {
         console.error(
           'Error: system env APP_ENV/NODE_ENV is unset, which is not safe. Reset blocked.',
         );
         process.exitCode = 1;
         return;
       }
-      if (!permitted.includes(systemEnv)) {
+      for (const [name, value] of [
+        ['APP_ENV', appEnv],
+        ['NODE_ENV', nodeEnv],
+      ] as const) {
+        if (value !== undefined && !permitted.includes(value)) {
+          console.error(
+            `Error: system env ${name} is '${value}' which is not safe. Reset blocked.`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+      }
+      if (appEnv !== undefined && nodeEnv !== undefined && appEnv !== nodeEnv) {
         console.error(
-          `Error: system env APP_ENV/NODE_ENV is '${systemEnv}' which is not safe. Reset blocked.`,
+          `Error: APP_ENV ('${appEnv}') and NODE_ENV ('${nodeEnv}') disagree. Reset blocked.`,
         );
         process.exitCode = 1;
         return;
       }
+      const systemEnv = (appEnv ?? nodeEnv) as string;
       if (systemEnv !== opts.env) {
         console.error(
           `Error: --env '${opts.env}' does not match the deployment environment '${systemEnv}' ` +
