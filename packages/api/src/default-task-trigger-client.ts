@@ -1,120 +1,69 @@
 /**
- * Issue #61: `minicoder api serve` never wired a real `TaskTriggerClient`, so every real
- * deployment's `request-coder-run`/`request-review`/`request-fixes`/`recompute-merge-gate`/
- * `request-design-doc` route fail-fast against `unconfiguredTaskTriggerClient()` — these five
- * routes were fully implemented and tested against an injected mock, but non-functional in
- * production.
+ * Trigger.dev replacement: enqueues a `task_queue` row instead of calling
+ * `@trigger.dev/sdk/v3`'s `tasks.trigger()`. `minicoder tasks worker` (backed by
+ * `TaskQueueDispatcher`) polls this table and executes the matching `runImpl`.
  *
- * This resolver constructs a real client against the Trigger.dev *runtime* API (`tasks.trigger()`
- * from `@trigger.dev/sdk/v3`) — deliberately **not** the Trigger.dev *management* API
- * (`list-runs`/`inspect-run`/`cancel-run`/etc., which CLAUDE.md's Orchestrator API Operational
- * Constraints section explicitly scopes out of this phase; that remains `packages/cli/src/
- * commands/trigger.ts`'s stub territory). Triggering a run by task ID and payload is a distinct,
- * much narrower capability than the management API's deploy/inspect/replay surface.
+ * `INSERT ... ON CONFLICT (project_id, task_id, idempotency_key) DO NOTHING`, falling back to a
+ * `SELECT` on conflict, is the same claim-first idempotency idiom already used by
+ * `packages/api/src/route-idempotency.ts`'s `claimRouteIdempotencyKey()` — a repeated call with
+ * the same `Idempotency-Key` for the SAME task and project returns the same `triggerdevRunId`
+ * without enqueuing a duplicate row, replacing the dedup Trigger.dev previously provided
+ * server-side. The conflict target is scoped to `(project_id, task_id, idempotency_key)`, not
+ * `idempotency_key` alone (PR #75 review fix, MEDIUM-1: task_id; round-2 review fix, HIGH-2:
+ * project_id) — a bare global-uniqueness constraint meant reusing the same key for a DIFFERENT
+ * task, or the same task from a DIFFERENT project, silently returned the unrelated old row's id
+ * and skipped enqueuing the new task entirely.
  *
- * `@trigger.dev/sdk/v3`'s `tasks.trigger(id, payload, options)` triggers a task purely by its
- * string ID — it does **not** require importing the actual `Task` object, so this module never
- * imports `packages/triggerdev/src/triggerdev-tasks.ts` (which calls `task({ id: ... })` for all
- * 19 canonical tasks at module load — a real Trigger.dev-runtime registration side effect this
- * process must not trigger). This mirrors the established "construct the real reference
- * implementation from env vars via dynamic `import()`" pattern already used for
- * `resolveDefaultGithubClientFactory`/`resolveDefaultCoderAdapterFactory`/
- * `resolveDefaultArbiterAdapterFactory` elsewhere in this codebase. `taskId` is typed as
- * `@minicoder/triggerdev`'s `TaskId` (not a bare `string`) — every call site below is one of the
- * four already-canonical task IDs, so a future rename of any of them is a compile error here
- * instead of a silent runtime drift (PR #73 review fix, LOW-3).
- *
- * PR #73 review fix (MEDIUM-2): both `TRIGGER_SECRET_KEY` **and** `TRIGGER_API_URL` are required
- * and explicitly passed to `configure()` before every call — not left to the SDK's own ambient
- * env-var pickup. The SDK silently falls back to Trigger.dev Cloud's hosted API URL
- * (`https://api.trigger.dev`) when `TRIGGER_API_URL` is unset; CLAUDE.md's own "Trigger.dev
- * execution backend is a separate axis from the state store" decision names self-host
- * single-node as the *default* backend and frames Cloud as an explicit, separate security/
- * compliance choice (payloads leave the user's boundary) — silently defaulting a self-hosted
- * deployment's missing config to Cloud would violate that decision instead of failing loudly.
- * Requiring both env vars explicitly, and passing them to `configure()` by value rather than
- * relying on the SDK reading `process.env` itself, makes the actual configured target visible
- * and testable at this call site.
- *
- * Fails fast with an actionable error only when a route is actually invoked and either env var
- * is missing/blank/malformed — not at server startup, matching `unconfiguredTaskTriggerClient()`'s
- * existing "fail only when actually used" contract so a deployment that never calls these five
- * routes is unaffected by missing Trigger.dev credentials.
- *
- * PR #73 review fix (round 2, MEDIUM-1): `TRIGGER_API_URL` was required (round 1) but only
- * blank-checked, not URL-validated — a typo'd value (`not-a-url`, or an unsupported scheme like
- * `ftp://`) would reach the SDK and fail later with a less actionable error, one layer removed
- * from the actual misconfiguration. `parseTriggerApiUrl()` validates it's a well-formed URL with
- * an `http:`/`https:` scheme and passes the normalized (`URL#toString()`) form to `configure()`.
+ * `triggerdevRunId` is kept as the field name on `TriggeredRun` (unchanged from the Trigger.dev
+ * implementation this replaces): it is a public response field on five routes
+ * (`packages/api/src/commands/task-trigger-routes.ts`), documented in the OpenAPI spec, and
+ * consumed by both the Text UI and Web UI API clients. It never literally meant "a Trigger.dev SDK
+ * run id" to any consumer — only "an opaque identifier for this async run" — so retaining the name
+ * avoids a purely cosmetic breaking change to a real public contract. It is now the `task_queue`
+ * row's own `id`.
  */
-import { requireNonBlankEnvVar } from '@minicoder/triggerdev';
+import { generateId } from '@minicoder/core';
+import { createDbClientFromEnv } from '@minicoder/triggerdev';
 import type { TaskId } from '@minicoder/triggerdev';
 import type { TaskTriggerClient, TriggeredRun } from './commands/task-trigger-routes.js';
 
-function parseTriggerApiUrl(raw: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(
-      `TRIGGER_API_URL "${raw}" is not a valid URL — expected e.g. ` +
-        '"https://trigger.internal.example.com".',
-    );
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(
-      `TRIGGER_API_URL "${raw}" must use the http: or https: scheme (got "${parsed.protocol}").`,
-    );
-  }
-  return parsed.toString();
-}
-
-async function triggerTask(
+async function enqueueTask(
   taskId: TaskId,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown> & { projectId: string },
   idempotencyKey: string,
 ): Promise<TriggeredRun> {
-  const secretKey = requireNonBlankEnvVar(
-    'TRIGGER_SECRET_KEY',
-    'minicoder api serve requires a Trigger.dev API credential to enqueue Workflow Layer tasks ' +
-      "(see docs/01-system-specification.md §14 and CLAUDE.md's Trigger.dev Operational " +
-      'Constraints for the self-hosted/Cloud backend setup).',
-  );
-  const rawApiUrl = requireNonBlankEnvVar(
-    'TRIGGER_API_URL',
-    'minicoder api serve requires TRIGGER_API_URL to be set explicitly (e.g. your self-hosted ' +
-      'Trigger.dev webapp URL) — this is never inferred or defaulted to Trigger.dev Cloud, per ' +
-      'CLAUDE.md\'s Trigger.dev Operational Constraints ("self-host single-node" is the default ' +
-      "backend; Cloud is a separate, explicit choice since payloads leave the deployment's " +
-      'trust boundary).',
-  );
-  const apiUrl = parseTriggerApiUrl(rawApiUrl);
-  const { tasks, configure } = await import('@trigger.dev/sdk/v3');
-  configure({ baseURL: apiUrl, accessToken: secretKey });
-  // `tasks.trigger<TTask>()`'s generic signature is designed for a caller that imports the real
-  // `Task` object (giving TypeScript a concrete payload/output type to infer); triggering purely
-  // by string ID from a separate process — the whole point of this module — has no such object to
-  // infer from. The cast reflects the SDK's own documented "trigger by string ID from your
-  // backend" usage (its own `tasks.d.ts` doc comment shows exactly this call shape); the runtime
-  // behavior is identical either way; only the compile-time generic inference is being worked
-  // around.
-  const trigger = tasks.trigger as unknown as (
-    id: TaskId,
-    payload: Record<string, unknown>,
-    options: { idempotencyKey: string },
-  ) => Promise<{ id: string }>;
-  const handle = await trigger(taskId, payload, { idempotencyKey });
-  return { triggerdevRunId: handle.id };
+  const db = await createDbClientFromEnv();
+  try {
+    const id = generateId();
+    const now = new Date().toISOString();
+    const inserted = await db.executeAffected(
+      `INSERT INTO task_queue
+         (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'pending', 0, ?, 1, ?, ?)
+       ON CONFLICT (project_id, task_id, idempotency_key) DO NOTHING`,
+      [id, taskId, JSON.stringify(payload), idempotencyKey, payload.projectId, now, now],
+    );
+    if (inserted === 1) {
+      return { triggerdevRunId: id };
+    }
+    const rows = await db.query<{ id: string }>(
+      `SELECT id FROM task_queue WHERE project_id = ? AND task_id = ? AND idempotency_key = ?`,
+      [payload.projectId, taskId, idempotencyKey],
+    );
+    return { triggerdevRunId: rows[0]!.id };
+  } finally {
+    await db.close();
+  }
 }
 
-/** Constructs a `TaskTriggerClient` backed by the real Trigger.dev runtime API. */
+/** Constructs a `TaskTriggerClient` backed by the local `task_queue` table. */
 export function resolveDefaultTaskTriggerClient(): TaskTriggerClient {
   return {
-    triggerRunCoder: (payload) => triggerTask('run-coder', payload, payload.idempotencyKey),
-    triggerRunReview: (payload) => triggerTask('run-review', payload, payload.idempotencyKey),
+    triggerRunCoder: (payload) => enqueueTask('run-coder', payload, payload.idempotencyKey),
+    triggerRunReview: (payload) => enqueueTask('run-review', payload, payload.idempotencyKey),
     triggerRunMergeGate: (payload) =>
-      triggerTask('run-merge-gate', payload, payload.idempotencyKey),
+      enqueueTask('run-merge-gate', payload, payload.idempotencyKey),
     triggerRunDesignDoc: (payload) =>
-      triggerTask('run-design-doc', payload, payload.idempotencyKey),
+      enqueueTask('run-design-doc', payload, payload.idempotencyKey),
   };
 }

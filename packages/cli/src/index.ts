@@ -24,6 +24,7 @@ import { createPauseCommand } from './commands/pause.js';
 import { createResumeCommand } from './commands/resume.js';
 import { createProjectCommand } from './commands/project.js';
 import { createObservabilityCommand } from './commands/observability.js';
+import { createTasksCommand } from './commands/tasks.js';
 
 const program = new Command();
 
@@ -56,6 +57,7 @@ program.addCommand(createPauseCommand());
 program.addCommand(createResumeCommand());
 program.addCommand(createProjectCommand());
 program.addCommand(createObservabilityCommand());
+program.addCommand(createTasksCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error('Fatal error:', err);

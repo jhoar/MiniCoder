@@ -14,10 +14,10 @@ export interface MockRunResult<R> {
 /**
  * MockTriggerRunner is the canonical test seam for unit and integration tests.
  * It executes a task's run implementation directly against a test DbClient,
- * bypassing the real Trigger.dev runtime but exercising the full DB linkage path.
+ * bypassing the real task-queue worker but exercising the full DB linkage path.
  *
  * DB lifecycle (linkRunToDb / updateRunStatus) is handled here, mirroring what
- * the Trigger.dev task wrappers in triggerdev-tasks.ts do in production.
+ * task-registry.ts's runRegisteredTask() does in production.
  */
 export class MockTriggerRunner {
   private runCounter = 0;

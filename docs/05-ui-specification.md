@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_ui_specification.md, minicoder_ui_specification_testing_updated.md
-> Version: 1.0.1
-> Last-updated: 2026-07-06
+> Version: 1.0.2
+> Last-updated: 2026-07-13
 
 ## 1. Purpose
 
@@ -16,7 +16,8 @@ parses `backlog.md` as runtime state.
 ```text
 MiniCoder database = authoritative state.
 Orchestrator API   = UI access path.
-Workflow Layer     = durable workflow execution (implemented by Trigger.dev).
+Workflow Layer     = durable workflow execution (implemented by an in-repo, DB-backed task queue
+                     — `packages/triggerdev/`, formerly Trigger.dev).
 GitHub             = repository and PR truth.
 GitHub webhooks    = primary external GitHub event source (surfaced via API read models).
 Markdown artifacts = generated/importable snapshots.
@@ -94,9 +95,8 @@ way for the TUI to discover its own permissions ahead of a call).
 
 The UI displays Workflow Layer execution through the API: task/run status, queued/running/waiting/
 succeeded/failed states, retry count, next retry, waitpoint reason, link to the underlying
-Trigger.dev run if available, and mapping to MiniCoder workflow events. The UI does not call
-Trigger.dev directly for
-orchestration decisions.
+task-queue run if available, and mapping to MiniCoder workflow events. The UI does not talk to the
+task-queue worker directly for orchestration decisions.
 
 ## 7. Clarification UI
 
@@ -111,7 +111,7 @@ run/waitpoint status, GitHub webhook/reconciliation status, state-doctor results
 outbox/inbox events, test/scenario results, diagnostics exports, and environment mode.
 
 Admin actions (backend-authorized, audited): run state validation, trigger reconciliation, export
-diagnostics, view system-test history, view stuck Trigger.dev runs, and view stale workflow locks.
+diagnostics, view system-test history, view stuck task-queue runs, and view stale workflow locks.
 Destructive actions must be guarded and backend-authorized; the UI never performs direct state
 mutation.
 

@@ -156,15 +156,27 @@ These are locked decisions that appear throughout the docs. Do not contradict or
 3. **GitHub webhooks are the primary event source.** Scheduled reconciliation is the fallback/
    repair mechanism, not the primary path.
 
-4. **Workflow Layer** is the subsystem name for durable workflow execution. The implementation is
-   Trigger.dev, but the docs use "Workflow Layer" for the architectural role everywhere except when
-   explicitly referring to the Trigger.dev product (CLI namespace `minicoder trigger ...`, deployment
-   tiers/backends, concrete runtime diagnostics like "underlying Trigger.dev run").
+4. **Workflow Layer** is the subsystem name for durable workflow execution. **The implementation
+   is an in-repo, DB-backed task queue** (`packages/triggerdev/src/task-registry.ts`'s
+   `TASK_REGISTRY` + `task-worker.ts`'s `TaskQueueDispatcher`, driven by `minicoder tasks worker`) —
+   the docs use "Workflow Layer" for the architectural role everywhere except when explicitly
+   referring to this concrete implementation (CLI namespace `minicoder trigger ...`/
+   `minicoder tasks ...`, the `task_queue`/`triggerdev_runs` tables, concrete runtime diagnostics).
+   **Superseded decision, kept for historical context:** this subsystem was originally implemented
+   on top of Trigger.dev (a 9-service self-hosted Docker Compose stack). It was replaced by the
+   task queue described above — see the "Task Worker Operational Constraints" section below for
+   the full rationale and design. The `@minicoder/triggerdev` package name and the
+   `minicoder trigger ...` CLI namespace were kept as-is through the replacement (an internal
+   rename buys nothing and would only add churn); do not read the package/command name as evidence
+   the Trigger.dev product is still in use.
 
-5. **Trigger.dev execution backend is a separate axis from the state store.** Default = self-host
-   single-node (Docker Compose: webapp + Postgres + Redis + worker). Self-host HA cluster and
-   Trigger.dev Cloud are drop-in options. Switching backends is a deployment/config decision only —
-   except Cloud is also a security/compliance decision (payloads leave the user's boundary).
+5. **The Workflow Layer execution backend has no separate deployment-tier axis anymore.** (This
+   decision — "Trigger.dev execution backend is a separate axis from the state store, self-host
+   single-node default vs. self-host HA vs. Trigger.dev Cloud" — is superseded by decision #4
+   above: there is no external backend left to choose a tier for.) Scaling the task queue is a
+   matter of running more `minicoder tasks worker` processes against the same database — there is
+   no Cloud-vs-self-host security/compliance axis to reason about, since payloads never leave the
+   deployment's own database.
 
 6. **Security is a design property established in Phases 1–3.** Never defer secrets management,
    audit actor identity, webhook-secret verification, or workspace sandboxing to later phases.
@@ -301,26 +313,187 @@ before returning to `under_review`. Review and merge never act on un-tested code
 - **Lock fencing — release is an UPDATE, not a DELETE.** `WorkflowLockManager.release()` updates `expires_at = now` and increments `fence`, preserving the row. The monotonically increasing fence counter must survive across acquire/release cycles so re-acquisition always returns a strictly higher fence. Deleting the row would reset the fence to 1.
 - **`assertFence` must run inside the same transaction as the guarded write** to prevent TOCTOU races between the fence check and the protected state mutation.
 
-## Trigger.dev Operational Constraints (`packages/triggerdev/`)
+## Task Worker Operational Constraints (`packages/triggerdev/`) — Trigger.dev replacement
 
-- **9-service compose stack.** `infra/docker-compose.triggerdev.yml`: `triggerdev-init`
-  (one-shot alpine:3.19 chown, must exit 0 before webapp/supervisor start), postgres, redis,
-  electric, webapp, registry, minio, docker-proxy, supervisor.
-- **Supervisor network.** Supervisor must join the `triggerdev-webapp` Docker network.
-  Set `TRIGGER_WORKLOAD_API_DOMAIN=triggerdev-supervisor` so runner containers can reach the
-  workload API by hostname. Supervisor healthcheck uses a Node `http.get` call (no curl in
-  the Node image).
-- **OTEL endpoint.** `OTEL_EXPORTER_OTLP_ENDPOINT=http://triggerdev-webapp:3000/otel` —
-  NOT the standard OpenTelemetry port `:4318`.
-- **Registry topology.** `DEPLOY_REGISTRY_HOST` (CLI push target) and `DOCKER_REGISTRY_URL`
-  (supervisor pull source) must point to the same registry. For GitHub-hosted CI runners,
-  `localhost:5000` is unreachable; both vars need an external registry.
-- **`assertSchemaReady()`.** `packages/triggerdev/src/db.ts` probes `triggerdev_runs`
-  immediately after connecting. Missing table → actionable error. Run `minicoder db migrate`
-  before starting tasks.
-- **CLI pin.** Deploy with `npx trigger.dev@4.4.6 deploy …`. Never use `@latest`.
-- **All secrets use `${VAR:?message}` syntax** in `docker-compose.triggerdev.yml` — Docker
-  Compose exits on missing/empty values.
+**Trigger.dev has been removed.** The Workflow Layer's execution backend is now an in-repo,
+DB-backed task queue — no external service, no 9-container Docker Compose stack, no
+`@trigger.dev/sdk` dependency anywhere in the codebase. This section replaces the former
+"Trigger.dev Operational Constraints" section; the historical Phase 3/6/7/8/9/etc. narrative
+elsewhere in this document that describes building on Trigger.dev is left as-is (per this
+document's own "leave historical phase bullets alone, add a superseded note" convention) — treat
+every such reference as describing what was true at the time, not the current implementation.
+
+- **`task_queue` table (migration 0017), not a repurposing of `triggerdev_runs`.**
+  `triggerdev_runs` (migration 0001) stays a stable status _read-model_ — `GET /triggerdev-runs`,
+  the Text UI, and the Web UI all still read it unchanged. `task_queue` is the new
+  queue-mechanics table: `task_id`, `payload` (JSON), `idempotency_key` (part of a composite
+  `UNIQUE (project_id, task_id, idempotency_key)` — the dedup mechanism, replacing Trigger.dev's
+  server-side run dedup; see the round-1/round-2 review-fix bullets below for how this scope was
+  arrived at), `status` (`pending|processing|succeeded|failed`), `attempts`, `next_retry_at`,
+  `project_id` (nullable at the schema level, but always populated for a real row — every
+  canonical task payload extends `BasePayload`, which requires a non-optional `projectId`),
+  `linked_run_id` (a best-effort back-reference to the `triggerdev_runs` row the worker links once
+  it claims the row), `error` (a redacted, length-capped failure summary — see MEDIUM-3 below),
+  `version`. `task_concurrency_gates` (a lockable one-column-per-`task_id` anchor table, see HIGH-2
+  below) is additive, worker-internal state with no read-model consumer.
+- **`packages/triggerdev/src/task-registry.ts`'s `TASK_REGISTRY`** replaces
+  `triggerdev-tasks.ts`'s 19 `task({ id, queue, retry, run })` calls (deleted) with a plain,
+  SDK-free `ReadonlyMap<TaskId, TaskDefinition>` — `{ taskId, concurrencyLimit, schema, impl }` per
+  canonical task ID, concurrency limits unchanged (1 for most tasks, 5 for
+  `ingest-specification`/`record-clarification-answer`/`export-plan`/`export-backlog`/
+  `run-design-doc`). `runRegisteredTask(taskId, payload, runId, db, registry?)` is the shared
+  DB-lifecycle wrapper (`linkRunToDb` → `impl` → `updateRunStatus`), taking an already-connected
+  `db` rather than creating/closing its own connection per call — unlike the old
+  `makeTaskRunner` (each Trigger.dev task ran in its own ephemeral container/process; the new
+  worker is one long-lived process reusing one connection across many tasks). The `registry`
+  parameter defaults to the real `TASK_REGISTRY` and exists only so tests can inject a fake
+  definition.
+- **`packages/triggerdev/src/task-worker.ts`'s `TaskQueueDispatcher`** mirrors
+  `packages/workflow/src/outbox/dispatcher.ts`'s `OutboxDispatcher` shape closely (stale-claim
+  recovery, atomic optimistic-lock claim, an awaited heartbeat loop re-touching `updated_at` while
+  a task runs, exponential backoff via the shared `deterministicBackoff()` helper reproducing
+  Trigger.dev's old retry envelope — `maxAttempts: 3`, `baseBackoffMs: 1000`,
+  `maxBackoffMs: 30_000`). One deliberate divergence: outbox events have no per-type concurrency
+  limit, so `OutboxDispatcher` processes its batch sequentially; `TaskQueueDispatcher` runs
+  multiple claimed rows concurrently within one poll tick, bounded per `task_id` by an in-process
+  `Map<TaskId, number>` of in-flight counts (a single worker process serves the whole queue, so no
+  cross-process coordination is needed). `isEmpty()` is the correct "is there still work to do"
+  check — `status = 'processing' OR (status IN ('pending','failed') AND attempts < maxAttempts)` —
+  a naive `status IN ('pending','processing')` check would miss a `'failed'`-but-still-retryable
+  row and falsely report the queue drained; both `minicoder tasks drain` and
+  `minicoder trigger drain-queue` use this method rather than hand-rolling the query.
+- **`minicoder tasks worker`** (`packages/cli/src/commands/tasks.ts`) is the long-running process
+  — mirrors `minicoder api serve`/`minicoder github serve`'s "stays alive until terminated" shape,
+  polling on a `setInterval` loop with a re-entrancy guard and SIGINT/SIGTERM handling that lets
+  in-flight work finish before closing the DB. `minicoder tasks drain --timeout-ms <n>` is the
+  one-shot CI/test variant (loop until `isEmpty()` or timeout).
+- **`minicoder trigger ...`** (`packages/cli/src/commands/trigger.ts`) is no longer a set of
+  permanent stubs proxying to Trigger.dev's management API — every subcommand except `deploy`
+  (nothing external to deploy to anymore) is now real, DB-backed functionality against
+  `task_queue`/`triggerdev_runs`: `list-runs`, `inspect-run`, `cancel-run` (force-fails a row via a
+  large sentinel `attempts` value rather than assuming a specific `maxAttempts`), `replay-run`
+  (re-enqueues with a fresh idempotency key), `drain-queue`, `reset-dev` (`DELETE FROM task_queue`,
+  same dev/test/CI env guard as before), `reconcile` (flags a `task_queue` row past
+  `pending`/`processing` with no linked `triggerdev_runs` row), and `validate` (now checks
+  `TASK_REGISTRY` parity directly instead of grepping deleted source text).
+- **`default-task-trigger-client.ts`'s `TriggeredRun.triggerdevRunId` field name is kept
+  verbatim** (now the `task_queue` row's own `id`) — it is a public API response field on five
+  routes, documented in the OpenAPI spec, and consumed by both the Text UI and Web UI. It never
+  literally meant "a Trigger.dev SDK run id" to any consumer, only "an opaque identifier for this
+  async run," so renaming it would be a purely cosmetic breaking change to a real contract.
+- **No scheduling/cron construct exists or is needed.** Trigger.dev never had one either (verified
+  by grep before starting this migration: zero `schedules.task`/`.schedule()` calls anywhere in
+  the codebase) — `github-reconciliation` was already invoked externally/manually, matching
+  `minicoder observability export-otel`'s existing "one-shot CLI, deployment supplies its own
+  external scheduler" posture.
+- **Operational footprint after the replacement: zero extra containers**, versus the deleted
+  9-service Docker Compose stack (`infra/docker-compose.triggerdev.yml`, removed) and CI deploy
+  workflow (`.github/workflows/trigger-deploy.yml`, removed). Scaling is "run more
+  `minicoder tasks worker` processes against the same database," not a deployment-tier decision.
+
+**Post-implementation review fixes (round 1 — PR #75):**
+
+- **HIGH-1 (`TaskQueueDispatcher` ran multiple concurrently-claimed tasks through one shared
+  `DbClient`).** A `DbClient` wrapper (`SqliteDbClient`/`PostgresDbClient`) tracks its own
+  `inTransaction` flag per instance — one in-flight task calling `db.transaction()` (as
+  `run-coder.ts`/`run-review.ts`/etc. routinely do via `TransactionalCommandExecutor`) broke every
+  other concurrently-running task sharing that same instance with a `Cannot call DbClient.X() while
+a transaction is active` error, reproduced empirically against a real workload. Fixed with a new
+  `runWithTaskDb` factory (`TaskQueueDispatcherOptions.runWithTaskDb`, defaulting to
+  `defaultRunWithTaskDb` — a fresh `createDbClientFromEnv()` connection per call) — both the claim
+  transaction (`attemptClaim()`) and each claimed task's execution (`runOne()`'s call into
+  `runRegisteredTask()`) now run on their own connection, never the dispatcher's own bookkeeping
+  `db`. Verified against genuinely separate PostgreSQL connections (not just SQLite, which cannot
+  prove this — see the next bullet) in a new
+  `packages/triggerdev/src/task-worker-concurrency.postgres.test.ts`.
+- **HIGH-2 (per-task-id `concurrencyLimit` was enforced only via one process's in-memory
+  counter).** The doc's own "scaling is running more `minicoder tasks worker` processes" claim was
+  false in practice: two separate worker processes each maintain their own independent in-process
+  map, so two processes could each independently believe they were within a `concurrencyLimit: 1`
+  budget and both claim a row for the same task, running two copies concurrently. Fixed with
+  `task_concurrency_gates` (migration 0017) — one lazily-created anchor row per `task_id` — and a
+  new `attemptClaim()` transaction that takes a portable cross-dialect row lock
+  (`UPDATE task_concurrency_gates SET task_id = task_id WHERE task_id = ?` — a real row lock under
+  PostgreSQL; SQLite's coarser whole-database write lock, which is still correct since SQLite has
+  only one writer anyway) before reading the live `processing`-count and claiming. Verified against
+  two independent `TaskQueueDispatcher` instances (simulating two separate worker processes) sharing
+  one real PostgreSQL database in the same new test file.
+- **HIGH-3 (`trigger reset-dev` inferred an unset `APP_ENV`/`NODE_ENV` as safe).** The original
+  guard only blocked a non-empty, non-permitted system env — an unset one (the default in a
+  misconfigured production shell) fell through and let `--yes --env <anything-permitted>` proceed
+  to a real `DELETE FROM task_queue`. Fixed by defaulting the unset case to a value guaranteed to
+  fail the permitted-values check, matching `db reset`'s own hard-production-reject-on-unknown
+  posture. (Hardened further in round 3 below — this fix alone was still incomplete.)
+- **MEDIUM-1 (idempotency dedup was globally unique on `idempotency_key` alone).** Reusing the same
+  key for a _different_ task silently returned the unrelated first task's row id and skipped
+  enqueuing the new task entirely. Fixed by scoping the unique constraint and lookup to
+  `(task_id, idempotency_key)`. (Widened again in round 2 below to include `project_id`.)
+- **MEDIUM-2 (`task_queue.project_id` was never populated by the API enqueue path).** Fixed by
+  persisting `payload.projectId` into the column on insert — every canonical task payload's shared
+  `BasePayload` already requires this field, so no caller needed to change.
+- **MEDIUM-3 (a failed task's `error` column was always left `NULL`).** The dispatcher caught and
+  discarded the exception. Fixed with `summarizeError()` — redacts the message/stack via
+  `defaultRedactor.redact()` (the same `SecretRedactor` `AgentRunRecorder`'s context-pack writer
+  uses) and caps it at 2000 characters before persisting.
+- **MEDIUM-4 (`assertSchemaReady()` only probed `triggerdev_runs`).** A database migrated only up
+  to an older revision (missing `task_queue`, migration 0017) passed this startup check and only
+  failed later, at first enqueue/poll, with a much less actionable "no such table" error. Fixed by
+  probing `task_queue` too. (Extended again in round 2 below to also probe
+  `task_concurrency_gates`.)
+
+**Post-implementation review fixes (round 2 — PR #75 re-review):**
+
+- **HIGH-1 (partial — `assertSchemaReady()` still didn't probe `task_concurrency_gates`, and a new
+  migration was suggested instead of editing 0017 in place).** Fixed the probe gap directly. On the
+  "add a new migration `0018`" recommendation: declined, and documented why directly in migration
+  0017's own header comment — this PR had not merged, and this repo's own established convention
+  (e.g. migration 0015's identical situation in PR #73) is that editing an _unmerged_ migration in
+  place is safe and expected; only a _merged_ migration must never be edited again. No production
+  deployment has ever applied a prior revision of 0017 since it has never shipped.
+- **HIGH-2 (idempotency was still not project-scoped).** Two different projects enqueuing the same
+  task with the same idempotency key collided: the second project's enqueue silently returned the
+  first project's unrelated row id. Fixed by widening the unique constraint/lookup from
+  `(task_id, idempotency_key)` to `(project_id, task_id, idempotency_key)` — safe without a
+  partial-index NULL-handling trick (cf. `agent_configurations`' two-index split) since every real
+  row has a non-NULL `project_id` per `BasePayload`'s required field.
+- **MEDIUM-1 (`trigger replay-run` dropped `project_id`).** The replay `INSERT` selected and wrote
+  only `task_id`/`payload`, so a replayed row lost its project-scoping metadata even though the
+  source row it was replayed from had one. Fixed by selecting and carrying `project_id` through.
+- **MEDIUM-2 (`trigger reset-dev`'s round-1 fix still let a mismatched `--env` through).**
+  `APP_ENV=development --env test` are each individually in the safe set but disagree about which
+  environment this actually is — the round-1 fix didn't check agreement, only permitted-set
+  membership. Fixed by requiring the system env (once known-safe) to match `--env` exactly,
+  mirroring `db reset`'s own guard.
+- **LOW-1**: reformatting fixes for `pnpm format:check`.
+
+**Post-implementation review fixes (round 3 — PR #75 re-review):**
+
+- **HIGH-1 (`trigger reset-dev`'s env check used `APP_ENV ?? NODE_ENV`, a short-circuit that never
+  inspected `NODE_ENV` once `APP_ENV` was set).** `APP_ENV=development NODE_ENV=production
+minicoder trigger reset-dev --yes --env development` passed cleanly, since `NODE_ENV=production`
+  was never looked at — a real gap in a destructive command's safety guard. Fixed by checking both
+  vars independently (each that IS set must individually be in the safe set), requiring them to
+  agree with each other when both are set, and only then requiring `--env` to match the single
+  agreed-upon system env exactly. **Watch, not fixed:** `packages/migrations/src/runner.ts`'s `db
+reset` guard uses the identical `APP_ENV ?? NODE_ENV` short-circuit and has the same latent gap —
+  out of scope for this PR (pre-existing code this PR never touched), tracked as issue #76 rather
+  than silently left undocumented.
+- **LOW-1 (the Postgres concurrency test's `task_queue` inserts omitted `project_id` on the row
+  itself, only embedding it in the JSON payload).** Weakened that suite's coverage of the real FK
+  and the `(project_id, task_id, idempotency_key)` composite unique index. Fixed by populating the
+  column directly.
+
+**Remaining watch items (accepted, not fixed, per reviewer agreement):**
+
+- **`task_queue.project_id` remains nullable at the schema level.** Every real production/API/CLI
+  path populates it (enforced structurally by `BasePayload`'s required `projectId` field for the
+  enqueue path; `replay-run` now carries it through), so this is a defense-in-depth gap, not an
+  observed one — tightening it to `NOT NULL` would also need to reconcile with existing raw-SQL
+  test fixtures/CLI paths (`trigger cancel-run`, direct test inserts) that don't always set it.
+  Tracked as issue #77 rather than silently assumed safe.
+- **Migration 0017 was edited in place three times while unmerged.** Accepted per this repo's own
+  documented pre-merge-editing convention (see HIGH-1/round 2 above) — fixed at its final shape
+  once this PR merges, per that same convention.
 
 ## Agent Adapter Operational Constraints (`packages/core/src/adapters/`, `packages/testing/src/conformance/`)
 
@@ -3071,21 +3244,21 @@ There are several distinct state machines — not one:
 
 ## Technology Stack (Locked)
 
-| Concern              | Choice                              |
-| -------------------- | ----------------------------------- |
-| Language             | TypeScript                          |
-| Runtime              | Node.js                             |
-| Package manager      | pnpm                                |
-| Local/single-node DB | SQLite                              |
-| Hosted/team DB       | PostgreSQL                          |
-| Validation           | Zod                                 |
-| Testing              | Vitest                              |
-| GitHub API           | Octokit                             |
-| Workflow execution   | Trigger.dev                         |
-| API framework        | Fastify                             |
-| Text UI              | Ink                                 |
-| Web UI               | React / Next.js                     |
-| Security scanning    | pnpm audit/OSV + gitleaks + semgrep |
+| Concern              | Choice                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| Language             | TypeScript                                                                             |
+| Runtime              | Node.js                                                                                |
+| Package manager      | pnpm                                                                                   |
+| Local/single-node DB | SQLite                                                                                 |
+| Hosted/team DB       | PostgreSQL                                                                             |
+| Validation           | Zod                                                                                    |
+| Testing              | Vitest                                                                                 |
+| GitHub API           | Octokit                                                                                |
+| Workflow execution   | In-repo DB-backed task queue (`packages/triggerdev/`) — formerly Trigger.dev, replaced |
+| API framework        | Fastify                                                                                |
+| Text UI              | Ink                                                                                    |
+| Web UI               | React / Next.js                                                                        |
+| Security scanning    | pnpm audit/OSV + gitleaks + semgrep                                                    |
 
 **Local setup prerequisite:** the root `package.json`'s `build`/`typecheck`/`lint`/`test` scripts
 shell out to nested `pnpm -r ...`/`pnpm --filter ...` calls, so `pnpm` must be resolvable on

@@ -1,16 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type {
-  DbClient,
-  TxClient,
-  ConfigBackend,
-  SecretBackend,
-  PlannerAgentAdapter,
-  CommandEnvelope,
-} from '@minicoder/core';
+import type { DbClient, TxClient, PlannerAgentAdapter, CommandEnvelope } from '@minicoder/core';
 import {
-  MissingSecretError,
   FeatureExecutionState,
   GapSeverity,
   TransactionalCommandExecutor,
@@ -27,7 +17,7 @@ import { humanActor } from './tasks/actor.js';
 import { MockTriggerRunner } from './mock-runner.js';
 import { getRunByTriggerdevId } from './metadata.js';
 import { ALL_TASK_IDS } from './task-ids.js';
-import { loadTriggerConfig } from './config.js';
+import { TASK_REGISTRY } from './task-registry.js';
 import { assertSchemaReady } from './db.js';
 import { GenerateFeatureBacklogPayload as GenerateFeatureBacklogPayloadSchema } from './tasks/types.js';
 
@@ -116,14 +106,14 @@ describe('ALL_TASK_IDS', () => {
 
   // HIGH-1 code-review fix (Phase 10 PR review): run-review was added to ALL_TASK_IDS with a
   // runImpl/payload schema/tests, but was never registered as a Trigger.dev SDK task in
-  // triggerdev-tasks.ts, so a live deployment would never schedule it. A static source scan (not
-  // an import — @trigger.dev/sdk/v3's `task()` requires a live Trigger.dev context this unit test
-  // doesn't have) keeps every ALL_TASK_IDS entry synchronized with an actual `task({ id: ... })`
-  // registration going forward.
-  it('every ALL_TASK_IDS entry has a corresponding task({ id: ... }) registration in triggerdev-tasks.ts', () => {
-    const source = readFileSync(join(__dirname, 'triggerdev-tasks.ts'), 'utf-8');
+  // triggerdev-tasks.ts, so a live deployment would never schedule it. Originally a static source
+  // scan (a live Trigger.dev context wasn't available to a unit test); now that task registration
+  // is a plain in-memory map (task-registry.ts's TASK_REGISTRY, replacing triggerdev-tasks.ts's
+  // task({ id: ... }) calls), this asserts against that map directly instead of grepping source
+  // text — same intent (nothing silently un-registered), simpler mechanism.
+  it('every ALL_TASK_IDS entry has a corresponding TASK_REGISTRY entry', () => {
     for (const taskId of ALL_TASK_IDS) {
-      expect(source, `missing task registration for '${taskId}'`).toContain(`id: '${taskId}'`);
+      expect(TASK_REGISTRY.has(taskId), `missing task registration for '${taskId}'`).toBe(true);
     }
   });
 });
@@ -1695,116 +1685,6 @@ describe('all 15 tasks write triggerdev_runs rows via MockTriggerRunner', () => 
   });
 });
 
-// ── loadTriggerConfig unit tests ─────────────────────────────────────────────
-
-function makeConfig(values: Record<string, string>): ConfigBackend {
-  return {
-    get: (k) => values[k],
-    getRequired: (k) => {
-      const v = values[k];
-      if (!v) throw new Error(`Required config missing: ${k}`);
-      return v;
-    },
-  };
-}
-
-function makeSecrets(values: Record<string, string>): SecretBackend {
-  return {
-    get: async (k) => {
-      const v = values[k];
-      if (!v) throw new MissingSecretError(k);
-      return v;
-    },
-    set: async (k, v) => {
-      values[k] = v;
-    },
-    delete: async (k) => {
-      delete values[k];
-    },
-    list: async () => [],
-  };
-}
-
-const VALID_SECRET = 'a'.repeat(64);
-const VALID_API_KEY = 'secret-api-key';
-const SELF_HOST_URL = 'http://localhost:3040';
-
-describe('loadTriggerConfig', () => {
-  it('loads self-host-single-node config with required values', async () => {
-    const cfg = await loadTriggerConfig(
-      makeConfig({
-        TRIGGERDEV_BACKEND: 'self-host-single-node',
-        TRIGGERDEV_API_URL: SELF_HOST_URL,
-      }),
-      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
-    );
-    expect(cfg.backend).toBe('self-host-single-node');
-    expect(cfg.apiUrl).toBe(SELF_HOST_URL);
-    expect(cfg.apiKey).toBe(VALID_API_KEY);
-    expect(cfg.webhookSecret).toBe(VALID_SECRET);
-  });
-
-  it('defaults backend to self-host-single-node when TRIGGERDEV_BACKEND is not set', async () => {
-    const cfg = await loadTriggerConfig(
-      makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
-      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
-    );
-    expect(cfg.backend).toBe('self-host-single-node');
-  });
-
-  it('uses cloud URL when backend is cloud', async () => {
-    const cfg = await loadTriggerConfig(
-      makeConfig({ TRIGGERDEV_BACKEND: 'cloud' }),
-      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
-    );
-    expect(cfg.apiUrl).toBe('https://api.trigger.dev');
-  });
-
-  it('throws on invalid TRIGGERDEV_BACKEND value', async () => {
-    await expect(
-      loadTriggerConfig(
-        makeConfig({ TRIGGERDEV_BACKEND: 'invalid-backend', TRIGGERDEV_API_URL: SELF_HOST_URL }),
-        makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
-      ),
-    ).rejects.toThrow("Invalid TRIGGERDEV_BACKEND value: 'invalid-backend'");
-  });
-
-  it('throws when TRIGGERDEV_API_KEY is missing', async () => {
-    await expect(
-      loadTriggerConfig(
-        makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
-        makeSecrets({ TRIGGERDEV_WEBHOOK_SECRET: VALID_SECRET }),
-      ),
-    ).rejects.toBeInstanceOf(MissingSecretError);
-  });
-
-  it('throws when TRIGGERDEV_WEBHOOK_SECRET is missing', async () => {
-    await expect(
-      loadTriggerConfig(
-        makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
-        makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY }),
-      ),
-    ).rejects.toBeInstanceOf(MissingSecretError);
-  });
-
-  it('throws when TRIGGERDEV_WEBHOOK_SECRET is shorter than 64 chars', async () => {
-    await expect(
-      loadTriggerConfig(
-        makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
-        makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: 'short' }),
-      ),
-    ).rejects.toThrow('too short');
-  });
-
-  it('accepts a webhook secret of exactly 64 chars', async () => {
-    const cfg = await loadTriggerConfig(
-      makeConfig({ TRIGGERDEV_API_URL: SELF_HOST_URL }),
-      makeSecrets({ TRIGGERDEV_API_KEY: VALID_API_KEY, TRIGGERDEV_WEBHOOK_SECRET: 'b'.repeat(64) }),
-    );
-    expect(cfg.webhookSecret).toHaveLength(64);
-  });
-});
-
 // ── assertSchemaReady ────────────────────────────────────────────────────────
 
 describe('assertSchemaReady', () => {
@@ -1820,6 +1700,54 @@ describe('assertSchemaReady', () => {
     const raw = new Database(':memory:');
     const db = new SqliteDbClient(raw);
     await expect(assertSchemaReady(db)).rejects.toThrow('triggerdev_runs table not found');
+    // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
+  });
+
+  // PR #75 review fix (MEDIUM-4): a partially-migrated DB (has the older triggerdev_runs table,
+  // but not the newer task_queue table from migration 0017) previously passed this check and only
+  // failed later, at first enqueue/poll, with a much less actionable error.
+  it('throws with a clear message when triggerdev_runs exists but task_queue does not', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const { SqliteDbClient } = await import('@minicoder/persistence-sqlite');
+    const raw = new Database(':memory:');
+    raw.exec(`
+      CREATE TABLE triggerdev_runs (
+        id TEXT PRIMARY KEY,
+        triggerdev_run_id TEXT NOT NULL UNIQUE,
+        triggerdev_task_id TEXT NOT NULL,
+        triggerdev_status TEXT NOT NULL
+      )
+    `);
+    const db = new SqliteDbClient(raw);
+    await expect(assertSchemaReady(db)).rejects.toThrow('task_queue table not found');
+    // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
+  });
+
+  // PR #75 round-2 review fix (HIGH-1, partial): task_concurrency_gates (added to migration 0017
+  // by the first review round's HIGH-2 fix) must be probed too — without this, a DB missing only
+  // that table would pass this check and fail later inside TaskQueueDispatcher's claim
+  // transaction, with a much less actionable raw SQL error.
+  it('throws with a clear message when task_queue exists but task_concurrency_gates does not', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const { SqliteDbClient } = await import('@minicoder/persistence-sqlite');
+    const raw = new Database(':memory:');
+    raw.exec(`
+      CREATE TABLE triggerdev_runs (
+        id TEXT PRIMARY KEY,
+        triggerdev_run_id TEXT NOT NULL UNIQUE,
+        triggerdev_task_id TEXT NOT NULL,
+        triggerdev_status TEXT NOT NULL
+      );
+      CREATE TABLE task_queue (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+      );
+    `);
+    const db = new SqliteDbClient(raw);
+    await expect(assertSchemaReady(db)).rejects.toThrow('task_concurrency_gates table not found');
     // no close — GC handles teardown (explicit close causes SIGSEGV via double-free of Statement finalizers)
   });
 });

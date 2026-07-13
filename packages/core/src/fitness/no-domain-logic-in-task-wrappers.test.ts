@@ -15,10 +15,13 @@ import * as path from 'path';
 
 const WORKFLOW_SRC = path.resolve(__dirname, '../../../../workflow/src');
 const TRIGGERDEV_TASKS_SRC = path.resolve(__dirname, '../../../../triggerdev/src/tasks');
-const TRIGGERDEV_WRAPPER_SRC = path.resolve(
-  __dirname,
-  '../../../../triggerdev/src/triggerdev-tasks.ts',
-);
+// Trigger.dev replacement: triggerdev-tasks.ts (task({ id, ... }) registration) was deleted and
+// replaced by task-registry.ts (the plain TASK_REGISTRY map) + task-worker.ts (the polling
+// dispatcher) — both are the same category of thin wrapper this fitness test guards.
+const TRIGGERDEV_WRAPPER_SRCS = [
+  path.resolve(__dirname, '../../../../triggerdev/src/task-registry.ts'),
+  path.resolve(__dirname, '../../../../triggerdev/src/task-worker.ts'),
+];
 
 const BANNED_PATTERNS = [
   { pattern: 'StateTransitionValidator', description: 'StateTransitionValidator import' },
@@ -69,7 +72,7 @@ describe('Architectural fitness: packages/workflow has no domain logic', () => {
 
 describe('Architectural fitness: packages/triggerdev task files have no domain logic', () => {
   const taskFiles = collectTsFiles(TRIGGERDEV_TASKS_SRC);
-  const wrapperFiles = fs.existsSync(TRIGGERDEV_WRAPPER_SRC) ? [TRIGGERDEV_WRAPPER_SRC] : [];
+  const wrapperFiles = TRIGGERDEV_WRAPPER_SRCS.filter((f) => fs.existsSync(f));
   const files = [...taskFiles, ...wrapperFiles];
 
   it('triggerdev tasks directory is scannable', () => {

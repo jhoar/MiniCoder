@@ -23,6 +23,8 @@
     "react": "17.0.2"
   },
   "devDependencies": {
-    "@types/react": "^17.0.83"
+    "@types/better-sqlite3": "*",
+    "@types/react": "^17.0.83",
+    "better-sqlite3": "*"
   }
 }

@@ -56,8 +56,8 @@ function isTransientRace(err: unknown): boolean {
 export type GithubClientFactory = () => Promise<GitHubClient>;
 
 /**
- * No live GitHubClient is injectable at the Trigger.dev task boundary the way a
- * PlannerAgentAdapter is (see resolveDefaultPlannerAdapter in triggerdev-tasks.ts) — this task
+ * No live GitHubClient is injectable at the task boundary the way a
+ * PlannerAgentAdapter is (see resolveDefaultPlannerAdapter in task-registry.ts) — this task
  * constructs an OctokitGitHubClient directly from env, since GitHub credentials (unlike agent
  * adapters) are a single deployment-wide secret, not a per-call injected dependency. Fails fast
  * with an actionable error if GITHUB_TOKEN is unset, matching the "not configured yet" pattern

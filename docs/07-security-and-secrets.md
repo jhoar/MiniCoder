@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.0.7
-> Last-updated: 2026-07-07
+> Version: 1.1.0
+> Last-updated: 2026-07-13
 
 This document is the authoritative security and secrets specification. It expands the principles in
 [`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
@@ -148,7 +148,7 @@ implementation for the first time:
 - **Deliberate trust-boundary split: the LLM code-generation call is host-side, not
   sandboxed.** `CodexCoderAdapter.run()` starts the sandbox for clone/list-files/write/commit/push,
   but calls `CodeGenerationProvider.generate()` (a plain `fetch`, `HttpCodeGenerationProvider`) in
-  the Trigger.dev task process itself — the _same_ process that holds `CODE_GEN_API_KEY` and
+  the Workflow Layer task-worker process itself — the _same_ process that holds `CODE_GEN_API_KEY` and
   `GITHUB_TOKEN` as environment variables. This is intentional, not an oversight: the sandbox
   container is the untrusted-code-execution boundary (it runs `pnpm install`/`pnpm test` against
   LLM-generated files and, eventually, project-supplied test/build scripts), so `CODE_GEN_API_KEY`
@@ -176,10 +176,12 @@ implementation for the first time:
 
 - Task payloads carry **references and IDs, never secrets** and never raw secret-bearing material.
 - Context packs (already secret-free) are the only sanctioned source of task input.
-- **Data residency:** self-host keeps payloads in-boundary; **Trigger.dev Cloud transmits payloads
-  to managed infrastructure**. Deployments with data-residency constraints must use a self-host
-  backend. This is a **security/compliance** decision, not merely a deployment-config decision (see
-  `00-glossary-and-terms.md` §6.2, `01-system-specification.md` §14).
+- **Data residency:** task payloads never leave the deployment's own database — the Workflow Layer
+  execution backend is an in-repo, DB-backed task queue (`packages/triggerdev/`) with no managed/
+  Cloud tier to reason about. **Superseded, kept for historical context:** this system previously
+  ran on Trigger.dev, where choosing the Trigger.dev Cloud tier over a self-host backend was a real
+  security/compliance decision (payloads left the deployment's boundary) — that tier no longer
+  exists (see `00-glossary-and-terms.md` §6.2, `01-system-specification.md` §14).
 - The "no secret in task payloads" rule is enforced as a Phase 2 architectural fitness test (see
   `06-implementation-plan.md` Phase 2). Implemented at:
   `packages/core/src/fitness/no-secret-in-task-payloads.test.ts` (RF-12). The test verifies that
@@ -187,37 +189,16 @@ implementation for the first time:
   applied via `defaultRedactor.redactObject()` before every outbox payload is serialized
   (`packages/core/src/commands/helpers.ts`).
 
-## 6b. Trigger.dev Webhook-Secret Management (Phase 3)
+## 6b. Trigger.dev Webhook-Secret Management (Phase 3) — superseded, removed
 
-MiniCoder uses two secrets when integrating with the self-hosted Trigger.dev server:
-
-- **`TRIGGERDEV_API_KEY`** — authenticates the MiniCoder application and task containers to the
-  Trigger.dev webapp API. Set as `TRIGGER_ACCESS_TOKEN` in the Docker Compose environment and
-  injected into task containers at runtime. Must be treated as a credential: stored only in the
-  secret backend, never committed to source control or included in task payloads.
-- **`TRIGGERDEV_WEBHOOK_SECRET`** — verifies that inbound payloads from the Trigger.dev server
-  have not been tampered with (see rotation procedure below).
-
-`TRIGGERDEV_WEBHOOK_SECRET` must be:
-
-- **Stored only in the secret backend** (`EnvSecretBackend` or `ManagedSecretBackend`), never
-  committed to source control or included in task payloads.
-- **Set in both the Trigger.dev webapp** (`TRIGGER_WEBHOOK_SECRET` env var in
-  `infra/docker-compose.triggerdev.yml`) and the **MiniCoder application** (`TRIGGERDEV_WEBHOOK_SECRET`
-  env var, accessed via `ConfigBackend`).
-- **At least 32 bytes of cryptographic randomness**: `openssl rand -hex 32`
-
-**Rotation procedure** (zero-downtime):
-
-1. Generate a new secret: `openssl rand -hex 32`
-2. Configure MiniCoder to accept both current and new secrets simultaneously (brief overlap window).
-3. Update `TRIGGER_WEBHOOK_SECRET` in the Trigger.dev webapp and restart `triggerdev-webapp`.
-4. Update `TRIGGERDEV_WEBHOOK_SECRET` in the MiniCoder secret backend.
-5. Remove the previous secret from the MiniCoder overlap window after the next successful delivery.
-6. Record the rotation in the audit log.
-
-See `04-testing-validation-state-lifecycle.md` §11 (Phase 3 runbook) for the full step-by-step
-procedure including pre-conditions and rollback path.
+**Trigger.dev has been removed** (see `00-glossary-and-terms.md` §6, `01-system-specification.md`
+§14, and CLAUDE.md's "Task Worker Operational Constraints" section). The Workflow Layer execution
+backend is now an in-repo, DB-backed task queue (`packages/triggerdev/`) that the API/CLI processes
+talk to directly over the shared database — there is no external Trigger.dev server, so
+`TRIGGERDEV_API_KEY`/`TRIGGERDEV_WEBHOOK_SECRET`/`TRIGGER_ACCESS_TOKEN`/`TRIGGER_WEBHOOK_SECRET` no
+longer exist as credentials anywhere in this codebase, and there is nothing to rotate. This section
+is kept only for historical context on what these secrets used to protect; do not configure or
+expect any of them in a current deployment.
 
 ## 7. Prompt-Injection and Untrusted Content
 

@@ -1,18 +1,20 @@
 /**
  * `POST /commands/{request-coder-run,request-review,recompute-merge-gate}` — "enqueue" routes.
  * `request-coder-run`, `request-review`, and `recompute-merge-gate` are not `CommandHandler`s;
- * they are whole Trigger.dev task orchestrations (`runCoderTask`/`runReviewTask`/`runMergeGateTask`
- * in `packages/triggerdev/src/triggerdev-tasks.ts`, each with a `.trigger(payload)` method). These
- * routes call `.trigger()` and return `{triggerdevRunId, accepted}` — a deliberate deviation from
- * the standard command envelope, since there is no synchronous `CommandResult` to report at
- * request time (the task runs asynchronously on the Workflow Layer).
+ * they are whole task orchestrations (`run-coder`/`run-review`/`run-merge-gate` in
+ * `packages/triggerdev/src/task-registry.ts`'s `TASK_REGISTRY`, executed asynchronously by
+ * `minicoder tasks worker`'s `TaskQueueDispatcher`, not inline in this request). These routes call
+ * `TaskTriggerClient`'s `trigger*` methods (which enqueue a `task_queue` row — see
+ * `default-task-trigger-client.ts`) and return `{triggerdevRunId, accepted}` — a deliberate
+ * deviation from the standard command envelope, since there is no synchronous `CommandResult` to
+ * report at request time (the task runs asynchronously on the Workflow Layer).
  *
  * "request fixes" (docs/01 §9) has no standalone handler or task of its own — `StartFixingCommand`
  * lives inside `run-review.ts`'s own decision chain (`changes_requested -> fixing`). Per the
  * confirmed Phase 13 scope decision, it is served by re-triggering `request-review`; no separate
  * route exists for it.
  *
- * No default Trigger.dev SDK client is constructed here (mirroring the established "no default
+ * No default task-trigger client is constructed here (mirroring the established "no default
  * PlannerAgentAdapter/ArbiterAgentAdapter, inject only" pattern for capabilities with no shipped
  * reference wiring at this layer) — a live deployment supplies a `TaskTriggerClient` at server
  * startup (see `app.ts`); omitting it fails fast with an actionable error only when one of these

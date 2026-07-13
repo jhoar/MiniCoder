@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.5.0
-> Last-updated: 2026-07-11
+> Version: 1.6.0
+> Last-updated: 2026-07-13
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -21,7 +21,8 @@ tests, Docker, Docker Compose, Kubernetes, CI, and staging.
 
 All stateful subsystems must have lifecycle-management tools for development, CI, staging, and
 production-safe maintenance. Stateful subsystems include the MiniCoder database; the Workflow
-Layer's tasks, runs, queues, schedules, retries, and waitpoints (Trigger.dev); GitHub
+Layer's tasks, runs, and retries (an in-repo, DB-backed task queue — `packages/triggerdev/`,
+formerly Trigger.dev); GitHub
 webhook/event state; GitHub
 PR/check/review simulation; agent-adapter run state; artifact exports/imports; cost records; human
 approval records; and final design document records.
@@ -37,7 +38,7 @@ fixtures, API commands, mock adapters, or test-mode approvals.
 ### 3.2 Mock Providers by Default
 
 Most tests must run without real Codex, real Claude, real paid LLM calls, real GitHub repository
-mutation, real human approval, or real production Trigger.dev state.
+mutation, real human approval, or real production task-queue state.
 
 ### 3.3 Deterministic Scenarios
 
@@ -82,7 +83,7 @@ Cover pure/domain logic: state-machine transitions, policy checks, feature selec
 validation, planning-readiness scoring, clarification gap classification, review-finding
 classification, merge-gate evaluation, budget-gate evaluation, idempotency behavior, disagreement
 detection, and final-design-document eligibility. Unit tests must not require Docker, GitHub,
-Trigger.dev, real agents, or network access.
+the task-queue worker, real agents, or network access.
 
 ### 4.2 Integration Tests
 
@@ -123,9 +124,9 @@ blocking gap unresolved → no backlog activation
 review loop exceeded → human_required
 budget exceeded → paused_budget_exceeded or waiting_for_budget_approval (glossary §3.8)
 GitHub event race → workflow invalidated and reconciled
-Trigger.dev task retry → idempotent completion
-Trigger.dev waitpoint lost → reconciliation detects issue
-database says running but Trigger.dev says failed → recovery path
+task-queue task retry → idempotent completion
+task-queue row stuck in "processing" → stale-claim recovery reclaims it
+database says running but task-queue says failed → recovery path
 ```
 
 ### 4.4 Deployment Tests
@@ -154,24 +155,26 @@ section specifies the behaviors each family must support.
   tenant/project, create isolated test schema/database, export diagnostics, restore from backup,
   validate migration status.
 
-### 5.2 Trigger.dev Lifecycle
+### 5.2 Workflow Layer / Task-Queue Lifecycle
 
 `minicoder trigger deploy | list-runs | inspect-run | cancel-run | replay-run | drain-queue |
-reset-dev | validate | reconcile`.
+reset-dev | validate | reconcile` (formerly "Trigger.dev Lifecycle" — see CLAUDE.md's "Task Worker
+Operational Constraints" section) plus `minicoder tasks worker | drain`.
 
-Must handle stuck runs, failed runs, waiting runs, cancelled runs, duplicate runs, replayed runs,
-orphaned waitpoints, queue backlog, and retry storms. Database correlation records track
-`triggerdev_run_id`, `triggerdev_task_id`, `triggerdev_status`, `last_seen_at`,
-`linked_workflow_event_id`, `linked_agent_run_id`, and `linked_feature_run_id` (table
-`triggerdev_runs`, see [`01-system-specification.md`](01-system-specification.md) §8).
+Must handle stuck runs, failed runs, cancelled runs, duplicate runs, replayed runs, queue backlog,
+and retry storms. Database correlation records track `triggerdev_run_id`, `triggerdev_task_id`,
+`triggerdev_status`, `last_seen_at`, `linked_workflow_event_id`, `linked_agent_run_id`, and
+`linked_feature_run_id` (table `triggerdev_runs`, see
+[`01-system-specification.md`](01-system-specification.md) §8), plus the queue-mechanics table
+`task_queue` (`task_id`, `payload`, `idempotency_key`, `status`, `attempts`, `next_retry_at`).
 
 ### 5.3 Workflow State Lifecycle
 
 `minicoder state inspect | validate | reconcile | doctor | export-diagnostics | repair --dry-run`.
 
-`doctor` detects database/Trigger.dev mismatch, database/GitHub mismatch, orphaned feature runs,
-orphaned waitpoints, stale locks, stuck `human_required` states, failed outbox events, unprocessed
-inbox events, stale artifact exports, and inconsistent cost records.
+`doctor` detects database/task-queue mismatch, database/GitHub mismatch, orphaned feature runs,
+stale locks, stuck `human_required` states, failed outbox events, unprocessed inbox events, stale
+artifact exports, and inconsistent cost records.
 
 ### 5.4 GitHub Simulation (test/dev only) and Webhook Receiver
 
@@ -195,8 +198,8 @@ Required mock adapters: `MockPlannerAdapter`, `MockCoderAdapter`, `MockReviewerA
 
 Required mock external systems: `MockGitHubProvider`, `MockTriggerRunner`, `MockCostProvider`,
 `MockArtifactStorage`. **Canonical test seam:** `MockTriggerRunner` is the seam for unit and
-integration tests; the real Trigger.dev test-harness wrapper is used **only** in the dedicated
-Trigger.dev integration job. (Full unattended testability holds only because domain logic lives in
+integration tests; the real `TaskQueueDispatcher`/`minicoder tasks worker` is exercised **only** in
+the dedicated task-queue integration job. (Full unattended testability holds only because domain logic lives in
 Orchestrator Core and task wrappers stay logic-free — enforced by the Phase 2 architectural fitness
 tests; see `06-implementation-plan.md` Phase 2.)
 
@@ -244,9 +247,10 @@ minicoder db reset --apply --yes --confirmation <token> --env development \
 
 GitHub Actions runs lint, typecheck, unit tests, integration tests, migration validation, a system
 test smoke scenario, a **security scan** (dependency audit, secret scan, SAST — see
-[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §7), Docker build, Docker Compose test (where
-applicable), and Trigger.dev task deployment validation. Longer system tests may run nightly or on
-release branches.
+[`00-glossary-and-terms.md`](00-glossary-and-terms.md) §7), and Docker build (where applicable).
+Longer system tests may run nightly or on release branches. There is no separate task-queue
+"deployment" job to run — the Workflow Layer worker ships as part of the ordinary application
+build (see CLAUDE.md's "Task Worker Operational Constraints" section).
 
 **Security scan job** (`.github/workflows/ci.yml`'s `security-scan`, issue #12) runs four checks,
 every third-party action/tool pinned to a commit SHA or image digest, with least-privilege
@@ -279,7 +283,7 @@ failure, and produce diagnostics when configured.
 
 Satisfied when unit tests run without external services; integration tests run with disposable
 databases and mocked providers; system tests run without real LLM calls or manual approval; Docker
-Compose and Kubernetes system tests run non-interactively; database, Trigger.dev, and state
+Compose and Kubernetes system tests run non-interactively; database, task-queue, and state
 lifecycle/doctor commands exist; GitHub simulation commands exist; production-destructive operations
 are guarded; and CI can execute meaningful MiniCoder workflows automatically.
 
@@ -300,24 +304,24 @@ Required runbooks:
   **destructive column-change recipe**: SQLite's create-new-table → copy → drop → rename rebuild
   pattern (SQLite has limited `ALTER`), with the PostgreSQL equivalent. **Dialect-specific DDL is
   forbidden outside an approved migration helper**, keeping one migration set valid on both targets.
-- **Local footprint** — `infra/docker-compose.triggerdev.yml` ships a full **8-service v4
-  execution stack**: Postgres, Redis, Electric (sync), webapp, Docker registry, MinIO (object
-  store), docker-socket-proxy, and supervisor (worker). Even a "local SQLite" install therefore
-  runs 8 additional Docker services. The supervisor uses the Docker socket (via the proxy) to
-  launch task containers, so the host Docker daemon must be running. ClickHouse (analytics) is
-  omitted from the development stack (`RUN_REPLICATION_ENABLED=false`); add it for production
-  following the official guide at
-  `https://github.com/triggerdotdev/trigger.dev/tree/main/hosting/docker`. The default outbox
-  drainer is a Trigger.dev scheduled task, so outbox liveness inherits the single-node SPOF; the
-  **persistent background-worker** drainer alternative (`01-system-specification.md` §6) decouples
-  outbox liveness from the scheduler.
-- **Trigger.dev (self-host) operations** — `infra/docker-compose.triggerdev.yml` ships a full v4
-  execution stack (9 services: init, Postgres, Redis, Electric, webapp, registry, MinIO,
-  docker-socket-proxy, supervisor). See the Phase 3 runbook in §11 for the complete resource
-  sizing table, required env vars, startup procedure, and upgrade/backup procedures.
+- **Local footprint** — **superseded, kept for historical context.** This system previously
+  required `infra/docker-compose.triggerdev.yml`'s 9-service Trigger.dev stack (Postgres, Redis,
+  Electric, webapp, Docker registry, MinIO, docker-socket-proxy, supervisor, plus an init
+  container) even for a "local SQLite" install. Trigger.dev has been removed: the Workflow Layer's
+  execution backend is now `minicoder tasks worker`, a plain long-running Node process with **zero
+  extra containers**, polling the same database (SQLite or PostgreSQL) the rest of the deployment
+  already uses. The default outbox drainer remains a periodically-invoked Workflow Layer task, so
+  outbox liveness still inherits whatever single-node/HA posture the worker itself runs under; the
+  **persistent background-worker** drainer alternative (`01-system-specification.md` §6) still
+  decouples outbox liveness from that cadence the same way it always did.
+- **Trigger.dev (self-host) operations** — superseded, removed. See the "Phase 3 — Trigger.dev
+  (Self-Host) Operations Runbook — SUPERSEDED" banner in §11 below for the current equivalents
+  (`minicoder tasks worker`/`drain`, and `minicoder trigger`'s now-real subcommands) — that
+  runbook's sizing table, required env vars, startup procedure, and upgrade/backup procedures all
+  describe infrastructure that no longer exists.
 
 - **Stuck-workflow recovery** — detect via `state doctor`; reconcile (`state reconcile`);
-  cancel/replay orphaned runs; clear stale locks/leases and orphaned waitpoints.
+  cancel/replay orphaned runs; clear stale locks/leases.
 - **GitHub webhook replay** — reprocess missed or failed inbox events; fall back to scheduled
   reconciliation; verify dedup keys prevent double-processing.
 - **Secret rotation** — rotate GitHub App/PAT, provider tokens, and webhook signing secrets with
@@ -472,7 +476,30 @@ Expected output: all steps print `✓`; exits 0.
 
 ---
 
-### Phase 3 — Trigger.dev (Self-Host) Operations Runbook
+### Phase 3 — Trigger.dev (Self-Host) Operations Runbook — SUPERSEDED, KEPT FOR HISTORICAL CONTEXT
+
+> **Trigger.dev has been removed.** Everything below this point through "Phase 7 — GitHub
+> Integration and Reconciliation Runbook" describes operating the self-hosted Trigger.dev v4 stack
+> (`infra/docker-compose.triggerdev.yml`, since deleted) that Phase 3 originally shipped. The
+> Workflow Layer execution backend is now an in-repo, DB-backed task queue
+> (`packages/triggerdev/src/task-registry.ts` + `task-worker.ts`) with no external service, no
+> Docker Compose stack, no webapp URL, and no separate management-API credentials — see
+> CLAUDE.md's "Task Worker Operational Constraints" section for the current operational model.
+> The real, current equivalents of this runbook's procedures:
+>
+> - **Starting the worker**: `minicoder tasks worker` (long-running; replaces "start the Trigger.dev
+>   stack").
+> - **Inspecting/managing runs**: `minicoder trigger list-runs`/`inspect-run`/`cancel-run`/
+>   `replay-run`/`reconcile` are now real, DB-backed commands against `task_queue`/
+>   `triggerdev_runs` — no webapp URL to visit instead.
+> - **Draining the queue**: `minicoder tasks drain --timeout-ms <n>` (replaces "wait for all runs
+>   to reach a terminal state via the webapp").
+> - **Backup/restore**: covered by the deployment's normal SQLite/PostgreSQL backup procedure
+>   (`minicoder db snapshot`/`restore` or your PostgreSQL backup tooling) — there is no separate
+>   "Trigger.dev Postgres" to back up.
+>
+> The historical text below is left as-is (it accurately describes what Phase 3 originally built)
+> rather than rewritten line-by-line — do not follow it against a current deployment.
 
 This runbook covers the `minicoder trigger` commands and the self-hosted single-node Trigger.dev
 stack delivered in Phase 3. The stack definition is `infra/docker-compose.triggerdev.yml`.
@@ -785,9 +812,11 @@ see `07-security-and-secrets.md` for the overlap procedure.
 
 This runbook covers the GitHub App/webhook setup, the standalone webhook receiver
 (`minicoder github serve`), webhook-secret rotation, and reconciliation diagnostics delivered in
-Phase 7 (`packages/github`, `packages/core/src/github/`, migration `0009_pull_requests`). This is
-distinct from the Trigger.dev webhook-secret rotation runbook above (§Phase 3) — the two secrets
-protect different webhook endpoints and rotate independently.
+Phase 7 (`packages/github`, `packages/core/src/github/`, migration `0009_pull_requests`). The
+Phase 3 runbook above described a _separate_ Trigger.dev webhook-secret rotation procedure
+(`TRIGGERDEV_WEBHOOK_SECRET`) that protected a different endpoint; that secret and its rotation
+procedure no longer exist (Trigger.dev has been removed — see the superseded banner at the top of
+§Phase 3). This GitHub webhook secret is unaffected and still rotates exactly as described below.
 
 #### GitHub App setup
 
@@ -844,7 +873,7 @@ production/hosted deployments. Phase 13's Fastify orchestrator API mounts the sa
 
 #### Procedure: Reconciliation diagnostics
 
-- **Force a reconciliation pass** for a project: invoke the `github-reconciliation` Trigger.dev
+- **Force a reconciliation pass** for a project: invoke the `github-reconciliation` Workflow Layer
   task with `{ projectId }` (omit `featureRunId` to sweep every active feature run in the
   project that already has a tracked `pull_requests` row).
 - **Force a reconciliation pass** for a single feature run: invoke `github-reconciliation` with
@@ -1232,9 +1261,10 @@ replay of the first.
 
 - Workflow Layer run visibility (`status`'s "Workflow Layer runs" table, backed by
   `GET /triggerdev-runs`) only ever shows the columns the `triggerdev_runs` table actually has
-  today (task id, status, linked feature run, last-seen timestamp) — there is no retry-count,
-  next-retry, or waitpoint-reason column in the schema to surface, and no dedicated Trigger.dev-run
-  detail read model beyond this. Adding those is future work, not a Phase 14 regression.
+  today (task id, status, linked feature run, last-seen timestamp) — there is no retry-count or
+  next-retry column surfaced there (those now live on the separate `task_queue` table, inspectable
+  via `minicoder trigger inspect-run`), and no dedicated task-queue-run detail read model beyond
+  this. Adding those is future work, not a Phase 14 regression.
 - `minicoder design-doc`'s default (no-subcommand) view is read-only; an empty project correctly
   shows "no design document yet." (Phase 17 added the `generate`/`regenerate`/`request-revision`/
   `approve`/`request-run` write subcommands and a new `minicoder project` command group — see
@@ -1281,7 +1311,7 @@ explain why a project paused at `paused_budget_exceeded`/`waiting_for_budget_app
 
 #### Procedure: Enable prospective (pre-flight) budget forecasting
 
-Opt-in only — unset by default. Set on the `run-coder`/`run-review` Trigger.dev worker process:
+Opt-in only — unset by default. Set on the `run-coder`/`run-review` Workflow Layer worker process:
 
 ```bash
 export CODE_GEN_ESTIMATED_COST_USD=0.50   # run-coder.ts pre-flight estimate
@@ -1298,7 +1328,7 @@ unchanged — this is the default and requires no action.
 
 Opt-in only — unset by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` in the environment, then invoke
 the exporter on whatever interval you want from your own external scheduler (cron, k8s CronJob,
-etc.) — deliberately **not** an always-on Trigger.dev task (issue #67):
+etc.) — deliberately **not** an always-on Workflow Layer task (issue #67):
 
 ```bash
 minicoder observability export-otel [--cursor-id <id>] [--limit <n>]
