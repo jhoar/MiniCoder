@@ -1,0 +1,563 @@
+# MiniCoder User Manual
+
+> **Non-authoritative.** This is a user-facing guide, not a specification. If anything here
+> disagrees with a file under [`docs/`](docs/), the `docs/` file wins — see that directory for the
+> canonical state machines, command matrices, and API contract. Terminology (state names, roles,
+> command names) is used verbatim from [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md).
+
+## What MiniCoder does, in one paragraph
+
+You give MiniCoder a specification. It clarifies anything ambiguous by asking you questions, turns
+the result into an approved backlog of features, and then — one feature at a time — has an AI
+coder write the code, push a branch, open a pull request, wait for CI, have an AI reviewer review
+it, fix what needs fixing, and merge it once your policy gate is satisfied. When every feature is
+merged, it drafts a final design document for you to approve. You interact with it either through
+a terminal (`minicoder ...` commands) or a browser (the Web UI); at a handful of decision points —
+approving the plan, resolving a disagreement between the coder and reviewer, approving a merge, or
+signing off on the final design doc — it stops and waits for a human.
+
+---
+
+## Table of contents
+
+1. [Quick summary of every command](#1-quick-summary-of-every-command)
+2. [Before you start: concepts you need](#2-before-you-start-concepts-you-need)
+3. [Installing and standing up a deployment](#3-installing-and-standing-up-a-deployment)
+4. [End-to-end walkthrough: building a project with MiniCoder](#4-end-to-end-walkthrough-building-a-project-with-minicoder)
+5. [Complete command reference](#5-complete-command-reference)
+6. [Troubleshooting and recovery](#6-troubleshooting-and-recovery)
+7. [Glossary quick-reference](#7-glossary-quick-reference)
+
+---
+
+## 1. Quick summary of every command
+
+| Command | What it's for |
+| --- | --- |
+| `minicoder db migrate/rollback/status/validate/diff` | Manage the database schema. |
+| `minicoder db reset` | Wipe and re-migrate the database (guarded, destructive). |
+| `minicoder db seed/snapshot/restore` | Dev/test fixture and backup helpers. |
+| `minicoder tasks worker` | Run the background worker that executes queued automation tasks. |
+| `minicoder tasks drain` | Wait for the task queue to empty (CI/scripts). |
+| `minicoder trigger list-runs/inspect-run/cancel-run/replay-run/reconcile/validate` | Inspect and manage individual task-queue runs. |
+| `minicoder github serve` | Run the GitHub webhook receiver. |
+| `minicoder github simulate-*` | Fake a GitHub event for local testing (dev/test only). |
+| `minicoder api serve` | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to. |
+| `minicoder status` | Project dashboard: state, automation, workflow health. |
+| `minicoder plan` | View the implementation plan and readiness. |
+| `minicoder plan import-backlog <file>` | Import a hand-written `backlog.md`. |
+| `minicoder clarification` | View clarification questions/answers. |
+| `minicoder features` | List the feature backlog, or (`--human-required`) items awaiting a human. |
+| `minicoder active` | Show the one feature currently being worked on and its PR/CI status. |
+| `minicoder runs` | List agent runs, or (`--timeline`) a merged history for one feature. |
+| `minicoder findings` | List review findings for a feature run. |
+| `minicoder disagreements` | List coder/reviewer disagreements. |
+| `minicoder costs` | List spend, or (`--report`) an aggregate budget breakdown. |
+| `minicoder artifacts` | List generated artifacts (plan.md, backlog.md, final-design-document.md). |
+| `minicoder adapters` | List registered AI adapters (read-only). |
+| `minicoder design-doc` | View, generate, regenerate, request revision on, or approve the final design document. |
+| `minicoder project` | Mark implementation complete, check acceptance validation, complete the project. |
+| `minicoder pause` / `minicoder resume` | Stop/restart automated execution for a project. |
+| `minicoder human resolve-disagreement/resume/retry/skip/block/unblock` | Disposition a feature stuck at `human_required` or `blocked`. |
+| `minicoder merge merge-if-ready` | Approve and execute a merge (the human trigger for merging). |
+| `minicoder merge finalize-if-github-merged` | Recovery command if a merge succeeded on GitHub but wasn't recorded. |
+| `minicoder state inspect/validate/doctor/reconcile/export-diagnostics` | Diagnose and repair workflow health. |
+| `minicoder state repair` | Guarded, two-step repair of orphaned runs. |
+| `minicoder observability export-otel` | Export workflow events to an OpenTelemetry collector. |
+| `minicoder test unit/integration/system/scenario` | Run the automated test suites. |
+
+Full details, every flag, and defaults are in [§5](#5-complete-command-reference).
+
+---
+
+## 2. Before you start: concepts you need
+
+**A project** holds one specification, one implementation plan, one feature backlog, and (later)
+one final design document.
+
+**A feature request** (`FR-001`, `FR-002`, ...) is one backlog item. Each one goes through its own
+execution lifecycle:
+
+```
+approved_pending_execution → selected → coding → code_pushed → pr_opened → ci_running
+→ under_review → changes_requested → fixing → code_pushed → ci_running → under_review
+→ approved_by_policy → merge_ready → merged
+```
+
+If something goes wrong at any point, the feature can land in `human_required` (needs a person to
+decide what happens next) or `blocked` (waiting on something else, usually another feature). A
+human can also `skip` a feature outright.
+
+**Automation** for a whole project can be `running`, `paused_by_operator` (you paused it), or
+paused because a cost budget was hit (`paused_budget_exceeded` / `waiting_for_budget_approval`).
+Only one feature is worked on at a time per project — this is deliberate, not a limitation.
+
+**Roles.** Every action is gated by a role: `viewer` (read-only), `operator` (can trigger runs,
+pause/resume, recompute the merge gate), `approver` (can approve plans, resolve disagreements,
+merge, approve the design document), `admin` (all of the above, plus system-replay actions). Your
+role comes from the API key you're using — see [§3](#3-installing-and-standing-up-a-deployment).
+
+**Where MiniCoder is authoritative vs. GitHub.** MiniCoder's database is the source of truth for
+plans, backlog, and workflow state. GitHub is the source of truth for the actual code, branches,
+commits, PRs, reviews, and CI/merge status — MiniCoder watches GitHub via webhooks (with a
+scheduled reconciliation pass as a fallback) and mirrors what it sees.
+
+---
+
+## 3. Installing and standing up a deployment
+
+### 3.1 Prerequisites
+
+- Node.js and `pnpm` on `PATH` (`corepack enable` if you haven't already).
+- A database: SQLite for local/single-node use, PostgreSQL for a hosted/team deployment. Never put
+  SQLite on a network filesystem.
+- A GitHub repository and a token (`GITHUB_TOKEN`) with permission to push branches, open PRs, and
+  merge — MiniCoder pushes real commits and opens real pull requests against it.
+- An LLM provider endpoint for the coder/reviewer/planner/arbiter/documentation adapters
+  (`CODE_GEN_BASE_URL`, `CODE_GEN_API_KEY`, `CODE_GEN_MODEL` — any OpenAI-compatible endpoint).
+
+### 3.2 First-time setup
+
+```bash
+pnpm install
+minicoder db migrate
+minicoder db validate        # confirms every expected table/index exists
+```
+
+### 3.3 Start the long-running processes
+
+MiniCoder is a handful of independent, always-on processes plus a normal CLI. In a real deployment
+you run all of these (each in its own terminal, container, or service):
+
+```bash
+minicoder api serve                 # the Orchestrator API — the UIs and most read commands need this
+minicoder tasks worker              # executes queued automation (coding, review, merge-gate, etc.)
+minicoder github serve              # receives GitHub webhooks (PR/CI/review events)
+```
+
+Configure the API's key(s) via `MINICODER_API_KEYS` (a JSON array of
+`{key, id, role, actorKind, displayName?}` objects — this is the whole auth model, there's no
+separate login system). Then, for any CLI command or UI that talks to the API:
+
+```bash
+export MINICODER_API_URL=http://localhost:4000   # default if omitted
+export MINICODER_API_KEY=<one of the keys from MINICODER_API_KEYS>
+```
+
+Configure the webhook receiver's `GITHUB_WEBHOOK_SECRET` (and point your repo's webhook at
+`http://<host>/webhooks/github`), and the coder/reviewer's `GITHUB_TOKEN` /
+`CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL`.
+
+### 3.4 Optional: the Text UI and Web UI
+
+Every `minicoder <noun>` command below (`status`, `plan`, `features`, ...) *is* the Text UI — no
+separate install. For the Web UI, run `packages/web`'s Next.js server (it reads the same
+`MINICODER_API_URL`/`MINICODER_API_KEY`), and put it behind a trusted/internal network — it holds
+one shared API credential for every visitor, with no per-user login yet.
+
+---
+
+## 4. End-to-end walkthrough: building a project with MiniCoder
+
+This walks through taking a specification all the way to a merged, documented project. Replace
+`<project>` with your actual project ID throughout.
+
+### Step 1 — Ingest your specification
+
+Feed MiniCoder your spec (a plain-text/markdown description of what you want built). This kicks
+off a planner-adapter-backed readiness assessment.
+
+> Specification ingestion and the readiness assessment run automatically once triggered — this is
+> normally driven by your deployment's own intake path (e.g. the API's `ingest-specification`
+> flow) rather than a bare CLI flag; check with whoever set up your deployment for the exact
+> intake command if the CLI doesn't already have a project ID for you.
+
+Once ingested, check readiness and whether clarification is needed:
+
+```bash
+minicoder status --project <project>
+minicoder plan --project <project>
+```
+
+### Step 2 — Answer clarifying questions (if any)
+
+If the readiness assessment came back `insufficient`, MiniCoder opens a clarification session and
+asks questions before it will draft a plan.
+
+```bash
+minicoder clarification --project <project>
+```
+
+Answer each question through your deployment's clarification-answer path. There's a hard limit of
+3 rounds and a per-round timeout — if you don't answer in time, the session is marked
+`clarification_blocked` and escalated to a human. Once every question in the current round is
+answered, the session completes (`clarification_complete`) and plan generation can proceed.
+
+### Step 3 — Review and approve the plan
+
+Once a plan and its feature backlog exist:
+
+```bash
+minicoder plan --project <project>
+minicoder features --project <project>
+```
+
+If you'd rather hand-author the backlog, write a `backlog.md` and import it:
+
+```bash
+minicoder plan import-backlog backlog.md --project <project> --plan <planId> --actor <you> --dry-run
+minicoder plan import-backlog backlog.md --project <project> --plan <planId> --actor <you>
+```
+
+Submission for approval requires the backlog to have passed validation with no unresolved blocking
+gaps. Approving and activating a plan requires `approver`/`admin` — this is where the plan moves
+`draft → pending_approval → approved → activated_for_execution`, and every feature request becomes
+a feature run at `approved_pending_execution`.
+
+### Step 4 — Let automation run, and watch it work
+
+Once activated, `start-next-feature` picks the next eligible feature (respecting dependency order
+and the one-feature-at-a-time rule), and the pipeline runs on its own: coding → push → PR → CI →
+review → fix loop (if needed) → policy approval. Watch it:
+
+```bash
+minicoder status --project <project>       # overall dashboard
+minicoder active --project <project>       # what's being worked on right now, its PR/CI state
+minicoder runs --project <project>         # agent run history
+minicoder runs --timeline <featureRunId>   # one feature's full chronological history
+```
+
+If you need to pause everything (say, before a maintenance window) and resume later:
+
+```bash
+minicoder pause --project <project> --yes
+minicoder resume --project <project> --yes
+```
+
+### Step 5 — Handle anything that needs you
+
+Two things route to a human: a feature stuck at `human_required`, or one `blocked` on an unmet
+dependency.
+
+```bash
+minicoder features --project <project> --human-required
+```
+
+For each one, decide and act:
+
+```bash
+# The reviewer/coder disagreed and it was escalated — you decide who's right
+minicoder human resolve-disagreement --feature-run <id> --project <project> --actor <you> \
+  --resolution "the reviewer's concern is valid, needs a fix"
+
+# You're satisfied nothing further is needed — send it back to review
+minicoder human resume --feature-run <id> --project <project> --actor <you> --notes "false alarm"
+
+# Start this feature over from scratch
+minicoder human retry --feature-run <id> --project <project> --actor <you> --notes "retry after infra fix"
+
+# Give up on this feature entirely (terminal)
+minicoder human skip --feature-run <id> --project <project> --actor <you> --notes "descoped"
+
+# Block it on something external (and unblock once resolved)
+minicoder human block --feature-run <id> --project <project> --actor <you> --notes "waiting on API access"
+minicoder human unblock --feature-run <id> --project <project> --actor <you> --notes "access granted"
+```
+
+Also watch for a budget pause: if a project hits a soft/hard cost limit, it moves to
+`waiting_for_budget_approval`/`paused_budget_exceeded` and needs an approver override before
+automation continues (check `minicoder costs --project <project>` and `minicoder status`).
+
+### Step 6 — Approve and execute merges
+
+When a feature's review passes and the merge gate is satisfied, it reaches `approved_by_policy`.
+An approver merges it:
+
+```bash
+minicoder merge merge-if-ready --feature-run <id> --project <project> --actor <you>
+```
+
+This re-checks the merge gate one more time, then merges on GitHub, then records the result. If
+GitHub reports the merge succeeded but MiniCoder failed to record it, recover with:
+
+```bash
+minicoder merge finalize-if-github-merged --feature-run <id> --project <project>
+```
+
+### Step 7 — Repeat until the backlog is done
+
+Steps 4–6 repeat automatically, one feature at a time, until every feature request is `merged` or
+`skipped`.
+
+### Step 8 — Final design document
+
+Once every feature is merged (or skipped) and Project Acceptance Validation passes, mark
+implementation complete (you must also attest that CI-only checks — the full test suite, build,
+lint, security scan — have passed out-of-band, since MiniCoder's own database can't run those
+itself):
+
+```bash
+minicoder project validate-acceptance --project <project>          # preview, no transition
+minicoder project mark-implementation-complete --project <project> \
+  --evidence "CI run https://github.com/org/repo/actions/runs/123 all green" --yes
+```
+
+Generate the design document, review it, and either send it back for changes or approve it:
+
+```bash
+minicoder design-doc generate --project <project> --yes
+minicoder design-doc request-run --project <project> --documentation-adapter ClaudeDocumentationAdapter
+minicoder design-doc --project <project>                                   # read the drafted sections
+
+# if it needs changes:
+minicoder design-doc request-revision --project <project> --document <docId> --notes "expand the risk section" --yes
+minicoder design-doc regenerate --project <project> --yes
+
+# once satisfied:
+minicoder design-doc approve --project <project> --document <docId> --yes
+```
+
+### Step 9 — Complete the project
+
+```bash
+minicoder project complete --project <project> --yes
+```
+
+The project is now `project_complete`. `minicoder artifacts --project <project>` will show the
+exported `final-design-document.md` (and the earlier `plan.md`/`backlog.md` snapshots).
+
+---
+
+## 5. Complete command reference
+
+Conventions used below:
+
+- **Transport** tells you what the command actually talks to: **API** (the Orchestrator API over
+  HTTP — needs `minicoder api serve` running and `MINICODER_API_KEY`/`MINICODER_API_URL` set),
+  **DB** (talks to the database directly — needs your DB connection env vars), or **process**
+  (spawns migrations/tests/a server).
+- Every **API**-transport read command supports `--json` to print the raw API response instead of
+  the colorized table view.
+- `<id>` placeholders are the IDs MiniCoder itself generates/returns; there's no fixed format to
+  guess.
+
+### 5.1 Database lifecycle — `minicoder db ...` (DB)
+
+| Subcommand | Purpose | Key flags |
+| --- | --- | --- |
+| `migrate` | Apply all pending migrations. | — |
+| `rollback` | Roll back the most recently applied migration. | — |
+| `status` | Show applied vs. pending migrations. | — |
+| `validate` | Verify every expected table/index exists. | — |
+| `diff` | List migrations on disk not yet applied. | — |
+| `seed` | Insert fixture data. **Dev/test/CI only** (SQLite only). | `--fixture <name>` (default `planning-review-merge`), `--env <env>`, `--project <id>` |
+| `snapshot` | Copy the current SQLite file to a backup, with a metadata sidecar. SQLite only. | `--output <path>` (required, must not exist) |
+| `restore` | Restore SQLite from a snapshot. **Dev/test/CI only.** | `--input <path>` (required), `--env <env>`, `--yes` (required) |
+| `reset` | Drop and re-migrate everything. **Guarded, destructive, two-step.** | See below |
+
+`db reset` is deliberately heavy-handed:
+
+```bash
+# Step 1 — preview and get a confirmation token (expires in 5 minutes)
+minicoder db reset --dry-run --env development --actor <you> --backup-verified
+
+# Step 2 — actually do it
+minicoder db reset --apply --yes --confirmation <token> --env development --actor <you> --backup-verified
+```
+
+Flags: `--env <env>` (required; must be `development`/`test`/`ci` and, if `APP_ENV`/`NODE_ENV` is
+set, must match it exactly), `--actor <name>` (required, audit-logged), `--backup-verified` or
+`--backup-exempt "<reason>"` (one required), `--disposable-db` (required only if
+`APP_ENV`/`NODE_ENV` is completely unset), `--force-host <host>` (only if resetting a PostgreSQL
+host not in `MINICODER_ALLOWED_RESET_HOSTS`). Refuses unconditionally if `APP_ENV`/`NODE_ENV` is
+`production`, no matter what `--env` says.
+
+### 5.2 Task queue (Workflow Layer) — `minicoder tasks ...` / `minicoder trigger ...` (DB)
+
+`minicoder tasks` runs the actual worker:
+
+| Subcommand | Purpose | Key flags |
+| --- | --- | --- |
+| `worker` | Long-running process: polls the task queue and executes claimed tasks until you stop it (Ctrl-C lets in-flight work finish first). | `--poll-interval-ms`, `--batch-size`, `--stale-claim-ms` |
+| `drain` | One-shot: waits until the queue is empty or a timeout elapses (CI use). Exits non-zero on timeout with work left. | `--timeout-ms` (default 60000), `--poll-interval-ms` (default 500) |
+
+`minicoder trigger` inspects/manages individual queued runs (a management console, not a worker):
+
+| Subcommand | Purpose | Key flags |
+| --- | --- | --- |
+| `deploy` | No-op (prints the list of registered task IDs — nothing external to deploy). | — |
+| `list-runs` | List recent runs. | `--task <id>`, `--limit <n>` (default 20) |
+| `inspect-run <runId>` | Show one run's detail. | positional `runId` |
+| `cancel-run <runId>` | Force-fail a stuck run so the worker stops retrying it. | positional `runId` |
+| `replay-run <runId>` | Re-enqueue a run with a fresh idempotency key. | positional `runId` |
+| `drain-queue` | Same as `tasks drain`. | `--timeout-ms`, `--poll-interval-ms` |
+| `reset-dev` | Wipe the whole task queue. **Dev/test/CI only.** | `--yes` (required), `--env <env>` (required, must agree with `APP_ENV`/`NODE_ENV`) |
+| `validate` | Confirm every canonical task ID has a registered handler. | — |
+| `reconcile` | Flag runs whose queue row and run-status row have drifted apart. | `--project <id>` |
+
+### 5.3 GitHub integration — `minicoder github ...`
+
+| Subcommand | Purpose | Transport | Key flags |
+| --- | --- | --- | --- |
+| `serve` | Run the real webhook receiver (`POST /webhooks/github`). Long-running; not environment-guarded — this is meant for production. Needs `GITHUB_WEBHOOK_SECRET`. | process | `--port` (default 3100), `--host` (default `0.0.0.0`) |
+| `simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved` / `simulate-review-changes-requested` / `simulate-branch-protection-ok` | Fake the corresponding GitHub event locally, without a real webhook. **Dev/test/CI only.** | DB | `--project <id>` (required), `--pr-number <n>` (required), plus event-specific optionals (`--merged`, `--check-name`, `--reviewer`, `--head-sha`, `--merge-sha`) |
+
+### 5.4 Orchestrator API — `minicoder api serve` (process)
+
+Starts the Fastify API everything else in this table depends on. `--port` (default 4000),
+`--host` (default `0.0.0.0`). Stays running until stopped; doesn't close the DB connection.
+
+### 5.5 Read/dashboard commands (all API transport, all support `--json`)
+
+| Command | Shows | Key flags |
+| --- | --- | --- |
+| `status --project <id>` | Project + automation state, task-queue health, (if your key is operator+) doctor-check summary. | `--project` (required) |
+| `plan --project <id>` | The implementation plan and readiness assessment. | `--project` (required) |
+| `clarification --project <id> [--session <id>]` | Clarification questions/answers, one session or the latest. | `--project` (required), `--session` |
+| `features --project <id> [--human-required]` | The feature backlog, or (with the flag) only features parked at `human_required`. | `--project` (required), `--human-required`, `--cursor`, `--limit` |
+| `active --project <id>` | The one feature currently in flight and its linked PR/CI status. | `--project` (required) |
+| `runs [--project <id>] [--feature-run <id>]` | Agent run history. | `--project`, `--feature-run`, `--cursor`, `--limit` |
+| `runs --timeline <featureRunId>` | One feature's full merged chronological history (events, runs, findings, PR, cost, approvals). | positional-ish `--timeline <id>` |
+| `findings --feature-run <id>` | Review findings for one feature run. | `--feature-run` (required), `--cursor`, `--limit` |
+| `disagreements [--feature-run <id>] [--state <state>]` | Coder/reviewer disagreements (global if unfiltered). | `--feature-run`, `--state` (`open`/`escalated`/`resolved`), `--cursor`, `--limit` |
+| `costs --project <id>` | Raw cost records + active budget policies. | `--project` (required) |
+| `costs --project <id> --report [--window-days <n>]` | Aggregate spend by scope/feature/provider/model/role. | `--report`, `--window-days` |
+| `artifacts --project <id>` | Generated artifact exports (plan.md, backlog.md, final-design-document.md, ...). | `--project` (required), `--cursor`, `--limit` |
+| `adapters [--adapter <id>]` | Registered AI adapters and their configurations (read-only). | `--adapter` |
+
+### 5.6 Plan and backlog — `minicoder plan ...`
+
+| Subcommand | Transport | Purpose | Key flags |
+| --- | --- | --- | --- |
+| *(bare)* | API | Default view: plan + readiness. | `--project` (required) |
+| `import-backlog <file>` | DB | Parse, validate, preview, and (unless `--dry-run`) import a hand-written `backlog.md`. | positional file, `--project` (required), `--plan` (required), `--actor` (required), `--actor-role` (default `approver`), `--dry-run` |
+
+### 5.7 Design document — `minicoder design-doc ...` (API)
+
+| Subcommand | Transitions | Role needed | Key flags |
+| --- | --- | --- | --- |
+| *(bare)* | — (read-only) | any | `--project` (required), `--document <id>` |
+| `generate` | `implementation_complete → design_document_generating` | operator+ | `--project`, `--yes` (required) |
+| `regenerate` | `design_document_revision_requested → design_document_generating` | operator+ | `--project`, `--yes` (required) |
+| `request-revision` | `design_document_ready_for_review → design_document_revision_requested` | approver+ | `--project`, `--document` (required), `--notes`, `--yes` (required) |
+| `approve` | `design_document_ready_for_review → design_document_approved` | approver+ | `--project`, `--document` (required), `--notes`, `--yes` (required) |
+| `request-run` | Enqueues the drafting task (calls the `DocumentationAgentAdapter`, exports `final-design-document.md`). | operator+ | `--project`, `--documentation-adapter <name>` (required) |
+
+### 5.8 Project lifecycle — `minicoder project ...` (API)
+
+| Subcommand | Transitions | Key flags |
+| --- | --- | --- |
+| `mark-implementation-complete` | `active → implementation_complete` (Project Acceptance Validation must pass) | `--project` (required), `--evidence <text>` (required — your attestation that CI-only checks passed), `--yes` (required) |
+| `validate-acceptance` | (read-only) previews Project Acceptance Validation | `--project` (required) |
+| `complete` | `design_document_approved → project_complete` | `--project` (required), `--yes` (required) |
+
+### 5.9 Automation control — `minicoder pause` / `minicoder resume` (API, operator+)
+
+Both require `--project <id>` and `--yes`. `pause`: `running → paused_by_operator`. `resume`:
+`paused_by_operator → running`.
+
+### 5.10 Human escalation — `minicoder human ...` (DB, dispatches state-machine commands directly)
+
+All subcommands take `--feature-run <id>` (required), `--project <id>` (required), `--actor <id>`
+(required — your identity for the audit trail), `--actor-role` (default `approver`), plus:
+
+| Subcommand | Transition | Extra flags |
+| --- | --- | --- |
+| `resolve-disagreement` | `human_required → changes_requested` | `--resolution <text>` (required), `--disagreement <id>` (optional, defaults to the latest open one) |
+| `resume` | `human_required → under_review` | `--notes <text>` (required), `--disagreement <id>` (optional) |
+| `retry` | `human_required → selected` | `--notes <text>` (required) |
+| `skip` | `human_required → skipped` (terminal) | `--notes <text>` (required) |
+| `block` | `human_required → blocked` | `--notes <text>` (required) |
+| `unblock` | `blocked → approved_pending_execution` | `--notes <text>` (required) |
+
+### 5.11 Merge — `minicoder merge ...` (DB + real GitHub API calls)
+
+| Subcommand | Purpose | Key flags |
+| --- | --- | --- |
+| `merge-if-ready` | Re-evaluates the merge gate, then merges via GitHub, then records the result (or the failure/escalation). | `--feature-run` (required), `--project` (required), `--actor` (required), `--actor-role` (default `approver`), `--merge-method` (default `squash`; `squash`\|`merge`\|`rebase`) |
+| `finalize-if-github-merged` | Recovery: use when GitHub shows the PR merged but MiniCoder never recorded it. Always re-verifies against GitHub first — refuses if GitHub disagrees. | `--feature-run` (required), `--project` (required) |
+
+### 5.12 Diagnostics and repair — `minicoder state ...` (DB)
+
+| Subcommand | Purpose | Key flags |
+| --- | --- | --- |
+| `inspect` | Show one project's or feature run's current state, locks, findings, recent events. | `--project` or `--feature-run` (one required) |
+| `validate` | Confirm every feature-run state is a recognized value. | `--project` |
+| `doctor` | Detect stale locks, stuck queues, orphaned runs. Exits 1 if unhealthy. | `--project`, `--check-github` (opt-in, needs `GITHUB_TOKEN`) |
+| `reconcile` | Clear the anomalies `doctor` found. | `--project <id>` (project-scoped) or `--all` (global; one is required) |
+| `export-diagnostics` | Dump full diagnostics as JSON. | `--project`, `--output <path>` |
+| `repair` | Guarded, two-step repair of orphaned runs (5-minute single-use token, project-bound). | `--project` (required always), then `--dry-run` or `--apply --confirmation <token>` |
+
+### 5.13 Observability — `minicoder observability export-otel` (DB)
+
+Exports `workflow_events` to an OpenTelemetry collector configured via
+`OTEL_EXPORTER_OTLP_ENDPOINT` (no-ops if unset). Meant to be called by your own scheduler (cron,
+k8s CronJob), not run continuously. `--cursor-id <id>` (default `workflow_events_otlp`),
+`--limit <n>` (max events per invocation).
+
+### 5.14 Testing — `minicoder test ...` (process)
+
+| Subcommand | Runs |
+| --- | --- |
+| `unit` | Fast unit tests only. |
+| `integration` | `*.integration.test.ts` files against a real DB. |
+| `system` | Every end-to-end scenario. |
+| `scenario <name>` | One named scenario (e.g. `planning-basic`, `review-loop`, `merge-gate`, `disagreement-arbiter`, `final-design-document`). |
+
+---
+
+## 6. Troubleshooting and recovery
+
+**"Nothing is happening" / automation seems stuck.**
+Run `minicoder status --project <project>` and `minicoder state doctor --project <project>`.
+Check whether automation is `paused_by_operator` (someone paused it — `minicoder resume`) or
+`paused_budget_exceeded`/`waiting_for_budget_approval` (needs an approver's budget override).
+Confirm `minicoder tasks worker` is actually running — nothing advances without it.
+
+**A feature is stuck at `human_required`.**
+That's by design — see [§4 Step 5](#step-5--handle-anything-that-needs-you). Use
+`minicoder findings --feature-run <id>` and `minicoder disagreements --feature-run <id>` to see
+why, then one of the `minicoder human ...` subcommands.
+
+**A feature is `blocked`.**
+Usually an unmet dependency on another feature. Check `minicoder features --project <project>` for
+the dependency's state; once it merges, `blocked` clears on its own. If a human explicitly caused
+the block, use `minicoder human unblock`.
+
+**GitHub shows a PR merged but MiniCoder still shows `merge_ready`.**
+Run `minicoder merge finalize-if-github-merged --feature-run <id> --project <project>`.
+
+**Suspected drift between MiniCoder and GitHub (stuck locks, a PR MiniCoder never noticed).**
+`minicoder state doctor --project <project> --check-github` (needs `GITHUB_TOKEN`), then
+`minicoder state reconcile --project <project>` (or `--all` for a global sweep, which also clears
+stuck queue entries).
+
+**You need to roll back a bad `state repair` or `db reset` accidentally in flight.**
+You can't skip the guard — that's intentional. Re-run with `--dry-run` first, read the preview
+carefully, and only `--apply` with the token it gives you.
+
+**Costs are climbing faster than expected.**
+`minicoder costs --project <project> --report` for the breakdown by feature/provider/model/role;
+`minicoder costs --project <project>` for the raw records.
+
+---
+
+## 7. Glossary quick-reference
+
+The full canonical glossary is [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md).
+The terms you'll actually use day to day:
+
+- **Feature execution states**: `approved_pending_execution`, `selected`, `coding`, `code_pushed`,
+  `pr_opened`, `ci_running`, `under_review`, `changes_requested`, `fixing`, `approved_by_policy`,
+  `merge_ready`, `merged` — plus the escape states `ci_failed`, `merge_failed`, `human_required`,
+  `blocked`, `failed`, `system_failed`, `skipped`.
+- **Automation states**: `running`, `paused_by_operator`, `paused_budget_exceeded`,
+  `waiting_for_budget_approval`.
+- **Planning states**: `draft`, `pending_approval`, `approved`, `activated_for_execution`.
+- **Project states**: `active`, `implementation_complete`, `design_document_generating`,
+  `design_document_ready_for_review`, `design_document_revision_requested`,
+  `design_document_approved`, `project_complete`.
+- **Roles**: `viewer`, `operator`, `approver`, `admin`.
+- **Review finding severities**: `blocking`, `non_blocking`, `question`, `nit`, `out_of_scope`,
+  `requires_human_decision`.
+- **Feature-request IDs**: `FR-<n>` (e.g. `FR-002`); feature branches: `minicoder/FR-<n>`.
