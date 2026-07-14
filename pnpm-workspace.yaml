@@ -1,5 +1,8 @@
 packages:
   - "packages/*"
+overrides:
+  systeminformation: ">=5.31.6"
+  ws: ">=8.21.0"
 allowBuilds:
   esbuild: true
   protobufjs: true
