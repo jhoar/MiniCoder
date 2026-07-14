@@ -583,7 +583,7 @@ minicoder design-doc generate --project <id> --yes                            # 
 minicoder design-doc regenerate --project <id> --yes                          # design_document_revision_requested -> design_document_generating (operator+)
 minicoder design-doc request-revision --project <id> --document <id> --yes [--notes <text>]  # -> design_document_revision_requested (approver+)
 minicoder design-doc approve --project <id> --document <id> --yes [--notes <text>]           # -> design_document_approved (approver+)
-minicoder design-doc request-run --project <id> --documentation-adapter <name> # enqueues run-design-doc (drafts sections, exports final-design-document.md)
+minicoder design-doc request-run --project <id> --documentation-adapter <name> [--idempotency-key <key>] # enqueues run-design-doc (drafts sections, exports final-design-document.md)
 
 # Generic-dispatch and task-enqueue CLI wrappers (previously curl-only — see USER-MANUAL.md §5.0/
 # §5.0.1; API-only, same conventions as the Ink Text UI commands above). Every write/enqueue
