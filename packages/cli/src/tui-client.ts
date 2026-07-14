@@ -3,6 +3,7 @@
  * are the first CLI code in this repo to call `@minicoder/api` over HTTP rather than importing it
  * in-process against the DB — the TUI must go through the Orchestrator API only (docs/05 §1/§10).
  */
+import { randomUUID } from 'crypto';
 import type React from 'react';
 import { ApiClient, resolveApiConfig, runView, ApiError } from '@minicoder/tui';
 
@@ -12,6 +13,21 @@ export function buildApiClient(): ApiClient {
 
 export interface JsonOption {
   json?: boolean;
+}
+
+export interface IdempotencyKeyOption {
+  idempotencyKey?: string;
+}
+
+/**
+ * Every write/enqueue command mints a fresh `Idempotency-Key` by default (a repeated invocation
+ * is a new, distinct submission — the same reasoning `pause.ts`/`resume.ts` already document).
+ * `--idempotency-key <key>` lets an operator supply their own, so a command that times out or
+ * whose response is lost can be safely retried with the *same* key instead of risking a duplicate
+ * side effect (code-review fix — MEDIUM-2).
+ */
+export function resolveIdempotencyKey(prefix: string, opts: IdempotencyKeyOption): string {
+  return opts.idempotencyKey ?? `${prefix}:${randomUUID()}`;
 }
 
 /**

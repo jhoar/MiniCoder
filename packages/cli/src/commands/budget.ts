@@ -1,7 +1,12 @@
-import { randomUUID } from 'crypto';
 import { Command } from 'commander';
 import { renderCommandResultView } from '@minicoder/tui';
-import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
+import {
+  buildApiClient,
+  renderOrJson,
+  resolveIdempotencyKey,
+  type IdempotencyKeyOption,
+  type JsonOption,
+} from '../tui-client.js';
 
 /**
  * `ApproveBudgetOverrideCommand` (previously curl-only, USER-MANUAL.md §5.0 #6) — serves both
@@ -15,17 +20,25 @@ export function createBudgetCommand(): Command {
 
   cmd
     .command('approve-override')
-    .description(
-      'paused_budget_exceeded|waiting_for_budget_approval -> running (approver+)',
-    )
+    .description('paused_budget_exceeded|waiting_for_budget_approval -> running (approver+)')
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--policy <id>', 'budget_policies row being overridden')
     .requiredOption('--reason <text>', 'Override reason')
     .option('--yes', 'Confirm the override (required)')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
       async (
-        opts: { project: string; policy: string; reason: string; yes?: boolean } & JsonOption,
+        opts: {
+          project: string;
+          policy: string;
+          reason: string;
+          yes?: boolean;
+        } & IdempotencyKeyOption &
+          JsonOption,
       ) => {
         if (!opts.yes) {
           console.error('Error: --yes is required to confirm approving the budget override.');
@@ -54,7 +67,10 @@ export function createBudgetCommand(): Command {
                   `paused_budget_exceeded or waiting_for_budget_approval — nothing to override.`,
               );
             }
-            const idempotencyKey = `${template}:${opts.project}:${status.workflowState.version}:${randomUUID()}`;
+            const idempotencyKey = resolveIdempotencyKey(
+              `${template}:${opts.project}:${status.workflowState.version}`,
+              opts,
+            );
             const result = await client.approveBudgetOverride(
               opts.project,
               status.workflowState.version,

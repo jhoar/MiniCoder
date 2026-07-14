@@ -586,7 +586,9 @@ minicoder design-doc approve --project <id> --document <id> --yes [--notes <text
 minicoder design-doc request-run --project <id> --documentation-adapter <name> # enqueues run-design-doc (drafts sections, exports final-design-document.md)
 
 # Generic-dispatch and task-enqueue CLI wrappers (previously curl-only — see USER-MANUAL.md §5.0/
-# §5.0.1; API-only, same conventions as the Ink Text UI commands above)
+# §5.0.1; API-only, same conventions as the Ink Text UI commands above). Every write/enqueue
+# command below also accepts an optional --idempotency-key <key> to reuse a specific key (for
+# safely retrying after a timeout/lost response) instead of minting a fresh one per invocation.
 minicoder spec ingest <file> --project <id> [--content-type <type>]           # operator+
 minicoder clarification answer --project <id> --session <id> --question <id> --text <answer>  # operator+
 minicoder plan submit-for-approval --project <id> --plan <id>                 # operator+; draft -> pending_approval

@@ -1,8 +1,13 @@
-import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import { Command } from 'commander';
 import { renderCommandResultView } from '@minicoder/tui';
-import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
+import {
+  buildApiClient,
+  renderOrJson,
+  resolveIdempotencyKey,
+  type IdempotencyKeyOption,
+  type JsonOption,
+} from '../tui-client.js';
 
 /**
  * `IngestSpecificationCommand` (docs/02 §3) — previously reachable only via a hand-built curl
@@ -18,15 +23,25 @@ export function createSpecCommand(): Command {
     .description('Ingest a specification file (operator+)')
     .requiredOption('--project <id>', 'Project ID')
     .option('--content-type <type>', 'MIME type of the specification content', 'text/plain')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
-      async (file: string, opts: { project: string; contentType: string } & JsonOption) => {
+      async (
+        file: string,
+        opts: { project: string; contentType: string } & IdempotencyKeyOption & JsonOption,
+      ) => {
         const content = fs.readFileSync(file, 'utf-8');
         const client = buildApiClient();
         await renderOrJson(
           opts,
           async () => {
-            const idempotencyKey = `ingest-specification:${opts.project}:${randomUUID()}`;
+            const idempotencyKey = resolveIdempotencyKey(
+              `ingest-specification:${opts.project}`,
+              opts,
+            );
             const result = await client.ingestSpecification(
               opts.project,
               content,

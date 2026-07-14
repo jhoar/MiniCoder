@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { Command } from 'commander';
 import * as fs from 'fs';
 import { createDbClientFromEnv } from '../db-client.js';
@@ -12,18 +11,25 @@ import {
 import type { CommandEnvelope } from '@minicoder/core';
 import { humanActor } from '@minicoder/triggerdev';
 import { renderPlanView, renderCommandResultView } from '@minicoder/tui';
-import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
+import {
+  buildApiClient,
+  renderOrJson,
+  resolveIdempotencyKey,
+  type IdempotencyKeyOption,
+  type JsonOption,
+} from '../tui-client.js';
 
 /** Fetches the plan's current `version` — every write action below needs a live
- * `expectedVersion`, and `listImplementationPlans` is the only read path that carries it. */
+ * `expectedVersion`. Uses `GET /plans/:id` (a direct lookup), not `listImplementationPlans`'s
+ * cursor-paginated listing — scanning only the first page would incorrectly report a valid plan
+ * as missing once it's not on page 1 (code-review fix). */
 async function fetchPlanVersion(
   client: ReturnType<typeof buildApiClient>,
   projectId: string,
   planId: string,
 ): Promise<number> {
-  const { items } = await client.listImplementationPlans(projectId);
-  const plan = items.find((p) => p.id === planId);
-  if (!plan) {
+  const plan = await client.getImplementationPlan(planId);
+  if (plan.project_id !== projectId) {
     throw new Error(`Plan ${planId} not found in project ${projectId}`);
   }
   return plan.version;
@@ -145,14 +151,21 @@ export function createPlanCommand(): Command {
     .description('plan-lifecycle draft -> pending_approval (operator+)')
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--plan <id>', 'Implementation plan ID')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string; plan: string } & JsonOption) => {
+    .action(async (opts: { project: string; plan: string } & IdempotencyKeyOption & JsonOption) => {
       const client = buildApiClient();
       await renderOrJson(
         opts,
         async () => {
           const version = await fetchPlanVersion(client, opts.project, opts.plan);
-          const idempotencyKey = `submit-plan-for-approval:${opts.plan}:${randomUUID()}`;
+          const idempotencyKey = resolveIdempotencyKey(
+            `submit-plan-for-approval:${opts.plan}`,
+            opts,
+          );
           const result = await client.submitPlanForApproval(
             opts.plan,
             opts.project,
@@ -176,9 +189,21 @@ export function createPlanCommand(): Command {
     .requiredOption('--plan <id>', 'Implementation plan ID')
     .option('--notes <text>', 'Approval notes')
     .option('--yes', 'Confirm the approval (required)')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
-      async (opts: { project: string; plan: string; notes?: string; yes?: boolean } & JsonOption) => {
+      async (
+        opts: {
+          project: string;
+          plan: string;
+          notes?: string;
+          yes?: boolean;
+        } & IdempotencyKeyOption &
+          JsonOption,
+      ) => {
         if (!opts.yes) {
           console.error('Error: --yes is required to confirm approving the plan.');
           process.exitCode = 1;
@@ -189,7 +214,7 @@ export function createPlanCommand(): Command {
           opts,
           async () => {
             const version = await fetchPlanVersion(client, opts.project, opts.plan);
-            const idempotencyKey = `approve-plan:${opts.plan}:${randomUUID()}`;
+            const idempotencyKey = resolveIdempotencyKey(`approve-plan:${opts.plan}`, opts);
             const result = await client.approvePlan(
               opts.plan,
               opts.project,
@@ -214,34 +239,42 @@ export function createPlanCommand(): Command {
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--plan <id>', 'Implementation plan ID')
     .option('--yes', 'Confirm the activation (required)')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string; plan: string; yes?: boolean } & JsonOption) => {
-      if (!opts.yes) {
-        console.error('Error: --yes is required to confirm activating the plan.');
-        process.exitCode = 1;
-        return;
-      }
-      const client = buildApiClient();
-      await renderOrJson(
-        opts,
-        async () => {
-          const version = await fetchPlanVersion(client, opts.project, opts.plan);
-          const idempotencyKey = `activate-plan:${opts.plan}:${randomUUID()}`;
-          const result = await client.activatePlan(
-            opts.plan,
-            opts.project,
-            version,
-            idempotencyKey,
-          );
-          return {
-            command: 'activate-plan',
-            projectId: opts.project,
-            resultingState: result.resulting_state,
-          };
-        },
-        (data) => renderCommandResultView(data),
-      );
-    });
+    .action(
+      async (
+        opts: { project: string; plan: string; yes?: boolean } & IdempotencyKeyOption & JsonOption,
+      ) => {
+        if (!opts.yes) {
+          console.error('Error: --yes is required to confirm activating the plan.');
+          process.exitCode = 1;
+          return;
+        }
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const version = await fetchPlanVersion(client, opts.project, opts.plan);
+            const idempotencyKey = resolveIdempotencyKey(`activate-plan:${opts.plan}`, opts);
+            const result = await client.activatePlan(
+              opts.plan,
+              opts.project,
+              version,
+              idempotencyKey,
+            );
+            return {
+              command: 'activate-plan',
+              projectId: opts.project,
+              resultingState: result.resulting_state,
+            };
+          },
+          (data) => renderCommandResultView(data),
+        );
+      },
+    );
 
   return plan;
 }

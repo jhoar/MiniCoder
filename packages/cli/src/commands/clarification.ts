@@ -1,7 +1,12 @@
-import { randomUUID } from 'crypto';
 import { Command } from 'commander';
 import { renderClarificationView, renderCommandResultView } from '@minicoder/tui';
-import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
+import {
+  buildApiClient,
+  renderOrJson,
+  resolveIdempotencyKey,
+  type IdempotencyKeyOption,
+  type JsonOption,
+} from '../tui-client.js';
 
 /**
  * The default (no-subcommand) invocation stays the Phase 14 read-only view; `answer` is a new
@@ -46,6 +51,10 @@ export function createClarificationCommand(): Command {
     .requiredOption('--session <id>', 'Clarification session ID')
     .requiredOption('--question <id>', 'Clarification question ID')
     .requiredOption('--text <answer>', 'Answer text')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
       async (
@@ -54,7 +63,8 @@ export function createClarificationCommand(): Command {
           session: string;
           question: string;
           text: string;
-        } & JsonOption,
+        } & IdempotencyKeyOption &
+          JsonOption,
       ) => {
         const client = buildApiClient();
         await renderOrJson(
@@ -67,7 +77,10 @@ export function createClarificationCommand(): Command {
                 `Question ${opts.question} not found in clarification session ${opts.session}`,
               );
             }
-            const idempotencyKey = `record-clarification-answer:${opts.question}:${randomUUID()}`;
+            const idempotencyKey = resolveIdempotencyKey(
+              `record-clarification-answer:${opts.question}`,
+              opts,
+            );
             const result = await client.recordClarificationAnswer(
               opts.question,
               opts.session,

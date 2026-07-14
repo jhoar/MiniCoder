@@ -1,7 +1,12 @@
-import { randomUUID } from 'crypto';
 import { Command } from 'commander';
 import { renderCommandResultView } from '@minicoder/tui';
-import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
+import {
+  buildApiClient,
+  renderOrJson,
+  resolveIdempotencyKey,
+  type IdempotencyKeyOption,
+  type JsonOption,
+} from '../tui-client.js';
 
 /**
  * Task-enqueue routes (USER-MANUAL.md §5.0.1) that previously had no CLI equivalent —
@@ -11,6 +16,11 @@ import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js'
  * `{triggerdevRunId, accepted}` — mirrored by `renderCommandResultView`'s `resultingState` as
  * `enqueued:<runId>` / `not_accepted`, the same shape `design-doc request-run` already uses.
  */
+const IDEMPOTENCY_KEY_OPTION = [
+  '--idempotency-key <key>',
+  'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+] as const;
+
 export function createRunCommand(): Command {
   const cmd = new Command('run').description(
     'Enqueue coder/reviewer/merge-gate task runs (operator+; docs/01 §9)',
@@ -22,10 +32,12 @@ export function createRunCommand(): Command {
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--feature-run <id>', 'Feature run ID')
     .requiredOption('--coder-adapter <name>', 'CoderAgentAdapter registry name')
+    .option(...IDEMPOTENCY_KEY_OPTION)
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
       async (
-        opts: { project: string; featureRun: string; coderAdapter: string } & JsonOption,
+        opts: { project: string; featureRun: string; coderAdapter: string } & IdempotencyKeyOption &
+          JsonOption,
       ) => {
         const client = buildApiClient();
         await renderOrJson(
@@ -35,7 +47,7 @@ export function createRunCommand(): Command {
               opts.project,
               opts.featureRun,
               opts.coderAdapter,
-              `request-coder-run:${opts.featureRun}:${randomUUID()}`,
+              resolveIdempotencyKey(`request-coder-run:${opts.featureRun}`, opts),
             ),
           (data) =>
             renderCommandResultView({
@@ -54,6 +66,7 @@ export function createRunCommand(): Command {
     .requiredOption('--feature-run <id>', 'Feature run ID')
     .requiredOption('--reviewer-adapter <name>', 'ReviewerAgentAdapter registry name')
     .option('--arbiter-adapter <name>', 'ArbiterAgentAdapter registry name (optional)')
+    .option(...IDEMPOTENCY_KEY_OPTION)
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
       async (
@@ -62,7 +75,8 @@ export function createRunCommand(): Command {
           featureRun: string;
           reviewerAdapter: string;
           arbiterAdapter?: string;
-        } & JsonOption,
+        } & IdempotencyKeyOption &
+          JsonOption,
       ) => {
         const client = buildApiClient();
         await renderOrJson(
@@ -73,7 +87,7 @@ export function createRunCommand(): Command {
               opts.featureRun,
               opts.reviewerAdapter,
               opts.arbiterAdapter,
-              `request-review:${opts.featureRun}:${randomUUID()}`,
+              resolveIdempotencyKey(`request-review:${opts.featureRun}`, opts),
             ),
           (data) =>
             renderCommandResultView({
@@ -91,10 +105,16 @@ export function createRunCommand(): Command {
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--feature-run <id>', 'Feature run ID')
     .requiredOption('--reviewer-adapter <name>', 'ReviewerAgentAdapter registry name')
+    .option(...IDEMPOTENCY_KEY_OPTION)
     .option('--json', 'Print raw JSON instead of rendering')
     .action(
       async (
-        opts: { project: string; featureRun: string; reviewerAdapter: string } & JsonOption,
+        opts: {
+          project: string;
+          featureRun: string;
+          reviewerAdapter: string;
+        } & IdempotencyKeyOption &
+          JsonOption,
       ) => {
         const client = buildApiClient();
         await renderOrJson(
@@ -104,7 +124,7 @@ export function createRunCommand(): Command {
               opts.project,
               opts.featureRun,
               opts.reviewerAdapter,
-              `request-fixes:${opts.featureRun}:${randomUUID()}`,
+              resolveIdempotencyKey(`request-fixes:${opts.featureRun}`, opts),
             ),
           (data) =>
             renderCommandResultView({
@@ -121,25 +141,28 @@ export function createRunCommand(): Command {
     .description('Enqueues run-merge-gate for a feature run')
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--feature-run <id>', 'Feature run ID')
+    .option(...IDEMPOTENCY_KEY_OPTION)
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string; featureRun: string } & JsonOption) => {
-      const client = buildApiClient();
-      await renderOrJson(
-        opts,
-        () =>
-          client.recomputeMergeGate(
-            opts.project,
-            opts.featureRun,
-            `recompute-merge-gate:${opts.featureRun}:${randomUUID()}`,
-          ),
-        (data) =>
-          renderCommandResultView({
-            command: 'recompute-merge-gate',
-            projectId: opts.project,
-            resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
-          }),
-      );
-    });
+    .action(
+      async (opts: { project: string; featureRun: string } & IdempotencyKeyOption & JsonOption) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          () =>
+            client.recomputeMergeGate(
+              opts.project,
+              opts.featureRun,
+              resolveIdempotencyKey(`recompute-merge-gate:${opts.featureRun}`, opts),
+            ),
+          (data) =>
+            renderCommandResultView({
+              command: 'recompute-merge-gate',
+              projectId: opts.project,
+              resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
+            }),
+        );
+      },
+    );
 
   return cmd;
 }

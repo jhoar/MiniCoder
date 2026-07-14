@@ -160,6 +160,14 @@ export class ApiClient {
     return this.get('/plans', { projectId, ...query });
   }
 
+  /** `GET /plans/:id` — a direct lookup, unlike `listImplementationPlans`'s cursor-paginated
+   * listing. Use this whenever a specific plan's current `version` is needed (e.g. before
+   * dispatching a write command) — scanning only the first page of `listImplementationPlans`
+   * would incorrectly report a valid plan as missing once it's not on page 1. */
+  getImplementationPlan(planId: string): Promise<ImplementationPlanRow> {
+    return this.get(`/plans/${encodeURIComponent(planId)}`);
+  }
+
   listPlanningReadinessAssessments(
     projectId: string,
     query?: { cursor?: string; limit?: string },
@@ -567,10 +575,6 @@ export class ApiClient {
     featureRunId: string,
     idempotencyKey: string,
   ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
-    return this.post(
-      '/commands/recompute-merge-gate',
-      { projectId, featureRunId },
-      idempotencyKey,
-    );
+    return this.post('/commands/recompute-merge-gate', { projectId, featureRunId }, idempotencyKey);
   }
 }

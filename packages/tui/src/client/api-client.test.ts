@@ -128,7 +128,13 @@ describe('ApiClient', () => {
     });
     const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
 
-    await client.approveBudgetOverride('project-1', 5, 'extra spend approved', 'policy-1', 'idem-1');
+    await client.approveBudgetOverride(
+      'project-1',
+      5,
+      'extra spend approved',
+      'policy-1',
+      'idem-1',
+    );
 
     const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(String(url)).toContain('/commands/approve-budget-override');
@@ -154,5 +160,118 @@ describe('ApiClient', () => {
       featureRunId: 'fr1',
       coderAdapterName: 'CodexCoderAdapter',
     });
+  });
+
+  it('sends requestReview with an optional arbiterAdapterName', async () => {
+    const fetchImpl = fakeFetch(202, { triggerdevRunId: 'run-2', accepted: true });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.requestReview(
+      'project-1',
+      'fr1',
+      'ClaudeReviewerAdapter',
+      'ClaudeArbiterAdapter',
+      'idem-1',
+    );
+
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/commands/request-review');
+    expect(JSON.parse(init.body as string)).toEqual({
+      projectId: 'project-1',
+      featureRunId: 'fr1',
+      reviewerAdapterName: 'ClaudeReviewerAdapter',
+      arbiterAdapterName: 'ClaudeArbiterAdapter',
+    });
+  });
+
+  it('sends requestReview with arbiterAdapterName omitted', async () => {
+    const fetchImpl = fakeFetch(202, { triggerdevRunId: 'run-2', accepted: true });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.requestReview('project-1', 'fr1', 'ClaudeReviewerAdapter', undefined, 'idem-1');
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const body = JSON.parse(init.body as string);
+    expect(body.reviewerAdapterName).toBe('ClaudeReviewerAdapter');
+    expect(body.arbiterAdapterName).toBeUndefined();
+  });
+
+  it('sends requestFixes to the enqueue route', async () => {
+    const fetchImpl = fakeFetch(202, { triggerdevRunId: 'run-3', accepted: true });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.requestFixes('project-1', 'fr1', 'ClaudeReviewerAdapter', 'idem-1');
+
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/commands/request-fixes');
+    expect(JSON.parse(init.body as string)).toEqual({
+      projectId: 'project-1',
+      featureRunId: 'fr1',
+      reviewerAdapterName: 'ClaudeReviewerAdapter',
+    });
+  });
+
+  it('sends recomputeMergeGate to the enqueue route', async () => {
+    const fetchImpl = fakeFetch(202, { triggerdevRunId: 'run-4', accepted: true });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.recomputeMergeGate('project-1', 'fr1', 'idem-1');
+
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/commands/recompute-merge-gate');
+    expect(JSON.parse(init.body as string)).toEqual({
+      projectId: 'project-1',
+      featureRunId: 'fr1',
+    });
+  });
+
+  it('sends submitPlanForApproval/approvePlan/activatePlan with the right bodies', async () => {
+    const fetchImpl = fakeFetch(200, {
+      command_id: 'c1',
+      accepted: true,
+      resulting_state: 'pending_approval',
+      emitted_event_ids: [],
+    });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.submitPlanForApproval('plan1', 'project-1', 0, 'idem-1');
+    await client.approvePlan('plan1', 'project-1', 1, 'looks good', 'idem-2');
+    await client.activatePlan('plan1', 'project-1', 2, 'idem-3');
+
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls;
+    expect(String(calls[0]![0])).toContain('/commands/submit-plan-for-approval');
+    expect(JSON.parse(calls[0]![1].body as string)).toEqual({
+      planId: 'plan1',
+      projectId: 'project-1',
+      expectedVersion: 0,
+    });
+    expect(String(calls[1]![0])).toContain('/commands/approve-plan');
+    expect(JSON.parse(calls[1]![1].body as string)).toEqual({
+      planId: 'plan1',
+      projectId: 'project-1',
+      expectedVersion: 1,
+      notes: 'looks good',
+    });
+    expect(String(calls[2]![0])).toContain('/commands/activate-plan');
+    expect(JSON.parse(calls[2]![1].body as string)).toEqual({
+      planId: 'plan1',
+      projectId: 'project-1',
+      expectedVersion: 2,
+    });
+  });
+
+  it('getImplementationPlan fetches a single plan by id (not the paginated listing)', async () => {
+    const fetchImpl = fakeFetch(200, {
+      id: 'plan1',
+      project_id: 'project-1',
+      version: 3,
+    });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    const plan = await client.getImplementationPlan('plan1');
+
+    expect(plan.version).toBe(3);
+    const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/plans/plan1');
   });
 });

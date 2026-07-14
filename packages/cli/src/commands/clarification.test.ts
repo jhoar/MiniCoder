@@ -76,10 +76,7 @@ describe('CLI clarification answer command', () => {
   });
 
   it('errors when the question is not found in the session', async () => {
-    vi.stubGlobal(
-      'fetch',
-      fakeFetch({ session: { id: 'sess1' }, questions: [] }, {}),
-    );
+    vi.stubGlobal('fetch', fakeFetch({ session: { id: 'sess1' }, questions: [] }, {}));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await makeProgram().parseAsync([
