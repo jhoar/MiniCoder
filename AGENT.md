@@ -12,111 +12,36 @@ architecture requirements remain under `docs/`.
 
 ## Current Repository State
 
-- The canonical specification describes an 18-phase target architecture.
-- The codebase currently contains the **Phase 1–15 implementation**. This section's bullet list
-  below predates Phase 9 and was never fully expanded for Phases 9–15; for the authoritative,
-  currently-accurate per-phase delivered-modules list, see `CLAUDE.md`'s per-phase sections and
-  `docs/06-implementation-plan.md` (each phase there is marked `✓ Complete` with its own
-  "Delivered modules" list). In summary, since Phase 8 this repository has also shipped: the
-  Reference Coder Adapter and sandboxed code-generation (Phase 9); the Reference Reviewer Adapter
-  and review/fix loop (Phase 10); Disagreement/Arbiter/Human Escalation (Phase 11); the Merge Gate
-  and branch protection (Phase 12); the Fastify-based Orchestrator API (`packages/api`, Phase 13);
-  the Ink Text UI (`packages/tui` + fourteen `minicoder` CLI commands calling that API over
-  HTTP only, Phase 14); and the Next.js Web UI (`packages/web`, all seventeen `docs/05` §5 routes,
-  a server-only Orchestrator API client with no client-exposed API key, scoped to trusted/internal
-  deployment pending real end-user auth, Phase 15). Phases 1–8's bullets below remain accurate as
-  far as they go:
-  - TypeScript/pnpm monorepo
-  - domain state and entity types
-  - persistence abstractions
-  - SQLite and PostgreSQL adapters
-  - paired migrations and database lifecycle CLI commands
-  - eight lifecycle state machines and a transition validator
-  - transactional, idempotent command execution and representative command handlers
-  - versioned event schemas, outbox/inbox dispatch, and idempotency sweeping
-  - workflow locks with fencing tokens and sequential execution lanes
-  - local authentication, authorization guards, and secret redaction
-  - database-backed state lifecycle CLI commands for inspect, validate, doctor, reconcile, diagnostics, and scoped repair
-  - Phase 4 testing harness with deterministic fixtures, mock adapters, scenario registry, and system-test CLI commands
-  - database lifecycle seed, snapshot, restore, and diff helpers for disposable local/CI workflows
-  - GitHub event simulation CLI commands for development/test inbox scenarios
-  - Workflow Layer harness backed by Trigger.dev v4 task wrappers
-  - 9-service self-hosted Trigger.dev Docker Compose stack
-  - Trigger.dev deployment workflow and `minicoder trigger` CLI scaffold
-  - provider-neutral agent adapter role interfaces and shared role-specific I/O contracts
-  - canonical agent capability token parsing, validation, and deterministic ordering
-  - database-backed `AdapterRegistry` for `(role, name)` registration, capability validation,
-    configuration resolution, and source-of-truth lookup
-  - `AgentRunRecorder` lifecycle persistence with state-machine validation, redaction,
-    normalized errors, and immutable Phase 5 adapter provenance snapshots
-  - six-role smoke conformance framework with `HumanTestAdapter`, append-only results, skipped
-    scenario accounting, and rerun-safe configuration setup
-  - `clarification_sessions`/`clarification_questions`/`clarification_answers`/`clarification_decisions`
-    schema persisting the `ClarificationStatus` machine, including assessment-scoped sessions and
-    nullable `clarification_session_id` links on `planning_gaps`/`planning_assumptions`
-  - backlog validation tracking on `implementation_plans` (`backlog_version`,
-    `backlog_validated_at`, `backlog_validated_state`, `backlog_validated_version`) so approval
-    requires validation evidence for the current backlog
-  - planning and clarification command handlers (`packages/core/src/commands/handlers/planning/`,
-    `.../clarification/`) covering specification ingestion, planner-adapter-backed readiness
-    assessment, assessment-scoped plan/backlog generation and validation, approval, activation
-    (creating `feature_runs` rows), artifact export, backlog import, and the clarification circuit
-    breaker
-  - all 15 canonical Trigger.dev task IDs registered; Phase 6 planning/clarification/artifact tasks,
-    Phase 7 `github-reconciliation`, and Phase 8 `start-next-feature` all call real Orchestrator
-    Core commands instead of returning stub values
-  - version-scoped backlog-validation tracking on `implementation_plans`
-    (`backlog_version`/`backlog_validated_at`/`backlog_validated_state`/`backlog_validated_version`)
-    and an `assessment_id` link on `clarification_sessions`, gating plan submission on a passing,
-    current `ValidateBacklogCommand` result and scoping the clarification-complete guard to the
-    assessment in use
-  - migration, configuration, security, workflow, Trigger.dev, and architectural fitness tests
-  - GitHub webhook receiver package (`packages/github`) with HMAC signature verification,
-    current/previous webhook-secret rotation, event normalization, and `minicoder github serve`
-  - provider-SDK-free GitHub client seam in core plus the Octokit implementation outside core
-  - `pull_requests` persistence and GitHub reconciliation handlers for PR opened, CI
-    running/passed/failed, changes requested, and irreconcilable closed-unmerged PR escalation
-  - shared `reconcileGithubState()` algorithm used by both webhook-triggered inbox handlers and
-    the scheduled `github-reconciliation` Trigger.dev task
-  - real `start-next-feature` Trigger.dev task wiring dependency-ordered feature selection to
-    `SelectFeatureCommand` and `StartCodingCommand` under the workflow execution lane
-  - Phase 8 execution-orchestrator commands for resume automation, budget breach recording,
-    budget override approval, start fixing, unblocking, and next-eligible-feature selection
-  - minimal budget-gate primitive in `packages/core/src/cost/` for live retrospective threshold
-    evaluation and soft/hard automation-state transitions
-  - execution-orchestrator scenario coverage for dependency ordering, single-active-feature
-    enforcement, budget approval flow, and sequencing continuation
-- Do not describe the repository as specification-only.
-- Phases 9–15 are implemented (see the summary above and CLAUDE.md/docs/06 for detail); only
-  Phases 16–18 (observability/cost/recovery, the Final Design Document Generator, and future
-  extensions) remain target architecture. Do not assume Phase 16+ is implemented merely because a
-  schema, state machine, or type already exists for it.
-- Phase 3 delivered the initial task IDs as payload-validated stubs; Phase 6 wired the
-  planning/clarification/artifact tasks (`ingest-specification`, `planning-readiness-assessment`,
-  `start-clarification`, `record-clarification-answer`, `complete-clarification`,
-  `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
-  `request-plan-approval`, `activate-approved-backlog`, `export-plan`, `export-backlog`,
-  `import-backlog`) to real core commands. Phase 7 wired `github-reconciliation`, and Phase 8 wired
-  `start-next-feature`; every canonical Trigger.dev task now calls Orchestrator Core through
-  `TransactionalCommandExecutor`.
-- Phase 5 shipped an adapter foundation and smoke conformance layer, not yet the full canonical
-  provider adapter runtime. **Superseded by Phases 9–12:** provider-specific reference adapters
-  (`adapters-coder`, `adapters-reviewer`, `adapters-planner`, `adapters-arbiter`), real
-  provider/model/cost/token fields on `agent_runs`, and Workflow Layer task-wrapper invocation
-  (`run-coder.ts`, `run-review.ts`) have all since shipped.
-- Phase 6's `planning-readiness-assessment` and `generate-implementation-plan` tasks never import a
-  concrete `PlannerAgentAdapter` implementation — the caller injects one. **Superseded (issue #32):**
-  `packages/adapters-planner`'s `GenericLLMPlannerAdapter` has since shipped as the reference
-  implementation; a live Trigger.dev deployment now resolves it by default via
-  `resolveDefaultPlannerAdapter()`.
-- Phase 7's GitHub integration is implemented. **Superseded (issue #35):** scheduled reconciliation
-  no longer only repairs feature runs with an existing `pull_requests` row — automated discovery of
-  a brand-new PR missed by webhooks (`GitHubClient.listPullRequestsForBranch()` +
-  `discoverMissingPullRequests()`) now runs as part of every `github-reconciliation` pass.
-- Phase 8's execution orchestrator is implemented for selecting and starting the next eligible
-  feature plus threshold-only budget gating. `StartFixingHandler` and `UnblockFeatureHandler` are
-  real, exported handlers with no caller yet; review/fix-loop decisions and merge commands remain
-  later-phase work.
+- The canonical specification describes an 18-phase architecture.
+- The codebase currently contains the **Phase 1–17 implementation**. Phase 18 remains future
+  extension scope. Do not describe the repository as specification-only, and do not assume future
+  extensions are implemented unless the current code/tests prove it.
+- In summary, the implemented system includes:
+  - TypeScript/pnpm monorepo with strict package boundaries.
+  - Provider-neutral core domain, state machines, command executor, local auth, redaction,
+    persistence abstractions, and SQLite/PostgreSQL adapters.
+  - Paired migrations through `0017_task_queue` plus database lifecycle CLI commands.
+  - Durable workflow primitives: outbox/inbox dispatch, locks, fencing tokens, execution lanes, and
+    idempotent command handling.
+  - Phase 4 testing harness, deterministic fixtures, mock adapters, conformance tests, scenario
+    registry, and system-test CLI commands.
+  - Workflow Layer task implementations for all 19 canonical task IDs. The current execution
+    backend is an in-repo DB-backed task queue in `packages/triggerdev`, not the Trigger.dev
+    product.
+  - GitHub webhook receiver, provider-SDK-free `GitHubClient` seam in core, Octokit implementation
+    outside core, PR mirror table, and shared reconciliation algorithm.
+  - Reference planner, coder, reviewer, arbiter, and documentation adapter packages, with provider
+    SDKs kept outside core.
+  - Execution orchestration, review/fix loop, disagreement/arbiter/human-escalation flow, merge
+    gate, branch-protection/status-check publishing, and final project/design-document lifecycle.
+  - Fastify Orchestrator API, Ink Text UI commands, and Next.js Web UI routes.
+  - Observability/cost/recovery read models and tools: feature-run timeline, budget forecasting and
+    reporting, secret-leak doctor check, optional OTLP export, and export cursors.
+  - Final Design Document Generator, `DocumentationAgentAdapter`, `run-design-doc`,
+    `final-design-document.md` export, project acceptance validation, and design-doc approval flow.
+- Trigger.dev references in historical phase narratives are historical only. Current operational
+  guidance must say **Workflow Layer** for the subsystem and **DB-backed task queue** /
+  `minicoder tasks worker` for the concrete runtime.
 - Before starting work, inspect the current branch, recent commits, and working tree:
 
 ```bash
@@ -157,21 +82,21 @@ packages/persistence-postgres/  pg implementation of core persistence contracts
 packages/migrations/            Paired SQLite/PostgreSQL migrations and lifecycle runner
 packages/workflow/              Locks, execution lanes, outbox/inbox dispatch, and sweepers
 packages/github/                GitHub webhook receiver, inbox handlers, and Octokit client
-packages/triggerdev/            Trigger.dev Workflow Layer harness and task registrations
-packages/adapters-coder/        Reference CodexCoderAdapter + sandboxed code-generation (Phase 9)
-packages/adapters-reviewer/     Reference ClaudeReviewerAdapter, sandbox-free review seam (Phase 10)
-packages/adapters-planner/      Reference GenericLLMPlannerAdapter (issue #32)
-packages/adapters-arbiter/      Reference ClaudeArbiterAdapter (issue #51, Phase 11)
-packages/api/                   Fastify Orchestrator API: read models, command dispatch, OpenAPI (Phase 13)
-packages/tui/                   Ink Text UI: ApiClient + render views, consumed by packages/cli (Phase 14)
-packages/web/                   Next.js Web UI: server-only API client, all 17 docs/05 §5 routes (Phase 15)
-packages/testing/               Deterministic fixtures, mock adapters, conformance, scenarios, and runner
-packages/cli/                   Thin Commander-based CLI (DB-direct commands plus Phase 14's API-only TUI commands)
-infra/docker-compose.triggerdev.yml  Self-hosted Trigger.dev v4 single-node stack
+packages/triggerdev/            Workflow Layer tasks plus DB-backed task queue runtime
+packages/adapters-coder/        Reference CodexCoderAdapter + sandboxed code generation
+packages/adapters-reviewer/     Reference ClaudeReviewerAdapter + review seam
+packages/adapters-planner/      Reference GenericLLMPlannerAdapter
+packages/adapters-arbiter/      Reference ClaudeArbiterAdapter
+packages/adapters-documentation/ Reference ClaudeDocumentationAdapter + final design-doc seam
+packages/api/                   Fastify Orchestrator API: read models, command dispatch, OpenAPI
+packages/tui/                   Ink Text UI: API client + render views, consumed by packages/cli
+packages/web/                   Next.js Web UI: server-only API client and docs/05 routes
+packages/testing/               Deterministic fixtures, mock adapters, conformance, scenarios, runner
+packages/cli/                   Thin Commander-based CLI (DB-direct, API, TUI, and worker commands)
+infra/docker-compose.coder-sandbox.yml  Ephemeral coder-sandbox support stack
 infra/docker-compose.test.yml   Disposable PostgreSQL test stack
-infra/k8s/                      Batch jobs for migrations, seed, diagnostics, reconciliation, and system tests
-.github/workflows/ci.yml        CI checks, database matrix, system smoke, and production dependency audit
-.github/workflows/trigger-deploy.yml Trigger.dev task deployment workflow
+infra/k8s/                      Batch jobs for migrations, seed, diagnostics, reconciliation, system tests
+.github/workflows/ci.yml        CI checks, database matrix, system smoke, and dependency audit
 ```
 
 Important files:
@@ -180,56 +105,57 @@ Important files:
 - `packages/core/src/domain/entities.ts` defines persisted domain shapes.
 - `packages/core/src/persistence/types.ts` defines database-neutral interfaces and concurrency
   errors.
-- `packages/core/src/statemachine/machines/` contains the eight implemented transition matrices.
+- `packages/core/src/statemachine/machines/` contains the implemented transition matrices.
 - `packages/core/src/commands/` contains the command registry, executor, and contracts.
 - `packages/core/src/commands/handlers/planning/` and `.../clarification/` contain the Phase 6
   planning and clarification command handlers. `ValidateBacklogHandler` owns backlog quality
   evidence, and `SubmitPlanForApprovalHandler` must require current valid backlog evidence before
   `pending_approval`.
-- `packages/core/src/commands/handlers/github/` contains Phase 7 GitHub-facing feature-execution
+- `packages/core/src/commands/handlers/github/` contains GitHub-facing feature-execution
   handlers. These handlers update MiniCoder state from GitHub observations; GitHub remains
   authoritative for PR/review/CI facts.
-- `packages/core/src/commands/handlers/feature/` and `.../automation/` contain Phase 8 execution
-  orchestration and automation-control handlers. Lock-gated feature-run mutations require
-  `envelope.lockContext`; `SelectFeatureHandler` uses an atomic workflow-state compare-and-swap
-  instead.
+- `packages/core/src/commands/handlers/feature/`, `.../automation/`, `.../merge/`, and
+  `.../project/` contain execution orchestration, automation control, merge gate, and final
+  project/design-document lifecycle handlers.
 - `packages/core/src/github/` owns the provider-SDK-free GitHub client interface and shared
   reconciliation algorithm. Octokit belongs only in `packages/github/`.
-- `packages/core/src/cost/` owns Phase 8's minimal budget evaluator and breach-to-command glue.
+- `packages/core/src/cost/` owns budget evaluation and forecasting.
+- `packages/core/src/observability/` owns OTLP export and export-cursor helpers.
+- `packages/core/src/design-doc/` owns final design-document evidence collection, section writing,
+  and Markdown rendering.
+- `packages/core/src/project/acceptance.ts` owns DB-knowable project acceptance validation.
 - `packages/core/src/events/schemas.ts` owns versioned event payload validation.
 - `packages/core/src/auth/` contains actor identity, local auth, authorization, and redaction.
 - `packages/core/src/adapters/types.ts` defines provider-neutral role adapter interfaces and I/O
-  contracts.
+  contracts, including the documentation role.
 - `packages/core/src/adapters/capabilities.ts` owns capability token schemas, validation, and
   canonical ordering.
 - `packages/core/src/adapters/registry.ts` implements database-backed adapter registration,
   capability validation, configuration resolution, and source-of-truth lookup.
 - `packages/core/src/adapters/run-recorder.ts` persists adapter run lifecycles, redacted summaries,
-  normalized errors, and Phase 5 adapter provenance snapshots.
+  normalized errors, provenance snapshots, and provider/model/cost/token metadata.
 - `packages/workflow/src/locks/manager.ts` implements lease ownership and fencing.
 - `packages/workflow/src/outbox/dispatcher.ts` and `inbox/processor.ts` implement durable dispatch.
-- `packages/triggerdev/src/task-ids.ts` owns all 15 canonical task ID constants (`ALL_TASK_IDS`).
-- `packages/triggerdev/src/triggerdev-tasks.ts` registers the Trigger.dev task wrappers.
-- `packages/triggerdev/src/tasks/github-reconciliation.ts` and `.../start-next-feature.ts` are real
-  command-backed task implementations as of Phases 7 and 8.
-- `packages/triggerdev/src/db.ts` links Trigger.dev runs to `triggerdev_runs` and probes schema
-  readiness.
-- `packages/triggerdev/trigger.config.ts` configures Trigger.dev deployment.
+- `packages/triggerdev/src/task-ids.ts` owns all 19 canonical task ID constants (`ALL_TASK_IDS`).
+- `packages/triggerdev/src/task-registry.ts` registers the SDK-free `TASK_REGISTRY`.
+- `packages/triggerdev/src/task-worker.ts` implements the DB-backed task queue dispatcher.
+- `packages/triggerdev/src/tasks/` contains command-backed task implementations, including
+  `run-coder`, `run-review`, `run-merge-gate`, and `run-design-doc`.
+- `packages/triggerdev/src/db.ts` probes `triggerdev_runs`, `task_queue`, and
+  `task_concurrency_gates` schema readiness.
 - `packages/migrations/src/index.ts` exports the expected table list.
 - `packages/migrations/src/runner.ts` implements migration lifecycle commands.
-- `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together. Current
-  Phase 6 planning schema is split across `0007_clarification_sessions.*` and
-  `0008_backlog_validation_tracking.*`; Phase 7 GitHub PR tracking is in
-  `0009_pull_requests.*`. Phase 8 required no new migration.
-- `packages/testing/src/fixtures/` owns SQLite-only deterministic fixture setup for local/system scenarios.
+- `packages/migrations/migrations/*.sqlite.sql` and `*.postgres.sql` must evolve together.
+- `packages/testing/src/fixtures/` owns SQLite-only deterministic fixture setup for local/system
+  scenarios.
 - `packages/testing/src/adapters/` owns mock role adapters and the test-only `HumanTestAdapter`.
-- `packages/testing/src/conformance/` owns the Phase 5 smoke conformance runner and append-only
-  result persistence.
-- `packages/testing/src/scenarios/` owns the registered scenario flows exercised by `minicoder test system`.
-- `packages/testing/src/scenarios/execution-orchestrator.ts` owns Phase 8 acceptance coverage for
-  dependency ordering, single-active-feature enforcement, budget gating, and sequencing.
-- `infra/docker-compose.triggerdev.yml` owns the local self-hosted Trigger.dev stack.
-- `infra/docker-compose.test.yml` owns the disposable PostgreSQL service used by cross-dialect validation.
+- `packages/testing/src/conformance/` owns the smoke conformance runner and append-only result
+  persistence.
+- `packages/testing/src/scenarios/` owns registered scenario flows, including design-document
+  lifecycle coverage.
+- `infra/docker-compose.coder-sandbox.yml` owns coder-sandbox support services.
+- `infra/docker-compose.test.yml` owns the disposable PostgreSQL service used by cross-dialect
+  validation.
 
 ## Locked Architectural Invariants
 
@@ -246,7 +172,7 @@ Do not contradict these rules without an explicit architecture change to the can
 6. Sequential feature execution is enforced by policy, locks/leases, lanes, and fencing tokens—not
    by a schema limitation.
 7. Workflow Layer tasks are thin, idempotent wrappers around Orchestrator Core commands. Business
-   rules belong in core.
+   rules belong in core; the current runtime is the in-repo DB-backed task queue.
 8. `packages/core` remains free of provider SDKs and concrete database drivers.
 9. Markdown artifacts are generated/importable snapshots, never runtime state.
 10. Private chain-of-thought is never requested, persisted, logged, or exposed.
@@ -257,7 +183,7 @@ Do not contradict these rules without an explicit architecture change to the can
 
 ### `@minicoder/core`
 
-- Keep domain logic independent of SQLite, PostgreSQL, Trigger.dev, GitHub SDKs, and LLM providers.
+- Keep domain logic independent of SQLite, PostgreSQL, Workflow Layer runtimes, GitHub SDKs, and LLM providers.
 - Import only abstractions into core.
 - Access environment configuration only through `src/config/`.
 - Keep adapter contracts provider-neutral and free of provider SDK imports.
@@ -294,7 +220,7 @@ backlog_validated_version = backlog_version` on `implementation_plans` before a 
   usable precisely when answers did not arrive in time.
 - `packages/triggerdev/src/tasks/validate-backlog.ts` must only catch the `CommandError` with
   `type: 'backlog-invalid'` and re-throw everything else — a bare `catch` that reports every error
-  as `{ valid: false }` hides real infrastructure/programmer failures from Trigger.dev's
+  as `{ valid: false }` hides real infrastructure/programmer failures from the task queue's
   retry/failed-status handling.
 
 ### GitHub integration (`packages/github/`, `packages/core/src/github/`, `packages/core/src/commands/handlers/github/`)
@@ -314,16 +240,15 @@ backlog_validated_version = backlog_version` on `implementation_plans` before a 
 - Reconciliation escalates irreconcilably closed-unmerged PRs to `human_required` from every
   non-terminal feature-execution state the check can reach. Do not narrow the matrix coverage to
   only early PR states.
-- `RecordCiFailedHandler` and `RecordChangesRequestedHandler` do not track fix-attempt counts or
-  write `review_findings`; that belongs to the Phase 10 review/fix loop.
-- Scheduled `github-reconciliation` only re-checks feature runs that already have a
-  `pull_requests` row. Completely missed PR-opened webhooks are not discovered until a future
-  branch/PR discovery client surface exists.
+- Review/fix-loop commands own review findings and aggregate fix-attempt counting; keep GitHub
+  observation mirrors separate from reviewer-authored findings.
+- `github-reconciliation` includes both tracked-PR reconciliation and missed-PR discovery through
+  `GitHubClient.listPullRequestsForBranch()`/`discoverMissingPullRequests()`.
 
-### Execution orchestrator and budget gate
+### Execution orchestrator, review loop, merge gate, and budget/cost
 
-Relevant code: `packages/core/src/commands/handlers/{feature,automation}/` and
-`packages/core/src/cost/`.
+Relevant code: `packages/core/src/commands/handlers/{feature,automation,merge}/`,
+`packages/core/src/cost/`, and `packages/core/src/merge-gate/`.
 
 - Sequential execution uses two mechanisms with different purposes. `SelectFeatureHandler` owns the
   durable single-active-feature-per-project invariant with an atomic conditional update of
@@ -334,23 +259,24 @@ Relevant code: `packages/core/src/commands/handlers/{feature,automation}/` and
   receive `envelope.lockContext` and assert the fence in the same transaction as the guarded write.
 - `findNextEligibleFeatureRun()` is a deterministic read-side candidate picker only. It never
   mutates state and never replaces the dependency guard inside `SelectFeatureHandler`.
-- `StartFixingHandler` (`changes_requested → fixing`) and `UnblockFeatureHandler`
-  (`blocked → approved_pending_execution`) are implemented and exported but intentionally have no
-  caller in Phase 8. Do not delete them as dead code and do not invent review/fix-loop callers
-  before the relevant phase.
+- `StartFixingHandler` (`changes_requested → fixing`) is used by the review/fix loop.
+  `UnblockFeatureHandler` (`blocked → approved_pending_execution`) is exported for operator/API
+  unblocking flows.
 - `ApproveBudgetOverrideHandler` serves both budget override matrix edges
   (`paused_budget_exceeded → running` and `waiting_for_budget_approval → running`) from one
   handler. Callers must use the idempotency-key template matching the origin state they observed.
 - `evaluateBudget()` is retrospective threshold evaluation only: it sums existing
   `cost_records.amount` rows live, applies optional `window_days`, and reports hard breaches before
-  soft breaches. Forecasting, dashboards, pre-flight provider caps, and denormalized spend rollups
-  are later-phase work.
+  soft breaches. `forecastBudget()` is the prospective Phase 16 counterpart used as an opt-in
+  pre-flight check by task wrappers. Do not introduce denormalized spend rollups without updating
+  the canonical docs and tests.
 - `RecordBudgetExceededHandler` and `RecordBudgetApprovalWaitingHandler` do not insert
   `cost_records` or `policy_decisions` rows. The cost record must already exist before evaluation;
   human override/resume handlers own policy-decision audit rows.
-- `start-next-feature` uses `automationOperatorActor()` for `SelectFeatureCommand` because the task
-  has no real authenticated operator session yet; keep this as a Phase 13 placeholder rather than
-  weakening actor requirements in core.
+- `start-next-feature` uses `automationOperatorActor()` for `SelectFeatureCommand` because the
+  task has no real authenticated operator session; do not weaken actor requirements in core.
+- `evaluateMergeGate()` is the merge-policy engine. GitHub status-check publishing and merge
+  operations belong behind the provider-SDK-free `GitHubClient` interface.
 
 ### `@minicoder/workflow`
 
@@ -378,35 +304,65 @@ Relevant code: `packages/core/src/commands/handlers/{feature,automation}/` and
 - Account for genuine SQLite/PostgreSQL differences rather than pretending their concurrency
   models are identical.
 
-### `@minicoder/triggerdev`
+### `@minicoder/triggerdev` / Workflow Layer task queue
 
-- Treat Trigger.dev as the concrete Workflow Layer runtime, not a place for business rules.
-- Register only canonical task ID strings from `ALL_TASK_IDS`; no renames, aliases, or drift.
-- The Phase 6 planning/clarification/artifact `runImpl` functions call real core commands
-  (`packages/core/src/commands/handlers/{planning,clarification}/`); `github-reconciliation` calls
-  the shared reconciliation algorithm as of Phase 7; `start-next-feature` selects and starts an
-  eligible feature as of Phase 8. Do not reintroduce payload-only stubs for canonical tasks.
+- The package name is historical. **Trigger.dev has been removed**: no external Trigger.dev
+  service, no 9-container stack, and no `@trigger.dev/sdk` dependency. The concrete runtime is an
+  in-repo DB-backed task queue.
+- Register only canonical task ID strings from `ALL_TASK_IDS`; no renames, aliases, or drift. Keep
+  `TASK_REGISTRY` one-to-one with `ALL_TASK_IDS`.
+- The Workflow Layer task `runImpl` functions call real core commands. Do not reintroduce
+  payload-only stubs for canonical tasks.
 - Task wrappers may sequence commands but must not change command semantics. Only expected
   domain-level invalid outcomes should be converted into structured task results; operational and
-  unexpected errors must propagate so Trigger.dev can mark failures and retry.
+  unexpected errors must propagate so the DB-backed task queue can mark failures and retry.
 - Task files build `CommandEnvelope`s and call `TransactionalCommandExecutor` — never import
   `StateTransitionValidator`/`TransitionError` or compare state enums directly
   (`fitness/no-domain-logic-in-task-wrappers.test.ts` enforces this).
-- `makeTaskRunner` and `MockTriggerRunner.run()` pass the resolved `DbClient` through to `runImpl`;
-  tasks that invoke `PlannerAgentAdapter` receive the concrete adapter instance as an injected
-  parameter, never importing a mock or reference implementation themselves.
-- Preserve `assertSchemaReady()` so task containers fail fast on an unmigrated database.
-- Keep Trigger.dev run metadata idempotent: retries reuse the original `triggerdev_runs` row.
-- `github-reconciliation` catches per-candidate domain failures as non-fatal structured results but
-  lets infrastructure/programmer errors fail the task.
+- `runRegisteredTask()` links a task run to `triggerdev_runs`, executes the registered task
+  implementation, and updates status. Keep `triggerdev_runs` as the stable async-run read model
+  consumed by API/TUI/Web UI.
+- `task_queue` is the queue-mechanics table: `task_id`, JSON `payload`, scoped idempotency key,
+  status, attempts, retry timing, `project_id`, optional `linked_run_id`, redacted error summary,
+  and optimistic `version`.
+- `task_concurrency_gates` enforces per-task concurrency limits across multiple worker processes.
+  Do not replace it with a process-local counter.
+- `TaskQueueDispatcher` should mirror durable dispatcher patterns: stale-claim recovery, atomic
+  optimistic-lock claim, heartbeat while work runs, deterministic exponential backoff, and
+  redacted failure summaries.
+- Each claimed task must run with its own `DbClient` connection via `runWithTaskDb`; do not run
+  concurrently claimed tasks through the dispatcher's bookkeeping connection.
+- Preserve `assertSchemaReady()` so workers fail fast on an unmigrated database, including missing
+  `task_queue` or `task_concurrency_gates`.
+- `minicoder tasks worker` is the long-running worker; `minicoder tasks drain` is the one-shot
+  CI/test drain helper. Scaling means running more worker processes against the same database.
+- `minicoder trigger ...` remains as a compatibility namespace over DB-backed functionality.
+  `trigger deploy` has nothing external to deploy; `validate`, `list-runs`, `inspect-run`,
+  `cancel-run`, `replay-run`, `drain-queue`, `reset-dev`, and `reconcile` operate on
+  `task_queue`/`triggerdev_runs`.
 - `start-next-feature` may dispatch two commands in one task invocation (`SelectFeatureCommand`
   then lock-gated `StartCodingCommand`) because `selected → coding` has no human/webhook gate
   between them. Expected races such as already-active feature, paused automation, stale candidate,
   unmet dependencies, or not found should be clean no-ops; unexpected failures should propagate.
-- Deploy with `npx trigger.dev@4.4.6 deploy ...`; do not use `@latest`.
-- Keep `TRIGGER_API_URL` explicit in deployment so CI does not silently target Trigger.dev Cloud.
-- `loadTriggerConfig()` and `applyTriggerEnv()` are Phase 3 abstractions with no runtime call sites
-  yet; they are wired as core-command-backed task execution arrives in later phases.
+
+### API, TUI, Web UI, and final design document
+
+- `packages/api` is the Orchestrator API boundary. Keep read models side-effect-free, command
+  dispatch authenticated/authorized, problem-details errors stable, and OpenAPI route parity tests
+  passing.
+- `packages/tui` and Phase 14-style CLI commands call the Orchestrator API over HTTP; do not add
+  DB-direct behavior to those commands when extending an API-backed surface.
+- `packages/web` uses a server-only API client; never expose the Orchestrator API key to client
+  components or browser JavaScript. Mutations should use Server Actions with per-submission
+  `Idempotency-Key` generation.
+- `/design-document` has live generate/regenerate/revision/approve actions. `/adapters` remains
+  read-only/disabled for adapter mutation until a backend adapter-registration command exists.
+- Final design-document generation must collect evidence from database/GitHub mirror state, write
+  all 13 canonical sections, export `final-design-document.md` as an artifact snapshot, and route
+  human approval/revision through project lifecycle commands.
+- Project acceptance validation is DB-knowable only. CI-only checks (full tests, migration
+  validation, build, lint, security scan) must be reported as externally unverified when a command
+  cannot run them without breaking layering.
 
 ### Migrations
 
@@ -455,12 +411,18 @@ NNNN_description.postgres.sql
 - The `minicoder test` group is implemented: `unit` runs non-integration Vitest files,
   `integration` runs `*.integration.test.ts` files, `system` runs all registered scenarios, and
   `scenario <name>` runs one registered scenario.
-- The `minicoder trigger` command group exists. `trigger validate` is functional and reports the
-  registered task IDs; `list-runs` and `inspect-run` are read-only placeholder JSON; operational
-  commands (`deploy`, `drain-queue`, `cancel-run`, `replay-run`, `reset-dev`, `reconcile`) exit
-  non-zero as not implemented until live API wiring lands.
-- Destructive trigger reset scaffolding requires `--yes` and `--env <development|test|ci>` and
-  rejects unsafe `APP_ENV`/`NODE_ENV` before reaching the not-implemented path.
+- `minicoder tasks worker` runs the DB-backed Workflow Layer worker; `tasks drain` is the
+  bounded one-shot drain command for CI/test use.
+- The `minicoder trigger` command group remains as a compatibility/operations namespace over
+  `task_queue`/`triggerdev_runs`: `validate`, `list-runs`, `inspect-run`, `cancel-run`,
+  `replay-run`, `drain-queue`, `reset-dev`, and `reconcile` are DB-backed; `deploy` has no
+  external Trigger.dev target.
+- Destructive trigger reset requires `--yes` and `--env <development|test|ci>` and rejects unsafe
+  or unset `APP_ENV`/`NODE_ENV` before deleting from `task_queue`.
+- API-backed/TUI CLI groups include `status`, `plan`, `clarification`, `features`, `active`,
+  `runs`, `findings`, `disagreements`, `costs`, `artifacts`, `adapters`, `design-doc`, `pause`,
+  `resume`, `project`, `merge`, and related human/observability operations. Preserve their
+  HTTP/API boundary when extending them.
 - The glossary lists the target CLI surface. Verify a command is implemented before documenting it
   as currently available.
 
@@ -470,13 +432,14 @@ NNNN_description.postgres.sql
 - Feature IDs use `FR-<zero-padded-int>`, such as `FR-002`.
 - Feature branches use `minicoder/FR-<n>`.
 - The GitHub review-gate status check is `minicoder/review-gate`.
-- All 15 canonical Trigger.dev task IDs are exact strings, no renaming/abbreviation permitted
-  (`ALL_TASK_IDS`): `ingest-specification`, `planning-readiness-assessment`,
+- All 19 canonical Workflow Layer task IDs are exact strings, no renaming/abbreviation
+  permitted (`ALL_TASK_IDS`): `ingest-specification`, `planning-readiness-assessment`,
   `start-clarification`, `record-clarification-answer`, `complete-clarification`,
   `generate-implementation-plan`, `generate-feature-backlog`, `validate-backlog`,
-  `request-plan-approval`, `activate-approved-backlog`, `start-next-feature`,
-  `github-reconciliation`, `export-plan`, `export-backlog`, and `import-backlog`.
-  Every canonical task is now command-backed; task wrappers remain thin orchestration surfaces.
+  `request-plan-approval`, `activate-approved-backlog`, `start-next-feature`, `run-coder`,
+  `run-review`, `run-merge-gate`, `github-reconciliation`, `export-plan`, `export-backlog`,
+  `import-backlog`, and `run-design-doc`. Every canonical task is command-backed; task wrappers
+  remain thin orchestration surfaces.
 - Persisted mutable entities use optimistic versions.
 - Locks use monotonically increasing fencing tokens; stale-fence writes must be rejected.
 - Outbox and inbox events contain both `payload` and `payload_schema_version`.
@@ -487,8 +450,8 @@ NNNN_description.postgres.sql
 - Adapter roles are the canonical six-role set from the glossary: planner, coder, reviewer,
   documentation, arbiter, and human.
 - Adapter capability tokens use the canonical `domain:name` shape and deterministic sorted order.
-- Agent run provenance is a Phase 5 immutable adapter/configuration snapshot; do not inflate it
-  into final provider/model/cost/token metadata without the corresponding later-phase design.
+- Agent run records include immutable adapter/configuration provenance plus later-phase provider,
+  model, token, and cost metadata. Keep writes redacted and role-appropriate.
 - Adapter conformance results are append-only audit records. Read paths that need the latest result
   must use an explicit deterministic tie-breaker.
 - Clarification sessions are assessment-scoped. Do not use "latest project clarification session"
@@ -501,8 +464,11 @@ NNNN_description.postgres.sql
 - A CI failure never silently advances or merges.
 - `pull_requests` stores observed GitHub mirror values; MiniCoder state transitions happen through
   feature-execution commands dispatched by reconciliation.
-- Budget-gate states are `paused_budget_exceeded` and `waiting_for_budget_approval`; the budget
-  evaluator reads spend rows live rather than a denormalized running total.
+- Budget-gate states are `paused_budget_exceeded` and `waiting_for_budget_approval`; the
+  retrospective evaluator and prospective forecaster read spend rows live rather than a
+  denormalized running total.
+- Project lifecycle includes final design-document states through `project_complete`; generated
+  `final-design-document.md` is an artifact snapshot, not runtime state.
 
 When modifying states, schemas, or entities, keep these layers synchronized:
 
@@ -529,9 +495,8 @@ When modifying states, schemas, or entities, keep these layers synchronized:
   untrusted data.
 - Untrusted content cannot expand permissions, alter orchestration policy, or bypass merge gates.
 - Provider credentials must be scoped to the adapter that needs them.
-- Trigger.dev webhook payloads require `TRIGGERDEV_WEBHOOK_SECRET`; all secrets in
-  `docker-compose.triggerdev.yml` use `${VAR:?message}` interpolation so Compose exits on missing
-  or empty values.
+- Task payloads live in the deployment database; they must remain secret-free, and task failures
+  must store redacted, length-capped error summaries.
 - Hosted agent workspaces require isolated ephemeral checkouts, bounded diffs, least-privilege
   secrets, and default-deny egress.
 - Production GitHub authentication uses a least-privilege GitHub App with verified webhook
@@ -583,7 +548,11 @@ pnpm vitest run packages/github/src/normalize.test.ts
 pnpm vitest run packages/testing/src/github-reconcile.test.ts
 pnpm vitest run packages/testing/src/testing.test.ts
 pnpm tsx packages/cli/src/index.ts test scenario execution-orchestrator
+pnpm tsx packages/cli/src/index.ts test scenario design-document-lifecycle
 pnpm vitest run packages/triggerdev/src/triggerdev.test.ts
+pnpm vitest run packages/triggerdev/src/task-registry.test.ts
+pnpm vitest run packages/triggerdev/src/task-worker.test.ts
+pnpm vitest run packages/cli/src/tasks.test.ts
 ```
 
 SQLite migration smoke test:
@@ -617,12 +586,15 @@ APP_ENV=development DB_DIALECT=sqlite DB_PATH=/tmp/minicoder-agent.db \
   pnpm tsx packages/cli/src/index.ts state doctor
 ```
 
-Trigger.dev task ID smoke check:
+Workflow Layer task registry smoke check:
 
 ```bash
 pnpm --filter @minicoder/triggerdev build
 pnpm --filter @minicoder/cli build
 pnpm tsx packages/cli/src/index.ts trigger validate
+APP_ENV=ci DB_DIALECT=sqlite DB_PATH=/tmp/minicoder-agent-tasks.db pnpm db:migrate
+APP_ENV=ci DB_DIALECT=sqlite DB_PATH=/tmp/minicoder-agent-tasks.db \
+  pnpm tsx packages/cli/src/index.ts tasks drain --timeout-ms 1000
 ```
 
 Do not substitute SQLite-only validation for a required cross-dialect check.
@@ -663,7 +635,7 @@ and a runnable demonstration scenario.
 - Preserve root `pnpm typecheck` ordering for packages whose `types` point to generated `dist/`:
 
   ```text
-  core → persistence-sqlite → persistence-postgres → workflow → github → triggerdev → testing → recursive --noEmit
+  core → persistence-sqlite → persistence-postgres → workflow → github → adapters-* → triggerdev → testing → api → tui → web → recursive --noEmit
   ```
 
 - Prefer small functions and explicit domain types over loosely shaped objects.
