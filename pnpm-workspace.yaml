@@ -7,3 +7,7 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   better-sqlite3: true
+  sharp: true          # via next — native image-optimization binary
+  ssh2: true           # via docker-modem (dockerode) — native crypto acceleration
+  cpu-features: true   # ssh2's native-acceleration dependency
+  unrs-resolver: true  # via eslint-import-resolver-typescript — native resolver binary
