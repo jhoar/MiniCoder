@@ -61,6 +61,11 @@ signing off on the final design doc — it stops and waits for a human.
 | `minicoder human resolve-disagreement/resume/retry/skip/block/unblock` | Disposition a feature stuck at `human_required` or `blocked`. |
 | `minicoder merge merge-if-ready` | Approve and execute a merge (the human trigger for merging). |
 | `minicoder merge finalize-if-github-merged` | Recovery command if a merge succeeded on GitHub but wasn't recorded. |
+| `minicoder spec ingest <file>` | Ingest a specification file. |
+| `minicoder clarification answer` | Answer a clarification question. |
+| `minicoder plan submit-for-approval/approve/activate` | Submit, approve, and activate the implementation plan. |
+| `minicoder budget approve-override` | Approve a budget override for a paused project. |
+| `minicoder run coder/review/fixes/merge-gate` | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute. |
 | `minicoder state inspect/validate/doctor/reconcile/export-diagnostics` | Diagnose and repair workflow health. |
 | `minicoder state repair` | Guarded, two-step repair of orphaned runs. |
 | `minicoder observability export-otel` | Export workflow events to an OpenTelemetry collector. |
@@ -402,56 +407,46 @@ Conventions used below:
 - `<id>` placeholders are the IDs MiniCoder itself generates/returns; there's no fixed format to
   guess.
 
-### 5.0 Generic API command dispatch (curl examples)
+### 5.0 Generic-dispatch commands — `minicoder spec/clarification/plan/budget ...` (API)
 
 Several lifecycle steps in the walkthrough above (spec ingestion, clarification answers, plan
-submission/approval/activation, budget override) have **no dedicated CLI command** — they're
-reached through the Orchestrator API's generic dispatch route,
-`POST /commands/:commandSlug`, which every registered command handler is reachable through by a
-slugified version of its name (e.g. `IngestSpecificationCommand` → `ingest-specification`). Every
-call needs `Authorization: Bearer <MINICODER_API_KEY>` and a client-chosen `Idempotency-Key`
-header (any unique string per logical submission — reusing one replays the original result rather
-than re-running the command). `GET /commands` lists every slug currently registered.
+submission/approval/activation, budget override) are reached through the Orchestrator API's
+generic dispatch route, `POST /commands/:commandSlug`, which every registered command handler is
+reachable through by a slugified version of its name (e.g. `IngestSpecificationCommand` →
+`ingest-specification`). Each now has a dedicated CLI command:
 
 ```bash
-# 1. Ingest a specification
-curl -X POST "$MINICODER_API_URL/commands/ingest-specification" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: ingest-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"projectId":"<project>","content":"<the spec text>","contentType":"text/plain"}'
+minicoder spec ingest <file> --project <project> [--content-type text/plain]
 
-# 2. Answer a clarification question (expectedQuestionVersion comes from
-#    `minicoder clarification --project <project> --json`)
-curl -X POST "$MINICODER_API_URL/commands/record-clarification-answer" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: answer-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"clarificationQuestionId":"<qId>","clarificationSessionId":"<sessionId>","projectId":"<project>","answer":"<your answer>","expectedQuestionVersion":1}'
+minicoder clarification answer --project <project> --session <sessionId> \
+  --question <qId> --text "<your answer>"
+  # expectedQuestionVersion is fetched automatically from the session — no manual lookup needed
 
-# 3. Submit the plan for approval (expectedVersion comes from `minicoder plan --project <project> --json`)
-curl -X POST "$MINICODER_API_URL/commands/submit-plan-for-approval" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: submit-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":0}'
+minicoder plan submit-for-approval --project <project> --plan <planId>
 
-# 4. Approve the plan (requires an approver/admin-role key)
-curl -X POST "$MINICODER_API_URL/commands/approve-plan" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: approve-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":1,"notes":"looks good"}'
+minicoder plan approve --project <project> --plan <planId> --yes [--notes "looks good"]
+  # requires an approver/admin-role key
 
-# 5. Activate the plan (requires an approver/admin-role key)
-curl -X POST "$MINICODER_API_URL/commands/activate-plan" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: activate-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":2}'
+minicoder plan activate --project <project> --plan <planId> --yes
+  # requires an approver/admin-role key
 
-# 6. Approve a budget override (requires an approver/admin-role key; approvedBudgetPolicyId
-#    is required, not optional — it's the budget_policies row being overridden)
+minicoder budget approve-override --project <project> --policy <policyId> \
+  --reason "approved extra spend for this sprint" --yes
+  # requires an approver/admin-role key; --policy is the budget_policies row being overridden
+```
+
+Every one of these fetches its own `expectedVersion`/`expectedQuestionVersion` (an
+optimistic-concurrency check) live before dispatching, and mints a fresh `Idempotency-Key` per
+invocation — you never need to compute either by hand.
+
+If you need to call a command with no dedicated CLI wrapper yet, every registered handler remains
+reachable directly via `POST /commands/:commandSlug` (`GET /commands` lists every slug currently
+registered) — this needs `Authorization: Bearer <MINICODER_API_KEY>` and a client-chosen
+`Idempotency-Key` header (any unique string per logical submission — reusing one replays the
+original result rather than re-running the command). Example, using `minicoder budget
+approve-override`'s underlying call:
+
+```bash
 curl -X POST "$MINICODER_API_URL/commands/approve-budget-override" \
   -H "Authorization: Bearer $MINICODER_API_KEY" \
   -H "Idempotency-Key: budget-override-$(uuidgen)" \
@@ -459,26 +454,29 @@ curl -X POST "$MINICODER_API_URL/commands/approve-budget-override" \
   -d '{"projectId":"<project>","expectedVersion":5,"overrideReason":"approved extra spend for this sprint","approvedBudgetPolicyId":"<policyId>"}'
 ```
 
-Every `expectedVersion`/`expectedQuestionVersion` value is an optimistic-concurrency check — fetch
-the current version first (via the corresponding read command's `--json` output) or the call
-rejects with a conflict.
+### 5.0.1 Task-enqueue commands — `minicoder run ...` / `minicoder design-doc request-run` (API)
 
-### 5.0.1 Task-enqueue API routes (no CLI equivalent)
-
-These five routes each enqueue a whole background task (coding, review, merge-gate recompute, or
+Five routes each enqueue a whole background task (coding, review, merge-gate recompute, or
 design-doc generation) rather than executing synchronously. All require an **operator**-role (or
-above) API key and a client-chosen `Idempotency-Key` header; all return `202 {triggerdevRunId,
-accepted: true}`.
+above) API key; the CLI mints the `Idempotency-Key` for you and prints `enqueued:<triggerdevRunId>`
+on success.
 
-| Route | Required body fields |
-| --- | --- |
-| `POST /commands/request-coder-run` | `projectId`, `featureRunId`, `coderAdapterName` |
-| `POST /commands/request-review` | `projectId`, `featureRunId`, `reviewerAdapterName` (optional `arbiterAdapterName`) |
-| `POST /commands/request-fixes` | `projectId`, `featureRunId`, `reviewerAdapterName` (re-triggers the review task — there is no separate "fixes" task) |
-| `POST /commands/recompute-merge-gate` | `projectId`, `featureRunId` |
-| `POST /commands/request-design-doc` | `projectId`, `documentationAdapterName` |
+```bash
+minicoder run coder --project <project> --feature-run <id> --coder-adapter CodexCoderAdapter
 
-Every `...AdapterName` field must already exist in the `AdapterRegistry` — see the adapter registry
+minicoder run review --project <project> --feature-run <id> \
+  --reviewer-adapter ClaudeReviewerAdapter [--arbiter-adapter ClaudeArbiterAdapter]
+
+minicoder run fixes --project <project> --feature-run <id> \
+  --reviewer-adapter ClaudeReviewerAdapter
+  # re-triggers the review task — there is no separate "fixes" task
+
+minicoder run merge-gate --project <project> --feature-run <id>
+
+minicoder design-doc request-run --project <project> --documentation-adapter ClaudeDocumentationAdapter
+```
+
+Every `...-adapter` value must already exist in the `AdapterRegistry` — see the adapter registry
 bootstrap note in [§3.5](#35-start-the-long-running-processes).
 
 ### 5.1 Database lifecycle — `minicoder db ...` (DB)

@@ -25,6 +25,9 @@ import { createResumeCommand } from './commands/resume.js';
 import { createProjectCommand } from './commands/project.js';
 import { createObservabilityCommand } from './commands/observability.js';
 import { createTasksCommand } from './commands/tasks.js';
+import { createSpecCommand } from './commands/spec.js';
+import { createBudgetCommand } from './commands/budget.js';
+import { createRunCommand } from './commands/run.js';
 
 const program = new Command();
 
@@ -58,6 +61,9 @@ program.addCommand(createResumeCommand());
 program.addCommand(createProjectCommand());
 program.addCommand(createObservabilityCommand());
 program.addCommand(createTasksCommand());
+program.addCommand(createSpecCommand());
+program.addCommand(createBudgetCommand());
+program.addCommand(createRunCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error('Fatal error:', err);

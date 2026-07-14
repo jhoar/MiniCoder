@@ -72,4 +72,87 @@ describe('ApiClient', () => {
     expect(String(url)).toContain('projectId=p1');
     expect(String(url)).not.toContain('featureRunId');
   });
+
+  // Previously curl-only generic-dispatch/task-enqueue commands (USER-MANUAL.md §5.0/§5.0.1) —
+  // one request-shape assertion per new method is enough; the CLI wrapper tests cover the
+  // version-fetch/idempotency-key-minting behavior built on top of these.
+
+  it('sends ingestSpecification to the generic dispatch route with the right body', async () => {
+    const fetchImpl = fakeFetch(200, {
+      command_id: 'c1',
+      accepted: true,
+      resulting_state: 'ingested',
+      emitted_event_ids: [],
+    });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.ingestSpecification('project-1', 'the spec text', 'text/plain', 'idem-1');
+
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/commands/ingest-specification');
+    expect(JSON.parse(init.body as string)).toEqual({
+      projectId: 'project-1',
+      content: 'the spec text',
+      contentType: 'text/plain',
+    });
+  });
+
+  it('sends recordClarificationAnswer with expectedQuestionVersion', async () => {
+    const fetchImpl = fakeFetch(200, {
+      command_id: 'c1',
+      accepted: true,
+      resulting_state: 'clarification_required',
+      emitted_event_ids: [],
+    });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.recordClarificationAnswer('q1', 's1', 'project-1', 'the answer', 2, 'idem-1');
+
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/commands/record-clarification-answer');
+    expect(JSON.parse(init.body as string)).toEqual({
+      clarificationQuestionId: 'q1',
+      clarificationSessionId: 's1',
+      projectId: 'project-1',
+      answer: 'the answer',
+      expectedQuestionVersion: 2,
+    });
+  });
+
+  it('sends approveBudgetOverride with the required approvedBudgetPolicyId', async () => {
+    const fetchImpl = fakeFetch(200, {
+      command_id: 'c1',
+      accepted: true,
+      resulting_state: 'running',
+      emitted_event_ids: [],
+    });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    await client.approveBudgetOverride('project-1', 5, 'extra spend approved', 'policy-1', 'idem-1');
+
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/commands/approve-budget-override');
+    expect(JSON.parse(init.body as string)).toEqual({
+      projectId: 'project-1',
+      expectedVersion: 5,
+      overrideReason: 'extra spend approved',
+      approvedBudgetPolicyId: 'policy-1',
+    });
+  });
+
+  it('sends requestCoderRun to the enqueue route and returns the 202 body', async () => {
+    const fetchImpl = fakeFetch(202, { triggerdevRunId: 'run-1', accepted: true });
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000', apiKey: 'k1', fetchImpl });
+
+    const result = await client.requestCoderRun('project-1', 'fr1', 'CodexCoderAdapter', 'idem-1');
+
+    expect(result).toEqual({ triggerdevRunId: 'run-1', accepted: true });
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain('/commands/request-coder-run');
+    expect(JSON.parse(init.body as string)).toEqual({
+      projectId: 'project-1',
+      featureRunId: 'fr1',
+      coderAdapterName: 'CodexCoderAdapter',
+    });
+  });
 });
