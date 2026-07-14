@@ -2999,6 +2999,59 @@ cursor (the same shape `observability_export_cursors` already establishes for an
 "make an unbounded periodic sweep resumable, without ever silently skipping" problem), not
 truncation that trades correctness for speed.
 
+## CLI Coverage for Generic-Dispatch and Task-Enqueue Commands (`packages/cli/src/commands/{spec,budget,run}.ts`, plus `clarification.ts`/`plan.ts`/`design-doc.ts` write subcommands)
+
+- **Not a numbered implementation-plan phase.** PR #79 is an operator-experience cleanup, not new
+  domain functionality: `USER-MANUAL.md` §5.0/§5.0.1 had long documented 11 lifecycle operations
+  (spec ingestion, clarification answers, plan submission/approval/activation, budget override, and
+  four task-enqueue routes) as reachable **only** via a hand-built `curl` call against the
+  Orchestrator API's generic dispatch route (`POST /commands/:commandSlug`) or a dedicated enqueue
+  route — the operator had to know the exact command slug, JSON payload shape, and
+  optimistic-concurrency/idempotency-key protocol by heart. This PR gives every one of those 11
+  operations a real `minicoder` CLI subcommand, following the exact conventions Phase 14/17 already
+  established (`ApiClient` typed methods, `renderOrJson()`/`--json`, `--yes` confirmation for
+  approval actions, the `isDefault`/`hidden` sibling-subcommand shape for avoiding Commander's
+  parent/child flag collision).
+- **New commands**: `minicoder spec ingest <file>` (`IngestSpecificationCommand`), `minicoder
+clarification answer` (`RecordClarificationAnswerCommand`), `minicoder plan
+{submit-for-approval,approve,activate}` (`SubmitPlanForApprovalCommand`/`ApprovePlanCommand`/
+  `ActivatePlanCommand`), `minicoder budget approve-override` (`ApproveBudgetOverrideCommand`), and
+  `minicoder run {coder,review,fixes,merge-gate}` (the `request-coder-run`/`request-review`/
+  `request-fixes`/`recompute-merge-gate` enqueue routes — `request-design-doc`, the fifth enqueue
+  route, was already covered by `design-doc.ts`'s pre-existing `request-run` subcommand, so it was
+  not duplicated).
+- **`minicoder budget approve-override` reads `GET /status` first to pick the correct
+  idempotency-key template**, since `ApproveBudgetOverrideCommand` serves two distinct matrix edges
+  (`paused_budget_exceeded -> running` vs `waiting_for_budget_approval -> running`) with no single
+  fixed template — see the Execution Orchestrator Operational Constraints section above for why
+  that ambiguity exists at the command-handler level; this CLI command is the first caller that has
+  to resolve it dynamically rather than the caller always knowing which edge applies.
+- **`minicoder plan {submit-for-approval,approve,activate}` fetch a specific plan's live `version`
+  via the new `ApiClient.getImplementationPlan()` (`GET /plans/:id`), not by scanning
+  `listImplementationPlans()`'s cursor-paginated listing (a real bug found and fixed during PR #79
+  review — HIGH-1).** Checking only `listImplementationPlans()`'s first page would incorrectly
+  report a valid plan as missing once it wasn't among the first 20 (the default page size) plans in
+  a project — `GET /plans/:id` already existed in the OpenAPI spec (`operationId: getPlan`) and just
+  needed a typed `ApiClient` method.
+- **Every write/enqueue command this PR added accepts an optional `--idempotency-key <key>`**, via
+  a new shared `packages/cli/src/tui-client.ts`'s `resolveIdempotencyKey(prefix, opts)` helper
+  (falls back to `${prefix}:${randomUUID()}` when the flag is omitted) — a second code-review round
+  on PR #79 flagged that always minting a fresh key made an ambiguous-failure retry (a request that
+  times out, or whose response is lost, after the server already committed/enqueued the operation)
+  unsafe: a second, differently-keyed submission risks a duplicate spec ingestion or task enqueue.
+  This is a deliberate, uniform addition across every new command in this PR — including
+  `design-doc.ts`'s pre-existing `request-run` subcommand, which the same review round flagged as
+  inconsistent with the manual's own claim that all task-enqueue commands support the flag.
+- **Four more generic-dispatch, human-actorKind, operator-role commands were found during review to
+  still be curl-only, but were judged out of scope for this PR and tracked separately (issue
+  #81)**: `ExportPlanCommand` (`export-plan`), `ExportBacklogCommand` (`export-backlog`),
+  `StartClarificationCommand` (`start-clarification`), and `CompleteClarificationCommand`
+  (`complete-clarification`) — none of `minicoder plan`/`minicoder clarification`/`minicoder
+artifacts` (read-only) wrap them. PR #79 only closed the specific 11-operation gap
+  `USER-MANUAL.md` already documented; this newly-discovered fourth category is real but was not
+  part of that documented set, so it's tracked as its own follow-up rather than silently expanding
+  this PR's scope mid-review.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

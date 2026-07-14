@@ -464,15 +464,18 @@ If you need to call a command with no dedicated CLI wrapper yet, every registere
 reachable directly via `POST /commands/:commandSlug` (`GET /commands` lists every slug currently
 registered) — this needs `Authorization: Bearer <MINICODER_API_KEY>` and a client-chosen
 `Idempotency-Key` header (any unique string per logical submission — reusing one replays the
-original result rather than re-running the command). Example, using `minicoder budget
-approve-override`'s underlying call:
+original result rather than re-running the command). A handful of operations still have no CLI
+wrapper — `export-plan`, `export-backlog`, `start-clarification`, `complete-clarification`
+(tracked in [issue #81](https://github.com/jhoar/MiniCoder/issues/81)) — as well as any future
+command added to the registry before its own CLI wrapper lands. Example, exporting a plan snapshot
+directly:
 
 ```bash
-curl -X POST "$MINICODER_API_URL/commands/approve-budget-override" \
+curl -X POST "$MINICODER_API_URL/commands/export-plan" \
   -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: budget-override-$(uuidgen)" \
+  -H "Idempotency-Key: export-plan-$(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{"projectId":"<project>","expectedVersion":5,"overrideReason":"approved extra spend for this sprint","approvedBudgetPolicyId":"<policyId>"}'
+  -d '{"planId":"<planId>","projectId":"<project>"}'
 ```
 
 ### 5.0.1 Task-enqueue commands — `minicoder run ...` / `minicoder design-doc request-run` (API)
