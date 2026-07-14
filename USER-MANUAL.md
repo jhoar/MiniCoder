@@ -125,6 +125,62 @@ scheduled reconciliation pass as a fallback) and mirrors what it sees.
 - An LLM provider endpoint for the coder/reviewer/planner/arbiter/documentation adapters
   (`CODE_GEN_BASE_URL`, `CODE_GEN_API_KEY`, `CODE_GEN_MODEL` — any OpenAI-compatible endpoint).
 
+### 3.1.1 Generating `GITHUB_TOKEN` and `GITHUB_WEBHOOK_SECRET`
+
+**`GITHUB_TOKEN`** — used by the coder/reviewer adapters (push branches, open PRs), `minicoder
+merge ...` (merge, publish the `minicoder/review-gate` status check), `github-reconciliation`
+(list/read PRs, checks, commit statuses), and `state doctor --check-github`.
+
+Fine-grained personal access tokens are recommended over classic tokens (narrower blast radius if
+leaked):
+
+1. GitHub → Settings → Developer settings → **Personal access tokens → Fine-grained tokens** →
+   **Generate new token**.
+2. **Repository access**: "Only select repositories" → pick the repo MiniCoder will operate on.
+3. **Permissions** → Repository permissions, grant exactly:
+   - **Contents**: Read and write (push commits/branches)
+   - **Pull requests**: Read and write (open, list, merge PRs)
+   - **Commit statuses**: Read and write (publish/read the `minicoder/review-gate` check, read CI results)
+   - **Metadata**: Read-only (auto-required)
+4. Set an expiration and generate. Copy the token immediately — GitHub shows it once.
+5. `export GITHUB_TOKEN=<the token>` (or set it in `.env`).
+
+A classic PAT works too (Settings → Developer settings → Personal access tokens → Tokens
+(classic)) — grant the single **`repo`** scope, which is a superset of everything above.
+
+Either way, the identity behind the token (a user account, or a
+[GitHub App](https://docs.github.com/en/apps) installation token if you've wired one up yourself —
+MiniCoder's `GitHubClient` interface doesn't care which) needs at least **write** access to the
+repository, since it merges PRs and pushes branches directly.
+
+**`GITHUB_WEBHOOK_SECRET`** — this one you generate yourself; it's never obtained from GitHub. It's
+an arbitrary shared secret both sides must agree on: MiniCoder verifies each webhook delivery's
+`X-Hub-Signature-256` header (HMAC-SHA256 over the raw request body) against it.
+
+1. Generate a strong random value:
+   ```bash
+   openssl rand -hex 32
+   ```
+2. `export GITHUB_WEBHOOK_SECRET=<that value>` (or set it in `.env`).
+3. Register the *same* value on the GitHub side: repository → **Settings → Webhooks → Add
+   webhook**.
+   - **Payload URL**: `https://<your-minicoder-host>/webhooks/github` (whichever process is
+     receiving it — see 3.5's "pick one, not both" note for `api serve` vs `github serve`).
+   - **Content type**: `application/json`.
+   - **Secret**: paste the same value from step 1.
+   - **Which events**: either "Send me everything," or, to match exactly what MiniCoder consumes,
+     select individually: *Pull requests*, *Pull request reviews*, *Pull request review comments*,
+     *Check runs*, *Check suites*, *Statuses*, *Pushes*.
+   - Leave **Active** checked, then **Add webhook**.
+4. Rotating later: set the new value as `GITHUB_WEBHOOK_SECRET` and the *old* one as
+   `GITHUB_WEBHOOK_SECRET_PREVIOUS` (both are accepted during the rotation window), update the
+   webhook's secret on GitHub to the new value, then drop `GITHUB_WEBHOOK_SECRET_PREVIOUS` once
+   you're confident no in-flight deliveries still use the old one.
+
+Your webhook receiver must be reachable from GitHub's servers — for local development, tunnel it
+first (e.g. `ngrok http 4000`) and use the tunnel's HTTPS URL as the payload URL; GitHub cannot
+reach `localhost` directly.
+
 ### 3.2 First-time setup
 
 ```bash
