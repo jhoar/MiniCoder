@@ -583,7 +583,22 @@ minicoder design-doc generate --project <id> --yes                            # 
 minicoder design-doc regenerate --project <id> --yes                          # design_document_revision_requested -> design_document_generating (operator+)
 minicoder design-doc request-revision --project <id> --document <id> --yes [--notes <text>]  # -> design_document_revision_requested (approver+)
 minicoder design-doc approve --project <id> --document <id> --yes [--notes <text>]           # -> design_document_approved (approver+)
-minicoder design-doc request-run --project <id> --documentation-adapter <name> # enqueues run-design-doc (drafts sections, exports final-design-document.md)
+minicoder design-doc request-run --project <id> --documentation-adapter <name> [--idempotency-key <key>] # enqueues run-design-doc (drafts sections, exports final-design-document.md)
+
+# Generic-dispatch and task-enqueue CLI wrappers (previously curl-only — see USER-MANUAL.md §5.0/
+# §5.0.1; API-only, same conventions as the Ink Text UI commands above). Every write/enqueue
+# command below also accepts an optional --idempotency-key <key> to reuse a specific key (for
+# safely retrying after a timeout/lost response) instead of minting a fresh one per invocation.
+minicoder spec ingest <file> --project <id> [--content-type <type>]           # operator+
+minicoder clarification answer --project <id> --session <id> --question <id> --text <answer>  # operator+
+minicoder plan submit-for-approval --project <id> --plan <id>                 # operator+; draft -> pending_approval
+minicoder plan approve --project <id> --plan <id> --yes [--notes <text>]      # approver+; pending_approval -> approved
+minicoder plan activate --project <id> --plan <id> --yes                     # approver+; approved -> activated_for_execution
+minicoder budget approve-override --project <id> --policy <id> --reason <text> --yes  # approver+
+minicoder run coder --project <id> --feature-run <id> --coder-adapter <name>          # operator+; enqueues run-coder
+minicoder run review --project <id> --feature-run <id> --reviewer-adapter <name> [--arbiter-adapter <name>]  # operator+; enqueues run-review
+minicoder run fixes --project <id> --feature-run <id> --reviewer-adapter <name>       # operator+; re-enqueues run-review
+minicoder run merge-gate --project <id> --feature-run <id>                            # operator+; enqueues run-merge-gate
 
 # Observability export (issue #67; optional, DB-direct — not the Ink Text UI's API-only surface)
 minicoder observability export-otel [--cursor-id <id>] [--limit <n>]  # exports workflow_events to

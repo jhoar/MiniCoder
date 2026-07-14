@@ -32,39 +32,44 @@ signing off on the final design doc — it stops and waits for a human.
 
 ## 1. Quick summary of every command
 
-| Command | What it's for |
-| --- | --- |
-| `minicoder db migrate/rollback/status/validate/diff` | Manage the database schema. |
-| `minicoder db reset` | Wipe and re-migrate the database (guarded, destructive). |
-| `minicoder db seed/snapshot/restore` | Dev/test fixture and backup helpers. |
-| `minicoder tasks worker` | Run the background worker that executes queued automation tasks. |
-| `minicoder tasks drain` | Wait for the task queue to empty (CI/scripts). |
-| `minicoder trigger list-runs/inspect-run/cancel-run/replay-run/reconcile/validate` | Inspect and manage individual task-queue runs. |
-| `minicoder github serve` | Run the GitHub webhook receiver. |
-| `minicoder github simulate-*` | Fake a GitHub event for local testing (dev/test only). |
-| `minicoder api serve` | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to. |
-| `minicoder status` | Project dashboard: state, automation, workflow health. |
-| `minicoder plan` | View the implementation plan and readiness. |
-| `minicoder plan import-backlog <file>` | Import a hand-written `backlog.md`. |
-| `minicoder clarification` | View clarification questions/answers. |
-| `minicoder features` | List the feature backlog, or (`--human-required`) items awaiting a human. |
-| `minicoder active` | Show the one feature currently being worked on and its PR/CI status. |
-| `minicoder runs` | List agent runs, or (`--timeline`) a merged history for one feature. |
-| `minicoder findings` | List review findings for a feature run. |
-| `minicoder disagreements` | List coder/reviewer disagreements. |
-| `minicoder costs` | List spend, or (`--report`) an aggregate budget breakdown. |
-| `minicoder artifacts` | List generated artifacts (plan.md, backlog.md, final-design-document.md). |
-| `minicoder adapters` | List registered AI adapters (read-only). |
-| `minicoder design-doc` | View, generate, regenerate, request revision on, or approve the final design document. |
-| `minicoder project` | Mark implementation complete, check acceptance validation, complete the project. |
-| `minicoder pause` / `minicoder resume` | Stop/restart automated execution for a project. |
-| `minicoder human resolve-disagreement/resume/retry/skip/block/unblock` | Disposition a feature stuck at `human_required` or `blocked`. |
-| `minicoder merge merge-if-ready` | Approve and execute a merge (the human trigger for merging). |
-| `minicoder merge finalize-if-github-merged` | Recovery command if a merge succeeded on GitHub but wasn't recorded. |
-| `minicoder state inspect/validate/doctor/reconcile/export-diagnostics` | Diagnose and repair workflow health. |
-| `minicoder state repair` | Guarded, two-step repair of orphaned runs. |
-| `minicoder observability export-otel` | Export workflow events to an OpenTelemetry collector. |
-| `minicoder test unit/integration/system/scenario` | Run the automated test suites. |
+| Command                                                                            | What it's for                                                                          |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `minicoder db migrate/rollback/status/validate/diff`                               | Manage the database schema.                                                            |
+| `minicoder db reset`                                                               | Wipe and re-migrate the database (guarded, destructive).                               |
+| `minicoder db seed/snapshot/restore`                                               | Dev/test fixture and backup helpers.                                                   |
+| `minicoder tasks worker`                                                           | Run the background worker that executes queued automation tasks.                       |
+| `minicoder tasks drain`                                                            | Wait for the task queue to empty (CI/scripts).                                         |
+| `minicoder trigger list-runs/inspect-run/cancel-run/replay-run/reconcile/validate` | Inspect and manage individual task-queue runs.                                         |
+| `minicoder github serve`                                                           | Run the GitHub webhook receiver.                                                       |
+| `minicoder github simulate-*`                                                      | Fake a GitHub event for local testing (dev/test only).                                 |
+| `minicoder api serve`                                                              | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to.     |
+| `minicoder status`                                                                 | Project dashboard: state, automation, workflow health.                                 |
+| `minicoder plan`                                                                   | View the implementation plan and readiness.                                            |
+| `minicoder plan import-backlog <file>`                                             | Import a hand-written `backlog.md`.                                                    |
+| `minicoder clarification`                                                          | View clarification questions/answers.                                                  |
+| `minicoder features`                                                               | List the feature backlog, or (`--human-required`) items awaiting a human.              |
+| `minicoder active`                                                                 | Show the one feature currently being worked on and its PR/CI status.                   |
+| `minicoder runs`                                                                   | List agent runs, or (`--timeline`) a merged history for one feature.                   |
+| `minicoder findings`                                                               | List review findings for a feature run.                                                |
+| `minicoder disagreements`                                                          | List coder/reviewer disagreements.                                                     |
+| `minicoder costs`                                                                  | List spend, or (`--report`) an aggregate budget breakdown.                             |
+| `minicoder artifacts`                                                              | List generated artifacts (plan.md, backlog.md, final-design-document.md).              |
+| `minicoder adapters`                                                               | List registered AI adapters (read-only).                                               |
+| `minicoder design-doc`                                                             | View, generate, regenerate, request revision on, or approve the final design document. |
+| `minicoder project`                                                                | Mark implementation complete, check acceptance validation, complete the project.       |
+| `minicoder pause` / `minicoder resume`                                             | Stop/restart automated execution for a project.                                        |
+| `minicoder human resolve-disagreement/resume/retry/skip/block/unblock`             | Disposition a feature stuck at `human_required` or `blocked`.                          |
+| `minicoder merge merge-if-ready`                                                   | Approve and execute a merge (the human trigger for merging).                           |
+| `minicoder merge finalize-if-github-merged`                                        | Recovery command if a merge succeeded on GitHub but wasn't recorded.                   |
+| `minicoder spec ingest <file>`                                                     | Ingest a specification file.                                                           |
+| `minicoder clarification answer`                                                   | Answer a clarification question.                                                       |
+| `minicoder plan submit-for-approval/approve/activate`                              | Submit, approve, and activate the implementation plan.                                 |
+| `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                        |
+| `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.     |
+| `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                   |
+| `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                             |
+| `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                  |
+| `minicoder test unit/integration/system/scenario`                                  | Run the automated test suites.                                                         |
 
 Full details, every flag, and defaults are in [§5](#5-complete-command-reference).
 
@@ -130,20 +135,20 @@ minicoder db validate        # confirms every expected table/index exists
 
 ### 3.3 Environment variables at a glance
 
-| Concern | Variable | Notes |
-| --- | --- | --- |
-| Database | `DB_DIALECT` | `sqlite` (default) or `postgres` |
-| Database (SQLite) | `DB_PATH` | Defaults to `./minicoder.db` |
-| Database (PostgreSQL) | `DB_URL` | Required when `DB_DIALECT=postgres` |
-| API auth (server) | `MINICODER_API_KEYS` | JSON array of `{key, id, role, actorKind, displayName?}` |
-| API auth (client/CLI/UI) | `MINICODER_API_KEY` | One raw key from the array above |
-| API location (client/CLI/UI) | `MINICODER_API_URL` | Defaults to `http://localhost:4000` |
-| GitHub | `GITHUB_TOKEN` | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-github` |
-| GitHub webhooks | `GITHUB_WEBHOOK_SECRET` | Required by both `minicoder github serve` and `minicoder api serve` |
-| GitHub webhooks (rotation) | `GITHUB_WEBHOOK_SECRET_PREVIOUS` | Optional, for secret rotation |
-| LLM provider | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL` | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters |
-| Observability (optional) | `OTEL_EXPORTER_OTLP_ENDPOINT` | If unset, `observability export-otel` is a no-op |
-| Web UI | (none new) | Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` as the CLI |
+| Concern                      | Variable                                                    | Notes                                                                                                                    |
+| ---------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Database                     | `DB_DIALECT`                                                | `sqlite` (default) or `postgres`                                                                                         |
+| Database (SQLite)            | `DB_PATH`                                                   | Defaults to `./minicoder.db`                                                                                             |
+| Database (PostgreSQL)        | `DB_URL`                                                    | Required when `DB_DIALECT=postgres`                                                                                      |
+| API auth (server)            | `MINICODER_API_KEYS`                                        | JSON array of `{key, id, role, actorKind, displayName?}`                                                                 |
+| API auth (client/CLI/UI)     | `MINICODER_API_KEY`                                         | One raw key from the array above                                                                                         |
+| API location (client/CLI/UI) | `MINICODER_API_URL`                                         | Defaults to `http://localhost:4000`                                                                                      |
+| GitHub                       | `GITHUB_TOKEN`                                              | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-github`                                          |
+| GitHub webhooks              | `GITHUB_WEBHOOK_SECRET`                                     | Required by both `minicoder github serve` and `minicoder api serve`                                                      |
+| GitHub webhooks (rotation)   | `GITHUB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
+| LLM provider                 | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL` | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters |
+| Observability (optional)     | `OTEL_EXPORTER_OTLP_ENDPOINT`                               | If unset, `observability export-otel` is a no-op                                                                         |
+| Web UI                       | (none new)                                                  | Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` as the CLI                                                        |
 
 ### 3.4 Getting the `minicoder` binary on your PATH
 
@@ -171,7 +176,7 @@ minicoder tasks worker              # executes queued automation (coding, review
 
 **Webhook receiver — pick one, not both.** `minicoder api serve` already mounts
 `POST /webhooks/github` itself (and requires `GITHUB_WEBHOOK_SECRET` to start, exactly like the
-standalone receiver). `minicoder github serve` is a *second*, standalone Fastify process exposing
+standalone receiver). `minicoder github serve` is a _second_, standalone Fastify process exposing
 the same route on its own port. Point your GitHub repository's webhook at whichever one you
 actually run — normally that's the API's own `/webhooks/github` (one fewer process to run), with
 `minicoder github serve` reserved for topologies that want the webhook receiver decoupled from the
@@ -202,7 +207,7 @@ it, any command that names an adapter (`design-doc request-run --documentation-a
 
 ### 3.6 Optional: the Text UI and Web UI
 
-Every `minicoder <noun>` command below (`status`, `plan`, `features`, ...) *is* the Text UI — no
+Every `minicoder <noun>` command below (`status`, `plan`, `features`, ...) _is_ the Text UI — no
 separate install. For the Web UI, run `packages/web`'s Next.js server (it reads the same
 `MINICODER_API_URL`/`MINICODER_API_KEY`), and put it behind a trusted/internal network — it holds
 one shared API credential for every visitor, with no per-user login yet.
@@ -219,10 +224,9 @@ This walks through taking a specification all the way to a merged, documented pr
 Feed MiniCoder your spec (a plain-text/markdown description of what you want built). This kicks
 off a planner-adapter-backed readiness assessment.
 
-> There's no dedicated `minicoder` CLI command for specification ingestion or plan
-> approval/activation — they're invoked through the Orchestrator API's generic command dispatch.
-> See [§5.0](#50-generic-api-command-dispatch-curl-examples) for working `curl` examples of every
-> step in this and the next section.
+```bash
+minicoder spec ingest spec.md --project <project>
+```
 
 Once ingested, check readiness and whether clarification is needed:
 
@@ -240,10 +244,17 @@ asks questions before it will draft a plan.
 minicoder clarification --project <project>
 ```
 
-Answer each question through your deployment's clarification-answer path. There's a hard limit of
-3 rounds and a per-round timeout — if you don't answer in time, the session is marked
-`clarification_blocked` and escalated to a human. Once every question in the current round is
-answered, the session completes (`clarification_complete`) and plan generation can proceed.
+Answer each question:
+
+```bash
+minicoder clarification answer --project <project> --session <sessionId> \
+  --question <questionId> --text "<your answer>"
+```
+
+There's a hard limit of 3 rounds and a per-round timeout — if you don't answer in time, the session
+is marked `clarification_blocked` and escalated to a human. Once every question in the current
+round is answered, the session completes (`clarification_complete`) and plan generation can
+proceed.
 
 ### Step 3 — Review and approve the plan
 
@@ -262,11 +273,20 @@ minicoder plan import-backlog backlog.md --project <project> --plan <planId> --a
 ```
 
 Submission for approval requires the backlog to have passed validation with no unresolved blocking
-gaps. Approving and activating a plan requires `approver`/`admin` — this is where the plan moves
+gaps:
+
+```bash
+minicoder plan submit-for-approval --project <project> --plan <planId>
+```
+
+Approving and activating a plan requires `approver`/`admin` — this is where the plan moves
 `draft → pending_approval → approved → activated_for_execution`, and every feature request becomes
-a feature run at `approved_pending_execution`. These three transitions
-(`submit-plan-for-approval`, `approve-plan`, `activate-plan`) are, again, generic API dispatch
-calls — see [§5.0](#50-generic-api-command-dispatch-curl-examples) for the exact `curl` invocations.
+a feature run at `approved_pending_execution`:
+
+```bash
+minicoder plan approve --project <project> --plan <planId> --yes
+minicoder plan activate --project <project> --plan <planId> --yes
+```
 
 ### Step 4 — Let automation run, and watch it work
 
@@ -320,9 +340,12 @@ minicoder human unblock --feature-run <id> --project <project> --actor <you> --n
 
 Also watch for a budget pause: if a project hits a soft/hard cost limit, it moves to
 `waiting_for_budget_approval`/`paused_budget_exceeded` and needs an approver override before
-automation continues (check `minicoder costs --project <project>` and `minicoder status`). The
-override itself is another generic API dispatch call, `approve-budget-override` — see
-[§5.0](#50-generic-api-command-dispatch-curl-examples) for the exact payload.
+automation continues (check `minicoder costs --project <project>` and `minicoder status`):
+
+```bash
+minicoder budget approve-override --project <project> --policy <policyId> \
+  --reason "approved extra spend for this sprint" --yes
+```
 
 ### Step 6 — Approve and execute merges
 
@@ -402,98 +425,98 @@ Conventions used below:
 - `<id>` placeholders are the IDs MiniCoder itself generates/returns; there's no fixed format to
   guess.
 
-### 5.0 Generic API command dispatch (curl examples)
+### 5.0 Generic-dispatch commands — `minicoder spec/clarification/plan/budget ...` (API)
 
 Several lifecycle steps in the walkthrough above (spec ingestion, clarification answers, plan
-submission/approval/activation, budget override) have **no dedicated CLI command** — they're
-reached through the Orchestrator API's generic dispatch route,
-`POST /commands/:commandSlug`, which every registered command handler is reachable through by a
-slugified version of its name (e.g. `IngestSpecificationCommand` → `ingest-specification`). Every
-call needs `Authorization: Bearer <MINICODER_API_KEY>` and a client-chosen `Idempotency-Key`
-header (any unique string per logical submission — reusing one replays the original result rather
-than re-running the command). `GET /commands` lists every slug currently registered.
+submission/approval/activation, budget override) are reached through the Orchestrator API's
+generic dispatch route, `POST /commands/:commandSlug`, which every registered command handler is
+reachable through by a slugified version of its name (e.g. `IngestSpecificationCommand` →
+`ingest-specification`). Each now has a dedicated CLI command:
 
 ```bash
-# 1. Ingest a specification
-curl -X POST "$MINICODER_API_URL/commands/ingest-specification" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: ingest-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"projectId":"<project>","content":"<the spec text>","contentType":"text/plain"}'
+minicoder spec ingest <file> --project <project> [--content-type text/plain]
 
-# 2. Answer a clarification question (expectedQuestionVersion comes from
-#    `minicoder clarification --project <project> --json`)
-curl -X POST "$MINICODER_API_URL/commands/record-clarification-answer" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: answer-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"clarificationQuestionId":"<qId>","clarificationSessionId":"<sessionId>","projectId":"<project>","answer":"<your answer>","expectedQuestionVersion":1}'
+minicoder clarification answer --project <project> --session <sessionId> \
+  --question <qId> --text "<your answer>"
+  # expectedQuestionVersion is fetched automatically from the session — no manual lookup needed
 
-# 3. Submit the plan for approval (expectedVersion comes from `minicoder plan --project <project> --json`)
-curl -X POST "$MINICODER_API_URL/commands/submit-plan-for-approval" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: submit-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":0}'
+minicoder plan submit-for-approval --project <project> --plan <planId>
 
-# 4. Approve the plan (requires an approver/admin-role key)
-curl -X POST "$MINICODER_API_URL/commands/approve-plan" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: approve-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":1,"notes":"looks good"}'
+minicoder plan approve --project <project> --plan <planId> --yes [--notes "looks good"]
+  # requires an approver/admin-role key
 
-# 5. Activate the plan (requires an approver/admin-role key)
-curl -X POST "$MINICODER_API_URL/commands/activate-plan" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: activate-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"planId":"<planId>","projectId":"<project>","expectedVersion":2}'
+minicoder plan activate --project <project> --plan <planId> --yes
+  # requires an approver/admin-role key
 
-# 6. Approve a budget override (requires an approver/admin-role key; approvedBudgetPolicyId
-#    is required, not optional — it's the budget_policies row being overridden)
-curl -X POST "$MINICODER_API_URL/commands/approve-budget-override" \
-  -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: budget-override-$(uuidgen)" \
-  -H "Content-Type: application/json" \
-  -d '{"projectId":"<project>","expectedVersion":5,"overrideReason":"approved extra spend for this sprint","approvedBudgetPolicyId":"<policyId>"}'
+minicoder budget approve-override --project <project> --policy <policyId> \
+  --reason "approved extra spend for this sprint" --yes
+  # requires an approver/admin-role key; --policy is the budget_policies row being overridden
 ```
 
-Every `expectedVersion`/`expectedQuestionVersion` value is an optimistic-concurrency check — fetch
-the current version first (via the corresponding read command's `--json` output) or the call
-rejects with a conflict.
+Every one of these fetches its own `expectedVersion`/`expectedQuestionVersion` (an
+optimistic-concurrency check) live before dispatching, and mints a fresh `Idempotency-Key` per
+invocation by default — you never need to compute either by hand. If a command times out or you
+lose its response before knowing whether it succeeded, pass `--idempotency-key <key>` on the retry
+to reuse the exact same key instead of risking a duplicate side effect from a second, differently-
+keyed submission.
 
-### 5.0.1 Task-enqueue API routes (no CLI equivalent)
+If you need to call a command with no dedicated CLI wrapper yet, every registered handler remains
+reachable directly via `POST /commands/:commandSlug` (`GET /commands` lists every slug currently
+registered) — this needs `Authorization: Bearer <MINICODER_API_KEY>` and a client-chosen
+`Idempotency-Key` header (any unique string per logical submission — reusing one replays the
+original result rather than re-running the command). A handful of operations still have no CLI
+wrapper — `export-plan`, `export-backlog`, `start-clarification`, `complete-clarification`
+(tracked in [issue #81](https://github.com/jhoar/MiniCoder/issues/81)) — as well as any future
+command added to the registry before its own CLI wrapper lands. Example, exporting a plan snapshot
+directly:
 
-These five routes each enqueue a whole background task (coding, review, merge-gate recompute, or
+```bash
+curl -X POST "$MINICODER_API_URL/commands/export-plan" \
+  -H "Authorization: Bearer $MINICODER_API_KEY" \
+  -H "Idempotency-Key: export-plan-$(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"planId":"<planId>","projectId":"<project>"}'
+```
+
+### 5.0.1 Task-enqueue commands — `minicoder run ...` / `minicoder design-doc request-run` (API)
+
+Five routes each enqueue a whole background task (coding, review, merge-gate recompute, or
 design-doc generation) rather than executing synchronously. All require an **operator**-role (or
-above) API key and a client-chosen `Idempotency-Key` header; all return `202 {triggerdevRunId,
-accepted: true}`.
+above) API key; the CLI mints the `Idempotency-Key` for you by default (or pass
+`--idempotency-key <key>` to reuse one after a timeout/lost response) and prints
+`enqueued:<triggerdevRunId>` on success.
 
-| Route | Required body fields |
-| --- | --- |
-| `POST /commands/request-coder-run` | `projectId`, `featureRunId`, `coderAdapterName` |
-| `POST /commands/request-review` | `projectId`, `featureRunId`, `reviewerAdapterName` (optional `arbiterAdapterName`) |
-| `POST /commands/request-fixes` | `projectId`, `featureRunId`, `reviewerAdapterName` (re-triggers the review task — there is no separate "fixes" task) |
-| `POST /commands/recompute-merge-gate` | `projectId`, `featureRunId` |
-| `POST /commands/request-design-doc` | `projectId`, `documentationAdapterName` |
+```bash
+minicoder run coder --project <project> --feature-run <id> --coder-adapter CodexCoderAdapter
 
-Every `...AdapterName` field must already exist in the `AdapterRegistry` — see the adapter registry
+minicoder run review --project <project> --feature-run <id> \
+  --reviewer-adapter ClaudeReviewerAdapter [--arbiter-adapter ClaudeArbiterAdapter]
+
+minicoder run fixes --project <project> --feature-run <id> \
+  --reviewer-adapter ClaudeReviewerAdapter
+  # re-triggers the review task — there is no separate "fixes" task
+
+minicoder run merge-gate --project <project> --feature-run <id>
+
+minicoder design-doc request-run --project <project> --documentation-adapter ClaudeDocumentationAdapter
+```
+
+Every `...-adapter` value must already exist in the `AdapterRegistry` — see the adapter registry
 bootstrap note in [§3.5](#35-start-the-long-running-processes).
 
 ### 5.1 Database lifecycle — `minicoder db ...` (DB)
 
-| Subcommand | Purpose | Key flags |
-| --- | --- | --- |
-| `migrate` | Apply all pending migrations. | — |
-| `rollback` | Roll back the most recently applied migration. | — |
-| `status` | Show applied vs. pending migrations. | — |
-| `validate` | Verify every expected table/index exists. | — |
-| `diff` | List migrations on disk not yet applied. | — |
-| `seed` | Insert fixture data. **Dev/test/CI only** (SQLite only). | `--fixture <name>` (default `planning-review-merge`), `--env <env>`, `--project <id>` |
-| `snapshot` | Copy the current SQLite file to a backup, with a metadata sidecar. SQLite only. | `--output <path>` (required, must not exist) |
-| `restore` | Restore SQLite from a snapshot. **Dev/test/CI only.** | `--input <path>` (required), `--env <env>`, `--yes` (required) |
-| `reset` | Drop and re-migrate everything. **Guarded, destructive, two-step.** | See below |
+| Subcommand | Purpose                                                                         | Key flags                                                                             |
+| ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `migrate`  | Apply all pending migrations.                                                   | —                                                                                     |
+| `rollback` | Roll back the most recently applied migration.                                  | —                                                                                     |
+| `status`   | Show applied vs. pending migrations.                                            | —                                                                                     |
+| `validate` | Verify every expected table/index exists.                                       | —                                                                                     |
+| `diff`     | List migrations on disk not yet applied.                                        | —                                                                                     |
+| `seed`     | Insert fixture data. **Dev/test/CI only** (SQLite only).                        | `--fixture <name>` (default `planning-review-merge`), `--env <env>`, `--project <id>` |
+| `snapshot` | Copy the current SQLite file to a backup, with a metadata sidecar. SQLite only. | `--output <path>` (required, must not exist)                                          |
+| `restore`  | Restore SQLite from a snapshot. **Dev/test/CI only.**                           | `--input <path>` (required), `--env <env>`, `--yes` (required)                        |
+| `reset`    | Drop and re-migrate everything. **Guarded, destructive, two-step.**             | See below                                                                             |
 
 `db reset` is deliberately heavy-handed:
 
@@ -516,31 +539,31 @@ host not in `MINICODER_ALLOWED_RESET_HOSTS`). Refuses unconditionally if `APP_EN
 
 `minicoder tasks` runs the actual worker:
 
-| Subcommand | Purpose | Key flags |
-| --- | --- | --- |
-| `worker` | Long-running process: polls the task queue and executes claimed tasks until you stop it (Ctrl-C lets in-flight work finish first). | `--poll-interval-ms`, `--batch-size`, `--stale-claim-ms` |
-| `drain` | One-shot: waits until the queue is empty or a timeout elapses (CI use). Exits non-zero on timeout with work left. | `--timeout-ms` (default 60000), `--poll-interval-ms` (default 500) |
+| Subcommand | Purpose                                                                                                                            | Key flags                                                          |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `worker`   | Long-running process: polls the task queue and executes claimed tasks until you stop it (Ctrl-C lets in-flight work finish first). | `--poll-interval-ms`, `--batch-size`, `--stale-claim-ms`           |
+| `drain`    | One-shot: waits until the queue is empty or a timeout elapses (CI use). Exits non-zero on timeout with work left.                  | `--timeout-ms` (default 60000), `--poll-interval-ms` (default 500) |
 
 `minicoder trigger` inspects/manages individual queued runs (a management console, not a worker):
 
-| Subcommand | Purpose | Key flags |
-| --- | --- | --- |
-| `deploy` | No-op (prints the list of registered task IDs — nothing external to deploy). | — |
-| `list-runs` | List recent runs. | `--task <id>`, `--limit <n>` (default 20) |
-| `inspect-run <runId>` | Show one run's detail. | positional `runId` |
-| `cancel-run <runId>` | Force-fail a stuck run so the worker stops retrying it. | positional `runId` |
-| `replay-run <runId>` | Re-enqueue a run with a fresh idempotency key. | positional `runId` |
-| `drain-queue` | Same as `tasks drain`. | `--timeout-ms`, `--poll-interval-ms` |
-| `reset-dev` | Wipe the whole task queue. **Dev/test/CI only.** | `--yes` (required), `--env <env>` (required, must agree with `APP_ENV`/`NODE_ENV`) |
-| `validate` | Confirm every canonical task ID has a registered handler. | — |
-| `reconcile` | Flag runs whose queue row and run-status row have drifted apart. | `--project <id>` |
+| Subcommand            | Purpose                                                                      | Key flags                                                                          |
+| --------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `deploy`              | No-op (prints the list of registered task IDs — nothing external to deploy). | —                                                                                  |
+| `list-runs`           | List recent runs.                                                            | `--task <id>`, `--limit <n>` (default 20)                                          |
+| `inspect-run <runId>` | Show one run's detail.                                                       | positional `runId`                                                                 |
+| `cancel-run <runId>`  | Force-fail a stuck run so the worker stops retrying it.                      | positional `runId`                                                                 |
+| `replay-run <runId>`  | Re-enqueue a run with a fresh idempotency key.                               | positional `runId`                                                                 |
+| `drain-queue`         | Same as `tasks drain`.                                                       | `--timeout-ms`, `--poll-interval-ms`                                               |
+| `reset-dev`           | Wipe the whole task queue. **Dev/test/CI only.**                             | `--yes` (required), `--env <env>` (required, must agree with `APP_ENV`/`NODE_ENV`) |
+| `validate`            | Confirm every canonical task ID has a registered handler.                    | —                                                                                  |
+| `reconcile`           | Flag runs whose queue row and run-status row have drifted apart.             | `--project <id>`                                                                   |
 
 ### 5.3 GitHub integration — `minicoder github ...`
 
-| Subcommand | Purpose | Transport | Key flags |
-| --- | --- | --- | --- |
-| `serve` | Run the real webhook receiver (`POST /webhooks/github`). Long-running; not environment-guarded — this is meant for production. Needs `GITHUB_WEBHOOK_SECRET`. | process | `--port` (default 3100), `--host` (default `0.0.0.0`) |
-| `simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved` / `simulate-review-changes-requested` / `simulate-branch-protection-ok` | Fake the corresponding GitHub event locally, without a real webhook. **Dev/test/CI only.** | DB | `--project <id>` (required), `--pr-number <n>` (required), plus event-specific optionals (`--merged`, `--check-name`, `--reviewer`, `--head-sha`, `--merge-sha`) |
+| Subcommand                                                                                                                                                                                                                  | Purpose                                                                                                                                                       | Transport | Key flags                                                                                                                                                        |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serve`                                                                                                                                                                                                                     | Run the real webhook receiver (`POST /webhooks/github`). Long-running; not environment-guarded — this is meant for production. Needs `GITHUB_WEBHOOK_SECRET`. | process   | `--port` (default 3100), `--host` (default `0.0.0.0`)                                                                                                            |
+| `simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved` / `simulate-review-changes-requested` / `simulate-branch-protection-ok` | Fake the corresponding GitHub event locally, without a real webhook. **Dev/test/CI only.**                                                                    | DB        | `--project <id>` (required), `--pr-number <n>` (required), plus event-specific optionals (`--merged`, `--check-name`, `--reviewer`, `--head-sha`, `--merge-sha`) |
 
 ### 5.4 Orchestrator API — `minicoder api serve` (process)
 
@@ -549,50 +572,50 @@ Starts the Fastify API everything else in this table depends on. `--port` (defau
 
 ### 5.5 Read/dashboard commands (all API transport, all support `--json`)
 
-| Command | Shows | Key flags |
-| --- | --- | --- |
-| `status --project <id>` | Project + automation state, task-queue health, (if your key is operator+) doctor-check summary. | `--project` (required) |
-| `plan --project <id>` | The implementation plan and readiness assessment. | `--project` (required) |
-| `clarification --project <id> [--session <id>]` | Clarification questions/answers, one session or the latest. | `--project` (required), `--session` |
-| `features --project <id> [--human-required]` | The feature backlog, or (with the flag) only features parked at `human_required`. | `--project` (required), `--human-required`, `--cursor`, `--limit` |
-| `active --project <id>` | The one feature currently in flight and its linked PR/CI status. | `--project` (required) |
-| `runs [--project <id>] [--feature-run <id>]` | Agent run history. | `--project`, `--feature-run`, `--cursor`, `--limit` |
-| `runs --timeline <featureRunId>` | One feature's full merged chronological history (events, runs, findings, PR, cost, approvals). | positional-ish `--timeline <id>` |
-| `findings --feature-run <id>` | Review findings for one feature run. | `--feature-run` (required), `--cursor`, `--limit` |
-| `disagreements [--feature-run <id>] [--state <state>]` | Coder/reviewer disagreements (global if unfiltered). | `--feature-run`, `--state` (`open`/`escalated`/`resolved`), `--cursor`, `--limit` |
-| `costs --project <id>` | Raw cost records + active budget policies. | `--project` (required) |
-| `costs --project <id> --report [--window-days <n>]` | Aggregate spend by scope/feature/provider/model/role. | `--report`, `--window-days` |
-| `artifacts --project <id>` | Generated artifact exports (plan.md, backlog.md, final-design-document.md, ...). | `--project` (required), `--cursor`, `--limit` |
-| `adapters [--adapter <id>]` | Registered AI adapters and their configurations (read-only). | `--adapter` |
+| Command                                                | Shows                                                                                           | Key flags                                                                         |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `status --project <id>`                                | Project + automation state, task-queue health, (if your key is operator+) doctor-check summary. | `--project` (required)                                                            |
+| `plan --project <id>`                                  | The implementation plan and readiness assessment.                                               | `--project` (required)                                                            |
+| `clarification --project <id> [--session <id>]`        | Clarification questions/answers, one session or the latest.                                     | `--project` (required), `--session`                                               |
+| `features --project <id> [--human-required]`           | The feature backlog, or (with the flag) only features parked at `human_required`.               | `--project` (required), `--human-required`, `--cursor`, `--limit`                 |
+| `active --project <id>`                                | The one feature currently in flight and its linked PR/CI status.                                | `--project` (required)                                                            |
+| `runs [--project <id>] [--feature-run <id>]`           | Agent run history.                                                                              | `--project`, `--feature-run`, `--cursor`, `--limit`                               |
+| `runs --timeline <featureRunId>`                       | One feature's full merged chronological history (events, runs, findings, PR, cost, approvals).  | positional-ish `--timeline <id>`                                                  |
+| `findings --feature-run <id>`                          | Review findings for one feature run.                                                            | `--feature-run` (required), `--cursor`, `--limit`                                 |
+| `disagreements [--feature-run <id>] [--state <state>]` | Coder/reviewer disagreements (global if unfiltered).                                            | `--feature-run`, `--state` (`open`/`escalated`/`resolved`), `--cursor`, `--limit` |
+| `costs --project <id>`                                 | Raw cost records + active budget policies.                                                      | `--project` (required)                                                            |
+| `costs --project <id> --report [--window-days <n>]`    | Aggregate spend by scope/feature/provider/model/role.                                           | `--report`, `--window-days`                                                       |
+| `artifacts --project <id>`                             | Generated artifact exports (plan.md, backlog.md, final-design-document.md, ...).                | `--project` (required), `--cursor`, `--limit`                                     |
+| `adapters [--adapter <id>]`                            | Registered AI adapters and their configurations (read-only).                                    | `--adapter`                                                                       |
 
 ### 5.6 Plan and backlog — `minicoder plan ...`
 
-| Subcommand | Transport | Purpose | Key flags |
-| --- | --- | --- | --- |
-| *(bare)* | API | Default view: plan + readiness. | `--project` (required) |
-| `import-backlog <file>` | DB | Parse, validate, preview, and (unless `--dry-run`) import a hand-written `backlog.md`. | positional file, `--project` (required), `--plan` (required), `--actor` (required), `--actor-role` (default `approver`), `--dry-run` |
+| Subcommand              | Transport | Purpose                                                                                | Key flags                                                                                                                            |
+| ----------------------- | --------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| _(bare)_                | API       | Default view: plan + readiness.                                                        | `--project` (required)                                                                                                               |
+| `import-backlog <file>` | DB        | Parse, validate, preview, and (unless `--dry-run`) import a hand-written `backlog.md`. | positional file, `--project` (required), `--plan` (required), `--actor` (required), `--actor-role` (default `approver`), `--dry-run` |
 
 ### 5.7 Design document — `minicoder design-doc ...` (API)
 
-| Subcommand | Transitions | Role needed | Key flags |
-| --- | --- | --- | --- |
-| *(bare)* | — (read-only) | any | `--project` (required), `--document <id>` |
-| `generate` | `implementation_complete → design_document_generating` | operator+ | `--project`, `--yes` (required) |
-| `regenerate` | `design_document_revision_requested → design_document_generating` | operator+ | `--project`, `--yes` (required) |
-| `request-revision` | `design_document_ready_for_review → design_document_revision_requested` | approver+ | `--project`, `--document` (required), `--notes`, `--yes` (required) |
-| `approve` | `design_document_ready_for_review → design_document_approved` | approver+ | `--project`, `--document` (required), `--notes`, `--yes` (required) |
-| `request-run` | Enqueues the drafting task (calls the `DocumentationAgentAdapter`, exports `final-design-document.md`). | operator+ | `--project`, `--documentation-adapter <name>` (required; must already be registered in `AdapterRegistry` — see [§3.5](#35-start-the-long-running-processes)) |
+| Subcommand         | Transitions                                                                                             | Role needed | Key flags                                                                                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| _(bare)_           | — (read-only)                                                                                           | any         | `--project` (required), `--document <id>`                                                                                                                    |
+| `generate`         | `implementation_complete → design_document_generating`                                                  | operator+   | `--project`, `--yes` (required)                                                                                                                              |
+| `regenerate`       | `design_document_revision_requested → design_document_generating`                                       | operator+   | `--project`, `--yes` (required)                                                                                                                              |
+| `request-revision` | `design_document_ready_for_review → design_document_revision_requested`                                 | approver+   | `--project`, `--document` (required), `--notes`, `--yes` (required)                                                                                          |
+| `approve`          | `design_document_ready_for_review → design_document_approved`                                           | approver+   | `--project`, `--document` (required), `--notes`, `--yes` (required)                                                                                          |
+| `request-run`      | Enqueues the drafting task (calls the `DocumentationAgentAdapter`, exports `final-design-document.md`). | operator+   | `--project`, `--documentation-adapter <name>` (required; must already be registered in `AdapterRegistry` — see [§3.5](#35-start-the-long-running-processes)) |
 
 ### 5.8 Project lifecycle — `minicoder project ...` (API)
 
 `mark-implementation-complete` and `complete` require a **`system`-actorKind** API key (not an
 ordinary human `approver`/`admin` key) — their command handlers are gated to system credentials.
 
-| Subcommand | Transitions | Role/kind needed | Key flags |
-| --- | --- | --- | --- |
-| `mark-implementation-complete` | `active → implementation_complete` (Project Acceptance Validation must pass) | system-kind | `--project` (required), `--evidence <text>` (required — your attestation that CI-only checks passed), `--yes` (required) |
-| `validate-acceptance` | (read-only) previews Project Acceptance Validation | any | `--project` (required) |
-| `complete` | `design_document_approved → project_complete` | system-kind | `--project` (required), `--yes` (required) |
+| Subcommand                     | Transitions                                                                  | Role/kind needed | Key flags                                                                                                                |
+| ------------------------------ | ---------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `mark-implementation-complete` | `active → implementation_complete` (Project Acceptance Validation must pass) | system-kind      | `--project` (required), `--evidence <text>` (required — your attestation that CI-only checks passed), `--yes` (required) |
+| `validate-acceptance`          | (read-only) previews Project Acceptance Validation                           | any              | `--project` (required)                                                                                                   |
+| `complete`                     | `design_document_approved → project_complete`                                | system-kind      | `--project` (required), `--yes` (required)                                                                               |
 
 ### 5.9 Automation control — `minicoder pause` / `minicoder resume` (API, operator+)
 
@@ -604,32 +627,32 @@ Both require `--project <id>` and `--yes`. `pause`: `running → paused_by_opera
 All subcommands take `--feature-run <id>` (required), `--project <id>` (required), `--actor <id>`
 (required — your identity for the audit trail), `--actor-role` (default `approver`), plus:
 
-| Subcommand | Transition | Extra flags |
-| --- | --- | --- |
-| `resolve-disagreement` | `human_required → changes_requested` | `--resolution <text>` (required), `--disagreement <id>` (optional, defaults to the latest open one) |
-| `resume` | `human_required → under_review` | `--notes <text>` (required), `--disagreement <id>` (optional) |
-| `retry` | `human_required → selected` | `--notes <text>` (required) |
-| `skip` | `human_required → skipped` (terminal) | `--notes <text>` (required) |
-| `block` | `human_required → blocked` | `--notes <text>` (required) |
-| `unblock` | `blocked → approved_pending_execution` | `--notes <text>` (required) |
+| Subcommand             | Transition                             | Extra flags                                                                                         |
+| ---------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `resolve-disagreement` | `human_required → changes_requested`   | `--resolution <text>` (required), `--disagreement <id>` (optional, defaults to the latest open one) |
+| `resume`               | `human_required → under_review`        | `--notes <text>` (required), `--disagreement <id>` (optional)                                       |
+| `retry`                | `human_required → selected`            | `--notes <text>` (required)                                                                         |
+| `skip`                 | `human_required → skipped` (terminal)  | `--notes <text>` (required)                                                                         |
+| `block`                | `human_required → blocked`             | `--notes <text>` (required)                                                                         |
+| `unblock`              | `blocked → approved_pending_execution` | `--notes <text>` (required)                                                                         |
 
 ### 5.11 Merge — `minicoder merge ...` (DB + real GitHub API calls)
 
-| Subcommand | Purpose | Key flags |
-| --- | --- | --- |
-| `merge-if-ready` | Re-evaluates the merge gate, then merges via GitHub, then records the result (or the failure/escalation). | `--feature-run` (required), `--project` (required), `--actor` (required), `--actor-role` (default `approver`), `--merge-method` (default `squash`; `squash`\|`merge`\|`rebase`) |
-| `finalize-if-github-merged` | Recovery: use when GitHub shows the PR merged but MiniCoder never recorded it. Always re-verifies against GitHub first — refuses if GitHub disagrees. | `--feature-run` (required), `--project` (required) |
+| Subcommand                  | Purpose                                                                                                                                               | Key flags                                                                                                                                                                       |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `merge-if-ready`            | Re-evaluates the merge gate, then merges via GitHub, then records the result (or the failure/escalation).                                             | `--feature-run` (required), `--project` (required), `--actor` (required), `--actor-role` (default `approver`), `--merge-method` (default `squash`; `squash`\|`merge`\|`rebase`) |
+| `finalize-if-github-merged` | Recovery: use when GitHub shows the PR merged but MiniCoder never recorded it. Always re-verifies against GitHub first — refuses if GitHub disagrees. | `--feature-run` (required), `--project` (required)                                                                                                                              |
 
 ### 5.12 Diagnostics and repair — `minicoder state ...` (DB)
 
-| Subcommand | Purpose | Key flags |
-| --- | --- | --- |
-| `inspect` | Show one project's or feature run's current state, locks, findings, recent events. | `--project` or `--feature-run` (one required) |
-| `validate` | Confirm every feature-run state is a recognized value. | `--project` |
-| `doctor` | Detect stale locks, stuck queues, orphaned runs. Exits 1 if unhealthy. | `--project`, `--check-github` (opt-in, needs `GITHUB_TOKEN`) |
-| `reconcile` | Clear the anomalies `doctor` found. | `--project <id>` (project-scoped) or `--all` (global; one is required) |
-| `export-diagnostics` | Dump full diagnostics as JSON. | `--project`, `--output <path>` |
-| `repair` | Guarded, two-step repair of orphaned runs (5-minute single-use token, project-bound). | `--project` (required always), then `--dry-run` or `--apply --confirmation <token>` |
+| Subcommand           | Purpose                                                                               | Key flags                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `inspect`            | Show one project's or feature run's current state, locks, findings, recent events.    | `--project` or `--feature-run` (one required)                                       |
+| `validate`           | Confirm every feature-run state is a recognized value.                                | `--project`                                                                         |
+| `doctor`             | Detect stale locks, stuck queues, orphaned runs. Exits 1 if unhealthy.                | `--project`, `--check-github` (opt-in, needs `GITHUB_TOKEN`)                        |
+| `reconcile`          | Clear the anomalies `doctor` found.                                                   | `--project <id>` (project-scoped) or `--all` (global; one is required)              |
+| `export-diagnostics` | Dump full diagnostics as JSON.                                                        | `--project`, `--output <path>`                                                      |
+| `repair`             | Guarded, two-step repair of orphaned runs (5-minute single-use token, project-bound). | `--project` (required always), then `--dry-run` or `--apply --confirmation <token>` |
 
 ### 5.13 Observability — `minicoder observability export-otel` (DB)
 
@@ -640,11 +663,11 @@ k8s CronJob), not run continuously. `--cursor-id <id>` (default `workflow_events
 
 ### 5.14 Testing — `minicoder test ...` (process)
 
-| Subcommand | Runs |
-| --- | --- |
-| `unit` | Fast unit tests only. |
-| `integration` | `*.integration.test.ts` files against a real DB. |
-| `system` | Every end-to-end scenario. |
+| Subcommand        | Runs                                                                                                                                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unit`            | Fast unit tests only.                                                                                                                                                                                                                 |
+| `integration`     | `*.integration.test.ts` files against a real DB.                                                                                                                                                                                      |
+| `system`          | Every end-to-end scenario.                                                                                                                                                                                                            |
 | `scenario <name>` | One named scenario (e.g. `planning-basic`, `review-loop`, `merge-gate`, `disagreement-arbiter`, `design-document-lifecycle` — the more complete end-to-end Phase 17 scenario, exercising the full project-lifecycle/design-doc flow). |
 
 ---

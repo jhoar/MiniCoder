@@ -1,7 +1,13 @@
 import { randomUUID } from 'crypto';
 import { Command } from 'commander';
 import { renderDesignDocView, renderCommandResultView } from '@minicoder/tui';
-import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
+import {
+  buildApiClient,
+  renderOrJson,
+  resolveIdempotencyKey,
+  type IdempotencyKeyOption,
+  type JsonOption,
+} from '../tui-client.js';
 
 /**
  * Final design document commands (Phase 17). The default (no-subcommand) invocation stays the
@@ -199,25 +205,33 @@ export function createDesignDocCommand(): Command {
     )
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--documentation-adapter <name>', 'DocumentationAgentAdapter registry name')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string; documentationAdapter: string } & JsonOption) => {
-      const client = buildApiClient();
-      await renderOrJson(
-        opts,
-        () =>
-          client.requestDesignDoc(
-            opts.project,
-            opts.documentationAdapter,
-            `request-design-doc:${opts.project}:${randomUUID()}`,
-          ),
-        (data) =>
-          renderCommandResultView({
-            command: 'request-design-doc',
-            projectId: opts.project,
-            resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
-          }),
-      );
-    });
+    .action(
+      async (
+        opts: { project: string; documentationAdapter: string } & IdempotencyKeyOption & JsonOption,
+      ) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          () =>
+            client.requestDesignDoc(
+              opts.project,
+              opts.documentationAdapter,
+              resolveIdempotencyKey(`request-design-doc:${opts.project}`, opts),
+            ),
+          (data) =>
+            renderCommandResultView({
+              command: 'request-design-doc',
+              projectId: opts.project,
+              resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
+            }),
+        );
+      },
+    );
 
   return cmd;
 }

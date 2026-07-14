@@ -160,6 +160,14 @@ export class ApiClient {
     return this.get('/plans', { projectId, ...query });
   }
 
+  /** `GET /plans/:id` — a direct lookup, unlike `listImplementationPlans`'s cursor-paginated
+   * listing. Use this whenever a specific plan's current `version` is needed (e.g. before
+   * dispatching a write command) — scanning only the first page of `listImplementationPlans`
+   * would incorrectly report a valid plan as missing once it's not on page 1. */
+  getImplementationPlan(planId: string): Promise<ImplementationPlanRow> {
+    return this.get(`/plans/${encodeURIComponent(planId)}`);
+  }
+
   listPlanningReadinessAssessments(
     projectId: string,
     query?: { cursor?: string; limit?: string },
@@ -409,5 +417,164 @@ export class ApiClient {
       { projectId, documentationAdapterName },
       idempotencyKey,
     );
+  }
+
+  // Generic-dispatch-only commands (USER-MANUAL.md §5.0) — previously reachable only via a
+  // hand-built curl call against `POST /commands/:commandSlug`; these give them the same typed
+  // method + CLI-wrapper treatment every other command already gets.
+
+  /** `IngestSpecificationCommand` — insert-only, no state matrix (docs/02 §3). */
+  ingestSpecification(
+    projectId: string,
+    content: string,
+    contentType: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/ingest-specification',
+      { projectId, content, contentType },
+      idempotencyKey,
+    );
+  }
+
+  /** `RecordClarificationAnswerCommand` — data-only, does not itself transition
+   * `clarification_sessions.status` (that's `CompleteClarificationCommand`, still curl-only). */
+  recordClarificationAnswer(
+    clarificationQuestionId: string,
+    clarificationSessionId: string,
+    projectId: string,
+    answer: string,
+    expectedQuestionVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/record-clarification-answer',
+      {
+        clarificationQuestionId,
+        clarificationSessionId,
+        projectId,
+        answer,
+        expectedQuestionVersion,
+      },
+      idempotencyKey,
+    );
+  }
+
+  /** `SubmitPlanForApprovalCommand` — plan-lifecycle draft -> pending_approval. */
+  submitPlanForApproval(
+    planId: string,
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/submit-plan-for-approval',
+      { planId, projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  /** `ApprovePlanCommand` — plan-lifecycle pending_approval -> approved (approver+). */
+  approvePlan(
+    planId: string,
+    projectId: string,
+    expectedVersion: number,
+    notes: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/approve-plan',
+      { planId, projectId, expectedVersion, notes },
+      idempotencyKey,
+    );
+  }
+
+  /** `ActivatePlanCommand` — plan-lifecycle approved -> activated_for_execution (approver+). */
+  activatePlan(
+    planId: string,
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/activate-plan',
+      { planId, projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  /** `ApproveBudgetOverrideCommand` — serves both `paused_budget_exceeded -> running` and
+   * `waiting_for_budget_approval -> running` (approver+); the caller picks the idempotency-key
+   * template matching the observed origin automation state (CLAUDE.md's Execution Orchestrator
+   * Operational Constraints). */
+  approveBudgetOverride(
+    projectId: string,
+    expectedVersion: number,
+    overrideReason: string,
+    approvedBudgetPolicyId: string,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/approve-budget-override',
+      { projectId, expectedVersion, overrideReason, approvedBudgetPolicyId },
+      idempotencyKey,
+    );
+  }
+
+  // Task-enqueue routes (USER-MANUAL.md §5.0.1) — each enqueues a whole Trigger.dev task
+  // orchestration rather than executing synchronously; all return `202 {triggerdevRunId,
+  // accepted: true}` and require an operator-or-above API key.
+
+  /** Enqueues `run-coder` for a feature run at `selected`/`coding`. */
+  requestCoderRun(
+    projectId: string,
+    featureRunId: string,
+    coderAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-coder-run',
+      { projectId, featureRunId, coderAdapterName },
+      idempotencyKey,
+    );
+  }
+
+  /** Enqueues `run-review` for a feature run at `under_review`/`ci_running`. */
+  requestReview(
+    projectId: string,
+    featureRunId: string,
+    reviewerAdapterName: string,
+    arbiterAdapterName: string | undefined,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-review',
+      { projectId, featureRunId, reviewerAdapterName, arbiterAdapterName },
+      idempotencyKey,
+    );
+  }
+
+  /** Enqueues `run-review` again (there is no separate "fixes" task — `request-fixes` just
+   * re-triggers review, per USER-MANUAL.md §5.0.1). */
+  requestFixes(
+    projectId: string,
+    featureRunId: string,
+    reviewerAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-fixes',
+      { projectId, featureRunId, reviewerAdapterName },
+      idempotencyKey,
+    );
+  }
+
+  /** Enqueues `run-merge-gate` for a feature run at `under_review`. */
+  recomputeMergeGate(
+    projectId: string,
+    featureRunId: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post('/commands/recompute-merge-gate', { projectId, featureRunId }, idempotencyKey);
   }
 }
