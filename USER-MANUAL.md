@@ -181,6 +181,31 @@ Your webhook receiver must be reachable from GitHub's servers — for local deve
 first (e.g. `ngrok http 4000`) and use the tunnel's HTTPS URL as the payload URL; GitHub cannot
 reach `localhost` directly.
 
+#### Local development with ngrok
+
+```bash
+ngrok config add-authtoken <your-authtoken>   # one-time — from your ngrok dashboard, required even free
+./scripts/start-minicoder.sh                  # API on :4000 by default
+ngrok http 4000                                # in a separate terminal
+```
+
+ngrok prints a forwarding URL like `https://a1b2c3d4.ngrok-free.app`. Use
+`https://a1b2c3d4.ngrok-free.app/webhooks/github` as the webhook's **Payload URL** in step 3 above
+— everything else (secret, content type, event selection) is unchanged.
+
+- Inspect live deliveries at ngrok's local dashboard, `http://127.0.0.1:4040` — the fastest way to
+  check whether a signature/payload actually arrived as expected. GitHub's own
+  **Settings → Webhooks → Recent Deliveries** also lets you replay a delivery without triggering a
+  new PR event.
+- The free tier's URL changes on every restart, so you'd need to update the webhook's Payload URL
+  each time — claim ngrok's one free static/reserved domain per account instead
+  (`ngrok http --domain=your-name.ngrok-free.app 4000`) if you're testing repeatedly.
+- The tunnel exposes your local API to the public internet while it's running. Every route except
+  `/webhooks/*` and `/healthz`/`/readyz` still requires a valid `MINICODER_API_KEYS` bearer token,
+  but only run the tunnel while actively testing — don't leave it up unattended.
+- Using `--webhook-only` (`minicoder github serve`, port `3100` by default) instead of the full API?
+  Point ngrok at `3100` — the payload path is still `/webhooks/github`.
+
 ### 3.2 First-time setup
 
 ```bash
