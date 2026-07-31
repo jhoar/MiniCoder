@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Thin wrapper so `minicoder` can be invoked as a normal command from anywhere on the machine,
+# regardless of the caller's current directory — it always resolves and runs against this repo
+# checkout's own workspace (packages/cli/src/index.ts via tsx, matching that package's own
+# `#!/usr/bin/env tsx` shebang and "start": "tsx src/index.ts" script).
+#
+# This file is what setup instructions (see README/USER-MANUAL "Installing minicoder as a
+# command line tool") point PATH or a symlink at — it is not itself the package's `bin` entry
+# (packages/cli/package.json's `bin` points at src/index.ts directly, for pnpm-workspace-local
+# use via `pnpm exec`/`pnpm link`).
+set -euo pipefail
+
+# Resolve ${BASH_SOURCE[0]} to its real, symlink-free path first — this file is meant to be
+# symlinked onto PATH (e.g. ~/.local/bin/minicoder), and BASH_SOURCE reports the symlink's own
+# location, not its target. Without this, REPO_ROOT below would resolve relative to wherever the
+# symlink lives (e.g. ~/.local) instead of this actual repo checkout.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_ROOT="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+
+exec pnpm -C "$REPO_ROOT" --filter @minicoder/cli exec tsx src/index.ts "$@"

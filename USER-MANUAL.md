@@ -125,6 +125,87 @@ scheduled reconciliation pass as a fallback) and mirrors what it sees.
 - An LLM provider endpoint for the coder/reviewer/planner/arbiter/documentation adapters
   (`CODE_GEN_BASE_URL`, `CODE_GEN_API_KEY`, `CODE_GEN_MODEL` — any OpenAI-compatible endpoint).
 
+### 3.1.1 Generating `GITHUB_TOKEN` and `GITHUB_WEBHOOK_SECRET`
+
+**`GITHUB_TOKEN`** — used by the coder/reviewer adapters (push branches, open PRs), `minicoder
+merge ...` (merge, publish the `minicoder/review-gate` status check), `github-reconciliation`
+(list/read PRs, checks, commit statuses), and `state doctor --check-github`.
+
+Fine-grained personal access tokens are recommended over classic tokens (narrower blast radius if
+leaked):
+
+1. GitHub → Settings → Developer settings → **Personal access tokens → Fine-grained tokens** →
+   **Generate new token**.
+2. **Repository access**: "Only select repositories" → pick the repo MiniCoder will operate on.
+3. **Permissions** → Repository permissions, grant exactly:
+   - **Contents**: Read and write (push commits/branches)
+   - **Pull requests**: Read and write (open, list, merge PRs)
+   - **Commit statuses**: Read and write (publish/read the `minicoder/review-gate` check, read CI results)
+   - **Metadata**: Read-only (auto-required)
+4. Set an expiration and generate. Copy the token immediately — GitHub shows it once.
+5. `export GITHUB_TOKEN=<the token>` (or set it in `.env`).
+
+A classic PAT works too (Settings → Developer settings → Personal access tokens → Tokens
+(classic)) — grant the single **`repo`** scope, which is a superset of everything above.
+
+Either way, the identity behind the token (a user account, or a
+[GitHub App](https://docs.github.com/en/apps) installation token if you've wired one up yourself —
+MiniCoder's `GitHubClient` interface doesn't care which) needs at least **write** access to the
+repository, since it merges PRs and pushes branches directly.
+
+**`GITHUB_WEBHOOK_SECRET`** — this one you generate yourself; it's never obtained from GitHub. It's
+an arbitrary shared secret both sides must agree on: MiniCoder verifies each webhook delivery's
+`X-Hub-Signature-256` header (HMAC-SHA256 over the raw request body) against it.
+
+1. Generate a strong random value:
+   ```bash
+   openssl rand -hex 32
+   ```
+2. `export GITHUB_WEBHOOK_SECRET=<that value>` (or set it in `.env`).
+3. Register the *same* value on the GitHub side: repository → **Settings → Webhooks → Add
+   webhook**.
+   - **Payload URL**: `https://<your-minicoder-host>/webhooks/github` (whichever process is
+     receiving it — see 3.5's "pick one, not both" note for `api serve` vs `github serve`).
+   - **Content type**: `application/json`.
+   - **Secret**: paste the same value from step 1.
+   - **Which events**: either "Send me everything," or, to match exactly what MiniCoder consumes,
+     select individually: *Pull requests*, *Pull request reviews*, *Pull request review comments*,
+     *Check runs*, *Check suites*, *Statuses*, *Pushes*.
+   - Leave **Active** checked, then **Add webhook**.
+4. Rotating later: set the new value as `GITHUB_WEBHOOK_SECRET` and the *old* one as
+   `GITHUB_WEBHOOK_SECRET_PREVIOUS` (both are accepted during the rotation window), update the
+   webhook's secret on GitHub to the new value, then drop `GITHUB_WEBHOOK_SECRET_PREVIOUS` once
+   you're confident no in-flight deliveries still use the old one.
+
+Your webhook receiver must be reachable from GitHub's servers — for local development, tunnel it
+first (e.g. `ngrok http 4000`) and use the tunnel's HTTPS URL as the payload URL; GitHub cannot
+reach `localhost` directly.
+
+#### Local development with ngrok
+
+```bash
+ngrok config add-authtoken <your-authtoken>   # one-time — from your ngrok dashboard, required even free
+./scripts/start-minicoder.sh                  # API on :4000 by default
+ngrok http 4000                                # in a separate terminal
+```
+
+ngrok prints a forwarding URL like `https://a1b2c3d4.ngrok-free.app`. Use
+`https://a1b2c3d4.ngrok-free.app/webhooks/github` as the webhook's **Payload URL** in step 3 above
+— everything else (secret, content type, event selection) is unchanged.
+
+- Inspect live deliveries at ngrok's local dashboard, `http://127.0.0.1:4040` — the fastest way to
+  check whether a signature/payload actually arrived as expected. GitHub's own
+  **Settings → Webhooks → Recent Deliveries** also lets you replay a delivery without triggering a
+  new PR event.
+- The free tier's URL changes on every restart, so you'd need to update the webhook's Payload URL
+  each time — claim ngrok's one free static/reserved domain per account instead
+  (`ngrok http --domain=your-name.ngrok-free.app 4000`) if you're testing repeatedly.
+- The tunnel exposes your local API to the public internet while it's running. Every route except
+  `/webhooks/*` and `/healthz`/`/readyz` still requires a valid `MINICODER_API_KEYS` bearer token,
+  but only run the tunnel while actively testing — don't leave it up unattended.
+- Using `--webhook-only` (`minicoder github serve`, port `3100` by default) instead of the full API?
+  Point ngrok at `3100` — the payload path is still `/webhooks/github`.
+
 ### 3.2 First-time setup
 
 ```bash
@@ -153,16 +234,72 @@ minicoder db validate        # confirms every expected table/index exists
 ### 3.4 Getting the `minicoder` binary on your PATH
 
 `pnpm install` alone does not put a `minicoder` executable directly on your shell's `PATH` — the
-CLI's `bin` entry points at a TypeScript source file run via a `tsx` shebang. From the repo root,
-use one of:
+CLI's `bin` entry points at a TypeScript source file run via a `tsx` shebang. You also need
+`pnpm build` once (the CLI depends on the compiled `dist/` output of `@minicoder/core`,
+`@minicoder/api`, etc. — not just their source). From the repo root:
 
 ```bash
-pnpm exec minicoder <command>            # resolves the workspace-linked bin
-pnpm --filter @minicoder/cli exec minicoder <command>
+pnpm install
+pnpm build
 ```
+
+Then, to actually invoke it, use whichever of these fits how you're working:
+
+```bash
+pnpm exec minicoder <command>                          # resolves the workspace-linked bin
+pnpm --filter @minicoder/cli exec minicoder <command>   # equivalent, explicit about which package
+./bin/minicoder <command>                               # repo-provided wrapper — see below
+```
+
+`./bin/minicoder` (`bin/minicoder` in the repo root) is a small wrapper script that resolves the
+repo root from its own location and runs
+`pnpm -C <repo-root> --filter @minicoder/cli exec tsx src/index.ts "$@"` — it exists so `minicoder`
+can be made a real, PATH-resolvable global command (see 3.4.1) without publishing a package.
 
 (A packaged/compiled distribution may expose `minicoder` directly — check your deployment's own
 install instructions if you're not running from a source checkout.)
+
+#### 3.4.1 Installing `minicoder` as a global command, by scenario
+
+**Local development (editing MiniCoder itself).** No install needed — just use `./bin/minicoder`
+or `pnpm exec minicoder` from the repo root, as above.
+
+**Global command on your own workstation** — so `minicoder` works from any directory, for any
+project:
+
+```bash
+sudo ln -s "$(pwd)/bin/minicoder" /usr/local/bin/minicoder
+# or, without sudo, per-user (ensure ~/.local/bin is on PATH):
+mkdir -p ~/.local/bin && ln -s "$(pwd)/bin/minicoder" ~/.local/bin/minicoder
+minicoder status --project <id>   # now works from anywhere
+```
+
+**Operator on a laptop, talking to an already-running hosted deployment** — no local database, no
+local server processes, just the Text UI's HTTP-only commands:
+
+```bash
+export MINICODER_API_URL=https://minicoder.example.com
+export MINICODER_API_KEY=<your-issued-key>
+minicoder status --project <id>
+minicoder features --project <id>
+```
+`DB_*`/`GITHUB_WEBHOOK_SECRET`/adapter env vars are irrelevant here — only the API client vars
+above matter, since every read/dashboard command in 5.5 and the generic-dispatch commands in 5.0
+talk over HTTP, never the database directly.
+
+**CI pipeline.** Don't install a global binary — invoke the same way each step needs it, no
+symlink required:
+
+```yaml
+- run: corepack enable && pnpm install --frozen-lockfile && pnpm build
+- run: pnpm --filter @minicoder/cli exec tsx src/index.ts db migrate
+- run: pnpm --filter @minicoder/cli exec tsx src/index.ts plan submit-for-approval --plan "$PLAN_ID" --project "$PROJECT_ID"
+```
+
+**Long-running server (staging/production).** See 3.5 — run `scripts/start-minicoder.sh` under a
+real process supervisor (systemd, Docker, k8s), and use `./bin/minicoder`/a global symlink for the
+one-shot commands (approvals, `human ...`, `merge merge-if-ready`, etc.) an operator runs against
+it afterward.
 
 ### 3.5 Start the long-running processes
 
@@ -173,6 +310,30 @@ you run all of these (each in its own terminal, container, or service):
 minicoder api serve                 # the Orchestrator API — the UIs and most read commands need this
 minicoder tasks worker              # executes queued automation (coding, review, merge-gate, etc.)
 ```
+
+**`scripts/start-minicoder.sh` does this for you in one command**, with sensible local-dev
+defaults, and is the recommended way to stand up a deployment (including production, under a
+process supervisor — see 3.5.1):
+
+```bash
+./scripts/start-minicoder.sh                    # sqlite, 1 task worker, API + webhooks on :4000
+WORKER_COUNT=3 ./scripts/start-minicoder.sh      # scale to 3 task workers
+START_WEB_UI=true ./scripts/start-minicoder.sh   # also start the Web UI (packages/web) on :3000
+./scripts/start-minicoder.sh --webhook-only      # dev-only: minicoder github serve instead of api serve
+./scripts/start-minicoder.sh --help              # full option/env-var reference
+```
+
+It loads a `.env` file from the repo root if present, runs `minicoder db migrate` before starting
+anything, waits for `/healthz` before printing its summary, and stops every process cleanly
+(no orphaned workers, no held ports) on Ctrl-C or `SIGTERM`. In local development, unset
+`MINICODER_API_KEYS`/`GITHUB_WEBHOOK_SECRET` are filled in with clearly-labeled dev-only
+placeholders (printed to the console so you know to use them); with `APP_ENV=production` it
+refuses to start instead of inventing a production secret — set both for real first. Logs for each
+process land in `logs/<process-name>.log`.
+
+Everything below this point describes what the script does under the hood — useful for
+understanding what's running, tuning an individual process, or wiring your own process supervisor
+instead of using the script directly.
 
 **Webhook receiver — pick one, not both.** `minicoder api serve` already mounts
 `POST /webhooks/github` itself (and requires `GITHUB_WEBHOOK_SECRET` to start, exactly like the
@@ -204,6 +365,39 @@ reference — including the default `CodexCoderAdapter` / `ClaudeReviewerAdapter
 implementations. This manual doesn't prescribe that script since it's deployment-specific; without
 it, any command that names an adapter (`design-doc request-run --documentation-adapter ...`, the
 `request-coder-run`/`request-review`/`request-design-doc` API routes) will fail to resolve it.
+
+#### 3.5.1 Running `scripts/start-minicoder.sh` in production
+
+The script itself does not daemonize — run it under a real supervisor so it restarts on crash and
+starts on boot. Two examples:
+
+**systemd** (`/etc/systemd/system/minicoder.service`):
+
+```ini
+[Unit]
+Description=MiniCoder
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/minicoder
+EnvironmentFile=/opt/minicoder/.env
+ExecStart=/opt/minicoder/scripts/start-minicoder.sh
+Restart=on-failure
+User=minicoder
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Docker**: build an image with `pnpm install && pnpm build` baked in, then
+`CMD ["./scripts/start-minicoder.sh"]`, supplying `DB_URL`, `MINICODER_API_KEYS`,
+`GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, and the `CODE_GEN_*` vars as container environment
+variables (never baked into the image).
+
+In both cases, set `APP_ENV=production`, `DB_DIALECT=postgres` with a real `DB_URL` (SQLite is
+local/single-node only — never on a network filesystem), and real values for
+`MINICODER_API_KEYS`/`GITHUB_WEBHOOK_SECRET`/`GITHUB_TOKEN`/`CODE_GEN_*` — the script will refuse
+to start without the first two once `APP_ENV=production` is set.
 
 ### 3.6 Optional: the Text UI and Web UI
 
