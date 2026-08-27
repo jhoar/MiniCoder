@@ -4,6 +4,7 @@ import { buildTestApp } from '../test-helpers.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 const GITEA_WEBHOOK_SECRET = 'test-gitea-webhook-secret';
+const GITLAB_WEBHOOK_SECRET = 'test-gitlab-webhook-secret';
 
 function sign(body: string): string {
   return 'sha256=' + crypto.createHmac('sha256', WEBHOOK_SECRET).update(body).digest('hex');
@@ -87,6 +88,46 @@ describe('webhook route mounting', () => {
         'x-gitea-delivery': 'delivery-2',
         'x-gitea-event': 'pull_request',
         'x-gitea-signature': signGitea(body),
+        'content-type': 'application/json',
+      },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).status).toBe('unlinked-repository');
+  });
+
+  it('mounts /webhooks/gitlab (opt-in — rejects a request with an invalid X-Gitlab-Token)', async () => {
+    const { app } = await buildTestApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/gitlab',
+      headers: {
+        'x-gitlab-token': 'wrong-token',
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify({ object_kind: 'merge_request' }),
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('/webhooks/gitlab accepts a request with a valid X-Gitlab-Token for an unlinked repository (no persistence, still 2xx)', async () => {
+    const { app } = await buildTestApp();
+    const body = JSON.stringify({
+      object_kind: 'merge_request',
+      project: { path_with_namespace: 'example/does-not-exist' },
+      object_attributes: {
+        iid: 1,
+        action: 'open',
+        source_branch: 'minicoder/fr-1',
+        target_branch: 'main',
+        last_commit: { id: 'abc123' },
+      },
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/gitlab',
+      headers: {
+        'x-gitlab-token': GITLAB_WEBHOOK_SECRET,
         'content-type': 'application/json',
       },
       payload: body,

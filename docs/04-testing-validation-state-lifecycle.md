@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.6.1
+> Version: 1.6.2
 > Last-updated: 2026-08-27
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
@@ -962,6 +962,38 @@ insert is the production-safe fallback:
 
 This manual path is now the exception, not the norm: automated discovery (above) handles the
 common case of a missed `pr.opened` webhook without any operator involvement.
+
+#### Gitea and GitLab (docs/06 §Phase 18 Stages 3–4)
+
+Everything above this point describes the GitHub implementation specifically. Gitea and GitLab are
+staged, additional `ScmClient` providers behind the same seam — most of this runbook's shape
+carries over directly (webhook receiver, secret-rotation procedure, `repositories.full_name`
+linking, `state doctor`/`state inspect` diagnostics), with these provider-specific env vars and one
+operational difference worth calling out explicitly:
+
+| Variable                         | Provider | Description                                                                             |
+| -------------------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `GITEA_WEBHOOK_SECRET`           | Gitea    | Current webhook signing secret — optional; `/webhooks/gitea` is left unmounted if unset |
+| `GITEA_WEBHOOK_SECRET_PREVIOUS`  | Gitea    | Previous secret, set only during a rotation overlap window                              |
+| `GITLAB_WEBHOOK_SECRET`          | GitLab   | Current webhook token — optional; `/webhooks/gitlab` is left unmounted if unset         |
+| `GITLAB_WEBHOOK_SECRET_PREVIOUS` | GitLab   | Previous token, set only during a rotation overlap window                               |
+
+Both are opt-in, unlike `GITHUB_WEBHOOK_SECRET`: `minicoder api serve` starts successfully with
+neither set, simply leaving the corresponding webhook route unmounted (docs/06 §Phase 18 Stage 3's
+own reasoning: a deployment with no repository linked to a given provider has no reason to expose
+that provider's webhook route at all).
+
+**Operational difference for GitLab — reconciliation, not webhook delivery, is the effective
+latency bound for a "changes requested" transition.** GitLab has no webhook event corresponding to
+a discrete "reviewer requested changes" action (unlike GitHub's `pull_request_review` or Gitea's
+`pull_request_review_reject`) — the condition is only ever discovered by the scheduled
+`github-reconciliation` task's own `GitlabScmClient.getPullRequest()` observation on its normal
+polling cadence. Operators running a GitLab-backed project should not expect this specific
+transition to arrive with the same near-real-time latency GitHub/Gitea webhooks provide; if it
+needs to happen faster than the scheduled cadence, invoke the reconciliation diagnostics procedure
+above manually (`github-reconciliation` with `{ projectId, featureRunId }`) rather than assuming a
+missing webhook indicates a bug. `packages/testing/src/gitlab-reconcile-fallback.test.ts` is the
+regression proving this fallback path actually works.
 
 ### Phase 8 — Execution Orchestrator Runbook
 

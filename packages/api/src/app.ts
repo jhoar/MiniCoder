@@ -27,6 +27,8 @@ export interface BuildAppOptions {
   webhookSecrets: string[];
   /** Opt-in — Gitea is a staged provider (docs/06 §Phase 18); omit to leave `/webhooks/gitea` unmounted. */
   giteaWebhookSecrets?: string[];
+  /** Opt-in — GitLab is a staged provider (docs/06 §Phase 18); omit to leave `/webhooks/gitlab` unmounted. */
+  gitlabWebhookSecrets?: string[];
   githubClientFactory?: GithubClientFactory;
   taskTriggerClient?: TaskTriggerClient;
 }
@@ -47,6 +49,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     db: opts.db,
     webhookSecrets: opts.webhookSecrets,
     giteaWebhookSecrets: opts.giteaWebhookSecrets,
+    gitlabWebhookSecrets: opts.gitlabWebhookSecrets,
   });
   registerAllReadRoutes(app, opts.db);
 

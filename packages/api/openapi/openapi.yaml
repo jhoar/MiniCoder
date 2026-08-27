@@ -113,6 +113,11 @@ paths:
       operationId: giteaWebhook
       security: []
       responses: { '200': { description: Accepted } }
+  /webhooks/gitlab:
+    post:
+      operationId: gitlabWebhook
+      security: []
+      responses: { '200': { description: Accepted } }
   /commands:
     get:
       operationId: listCommands

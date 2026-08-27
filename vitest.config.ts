@@ -16,6 +16,8 @@ export default defineConfig({
       '@minicoder/migrations': path.resolve(__dirname, 'packages/migrations/src/index.ts'),
       '@minicoder/workflow': path.resolve(__dirname, 'packages/workflow/src/index.ts'),
       '@minicoder/github': path.resolve(__dirname, 'packages/github/src/index.ts'),
+      '@minicoder/gitea': path.resolve(__dirname, 'packages/gitea/src/index.ts'),
+      '@minicoder/gitlab': path.resolve(__dirname, 'packages/gitlab/src/index.ts'),
       '@minicoder/adapters-reviewer': path.resolve(
         __dirname,
         'packages/adapters-reviewer/src/index.ts',

@@ -21,10 +21,25 @@ function fakeFetch(routes: FakeRoute[]): typeof fetch {
   return (async (input: unknown, init?: { method?: string }) => {
     const url = typeof input === 'string' ? input : String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
-    // Pick the most specific (longest-path) match, not the first substring match — otherwise a
-    // route for `/pulls/7` would incorrectly also match `/pulls/7/reviews`.
-    const candidates = routes.filter((r) => r.method === method && url.includes(r.path));
-    const match = candidates.sort((a, b) => b.path.length - a.path.length)[0];
+    // Prefer a route whose path consumes the URL's *entire* meaningful path (nothing but an
+    // optional query string follows) over one that merely matches a leading prefix — e.g.
+    // `/pulls/7` must not win against `/pulls/7/reviews` just because "longest path wins" would
+    // otherwise pick whichever string happens to be longer (a real bug this exact shape hit in
+    // @minicoder/gitlab's equivalent test, caught and fixed there first).
+    const candidates = routes
+      .filter((r) => r.method === method)
+      .map((r) => {
+        const index = url.indexOf(r.path);
+        if (index === -1) return null;
+        const suffix = url.slice(index + r.path.length);
+        const isFullMatch = suffix === '' || suffix.startsWith('?');
+        return { route: r, isFullMatch, pathLength: r.path.length };
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null);
+    const match = candidates.sort((a, b) => {
+      if (a.isFullMatch !== b.isFullMatch) return a.isFullMatch ? -1 : 1;
+      return b.pathLength - a.pathLength;
+    })[0]?.route;
     if (!match) {
       throw new Error(`fakeFetch: no route registered for ${method} ${url}`);
     }

@@ -40,6 +40,7 @@ describe('OpenAPI conformance', () => {
     const ops = allDocumentedOperations(spec);
     expect(ops.has('POST /webhooks/github')).toBe(true);
     expect(ops.has('POST /webhooks/gitea')).toBe(true);
+    expect(ops.has('POST /webhooks/gitlab')).toBe(true);
     expect(ops.has('GET /healthz')).toBe(true);
   });
 

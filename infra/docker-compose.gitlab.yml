@@ -1,0 +1,61 @@
+version: '3.8'
+
+# MiniCoder — local/CI GitLab fixture (docs/06 §Phase 18 Stage 4).
+#
+# A single GitLab CE instance for exercising `@minicoder/gitlab`'s `GitlabScmClient` and webhook
+# receiver against a real server, mirroring the posture `infra/docker-compose.gitea.yml`/
+# `infra/docker-compose.coder-sandbox.yml` already document.
+#
+# Status: this stack has not been exercised against a live Docker daemon in this repository's CI
+# yet — the implementation session that wrote it had no reachable Docker daemon (`docker info`
+# reported "Cannot connect to the Docker daemon"; only `docker compose config` syntax validation
+# was possible). `packages/gitlab`'s unit tests run against a fake `fetchImpl` instead of this
+# stack, and the Stage 4 "reconciliation fallback is primary" acceptance regression
+# (`packages/testing/src/gitlab-reconcile-fallback.test.ts`) exercises `reconcileGithubState()`
+# directly against a hand-built `ObservedPullRequestState`, not this stack either. A
+# Docker-daemon-gated end-to-end scenario against a real GitLab instance remains real, tracked
+# future work.
+#
+# GitLab CE is a substantially heavier, slower-starting image than Gitea's (a full Rails
+# monolith plus Redis/Postgres/Sidekiq bundled inside one container) — expect several minutes
+# before the healthcheck passes, even on capable hardware. This is GitLab's own documented startup
+# characteristic, not a MiniCoder-specific issue.
+#
+# Startup: `docker compose -f infra/docker-compose.gitlab.yml up -d`, wait for the healthcheck
+# (this can take several minutes on first boot), then create a personal/project access token and a
+# webhook (either through GitLab's web UI at http://localhost:3400, or its API) pointed at a
+# `minicoder gitlab serve`/Orchestrator-API instance's `/webhooks/gitlab`, with "Secret token" set
+# to the value configured as `GITLAB_WEBHOOK_SECRET`.
+
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:17.5.2-ce.0
+    container_name: minicoder-gitlab-fixture
+    hostname: localhost
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:3400'
+        gitlab_rails['gitlab_shell_ssh_port'] = 3422
+        # Throwaway test fixture — disable outbound mail and background telemetry noise.
+        gitlab_rails['gitlab_email_enabled'] = false
+        gitlab_rails['usage_ping_enabled'] = false
+        prometheus_monitoring['enable'] = false
+    ports:
+      - '3400:80'
+      - '3422:22'
+    volumes:
+      - minicoder-gitlab-config:/etc/gitlab
+      - minicoder-gitlab-logs:/var/log/gitlab
+      - minicoder-gitlab-data:/var/opt/gitlab
+    shm_size: '256m'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost/-/readiness']
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 5m
+
+volumes:
+  minicoder-gitlab-config:
+  minicoder-gitlab-logs:
+  minicoder-gitlab-data:

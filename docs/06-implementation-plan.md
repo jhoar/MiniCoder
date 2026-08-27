@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.36
+> Version: 1.0.37
 > Last-updated: 2026-08-27
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -2337,7 +2337,8 @@ serve` reads `GITEA_WEBHOOK_SECRET`/`_PREVIOUS`, absent by default), since Gitea
   chain right after `@minicoder/github`), `pnpm lint`, `pnpm format:check`, and `pnpm test` (965
   tests, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass.
 
-**Stage 4 — GitLab provider (largest lowest-common-denominator compromise).**
+**Stage 4 — GitLab provider (largest lowest-common-denominator compromise). ✓ Complete
+(2026-08-27), with caveats below.**
 
 - `packages/gitlab`: `GitlabScmClient implements ScmClient` over GitLab's REST API (merge requests,
   discussions, pipelines/commit statuses, approvals).
@@ -2357,6 +2358,76 @@ serve` reads `GITEA_WEBHOOK_SECRET`/`_PREVIOUS`, absent by default), since Gitea
   GitLab-hosted test group); a dedicated regression proves the reconciliation fallback — not a
   webhook — is what advances a GitLab-backed feature run out of `under_review` when GitLab reports
   insufficient approvals with no corresponding webhook.
+
+**Delivered, plus honest caveats — same posture as Stage 3's writeup.**
+
+- `packages/gitlab` — `GitlabScmClient` implements all seven `ScmClient` methods against GitLab's
+  documented REST API v4 (URL-encoded `owner/repo` project addressing, `PRIVATE-TOKEN` auth, MR
+  `iid` as `prNumber`). `deriveReviewState()` is the documented synthesis this stage's plan called
+  for: an unresolved resolvable discussion is treated as blocking regardless of approval count,
+  else `approvals_left === 0` is `APPROVED`, else `PENDING`. `deriveConversationsResolved()` and
+  `deriveCiStatus()` mirror `GiteaScmClient`'s equivalent shape (a real discussions-based
+  observation for the former — unusually, GitLab's native support here is _better_ than Gitea's,
+  not a downgrade; a direct pipeline-status mapping for the latter, since GitLab also has no
+  separate Checks-API concept).
+- **New fidelity findings beyond what the Stage 4 plan text anticipated, all documented in
+  `gitlab-client.ts`'s own header comment:**
+  - GitLab's merge endpoint's `sha` parameter **genuinely supports the same optimistic-concurrency
+    guard GitHub's does** (a real 406 on mismatch) — unlike Gitea, which has no such parameter at
+    all. This is the one place GitLab's fidelity matches GitHub's exactly, not a place it's lower.
+  - `mergeMethod: 'rebase'` has no direct GitLab equivalent — merge strategy is a _project-level_
+    setting there, not a per-call parameter. Implemented as a best-effort two-step (call GitLab's
+    separate async `/rebase` endpoint, poll briefly, then merge without squash) — not atomic the
+    way a single GitHub/Gitea merge call is.
+  - `getPullRequestDiff()` returns a **synthesized** unified-diff-like text: GitLab's diffs
+    endpoint returns structured per-file objects, not a single unified-diff blob the way GitHub's/
+    Gitea's `.diff` media type does.
+  - GitLab's webhooks carry **no delivery-GUID header at all** (unlike GitHub's
+    `X-GitHub-Delivery`/Gitea's `X-Gitea-Delivery`) — `webhook-app.ts` falls back to a SHA-256 hash
+    of the raw request body as the `dedup_key`, which correctly collapses an exact-duplicate
+    redelivery but is a documented, narrower guarantee than a real delivery ID.
+- **The webhook-authenticity module is named `verifyGitlabWebhookToken`, not `...Signature`** — a
+  small but deliberate naming choice reflecting that GitLab has nothing to cryptographically verify,
+  only a shared secret to compare (docs/07 §3.2's "materially weaker authenticity model" framing,
+  now reflected in the actual function name a future reader will see).
+- **The Stage 4 acceptance criterion's core claim — reconciliation, not a webhook, is what
+  advances a GitLab-backed run out of `under_review` — is proven by a dedicated regression**,
+  `packages/testing/src/gitlab-reconcile-fallback.test.ts`: it calls `reconcileGithubState()`
+  directly with an `ObservedPullRequestState` built from `GitlabScmClient`'s own
+  `deriveReviewState()`/`deriveConversationsResolved()` synthesis (fully-approved MR, one
+  unresolved discussion — a condition `normalize.test.ts`'s "never produces
+  review.changes_requested" test proves no GitLab webhook can ever carry), with no webhook payload
+  anywhere in the call path, and asserts the run reaches `changes_requested` then `fixing`.
+- **Live-instance verification was not possible in this session, for the same reason as Stage 3.** `infra/docker-compose.gitlab.yml` exists (GitLab CE, syntax-validated via `docker compose
+config`) but this environment had no reachable Docker daemon. GitLab CE is a substantially
+  heavier, slower-starting image than Gitea's — its compose file's own header comment sets that
+  expectation for whoever runs it next. 56 unit tests cover the client/normalizer/token-verifier
+  against fakes; the reconciliation-fallback regression above covers the algorithm-level acceptance
+  claim without needing a live server.
+- **A real, pre-existing test-infrastructure gap was found and fixed while adding this stage**:
+  `vitest.config.ts`'s alias map had no entry for `@minicoder/gitea` (added in Stage 3) at all —
+  Stage 3's own tests happened to pass anyway only because a stale `packages/gitea/dist/` from a
+  manual build step was still present, the same class of gap CLAUDE.md already documents having
+  been found and fixed once before for `@minicoder/adapters-reviewer`. Both `@minicoder/gitea` and
+  `@minicoder/gitlab` are now in the alias map, matching every other workspace package tests
+  resolve directly from source.
+- **A test-helper correctness bug was found and fixed while writing `GitlabScmClient`'s own
+  tests**: the fake-`fetch` route matcher both this package's and (retroactively)
+  `packages/gitea`'s test files used picked the _longest matching path string_ as "most specific,"
+  which is backwards when a shorter path is actually the more deeply-nested resource (e.g.
+  `/merge_requests/7/discussions` vs. `/merge_requests/7` — the latter is the longer _route
+  registration_ in one direction and shorter in another depending on which sub-resource is
+  registered first, so "longest wins" picked the wrong one for GitLab's discussions call). Fixed in
+  both files to prefer a route that consumes the URL's entire meaningful path over one that merely
+  matches a prefix.
+- **docs/04's Phase 7 runbook gained a short GitLab-specific operational note** (see that section):
+  operators running a GitLab-backed project should not expect a `changes_requested` transition to
+  arrive promptly on human review the way it does for GitHub/Gitea — the scheduled
+  `github-reconciliation` pass's polling interval is the effective latency bound for that specific
+  condition on GitLab, not webhook delivery latency.
+- Full monorepo `pnpm typecheck` (20 workspace packages, `@minicoder/gitlab` added to the ordered
+  chain right after `@minicoder/gitea`), `pnpm lint`, `pnpm format:check`, and `pnpm test` (1019
+  tests, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass.
 
 **Stage 5 — Cross-provider conformance.**
 

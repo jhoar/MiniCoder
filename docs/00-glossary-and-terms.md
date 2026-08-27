@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.1
+> Version: 1.2.2
 > Last-updated: 2026-08-27
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -559,6 +559,21 @@ minicoder gitea simulate-review-changes-requested
 
 # Gitea webhook receiver (docs/06 §Phase 18 Stage 3; not env-guarded, same posture as `github serve`)
 minicoder gitea serve                                   # POST /webhooks/gitea; standalone Fastify app
+
+# GitLab simulation (test/dev only) — docs/06 §Phase 18 Stage 4; mirrors the GitHub/Gitea groups
+# above, minus simulate-review-changes-requested (GitLab has no webhook event for a discrete
+# "changes requested" review action, and no inbox handler is registered for it on this provider —
+# see @minicoder/gitlab's normalize.ts) and simulate-branch-protection-ok (no GitLab equivalent,
+# same reason as Gitea's)
+minicoder gitlab simulate-pr-opened
+minicoder gitlab simulate-pr-closed
+minicoder gitlab simulate-pr-merged
+minicoder gitlab simulate-check-passed
+minicoder gitlab simulate-check-failed
+minicoder gitlab simulate-review-approved
+
+# GitLab webhook receiver (docs/06 §Phase 18 Stage 4; not env-guarded, same posture as `github serve`)
+minicoder gitlab serve                                  # POST /webhooks/gitlab; standalone Fastify app
 
 # Human escalation disposition (Phase 11; human_required exit commands)
 minicoder human resolve-disagreement --feature-run <id> --project <id> --actor <id> --resolution <text> [--disagreement <id>]
