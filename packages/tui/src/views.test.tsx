@@ -95,6 +95,40 @@ describe('views', () => {
     expect(lastFrame()).toContain('(none)');
   });
 
+  it('renderActiveFeatureView shows the provider-aware PR link (docs/06 §Phase 18 Stage 6)', () => {
+    const { lastFrame } = render(
+      renderActiveFeatureView({
+        automationState: 'running',
+        activeFeatureRun: null,
+        pullRequest: {
+          id: 'pr-1',
+          feature_run_id: 'run-1',
+          pr_number: 42,
+          branch_name: 'minicoder/run-1',
+          base_branch: 'main',
+          head_sha: 'abc123',
+          state: 'open',
+          review_state: 'approved',
+          ci_status: 'passed',
+          mergeable: true,
+          blocking_labels: [],
+          conversations_resolved: true,
+          merged_at: null,
+          merge_sha: null,
+          closed_at: null,
+          version: 1,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          provider: 'gitlab',
+          provider_url: 'https://gitlab.example.test/acme/widgets/-/merge_requests/42',
+        },
+      }),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('View on gitlab');
+    expect(frame).toContain('https://gitlab.example.test/acme/widgets/-/merge_requests/42');
+  });
+
   it('renderRunsView tolerates a PostgreSQL NUMERIC cost_usd returned as a string', () => {
     // pg returns NUMERIC(12,6) columns as strings, not numbers — AgentRunRow's `cost_usd: number
     // | null` type is inaccurate for that dialect. This must not throw (a bare `.toFixed()` call

@@ -24,7 +24,9 @@ without human intervention**.
 MiniCoder includes Bootstrap planning, planning readiness assessment, clarification workflow,
 structured implementation plan generation, database-backed feature backlog, sequential feature
 execution, vendor-neutral agent adapters, SCM branch and pull request workflow (webhook-driven
-with reconciliation fallback; GitHub is the only shipped provider today, see §4.3/§5.7), structured
+with reconciliation fallback; GitHub, Gitea, and GitLab are all shipped `ScmClient`
+implementations, see §4.3/§5.7 — though see the write-pipeline caveat there and in
+`06-implementation-plan.md` §Phase 18 Stage 6's completion notes), structured
 review/fix loops, disagreement and human escalation,
 durable Workflow Layer execution, automated testing and state-lifecycle tooling, cost
 management, observability and audit records, the Orchestrator API, a Node.js + Ink Text UI, a
@@ -33,12 +35,15 @@ generation.
 
 MiniCoder does **not** initially include parallel feature execution, multi-repository
 orchestration, PDF/DOCX exports, a plugin marketplace, or advanced enterprise RBAC. These are
-future extensions, not separate architectures. **SCM providers other than GitHub** are the one
-future extension with a concrete staged plan (`06-implementation-plan.md` §Phase 18's "Generic SCM
-Interface"): GitLab and Gitea are added behind the existing `ScmClient` seam, with lowest-common-
-denominator reductions in fidelity documented per provider — this is a staged rollout, not a
+future extensions, not separate architectures. **SCM providers other than GitHub**
+(`06-implementation-plan.md` §Phase 18's "Generic SCM Interface") are a completed staged rollout at
+the interface/webhook/diagnostic layer — GitLab and Gitea are added behind the existing `ScmClient`
+seam, with lowest-common-denominator reductions in fidelity documented per provider, not a
 redesign, since `ObservedPullRequestState` and the rest of the `ScmClient` contract were already
-written at a provider-neutral level of abstraction.
+written at a provider-neutral level of abstraction. **The production write pipeline (coder push,
+reviewer diff fetch, merge-gate status checks, the real merge call, and the scheduled
+reconciliation task's own client resolution) is a real, tracked exception, still GitHub-only** —
+see §4.3/§5.7 and Stage 6's completion notes for the full list of affected call sites.
 
 > Note: **PostgreSQL is in scope** as the hosted/team state store (see §3, §14). It is not a
 > deferred "migration"; it is a first-class deployment profile supported by the persistence
@@ -55,10 +60,12 @@ MiniCoder database = authoritative planning, backlog, workflow, testing, review,
 Workflow Layer     = durable workflow execution (tasks, retries, a polling queue); implemented by
                      an in-repo, DB-backed task queue (formerly Trigger.dev).
 SCM provider       = authoritative repository, branch, commit, PR, review, CI/check,
-                     conversation, mergeability, and merge state. Implemented today by GitHub only
-                     (`ScmClient`'s `OctokitGitHubClient`); GitLab and Gitea are staged future
-                     providers behind the same interface (§4.3, §5.7, `06-implementation-plan.md`
-                     §Phase 18).
+                     conversation, mergeability, and merge state. GitHub, Gitea, and GitLab are all
+                     shipped `ScmClient` implementations behind the same interface (§4.3, §5.7,
+                     `06-implementation-plan.md` §Phase 18) for observation/diagnostics; the
+                     production write pipeline (coder/reviewer/merge-gate/merge, and the scheduled
+                     reconciliation task's own client resolution) is still GitHub-only — a real,
+                     tracked gap, see §5.7 and Stage 6's completion notes.
 SCM webhooks       = primary source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism.
 CI provider        = CI, tests, and build validation (GitHub Actions today).
@@ -85,7 +92,8 @@ its own; it reads/writes whichever database the profile below already uses.
 
 - SQLite on local disk.
 - Workflow Layer: one `minicoder tasks worker` process against the same SQLite file (see §14).
-- SCM repository (GitHub today; GitLab/Gitea staged, `06-implementation-plan.md` §Phase 18).
+- SCM repository (GitHub, Gitea, or GitLab — `06-implementation-plan.md` §Phase 18; see §5.7 for
+  the write-pipeline caveat that still applies to a Gitea/GitLab-provider repository).
 - Local API, local TUI, optional local Web UI.
 
 ### 3.2 Hosted / Team Profile
@@ -132,13 +140,20 @@ stranding a branch mid-workflow — when remaining capacity is insufficient. SQL
 authoritative for orchestration intent, history, and policy decisions; MiniCoder reconciles its
 database state against the SCM provider's observed state.
 
-GitHub is the only shipped provider today (`OctokitGitHubClient`, `packages/github`, via Octokit),
-and the remainder of this section (§5.7) documents that implementation's real contract in detail.
-GitLab and Gitea are staged, not-yet-built implementations of the same `ScmClient` interface
-(`06-implementation-plan.md` §Phase 18) — some of what §5.7 describes below is GitHub-specific
-detail (e.g. GraphQL-derived conversation resolution, the Checks API) that a GitLab/Gitea
-implementation will satisfy differently, at a genuinely lower common-denominator fidelity in a few
-places (documented in the Phase 18 plan) rather than by replicating GitHub's exact mechanism.
+GitHub is the original and most complete shipped provider (`OctokitGitHubClient`,
+`packages/github`, via Octokit), and the remainder of this section (§5.7) documents that
+implementation's real contract in detail. Gitea and GitLab are also shipped, real `ScmClient`
+implementations (`packages/gitea`, `packages/gitlab` — `06-implementation-plan.md` §Phase 18
+Stages 3–4) — some of what §5.7 describes below is GitHub-specific detail (e.g. GraphQL-derived
+conversation resolution, the Checks API) that Gitea/GitLab satisfy differently, at a genuinely
+lower common-denominator fidelity in a few places (documented in the Phase 18 plan) rather than by
+replicating GitHub's exact mechanism. **A real, tracked gap: this "shipped" status covers the
+`ScmClient` interface, webhook receivers, and read/diagnostic paths only** — the production write
+pipeline (coder push, reviewer diff fetch, merge-gate status checks, the real merge call, and the
+scheduled reconciliation task's own client resolution) still unconditionally uses
+`OctokitGitHubClient` regardless of a project's actual `repositories.provider`, so a Gitea/GitLab-
+provider project cannot yet be coded, reviewed, merge-gated, or merged through the automated
+pipeline (docs/06 §Phase 18 Stage 6's completion notes have the full list of affected call sites).
 
 ### 4.4 Vendor-Neutral Agents
 
@@ -225,10 +240,17 @@ Owns all SCM provider API operations and the webhook receiver: repository inspec
 lookup/creation, PR lookup/creation, PR state reading, review reading, check/status reading,
 mergeability reading, status check publication, webhook ingestion into the inbox, and the merge
 operation when policy permits. Behind the provider-neutral `ScmClient` interface
-(`packages/core/src/scm/`, called `GitHubClient` until the Phase 18 rename); GitHub is the only
-shipped implementation as of this writing (`OctokitGitHubClient`, `packages/github`) — GitLab and
-Gitea are staged (`06-implementation-plan.md` §Phase 18), and the contract below is GitHub's real,
-current implementation of that interface, not yet a cross-provider description.
+(`packages/core/src/scm/`, called `GitHubClient` until the Phase 18 rename); GitHub
+(`OctokitGitHubClient`, `packages/github`), Gitea (`GiteaScmClient`, `packages/gitea`), and GitLab
+(`GitlabScmClient`, `packages/gitlab`) are all shipped implementations
+(`06-implementation-plan.md` §Phase 18 Stages 3–4), and the contract below is GitHub's real,
+current implementation of that interface — Gitea/GitLab satisfy the same interface at a documented
+lowest-common-denominator fidelity in places (that stage's completion notes have the full
+per-field breakdown), not by replicating this description exactly. **The production write pipeline
+described in this section (coder push, reviewer diff fetch, merge-gate status checks, the real
+merge call) still unconditionally constructs `OctokitGitHubClient` regardless of a project's actual
+provider — a real, tracked gap, not yet fixed for Gitea/GitLab (Stage 6's completion notes have the
+full list of affected call sites).**
 
 **GitHub integration contract** (finalized in implementation Phase 7 against
 `packages/github`, `packages/core/src/scm/` (renamed from `packages/core/src/github/` by docs/06
@@ -577,7 +599,8 @@ columns are never duplicated across tables.
 MiniCoder stores authoritative system state in its database (SQLite or PostgreSQL). Core table
 groups:
 
-- **Project and repository:** `projects`, `repositories`, `github_links`
+- **Project and repository:** `projects`, `repositories` (including `provider`/`base_url`,
+  migration `0018`), `scm_links` (renamed from `github_links`, docs/06 §Phase 18 Stage 2)
 - **Planning:** `specification_inputs`, `planning_readiness_assessments`, `planning_gaps`,
   `planning_questions`, `planning_assumptions`, `clarification_sessions`, `clarification_questions`,
   `clarification_answers`, `clarification_decisions`, `implementation_plans`, `plan_sections`,
@@ -652,10 +675,10 @@ export plan, export backlog, generate final design document, approve final desig
 state/diagnostics actions (validate, reconcile, doctor, export-diagnostics) subject to
 authorization.
 
-**Webhook endpoints:** receive SCM webhook deliveries (GitHub today; GitLab/Gitea staged,
-`06-implementation-plan.md` §Phase 18), verify signatures (or, for a provider with no signature
-scheme, a constant-time shared-secret comparison — see `07-security-and-secrets.md` §3), and
-persist them to the inbox for durable processing (reconciliation remains the fallback path).
+**Webhook endpoints:** receive SCM webhook deliveries (GitHub, Gitea, and GitLab are all shipped,
+`06-implementation-plan.md` §Phase 18 Stages 3–4), verify signatures (or, for a provider with no
+signature scheme, a constant-time shared-secret comparison — see `07-security-and-secrets.md` §3),
+and persist them to the inbox for durable processing (reconciliation remains the fallback path).
 
 **API conventions** (defined now; the full OpenAPI-first contract is an implementation Phase 13
 deliverable):

@@ -15,7 +15,7 @@ State names match `00-glossary-and-terms.md`; adapter names match `03-agent-adap
 
 ```
 projects (1) ──< repositories (*)
-projects (1) ──< github_links (*)
+projects (1) ──< scm_links (*)
 projects (1) ──< specification_inputs (*)
 projects (1) ──< planning_readiness_assessments (*)
 projects (1) ── workflow_states (1)          [UNIQUE project_id]
@@ -121,22 +121,32 @@ design_document_approved → project_complete` (§3.1 glossary).
 
 ### repositories
 
-| Column                  | Type      | Constraints             |
-| ----------------------- | --------- | ----------------------- |
-| id                      | TEXT      | PRIMARY KEY             |
-| project_id              | TEXT      | NOT NULL FK projects    |
-| owner                   | TEXT      | NOT NULL                |
-| name                    | TEXT      | NOT NULL                |
-| full_name               | TEXT      | NOT NULL (owner/name)   |
-| default_branch          | TEXT      | NOT NULL DEFAULT 'main' |
-| version                 | INTEGER   | NOT NULL DEFAULT 1      |
-| created_at / updated_at | timestamp | NOT NULL                |
+> Migration `0018` (docs/06 §Phase 18 Stage 2, "Generic SCM Interface") added `provider` and
+> `base_url` to this table, originally introduced by Phase 1's `0001_initial_schema`. This ERD is
+> updated to reflect that.
 
-Indexes: `project_id`.
+| Column                  | Type      | Constraints                                                 |
+| ----------------------- | --------- | ----------------------------------------------------------- |
+| id                      | TEXT      | PRIMARY KEY                                                 |
+| project_id              | TEXT      | NOT NULL FK projects                                        |
+| owner                   | TEXT      | NOT NULL                                                    |
+| name                    | TEXT      | NOT NULL                                                    |
+| full_name               | TEXT      | NOT NULL (owner/name)                                       |
+| default_branch          | TEXT      | NOT NULL DEFAULT 'main'                                     |
+| provider                | TEXT      | NOT NULL DEFAULT 'github' (`github` \| `gitea` \| `gitlab`) |
+| base_url                | TEXT      | nullable (self-hosted instance URL; NULL for GitHub)        |
+| version                 | INTEGER   | NOT NULL DEFAULT 1                                          |
+| created_at / updated_at | timestamp | NOT NULL                                                    |
+
+Indexes: `project_id`, `(full_name, provider)`.
 
 ---
 
-### github_links
+### scm_links
+
+> Renamed from `github_links` by migration `0018` (docs/06 §Phase 18 Stage 2) — the table itself
+> was already provider-neutral (only `installation_id`/`app_id` are GitHub-App-specific, and are
+> simply left unpopulated by a Gitea/GitLab-linked row); only the name changed.
 
 | Column                  | Type      | Constraints                           |
 | ----------------------- | --------- | ------------------------------------- |
@@ -150,6 +160,8 @@ Indexes: `project_id`.
 | created_at / updated_at | timestamp | NOT NULL                              |
 
 Indexes: `project_id`.
+
+---
 
 ---
 

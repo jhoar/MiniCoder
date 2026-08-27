@@ -116,6 +116,18 @@ export default async function FeatureDetailPage({
                   },
                   { label: 'CI status', value: <StatusBadge value={pullRequest.ci_status} /> },
                   { label: 'Branch', value: pullRequest.branch_name },
+                  {
+                    // Provider-aware external link (docs/06 §Phase 18 Stage 6) — see
+                    // `/pull-requests/[number]`'s identical field for the full rationale.
+                    label: `View on ${pullRequest.provider}`,
+                    value: pullRequest.provider_url ? (
+                      <a href={pullRequest.provider_url} target="_blank" rel="noreferrer noopener">
+                        {pullRequest.provider_url}
+                      </a>
+                    ) : (
+                      '(link unavailable)'
+                    ),
+                  },
                 ]}
               />
             </section>

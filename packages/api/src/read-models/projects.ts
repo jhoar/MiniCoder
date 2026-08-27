@@ -41,6 +41,14 @@ export interface RepositoryRow {
   name: string;
   full_name: string;
   default_branch: string;
+  /** SCM provider this repository lives on (`'github' | 'gitea' | 'gitlab'`,
+   * `repositories.provider` — migration 0018, docs/06 §Phase 18 Stage 2). Previously omitted from
+   * this read model even though the column has existed since Stage 2 — no caller needed it until
+   * Stage 6's operator-facing provider-aware link rollout. */
+  provider: string;
+  /** The self-hosted instance base URL for Gitea/GitLab repositories; `null` for GitHub (fixed
+   * `api.github.com`/`github.com` host). */
+  base_url: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -56,7 +64,7 @@ export function listRepositories(
     {
       table: 'repositories',
       columns:
-        'id, project_id, owner, name, full_name, default_branch, version, created_at, updated_at',
+        'id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at',
       where: projectId ? 'project_id = ?' : undefined,
       params: projectId ? [projectId] : [],
     },

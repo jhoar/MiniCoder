@@ -275,6 +275,12 @@ export function renderActiveFeatureView(props: {
       { label: 'PR state', value: <StatusBadge state={props.pullRequest.state} /> },
       { label: 'Review state', value: <StatusBadge state={props.pullRequest.review_state} /> },
       { label: 'CI status', value: <StatusBadge state={props.pullRequest.ci_status} /> },
+      // Provider-aware link (docs/06 §Phase 18 Stage 6) — built server-side by
+      // `buildScmPullRequestUrl()` and carried straight through on `PullRequestRow`.
+      {
+        label: `View on ${props.pullRequest.provider}`,
+        value: props.pullRequest.provider_url ?? '(link unavailable)',
+      },
     );
   }
   return (

@@ -154,12 +154,23 @@ These are locked decisions that appear throughout the docs. Do not contradict or
    stale-fence writes), not a hard schema invariant.
 
 3. **SCM webhooks are the primary event source.** Scheduled reconciliation is the fallback/repair
-   mechanism, not the primary path. **Today this means GitHub webhooks** — GitHub is the only
-   shipped SCM provider (`packages/github`, behind the `ScmClient` seam in
-   `packages/core/src/scm/`). GitLab and Gitea are staged, not-yet-built providers behind that same
-   seam (docs/06 §Phase 18's "Generic SCM Interface" plan) — this decision is written at the
-   provider-neutral level so it doesn't need to change again when they land. The scheduled
-   reconciliation task keeps its literal name (`github-reconciliation`, one of the no-drift
+   mechanism, not the primary path. This decision is written at the provider-neutral level so it
+   doesn't need to change again as providers land. **GitHub is the original and most complete
+   shipped SCM provider** (`packages/github`, behind the `ScmClient` seam in
+   `packages/core/src/scm/`); **Gitea and GitLab are also shipped** (`packages/gitea`,
+   `packages/gitlab` — full `ScmClient` implementations, webhook receivers, CLI tooling, and a
+   cross-provider conformance suite, docs/06 §Phase 18's "Generic SCM Interface" plan, Stages 0–5).
+   **A real, tracked gap remains, though: the production write pipeline is still GitHub-only.**
+   `github-reconciliation`'s scheduled task, `run-coder`, `run-review`, `run-merge-gate`, and
+   `minicoder merge ...`/its API routes all still unconditionally construct `OctokitGitHubClient`
+   regardless of a project's actual `repositories.provider` — a Gitea/GitLab-provider project can
+   be diagnosed (`state doctor --check-scm`) and receive webhooks today, but cannot yet be coded,
+   reviewed, merge-gated, or merged through the automated pipeline. Making these call sites
+   provider-aware (the same dispatch-by-`repositories.provider` pattern
+   `packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()` already establishes) is
+   real, documented follow-up work — see docs/06 §Phase 18 Stage 6's completion notes for the full
+   list of affected call sites — not silently assumed done because the interface and read paths
+   are. The scheduled reconciliation task keeps its literal name (`github-reconciliation`, one of the no-drift
    canonical task IDs, docs/00 §3.12) regardless of which provider it ends up reconciling — same
    precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
 

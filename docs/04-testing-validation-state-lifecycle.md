@@ -990,17 +990,28 @@ neither set, simply leaving the corresponding webhook route unmounted (docs/06 �
 own reasoning: a deployment with no repository linked to a given provider has no reason to expose
 that provider's webhook route at all).
 
-**Operational difference for GitLab — reconciliation, not webhook delivery, is the effective
-latency bound for a "changes requested" transition.** GitLab has no webhook event corresponding to
-a discrete "reviewer requested changes" action (unlike GitHub's `pull_request_review` or Gitea's
-`pull_request_review_reject`) — the condition is only ever discovered by the scheduled
-`github-reconciliation` task's own `GitlabScmClient.getPullRequest()` observation on its normal
-polling cadence. Operators running a GitLab-backed project should not expect this specific
-transition to arrive with the same near-real-time latency GitHub/Gitea webhooks provide; if it
-needs to happen faster than the scheduled cadence, invoke the reconciliation diagnostics procedure
-above manually (`github-reconciliation` with `{ projectId, featureRunId }`) rather than assuming a
-missing webhook indicates a bug. `packages/testing/src/gitlab-reconcile-fallback.test.ts` is the
-regression proving this fallback path actually works.
+**Operational difference for GitLab — reconciliation, not webhook delivery, is the intended
+latency bound for a "changes requested" transition — with a real, currently-unfixed gap in how
+that reconciliation client is resolved (docs/06 §Phase 18 Stage 6's grep sweep).** GitLab has no
+webhook event corresponding to a discrete "reviewer requested changes" action (unlike GitHub's
+`pull_request_review` or Gitea's `pull_request_review_reject`) — by design, the condition is meant
+to be discovered by the scheduled `github-reconciliation` task's own `getPullRequest()` observation
+on its normal polling cadence, feeding the shared `reconcileGithubState()` algorithm. **This is not
+yet true in production**: `github-reconciliation.ts`'s `resolveDefaultGithubClientFactory()`
+unconditionally constructs a single `OctokitGitHubClient` for the entire scheduled pass (never a
+`GitlabScmClient`/`GiteaScmClient`, and never per-candidate-repository), so a real GitLab-provider
+repository's scheduled reconciliation pass calls the GitHub API against it today, not GitLab's —
+this specific transition currently has no automated path to fire in production for a real
+GitLab-backed project. `packages/testing/src/gitlab-reconcile-fallback.test.ts` proves the
+_algorithm_ (`reconcileGithubState()`) correctly acts on a `GitlabScmClient`-shaped observation when
+handed one directly — its own header comment is explicit that it calls `reconcileGithubState()`
+directly, bypassing the task (and its client-resolution bug) entirely — it is not, and was never
+intended to be, proof that `github-reconciliation.ts` itself resolves the right client for a
+GitLab-provider repository. Making the task's client resolution provider-aware (mirroring
+`packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()`) is real, tracked follow-up
+work, not fixed as part of the Generic SCM Interface plan's Stage 6 — see that stage's completion
+notes in docs/06 for the full list of production write-path call sites with the same gap
+(coder push, reviewer diff fetch, merge-gate status checks, and the real merge call all share it).
 
 ### Phase 8 — Execution Orchestrator Runbook
 

@@ -50,11 +50,16 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 
 ## 3. SCM Authentication Model
 
-GitHub is the only shipped SCM provider today; §3.1 documents its real, current implementation.
-GitLab and Gitea are staged, not-yet-built providers behind the same `ScmClient` seam
-(`06-implementation-plan.md` §Phase 18) — §3.2 documents the authentication and webhook-authenticity
-differences that plan must account for, since they are not uniform across providers and directly
-affect this document's security guarantees.
+GitHub, Gitea, and GitLab are all shipped SCM providers as of `06-implementation-plan.md` §Phase
+18 Stages 3–4; §3.1 documents GitHub's real, current implementation and §3.2 documents the
+authentication and webhook-authenticity differences for Gitea/GitLab, since they are not uniform
+across providers and directly affect this document's security guarantees. **A real, tracked gap:
+the production write pipeline (coder push, reviewer diff fetch, merge-gate status checks, the real
+merge call, and the scheduled reconciliation task's own client resolution) still unconditionally
+resolves a GitHub credential regardless of a project's actual provider — a Gitea/GitLab-provider
+project's `GITEA_TOKEN`/`GITLAB_TOKEN` is currently only consulted by the opt-in
+`state doctor --check-scm` diagnostic, not by any of those write-path callers. See Stage 6's
+completion notes in `06-implementation-plan.md` for the full list of affected call sites.**
 
 ### 3.1 GitHub (current implementation)
 
@@ -66,12 +71,11 @@ affect this document's security guarantees.
   the raw request body, `X-Hub-Signature-256`) before inbox persistence; unsigned/invalid
   deliveries are rejected and audited. See §5 for the current + previous secret rotation window.
 
-### 3.2 Staged providers: GitLab and Gitea
+### 3.2 Gitea and GitLab (shipped, docs/06 §Phase 18 Stages 3–4)
 
 - **Gitea** uses the same authenticity model as GitHub: HMAC-SHA256 over the raw request body
-  (`X-Gitea-Signature`). The existing verifier (`verifyWebhookSignature()`,
-  `packages/github/src/webhook-signature.ts`) is reusable as-is for a Gitea webhook receiver — same
-  algorithm, same current+previous secret-rotation contract, different header name only.
+  (`X-Gitea-Signature`), via its own dedicated verifier (`packages/gitea/src/webhook-signature.ts`)
+  — same algorithm, same current+previous secret-rotation contract, different header name only.
 - **GitLab has no HMAC signature scheme.** It authenticates a webhook delivery with a bare
   shared-secret token (`X-Gitlab-Token`) that GitLab echoes back unmodified — there is no signing
   of the request body, so payload tampering in transit is not detected the way it is for

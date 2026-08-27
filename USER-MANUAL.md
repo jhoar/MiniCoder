@@ -210,6 +210,72 @@ ngrok prints a forwarding URL like `https://a1b2c3d4.ngrok-free.app`. Use
 - Using `--webhook-only` (`minicoder github serve`, port `3100` by default) instead of the full API?
   Point ngrok at `3100` — the payload path is still `/webhooks/github`.
 
+### 3.1.2 Connecting a Gitea or GitLab project
+
+GitHub, Gitea, and GitLab are all first-class `ScmClient` implementations behind the same
+provider-neutral interface (docs/06 §Phase 18 "Generic SCM Interface") — the state machine, merge
+gate, and review/fix loop behave identically regardless of which one a project's repository is on.
+The differences are entirely in which repository row and env vars you set up. A project's
+repository is recorded with a `provider` (`github` | `gitea` | `gitlab`) and, for the two
+self-hosted providers, a `base_url` pointing at your instance — set these when you create the
+`repositories` row for the project (however your setup tooling/import path does that; there is no
+separate "connect a repo" CLI command yet — a repository row is created alongside the project).
+
+**`GITEA_TOKEN` / `GITLAB_TOKEN`** — used by `state doctor --check-scm` to check a repository of
+that provider for undiscovered PRs. Generate one from your instance:
+
+- **Gitea**: your user icon → **Settings → Applications → Generate New Token**, granting at least
+  `repository` read/write scope (Gitea's OAu2/token scopes are coarser-grained than GitHub's
+  fine-grained tokens — there is no per-permission breakdown to match line-by-line). Copy it and
+  `export GITEA_TOKEN=<the token>`.
+- **GitLab**: your avatar → **Edit profile → Access Tokens** (a personal access token) or, scoped
+  to just one project, that project's **Settings → Access Tokens**, granting the `api` scope. Copy
+  it and `export GITLAB_TOKEN=<the token>`.
+
+**`GITEA_WEBHOOK_SECRET` / `GITLAB_WEBHOOK_SECRET`** — the same "you generate it, register it on
+both sides" shape as `GITHUB_WEBHOOK_SECRET` above, with one real difference in how strongly each
+side is verified (docs/07-security-and-secrets.md §3.2): Gitea authenticates deliveries with an
+HMAC-SHA256 signature (`X-Gitea-Signature`), the same mechanism GitHub uses; **GitLab does not sign
+its webhook payloads at all** — it sends the configured secret back verbatim in an `X-Gitlab-Token`
+header, which MiniCoder compares using a constant-time string comparison. This is a materially
+weaker authenticity guarantee than HMAC (a token, not a signature, so there is nothing tying it to
+the specific payload bytes) — it is GitLab's webhook design, not a MiniCoder shortcut.
+
+1. Generate a strong random value the same way as for GitHub (`openssl rand -hex 32`).
+2. `export GITEA_WEBHOOK_SECRET=<value>` / `export GITLAB_WEBHOOK_SECRET=<value>`.
+3. Register it on the instance side:
+   - **Gitea**: repository → **Settings → Webhooks → Add Webhook → Gitea**. **Target URL**:
+     `https://<your-minicoder-host>/webhooks/gitea`. **HTTP Method**: POST. **POST Content Type**:
+     `application/json`. **Secret**: paste the value. **Trigger On**: "Custom Events" → select
+     _Pull Request_, _Pull Request Review_, _Pull Request Comment_ (used for delivery dedup only —
+     see docs/04), _Status_ (or "All Events" is fine too). **Active**, then **Add Webhook**.
+   - **GitLab**: project → **Settings → Webhooks → Add new webhook**. **URL**:
+     `https://<your-minicoder-host>/webhooks/gitlab`. **Secret token**: paste the value.
+     **Trigger**: check _Merge request events_, _Pipeline events_, _Note events_ (comments — used
+     for delivery dedup, since GitLab sends no delivery-GUID header to dedup on directly), _Push
+     events_. **Enable SSL verification** (leave checked), then **Add webhook**.
+4. Rotating later: same current+previous pattern as GitHub —
+   `GITEA_WEBHOOK_SECRET_PREVIOUS`/`GITLAB_WEBHOOK_SECRET_PREVIOUS`.
+
+**Running the receiver**: either mount it inside the shared API process
+(`minicoder api serve` mounts `/webhooks/gitea` and/or `/webhooks/gitlab` automatically whenever
+the corresponding `*_WEBHOOK_SECRET` env var is set — leaving it unset simply leaves that route
+unmounted, unlike `GITHUB_WEBHOOK_SECRET`, which `minicoder api serve` currently requires
+unconditionally even on a Gitea/GitLab-only deployment; see §6's troubleshooting note), or run a
+provider-specific standalone receiver: `minicoder gitea serve` (port `3101` by default) /
+`minicoder gitlab serve` (port `3102` by default) — the same `--webhook-only` shape as
+`minicoder github serve`'s port `3100`. `minicoder gitea simulate-*` / `minicoder gitlab
+simulate-*` (dev/test/CI only, `guardEnv()`-gated) mirror `minicoder github simulate-*` for local
+testing without a real webhook — see §5.3 for the full subcommand list, including the two
+GitLab-specific gaps (no `simulate-review-changes-requested`, no
+`simulate-branch-protection-ok`) and why they don't exist.
+
+**No scheduled auto-discovery for Gitea/GitLab yet.** GitHub's scheduled `github-reconciliation`
+task auto-discovers a PR a missed webhook never reported; Gitea and GitLab have no equivalent
+scheduled pass (docs/06 §Phase 18 Stage 5) — `minicoder state doctor --project <id> --check-scm`
+is, for now, the only automated way to find that class of divergence on those two providers, not
+just an on-demand convenience the way it is for GitHub.
+
 ### 3.2 First-time setup
 
 ```bash
@@ -233,6 +299,10 @@ minicoder db validate        # confirms every expected table/index exists
 | GitLab                       | `GITLAB_TOKEN`                                              | Used by `state doctor --check-scm` (GitLab-provider repos)                                                               |
 | GitHub webhooks              | `GITHUB_WEBHOOK_SECRET`                                     | Required by both `minicoder github serve` and `minicoder api serve`                                                      |
 | GitHub webhooks (rotation)   | `GITHUB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
+| Gitea webhooks               | `GITEA_WEBHOOK_SECRET`                                      | Required by `minicoder gitea serve`; optional for `minicoder api serve` (unset leaves `/webhooks/gitea` unmounted)       |
+| Gitea webhooks (rotation)    | `GITEA_WEBHOOK_SECRET_PREVIOUS`                             | Optional, for secret rotation                                                                                            |
+| GitLab webhooks              | `GITLAB_WEBHOOK_SECRET`                                     | Required by `minicoder gitlab serve`; optional for `minicoder api serve` (unset leaves `/webhooks/gitlab` unmounted)     |
+| GitLab webhooks (rotation)   | `GITLAB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
 | LLM provider                 | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL` | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters |
 | Observability (optional)     | `OTEL_EXPORTER_OTLP_ENDPOINT`                               | If unset, `observability export-otel` is a no-op                                                                         |
 | Web UI                       | (none new)                                                  | Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` as the CLI                                                        |
@@ -759,17 +829,30 @@ host not in `MINICODER_ALLOWED_RESET_HOSTS`). Refuses unconditionally if `APP_EN
 | `validate`            | Confirm every canonical task ID has a registered handler.                    | —                                                                                  |
 | `reconcile`           | Flag runs whose queue row and run-status row have drifted apart.             | `--project <id>`                                                                   |
 
-### 5.3 GitHub integration — `minicoder github ...`
+### 5.3 SCM integration — `minicoder github/gitea/gitlab ...`
 
-| Subcommand                                                                                                                                                                                                                  | Purpose                                                                                                                                                       | Transport | Key flags                                                                                                                                                        |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serve`                                                                                                                                                                                                                     | Run the real webhook receiver (`POST /webhooks/github`). Long-running; not environment-guarded — this is meant for production. Needs `GITHUB_WEBHOOK_SECRET`. | process   | `--port` (default 3100), `--host` (default `0.0.0.0`)                                                                                                            |
-| `simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved` / `simulate-review-changes-requested` / `simulate-branch-protection-ok` | Fake the corresponding GitHub event locally, without a real webhook. **Dev/test/CI only.**                                                                    | DB        | `--project <id>` (required), `--pr-number <n>` (required), plus event-specific optionals (`--merged`, `--check-name`, `--reviewer`, `--head-sha`, `--merge-sha`) |
+Each shipped SCM provider gets its own top-level command group (docs/06 §Phase 18) rather than one
+generic `minicoder scm ... --provider <p>` — a project's `repositories.provider` decides which
+provider's `ScmClient` the orchestrator actually talks to at runtime; these command groups are the
+webhook receiver and dev-tooling for each.
+
+| Subcommand                                                                                                                                                                                                                         | Purpose                                                                                                                                                                                                                                                                                                                                                            | Transport | Key flags                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `github serve`                                                                                                                                                                                                                     | Run the real webhook receiver (`POST /webhooks/github`). Long-running; not environment-guarded — this is meant for production. Needs `GITHUB_WEBHOOK_SECRET`.                                                                                                                                                                                                      | process   | `--port` (default 3100), `--host` (default `0.0.0.0`)                                                                                                            |
+| `github simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved` / `simulate-review-changes-requested` / `simulate-branch-protection-ok` | Fake the corresponding GitHub event locally, without a real webhook. **Dev/test/CI only.**                                                                                                                                                                                                                                                                         | DB        | `--project <id>` (required), `--pr-number <n>` (required), plus event-specific optionals (`--merged`, `--check-name`, `--reviewer`, `--head-sha`, `--merge-sha`) |
+| `gitea serve`                                                                                                                                                                                                                      | Run the real Gitea webhook receiver (`POST /webhooks/gitea`). Needs `GITEA_WEBHOOK_SECRET`.                                                                                                                                                                                                                                                                        | process   | `--port` (default 3101), `--host` (default `0.0.0.0`)                                                                                                            |
+| `gitea simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved` / `simulate-review-changes-requested`                                    | Fake the corresponding Gitea event locally. **Dev/test/CI only.** No `simulate-branch-protection-ok` — GitHub-specific dev-tooling with no real webhook event behind it even on GitHub's own side.                                                                                                                                                                 | DB        | Same shape as `github simulate-*`; `--reviewer` takes a Gitea login                                                                                              |
+| `gitlab serve`                                                                                                                                                                                                                     | Run the real GitLab webhook receiver (`POST /webhooks/gitlab`). Needs `GITLAB_WEBHOOK_SECRET`.                                                                                                                                                                                                                                                                     | process   | `--port` (default 3102), `--host` (default `0.0.0.0`)                                                                                                            |
+| `gitlab simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved`                                                                         | Fake the corresponding GitLab event locally. **Dev/test/CI only.** No `simulate-review-changes-requested` (GitLab's webhooks never carry that condition — see §3.1.2's reconciliation-only recovery note) and no `simulate-branch-protection-ok` (same reason as Gitea). `--pr-number` here means the merge request's `iid`; `--reviewer` takes a GitLab username. | DB        | Same shape as `github simulate-*`                                                                                                                                |
 
 ### 5.4 Orchestrator API — `minicoder api serve` (process)
 
 Starts the Fastify API everything else in this table depends on. `--port` (default 4000),
-`--host` (default `0.0.0.0`). Stays running until stopped; doesn't close the DB connection.
+`--host` (default `0.0.0.0`). Stays running until stopped; doesn't close the DB connection. Also
+mounts whichever SCM webhook routes have a configured secret: `/webhooks/github` (requires
+`GITHUB_WEBHOOK_SECRET` — refuses to start without it, even on a deployment with no GitHub-provider
+repository), `/webhooks/gitea` (mounted only if `GITEA_WEBHOOK_SECRET` is set), `/webhooks/gitlab`
+(mounted only if `GITLAB_WEBHOOK_SECRET` is set).
 
 ### 5.5 Read/dashboard commands (all API transport, all support `--json`)
 
@@ -911,6 +994,17 @@ recoverable by restoring the snapshot rather than by rolling back the reset itse
 **Costs are climbing faster than expected.**
 `minicoder costs --project <project> --report` for the breakdown by feature/provider/model/role;
 `minicoder costs --project <project>` for the raw records.
+
+**`minicoder api serve` refuses to start on a Gitea/GitLab-only deployment, complaining about
+`GITHUB_WEBHOOK_SECRET`.** `minicoder api serve` currently requires `GITHUB_WEBHOOK_SECRET`
+unconditionally to start at all, even when every project's repository is on Gitea or GitLab and
+`/webhooks/github` will never receive a delivery — this is a known, real asymmetry versus
+`GITEA_WEBHOOK_SECRET`/`GITLAB_WEBHOOK_SECRET`, which are genuinely optional (each just leaves its
+own route unmounted if unset). The workaround today: set `GITHUB_WEBHOOK_SECRET` to any random
+value (`openssl rand -hex 32`) even if you never register a GitHub webhook — `/webhooks/github`
+being mounted but never called is harmless. Making `GITHUB_WEBHOOK_SECRET` genuinely optional, to
+match Gitea/GitLab's treatment, is tracked as real follow-up work, not fixed as part of the Generic
+SCM Interface plan's Stage 6 rollout (docs/06 §Phase 18) — see that stage's completion notes.
 
 ---
 

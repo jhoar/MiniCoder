@@ -25,9 +25,10 @@ Subsystem names:
 - MiniCoder Execution Orchestrator
 - MiniCoder Agent Adapter Architecture
 - MiniCoder Workflow Layer (implemented by an in-repo DB-backed task queue, `packages/triggerdev/` — formerly Trigger.dev)
-- MiniCoder SCM Integration (implemented today by GitHub only, `packages/github`; GitLab and Gitea
-  are staged future providers behind the same `ScmClient` seam — see `06-implementation-plan.md`
-  §Phase 18)
+- MiniCoder SCM Integration (`packages/github`, `packages/gitea`, `packages/gitlab` are all shipped
+  `ScmClient` implementations — see `06-implementation-plan.md` §Phase 18; the production write
+  pipeline remains GitHub-only, a real tracked gap documented in that plan's Stage 6 completion
+  notes)
 - MiniCoder Orchestrator API
 - MiniCoder Text UI
 - MiniCoder Web UI
@@ -42,10 +43,14 @@ MiniCoder database = authoritative planning, backlog, workflow, testing, review,
                      agent-run, cost, artifact, and design-document state.
                      Local/single-node = SQLite on local disk. Hosted/team = PostgreSQL.
 SCM provider       = authoritative repository, branch, commit, PR, review, CI/check,
-                     conversation, mergeability, and merge state. Implemented today by GitHub only
-                     (`ScmClient`'s `OctokitGitHubClient`, `packages/github`); GitLab and Gitea are
-                     staged future implementations of the same `ScmClient` interface
-                     (see `06-implementation-plan.md` §Phase 18).
+                     conversation, mergeability, and merge state. GitHub (`OctokitGitHubClient`,
+                     `packages/github`), Gitea (`GiteaScmClient`, `packages/gitea`), and GitLab
+                     (`GitlabScmClient`, `packages/gitlab`) are all shipped `ScmClient`
+                     implementations (see `06-implementation-plan.md` §Phase 18) for
+                     observation/diagnostics; the production write pipeline (coder/reviewer/
+                     merge-gate/merge, and the scheduled reconciliation task's own client
+                     resolution) is still GitHub-only — a real, tracked gap (Stage 6's completion
+                     notes).
 SCM webhooks       = PRIMARY source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism. Implemented by the `github-reconciliation`
                      task (docs §3.12), which keeps that literal name regardless of which provider
@@ -698,8 +703,10 @@ HA cluster vs. Trigger.dev Cloud) — that entire axis is gone along with the Tr
 ### 6.1 State store
 
 - **Local / Single-Node** — SQLite on local disk; local API; local TUI; optional local Web UI.
-- **Hosted / Team** — PostgreSQL; hosted API; Web UI; SCM OAuth/App auth (GitHub today; GitLab/Gitea
-  staged, `06-implementation-plan.md` §Phase 18); SCM webhooks.
+- **Hosted / Team** — PostgreSQL; hosted API; Web UI; a token-based SCM credential per provider
+  (GitHub App/PAT, Gitea token, GitLab token — `06-implementation-plan.md` §Phase 18; real
+  end-user OAuth/SSO session auth is deferred future work regardless of provider, docs/07 §4);
+  SCM webhooks.
 
 ### 6.2 Workflow Layer execution: `minicoder tasks worker`
 

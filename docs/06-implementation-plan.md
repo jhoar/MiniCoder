@@ -2506,16 +2506,129 @@ config`) but this environment had no reachable Docker daemon. GitLab CE is a sub
   tests passed, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all
   pass.
 
-**Stage 6 — Operator-facing rollout.**
+**Stage 6 — Operator-facing rollout. ✓ Complete (2026-08-27), with a major caveat below.**
 
-- Web UI / Text UI: hardcoded "PR #"/GitHub-specific link formatting on the pull-requests and
-  feature-detail views becomes provider-aware (link paths differ: GitHub `/pull/N`, GitLab
-  `/-/merge_requests/N`, Gitea `/pulls/N`).
-- `USER-MANUAL.md`: a new "connecting a GitLab/Gitea project" section alongside the existing GitHub
-  setup instructions.
-- Final grep sweep for any remaining GitHub-only assumption missed by earlier stages.
+- **Provider-aware PR links, closing a real gap the plan text's premise had wrong.** The plan
+  text assumed hardcoded GitHub-specific link _formatting_ already existed on the pull-request and
+  feature-detail views; investigation found neither `packages/web`'s
+  `/pull-requests/[number]`/`/features/[id]` pages nor `packages/tui`'s `renderActiveFeatureView()`
+  ever rendered an outbound link to the PR's page on its provider at all — only internal
+  MiniCoder-to-MiniCoder navigation existed. Built the missing capability rather than reformatting
+  something that didn't exist: `packages/api/src/read-models/scm-url.ts`'s
+  `buildScmPullRequestUrl(provider, baseUrl, owner, repo, prNumber)` is a pure, provider-neutral URL
+  formatter (GitHub `https://github.com/{owner}/{repo}/pull/{n}`, Gitea
+  `{baseUrl}/{owner}/{repo}/pulls/{n}`, GitLab `{baseUrl}/{owner}/{repo}/-/merge_requests/{n}`,
+  `null` for an unrecognized provider or a missing required `baseUrl`). `PullRequestRow` gained
+  additive `provider`/`provider_url` fields, populated by `getPullRequestByFeatureRun()`/
+  `listPullRequests()` (`packages/api/src/read-models/features.ts`) via a small,
+  non-cursor-paginated repository lookup (one repo per project, the same assumption this document
+  already documents for every other repository lookup in the codebase) — deliberately centralized
+  server-side rather than duplicated in each UI, since `packages/web` only carries `@minicoder/api`
+  as a type-only devDependency and cannot call a runtime formatter from it. Both Web UI pages and
+  the Text UI's `minicoder active` render a "View on {provider}" link/field from this one shared
+  field. `RepositoryRow`/`listRepositories()` also gained `provider`/`base_url` (present in the
+  schema since Stage 2, never selected by this read model until now — the same "small, additive,
+  previously-missing" pattern Phase 14/15 established for `whoami`/`ClarificationQuestionRow.version`
+  /etc.). New tests: `scm-url.test.ts` (8 cases, the pure formatter), a new read-model integration
+  test proving the repository-lookup wiring for all three providers plus the no-repository-row
+  defensive case (`pull-request-provider-url.test.ts`, 4 cases), and a `views.test.tsx` case
+  proving the Text UI renders the link. `next build` passes; no page-level unit-test harness exists
+  in `packages/web` for Server Components (an established, documented gap, not new to this stage).
+- **`USER-MANUAL.md` §3.1.2 "Connecting a Gitea or GitLab project"** — token generation
+  (`GITEA_TOKEN`/`GITLAB_TOKEN`), webhook-secret setup for both providers (explicitly calling out
+  GitLab's materially weaker bare-token authenticity model versus Gitea's HMAC, matching docs/07
+  §3.2), the `minicoder gitea/gitlab serve` vs. mounting inside `minicoder api serve` choice, and
+  the "no scheduled auto-discovery for Gitea/GitLab yet" operational note. §3.3's env-var table and
+  §5.3 (renamed from "GitHub integration" to "SCM integration") gained the Gitea/GitLab rows and
+  CLI subcommand tables that had existed in the code since Stages 3–4 but were never added to this
+  manual — a real, previously-undocumented gap this stage closed. §6 gained a troubleshooting entry
+  for the asymmetry noted below (`GITHUB_WEBHOOK_SECRET` required unconditionally to start
+  `minicoder api serve`, unlike the genuinely-optional Gitea/GitLab secrets).
+- **Final grep sweep — found a real, major, previously-undocumented gap.** A dedicated
+  investigation (not a manual `grep`, a directed sub-agent search across the whole repository)
+  found that Stages 0–5 made the `ScmClient` interface, schema, webhook receivers, and read-only
+  diagnostics (`state doctor --check-scm`, PR-discovery divergence) genuinely provider-generic and
+  well-tested for all three providers — but **the entire production write pipeline is still
+  hardcoded to `OctokitGitHubClient`/GitHub, with no provider dispatch at all**, contradicting this
+  document's own "swap the implementation behind an unchanged interface" framing for anything past
+  observation. Confirmed directly in the code (not just trusted from the sweep) for the single
+  highest-impact instance: `packages/triggerdev/src/tasks/github-reconciliation.ts`'s
+  `resolveDefaultGithubClientFactory()` (~line 68) unconditionally constructs one
+  `OctokitGitHubClient`, used for every candidate in a scheduled pass (`clientFactory()` is called
+  once per invocation, not once per candidate repository) — its candidate query
+  (`SELECT owner, name FROM repositories ...`) doesn't even select `provider`/`base_url`. This
+  directly falsified a claim this very document's Stage 4 completion notes (and docs/04's GitLab
+  runbook section) had made — that the scheduled reconciliation task's own `getPullRequest()`
+  observation is what discovers GitLab's synthesized "changes requested" condition in production;
+  in fact `github-reconciliation.ts` calls the GitHub API against every candidate regardless of its
+  real provider, so a real GitLab-provider project's scheduled pass currently does nothing useful
+  for it. `packages/testing/src/gitlab-reconcile-fallback.test.ts` is not wrong, but proves less
+  than the surrounding prose implied: it calls `reconcileGithubState()` (the shared algorithm)
+  directly with a hand-built observation, deliberately bypassing the task and its client-resolution
+  bug entirely — exactly what its own header comment says, which this document's Stage 4 notes and
+  docs/04's runbook prose then over-read as "and therefore the real task does this too." The same
+  unconditional-`OctokitGitHubClient` pattern was found (via the sweep, not independently
+  re-verified line-by-line the way the reconciliation task was) at every other production
+  write-path call site: `run-coder.ts` (coder push — including a literal hardcoded
+  `` `https://github.com/${owner}/${repo}.git` `` clone URL, and a coder-adapter factory that
+  requires `GITHUB_TOKEN` unconditionally with no `GITEA_TOKEN`/`GITLAB_TOKEN` branch),
+  `run-review.ts` (reviewer diff fetch), `run-merge-gate.ts` (status-check publication),
+  `packages/cli/src/commands/merge.ts` and both of its API-route twins,
+  `merge-if-ready-route.ts`/`finalize-if-github-merged-route.ts` (the real merge call) — none of
+  these select `repositories.provider`/`.base_url` in their repository lookups either. The
+  coder-sandbox egress allow-list (`infra/docker/coder-sandbox/egress-proxy/filter.txt`) is
+  hardcoded to GitHub hosts only, consistent with the coder pipeline being GitHub-only end-to-end
+  today. The sweep also found zero direct unit-test coverage of
+  `packages/gitea/src/inbox-handlers.ts`/`packages/gitlab/src/inbox-handlers.ts` (only indirect
+  coverage via the webhook-route tests and the reconciliation-fallback regression), and confirmed
+  that every fixture feeding the tasks named above seeds `repositories` with no `provider` column
+  set (relying on the schema default), so none of this gap had a failing test to surface it.
+- **This write-pipeline gap is deliberately NOT fixed in this stage** — it is a materially larger
+  and riskier body of work than "Stage 6: Operator-facing rollout" was ever scoped for: seven-plus
+  call sites across the coder/reviewer/merge-gate/merge surfaces, each needing its own credential-
+  resolution story (mirroring `packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()`
+  dispatch pattern), each touching production paths this document's own history shows went through
+  three-to-six rounds of careful concurrency/security bug-fixing per file (`run-coder.ts`,
+  `run-review.ts`, `github-reconciliation.ts`, the merge routes), and each needing new
+  Gitea/GitLab-seeded test fixtures to actually prove the fix rather than just changing the code.
+  Rushing that inside a "final grep sweep" cleanup pass would risk exactly the kind of regression
+  this document's many prior "post-implementation review fixes" sections exist to catch. Recorded
+  here as real, tracked follow-up work (the same "found, documented, not silently dropped" posture
+  this document applies to every other issue-numbered gap) rather than fixed or silently left
+  undocumented: whoever picks this up next should start from
+  `github-reconciliation.ts`'s client resolution (highest blast radius, and the one place this
+  document's own prior text asserted incorrect behavior), then follow with `run-coder.ts`/
+  `run-review.ts`/`run-merge-gate.ts`/`merge.ts`/the two merge routes as one consistent pass, adding
+  a `provider`/`base_url`-seeded Gitea/GitLab fixture to each call site's existing test suite as
+  proof.
+- **Documentation corrected to reflect the interface/schema/diagnostic layer being genuinely
+  shipped, while being explicit about the write-pipeline exception** — the "GitLab and Gitea are
+  staged, not-yet-built providers" framing in `CLAUDE.md` (decision #3), `docs/00`, `docs/01`
+  (six separate instances), and `docs/07` (§3's intro and §3.2's header) was stale even before this
+  gap was found (Gitea/GitLab genuinely are shipped `ScmClient` implementations as of Stages 3–4);
+  all were rewritten to say so, each now also carrying the accurate caveat that the _write_
+  pipeline remains GitHub-only. `docs/04-testing-validation-state-lifecycle.md`'s GitLab
+  operational note (the factually-wrong `github-reconciliation` claim above) was corrected to
+  describe the actual, current behavior rather than the intended one. `docs/erd.md` — a separate
+  canonical file (`Status: Canonical`, its own header requiring it "remain in sync with" the
+  migrations) that Stage 2 missed entirely — still described `github_links` and a `repositories`
+  table with no `provider`/`base_url` columns; both are now corrected. `docs/01`'s stale
+  `github_links` mention in its Data Design table listing (§8) was also fixed. `README.md`'s
+  "GitHub is repository truth" bullet was generalized, and its own pre-existing (untouched by any
+  prior stage) Prettier formatting warning was fixed as a side effect of touching the file, leaving
+  every Markdown file in the repository Prettier-clean for the first time across this whole plan's
+  six stages.
+- Full monorepo `pnpm typecheck`, `pnpm lint`, `pnpm format:check` (now 100% clean — no remaining
+  warnings anywhere, including `README.md`'s long-standing pre-existing one), `pnpm build:web`
+  (`next build` succeeds), and `pnpm test` (115 test files, 1056 tests passed, 26 skipped —
+  Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass.
 
-Acceptance (whole item): at least one alternative SCM provider (Gitea, then GitLab) is added without
-changing core orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution
-state matrix — the same "swap the implementation behind an unchanged interface" property this
-document already requires of adapters.
+Acceptance (whole item): **partially met, honestly.** At least one alternative SCM provider (Gitea,
+then GitLab) was added without changing core orchestration, the `pull_requests`/`feature_runs`
+schema, or the feature-execution state matrix — the literal schema/state-matrix clause holds, and
+the `ScmClient` interface itself, its webhook receivers, and its read/diagnostic call sites are
+genuine "swap the implementation behind an unchanged interface" successes, proven by the Stage 5
+cross-provider conformance suite. The stronger, implied reading of that sentence — that a
+Gitea/GitLab-configured project can actually be _driven_ through the automated pipeline the way a
+GitHub-configured one can — does **not** yet hold, per the write-pipeline gap documented above.
+This is the accurate, as-built status at the end of Stage 6, not a claim of full completion.

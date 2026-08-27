@@ -5,6 +5,7 @@ import type { DbClient } from '@minicoder/core';
 import { listByCreatedAt, type CursorPage, type ListParams } from '../pagination.js';
 import { getByIdOrThrow, getByIdOrNull } from './helpers.js';
 import { NotFoundError } from '../errors.js';
+import { buildScmPullRequestUrl } from './scm-url.js';
 
 export interface FeatureRequestRow {
   id: string;
@@ -129,39 +130,107 @@ export interface PullRequestRow {
   version: number;
   created_at: string;
   updated_at: string;
+  /** SCM provider this PR lives on (`'github' | 'gitea' | 'gitlab'`, `repositories.provider` —
+   * migration 0018), issue docs/06 §Phase 18 Stage 6. */
+  provider: string;
+  /** A ready-to-render link to view this PR/MR on its provider's web UI, or `null` when it
+   * can't be built (an unrecognized provider, or a self-hosted provider with no `base_url`
+   * recorded) — see `buildScmPullRequestUrl()`'s own doc comment. */
+  provider_url: string | null;
 }
 
-export function getPullRequestByFeatureRun(
+interface RepositoryProviderInfo {
+  provider: string;
+  base_url: string | null;
+  owner: string;
+  name: string;
+}
+
+function withProviderUrl(
+  pr: Omit<PullRequestRow, 'provider' | 'provider_url'>,
+  repo: RepositoryProviderInfo | null,
+): PullRequestRow {
+  return {
+    ...pr,
+    provider: repo?.provider ?? 'unknown',
+    provider_url: repo
+      ? buildScmPullRequestUrl(repo.provider, repo.base_url, repo.owner, repo.name, pr.pr_number)
+      : null,
+  };
+}
+
+/** A PR is tracked per feature run, and a feature run belongs to exactly one repository via its
+ * project — the same one-repository-per-project assumption every other repository lookup in this
+ * codebase already makes (CLAUDE.md's Merge Gate Operational Constraints: "every other repository
+ * lookup in this codebase already makes the identical assumption"). A single, ad hoc lookup (not a
+ * JOIN into a cursor-paginated query) avoids the ambiguous-bare-column gotcha documented elsewhere
+ * in this codebase for joined cursor-pagination queries. */
+async function resolveRepositoryForFeatureRun(
+  db: DbClient,
+  featureRunId: string,
+): Promise<RepositoryProviderInfo | null> {
+  const rows = await db.query<RepositoryProviderInfo>(
+    `SELECT r.provider, r.base_url, r.owner, r.name
+     FROM repositories r
+     JOIN feature_requests freq ON freq.project_id = r.project_id
+     JOIN feature_runs fr ON fr.feature_request_id = freq.id
+     WHERE fr.id = ?
+     LIMIT 1`,
+    [featureRunId],
+  );
+  return rows[0] ?? null;
+}
+
+async function resolveRepositoryForProject(
+  db: DbClient,
+  projectId: string,
+): Promise<RepositoryProviderInfo | null> {
+  const rows = await db.query<RepositoryProviderInfo>(
+    `SELECT provider, base_url, owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+    [projectId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function getPullRequestByFeatureRun(
   db: DbClient,
   featureRunId: string,
 ): Promise<PullRequestRow> {
-  return getByIdOrThrowByColumn<PullRequestRow>(
-    db,
-    'pull_requests',
-    'id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, merged_at, merge_sha, closed_at, version, created_at, updated_at',
-    'feature_run_id',
-    featureRunId,
-    'pull-request',
-  );
+  const [pr, repo] = await Promise.all([
+    getByIdOrThrowByColumn<Omit<PullRequestRow, 'provider' | 'provider_url'>>(
+      db,
+      'pull_requests',
+      'id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, merged_at, merge_sha, closed_at, version, created_at, updated_at',
+      'feature_run_id',
+      featureRunId,
+      'pull-request',
+    ),
+    resolveRepositoryForFeatureRun(db, featureRunId),
+  ]);
+  return withProviderUrl(pr, repo);
 }
 
-export function listPullRequests(
+export async function listPullRequests(
   db: DbClient,
   projectId: string,
   params: ListParams,
 ): Promise<CursorPage<PullRequestRow>> {
-  return listByCreatedAt<PullRequestRow>(
-    db,
-    {
-      table: 'pull_requests',
-      columns:
-        'id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, merged_at, merge_sha, closed_at, version, created_at, updated_at',
-      where:
-        'feature_run_id IN (SELECT fr.id FROM feature_runs fr JOIN feature_requests freq ON fr.feature_request_id = freq.id WHERE freq.project_id = ?)',
-      params: [projectId],
-    },
-    params,
-  );
+  const [page, repo] = await Promise.all([
+    listByCreatedAt<Omit<PullRequestRow, 'provider' | 'provider_url'>>(
+      db,
+      {
+        table: 'pull_requests',
+        columns:
+          'id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, merged_at, merge_sha, closed_at, version, created_at, updated_at',
+        where:
+          'feature_run_id IN (SELECT fr.id FROM feature_runs fr JOIN feature_requests freq ON fr.feature_request_id = freq.id WHERE freq.project_id = ?)',
+        params: [projectId],
+      },
+      params,
+    ),
+    resolveRepositoryForProject(db, projectId),
+  ]);
+  return { ...page, items: page.items.map((pr) => withProviderUrl(pr, repo)) };
 }
 
 export interface HumanRequiredItemRow {
