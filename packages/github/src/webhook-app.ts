@@ -66,8 +66,12 @@ function generateId(): string {
 
 async function resolveProjectId(db: DbClient, repoFullName: string): Promise<string | null> {
   if (!repoFullName) return null;
+  // Scoped by provider (docs/06 §Phase 18 Stage 2), not just full_name: owner/repo strings are not
+  // guaranteed unique once a GitLab/Gitea repository can also be linked to a project. This is
+  // GitHub's own webhook receiver, so it only ever resolves a 'github'-provider repository row —
+  // a future GitLab/Gitea webhook receiver resolves its own provider's rows the same way.
   const rows = await db.query<{ project_id: string }>(
-    `SELECT project_id FROM repositories WHERE full_name = ?`,
+    `SELECT project_id FROM repositories WHERE full_name = ? AND provider = 'github'`,
     [repoFullName],
   );
   return rows[0]?.project_id ?? null;

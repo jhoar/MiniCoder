@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.34
+> Version: 1.0.35
 > Last-updated: 2026-08-27
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -2214,7 +2214,7 @@ Gitea only, GitLab deferred) is a complete, shippable state rather than a half-f
   Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass with only the rename
   applied — no behavior change, confirming the interface needed relabeling, not reshaping.
 
-**Stage 2 — Schema and config generalization.**
+**Stage 2 — Schema and config generalization. ✓ Complete (2026-08-27).**
 
 - Additive migration: `repositories.provider` (`'github'|'gitlab'|'gitea'`, defaulting existing rows
   to `'github'`) and `repositories.base_url` (nullable — self-hosted GitLab/Gitea need a configurable
@@ -2229,6 +2229,28 @@ Gitea only, GitLab deferred) is a complete, shippable state rather than a half-f
 - Acceptance: existing GitHub-only deployments are unaffected (provider defaults to `'github'`,
   `base_url` null means api.github.com); migration applies cleanly on both SQLite and PostgreSQL per
   the mandatory cross-dialect suite.
+- **Delivered as planned, with one scoping decision made during implementation.** Migration `0018`
+  (`repositories.provider`/`.base_url`, `github_links`→`scm_links`, a new
+  `idx_repositories_full_name_provider` index — which also closes a pre-existing gap, since
+  `repositories.full_name` had no supporting index at all before this) was verified by actually
+  applying and rolling it back against a scratch SQLite database (not just reviewed for syntax): the
+  resulting `repositories` columns, the renamed `scm_links` table, and both indexes matched exactly,
+  and the down-migration cleanly restored the original schema. `resolveProjectId()` now filters on
+  `provider = 'github'` (this is GitHub's own webhook receiver). The **config** bullet's
+  per-repository connection descriptor was **not** built in this stage — with no second provider yet
+  to actually dispatch a different credential to, it would be exactly the unused, half-finished
+  abstraction this codebase's own conventions (and this session's operating instructions) warn
+  against building ahead of a real caller. It is deferred to Stage 3, where `packages/gitea`'s client
+  factory is the first real consumer that needs to know which repository it's building a client for
+  — the same "factory takes the caller's context, not a zero-argument singleton" reasoning
+  `CoderAdapterFactory`/`ReviewerAdapterFactory` already established elsewhere in this document.
+  `GithubLinkRow`/`listGithubLinks`/the `/github-links` API route keep their GitHub-branded names
+  even though the underlying table is now `scm_links` — GitHub is still the only provider a link can
+  actually be established for, so renaming this public HTTP surface now would be a breaking API
+  change with no functional benefit (same reasoning as keeping `packages/github`/`OctokitGitHubClient`
+  themselves unrenamed). Full monorepo `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, and
+  `pnpm test` (921 tests, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this
+  environment) all pass.
 
 **Stage 3 — Gitea provider (first new provider).**
 

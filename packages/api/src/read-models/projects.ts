@@ -64,6 +64,15 @@ export function listRepositories(
   );
 }
 
+/**
+ * Reads the `scm_links` table (renamed from `github_links` by docs/06 §Phase 18 Stage 2 — the
+ * table itself is provider-neutral, storing only a project<->repository link plus two
+ * GitHub-App-specific nullable columns). `GithubLinkRow`/`listGithubLinks`, and the `/github-links`
+ * route that calls it, keep their GitHub-branded names: GitHub is still the only provider a link
+ * can actually be established for today, so renaming this public surface now would be a breaking
+ * API change with no functional benefit — deferred to whichever later stage first gives an
+ * operator a way to link a non-GitHub repository.
+ */
 export interface GithubLinkRow {
   id: string;
   project_id: string;
@@ -84,7 +93,7 @@ export function listGithubLinks(
   return listByCreatedAt<GithubLinkRow>(
     db,
     {
-      table: 'github_links',
+      table: 'scm_links',
       columns:
         'id, project_id, repository_id, installation_id, app_id, linked_at, version, created_at, updated_at',
       where: projectId ? 'project_id = ?' : undefined,
