@@ -54,12 +54,13 @@ GitHub, Gitea, and GitLab are all shipped SCM providers as of `06-implementation
 18 Stages 3–4; §3.1 documents GitHub's real, current implementation and §3.2 documents the
 authentication and webhook-authenticity differences for Gitea/GitLab, since they are not uniform
 across providers and directly affect this document's security guarantees. **A real, tracked gap:
-the production write pipeline (coder push, reviewer diff fetch, merge-gate status checks, the real
-merge call, and the scheduled reconciliation task's own client resolution) still unconditionally
-resolves a GitHub credential regardless of a project's actual provider — a Gitea/GitLab-provider
-project's `GITEA_TOKEN`/`GITLAB_TOKEN` is currently only consulted by the opt-in
-`state doctor --check-scm` diagnostic, not by any of those write-path callers. See Stage 6's
-completion notes in `06-implementation-plan.md` for the full list of affected call sites.**
+coder push, merge-gate status checks, and the real merge call still unconditionally resolve a
+GitHub credential regardless of a project's actual provider** — a Gitea/GitLab-provider project's
+`GITEA_TOKEN`/`GITLAB_TOKEN` is consulted by the opt-in `state doctor --check-scm` diagnostic and
+(as a same-day Stage 6 follow-up) by the scheduled reconciliation task's own client resolution and
+the reviewer's diff fetch, but not yet by the three write-path callers named above. See Stage 6's
+completion notes in `06-implementation-plan.md` for the full, up-to-date list of affected call
+sites.
 
 ### 3.1 GitHub (current implementation)
 

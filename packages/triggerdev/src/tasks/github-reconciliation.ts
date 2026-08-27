@@ -10,8 +10,8 @@ import { WorkflowLockManager } from '@minicoder/workflow';
 import { branchNameFor } from '@minicoder/adapters-coder';
 import type { GithubReconciliationPayload } from './types.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
-import { requireNonBlankEnvVar } from './env.js';
 import { systemActor } from './actor.js';
+import { resolveDefaultScmClient, type ScmClientResolver } from './scm-client-resolver.js';
 
 export type { GithubReconciliationPayload };
 
@@ -53,33 +53,11 @@ function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
-export type GithubClientFactory = () => Promise<ScmClient>;
-
-/**
- * No live ScmClient is injectable at the task boundary the way a
- * PlannerAgentAdapter is (see resolveDefaultPlannerAdapter in task-registry.ts) — this task
- * constructs an OctokitGitHubClient directly from env, since GitHub credentials (unlike agent
- * adapters) are a single deployment-wide secret, not a per-call injected dependency. Fails fast
- * with an actionable error if GITHUB_TOKEN is unset, matching the "not configured yet" pattern
- * used elsewhere for not-yet-wired dependencies. `requireNonBlankEnvVar` is shared with
- * `run-coder.ts` (LOW-1 code-review fix, round 5) so both GitHub-facing task entrypoints reject
- * whitespace-only `GITHUB_TOKEN` values identically instead of drifting apart.
- */
-function resolveDefaultGithubClientFactory(): GithubClientFactory {
-  return async () => {
-    const token = requireNonBlankEnvVar(
-      'GITHUB_TOKEN',
-      'github-reconciliation requires a GitHub credential (GitHub App installation token or PAT) ' +
-        'to fetch authoritative PR state — see docs/07-security-and-secrets.md §3.',
-    );
-    const { OctokitGitHubClient } = await import('@minicoder/github');
-    return new OctokitGitHubClient({ auth: token });
-  };
-}
-
 interface RepositoryRow {
   owner: string;
   name: string;
+  provider: string;
+  base_url: string | null;
 }
 
 interface FeatureRunCandidateRow {
@@ -235,10 +213,10 @@ async function discoverMissingPullRequests(
 export async function runImpl(
   payload: GithubReconciliationPayload,
   db: DbClient,
-  clientFactory: GithubClientFactory = resolveDefaultGithubClientFactory(),
+  resolveScmClient: ScmClientResolver = resolveDefaultScmClient('github-reconciliation'),
 ): Promise<GithubReconciliationResult> {
   const repoRows = await db.query<RepositoryRow>(
-    `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+    `SELECT owner, name, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
     [payload.projectId],
   );
   const repo = repoRows[0];
@@ -252,7 +230,14 @@ export async function runImpl(
     };
   }
 
-  const client = await clientFactory();
+  // Stage 6 write-pipeline fix (docs/06 §Phase 18): resolved per this project's own repository
+  // row rather than always constructing OctokitGitHubClient — this task previously called the
+  // GitHub API against every candidate regardless of the project's real `repositories.provider`.
+  // One resolve per invocation is correct (not per-candidate): every candidate in this batch
+  // belongs to the same project, and this task already assumes one repository per project (the
+  // `LIMIT 1` above), the same assumption documented elsewhere in this codebase for every other
+  // repository lookup.
+  const client = await resolveScmClient(repo.provider, repo.base_url);
   const { discovered } = await discoverMissingPullRequests(
     db,
     client,

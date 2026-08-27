@@ -40,10 +40,11 @@ future extensions, not separate architectures. **SCM providers other than GitHub
 the interface/webhook/diagnostic layer — GitLab and Gitea are added behind the existing `ScmClient`
 seam, with lowest-common-denominator reductions in fidelity documented per provider, not a
 redesign, since `ObservedPullRequestState` and the rest of the `ScmClient` contract were already
-written at a provider-neutral level of abstraction. **The production write pipeline (coder push,
-reviewer diff fetch, merge-gate status checks, the real merge call, and the scheduled
-reconciliation task's own client resolution) is a real, tracked exception, still GitHub-only** —
-see §4.3/§5.7 and Stage 6's completion notes for the full list of affected call sites.
+written at a provider-neutral level of abstraction. **Coder push, merge-gate status checks, and
+the real merge call remain a real, tracked exception, still GitHub-only** — the scheduled
+reconciliation task's own client resolution and the reviewer's diff fetch were made provider-aware
+as a same-day Stage 6 follow-up; see §4.3/§5.7 and Stage 6's completion notes for the full,
+up-to-date list of affected call sites.
 
 > Note: **PostgreSQL is in scope** as the hosted/team state store (see §3, §14). It is not a
 > deferred "migration"; it is a first-class deployment profile supported by the persistence
@@ -62,10 +63,10 @@ Workflow Layer     = durable workflow execution (tasks, retries, a polling queue
 SCM provider       = authoritative repository, branch, commit, PR, review, CI/check,
                      conversation, mergeability, and merge state. GitHub, Gitea, and GitLab are all
                      shipped `ScmClient` implementations behind the same interface (§4.3, §5.7,
-                     `06-implementation-plan.md` §Phase 18) for observation/diagnostics; the
-                     production write pipeline (coder/reviewer/merge-gate/merge, and the scheduled
-                     reconciliation task's own client resolution) is still GitHub-only — a real,
-                     tracked gap, see §5.7 and Stage 6's completion notes.
+                     `06-implementation-plan.md` §Phase 18) for observation/diagnostics, scheduled
+                     reconciliation, and the reviewer's diff fetch; coder push, merge-gate status
+                     checks, and the real merge call are still GitHub-only — a real, tracked gap,
+                     see §5.7 and Stage 6's completion notes.
 SCM webhooks       = primary source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism.
 CI provider        = CI, tests, and build validation (GitHub Actions today).
@@ -246,11 +247,12 @@ operation when policy permits. Behind the provider-neutral `ScmClient` interface
 (`06-implementation-plan.md` §Phase 18 Stages 3–4), and the contract below is GitHub's real,
 current implementation of that interface — Gitea/GitLab satisfy the same interface at a documented
 lowest-common-denominator fidelity in places (that stage's completion notes have the full
-per-field breakdown), not by replicating this description exactly. **The production write pipeline
-described in this section (coder push, reviewer diff fetch, merge-gate status checks, the real
-merge call) still unconditionally constructs `OctokitGitHubClient` regardless of a project's actual
-provider — a real, tracked gap, not yet fixed for Gitea/GitLab (Stage 6's completion notes have the
-full list of affected call sites).**
+per-field breakdown), not by replicating this description exactly. **Coder push, merge-gate status
+checks, and the real merge call described in this section still unconditionally construct
+`OctokitGitHubClient` regardless of a project's actual provider — a real, tracked gap, not yet
+fixed for Gitea/GitLab.** The reviewer diff fetch and the scheduled reconciliation task's own
+client resolution were made provider-aware as a same-day Stage 6 follow-up (Stage 6's completion
+notes have the full, up-to-date list of affected call sites).
 
 **GitHub integration contract** (finalized in implementation Phase 7 against
 `packages/github`, `packages/core/src/scm/` (renamed from `packages/core/src/github/` by docs/06

@@ -82,7 +82,7 @@ export const disagreementArbiterScenario: Scenario = {
       },
       runRunReview,
       undefined,
-      { reviewerAdapterFactory: async () => reviewer, githubClientFactory: async () => client },
+      { reviewerAdapterFactory: async () => reviewer, resolveScmClient: async () => client },
     );
 
     const afterCycle1 = await db.query<FeatureRunRow>(
@@ -122,7 +122,7 @@ export const disagreementArbiterScenario: Scenario = {
       undefined,
       {
         reviewerAdapterFactory: async () => reviewer,
-        githubClientFactory: async () => client,
+        resolveScmClient: async () => client,
         arbiterAdapterFactory: async () => arbiter,
       },
     );
@@ -170,7 +170,7 @@ export const disagreementArbiterScenario: Scenario = {
       undefined,
       {
         reviewerAdapterFactory: async () => reviewer,
-        githubClientFactory: async () => client,
+        resolveScmClient: async () => client,
         arbiterAdapterFactory: async () => escalatingArbiter,
       },
     );

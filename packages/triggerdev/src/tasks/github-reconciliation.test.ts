@@ -697,3 +697,121 @@ describe('github-reconciliation runImpl (issue #35: automated PR discovery)', ()
     expect(result.discovered).toBe(0);
   });
 });
+
+/**
+ * Stage 6 write-pipeline fix (docs/06 §Phase 18): before this fix, `runImpl` always constructed
+ * `OctokitGitHubClient` via the no-argument `GithubClientFactory` shape, regardless of the
+ * project's actual `repositories.provider` — a real GitLab/Gitea-provider project's scheduled
+ * reconciliation pass called the GitHub API against it. This asserts the resolver now receives
+ * the repository row's own `provider`/`base_url`, not a hardcoded `'github'`.
+ */
+describe('github-reconciliation runImpl (Stage 6: provider-aware client resolution)', () => {
+  const fakeClient: ScmClient = {
+    async createBranch() {
+      throw new Error('not used');
+    },
+    async createPullRequest() {
+      throw new Error('not used');
+    },
+    async getPullRequest() {
+      return null;
+    },
+    async publishStatusCheck() {},
+    async mergePullRequest() {
+      throw new Error('not used');
+    },
+    async getRemainingRateLimit() {
+      return 5000;
+    },
+    async getPullRequestDiff() {
+      return '';
+    },
+    async listPullRequestsForBranch() {
+      return [];
+    },
+  };
+
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-hr-provider-gitlab';
+    insertTestProject(db, projectId);
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return fakeClient;
+    };
+
+    await runImpl(
+      { projectId, correlationId: 'corr-hr-provider-1', idempotencyKey: 'idem-hr-provider-1' },
+      db,
+      resolveScmClient,
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
+  });
+
+  it("resolves the ScmClient using the repository row's own provider for a Gitea-provider project with no base_url override needed", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-hr-provider-gitea';
+    insertTestProject(db, projectId);
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitea', 'https://gitea.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return fakeClient;
+    };
+
+    await runImpl(
+      { projectId, correlationId: 'corr-hr-provider-2', idempotencyKey: 'idem-hr-provider-2' },
+      db,
+      resolveScmClient,
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitea', baseUrl: 'https://gitea.example.test' }]);
+  });
+
+  it('still resolves github with a null base_url for a github-provider project (the pre-Stage-6 default)', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-hr-provider-github';
+    insertTestProject(db, projectId);
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'github', NULL, 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return fakeClient;
+    };
+
+    await runImpl(
+      { projectId, correlationId: 'corr-hr-provider-3', idempotencyKey: 'idem-hr-provider-3' },
+      db,
+      resolveScmClient,
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'github', baseUrl: null }]);
+  });
+});

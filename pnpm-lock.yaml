@@ -364,9 +364,15 @@ importers:
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core
+      '@minicoder/gitea':
+        specifier: workspace:*
+        version: link:../gitea
       '@minicoder/github':
         specifier: workspace:*
         version: link:../github
+      '@minicoder/gitlab':
+        specifier: workspace:*
+        version: link:../gitlab
       '@minicoder/migrations':
         specifier: workspace:*
         version: link:../migrations

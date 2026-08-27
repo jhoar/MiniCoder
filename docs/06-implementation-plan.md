@@ -2583,24 +2583,52 @@ config`) but this environment had no reachable Docker daemon. GitLab CE is a sub
   coverage via the webhook-route tests and the reconciliation-fallback regression), and confirmed
   that every fixture feeding the tasks named above seeds `repositories` with no `provider` column
   set (relying on the schema default), so none of this gap had a failing test to surface it.
-- **This write-pipeline gap is deliberately NOT fixed in this stage** — it is a materially larger
-  and riskier body of work than "Stage 6: Operator-facing rollout" was ever scoped for: seven-plus
-  call sites across the coder/reviewer/merge-gate/merge surfaces, each needing its own credential-
-  resolution story (mirroring `packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()`
-  dispatch pattern), each touching production paths this document's own history shows went through
-  three-to-six rounds of careful concurrency/security bug-fixing per file (`run-coder.ts`,
-  `run-review.ts`, `github-reconciliation.ts`, the merge routes), and each needing new
-  Gitea/GitLab-seeded test fixtures to actually prove the fix rather than just changing the code.
-  Rushing that inside a "final grep sweep" cleanup pass would risk exactly the kind of regression
-  this document's many prior "post-implementation review fixes" sections exist to catch. Recorded
-  here as real, tracked follow-up work (the same "found, documented, not silently dropped" posture
-  this document applies to every other issue-numbered gap) rather than fixed or silently left
-  undocumented: whoever picks this up next should start from
-  `github-reconciliation.ts`'s client resolution (highest blast radius, and the one place this
-  document's own prior text asserted incorrect behavior), then follow with `run-coder.ts`/
-  `run-review.ts`/`run-merge-gate.ts`/`merge.ts`/the two merge routes as one consistent pass, adding
-  a `provider`/`base_url`-seeded Gitea/GitLab fixture to each call site's existing test suite as
-  proof.
+- **This write-pipeline gap was deliberately NOT fixed all at once in this stage** — seven-plus
+  call sites across the coder/reviewer/merge-gate/merge surfaces, several performing destructive/
+  security-sensitive actions (pushing code, merging PRs), was judged too large and risky for one
+  "final grep sweep" cleanup pass. Instead, split by risk and addressed incrementally:
+  - **Read-only call sites — fixed as an immediate follow-up (same day).**
+    `github-reconciliation.ts`'s client resolution (highest blast radius, and the one place this
+    document's own prior text asserted incorrect behavior — see the corrected operational note
+    above) and `run-review.ts`'s reviewer-diff-fetch client resolution are both now
+    provider-aware. A new shared `packages/triggerdev/src/tasks/scm-client-resolver.ts`
+    (`resolveDefaultScmClient(taskName)`, returning a `ScmClientResolver =
+(provider, baseUrl) => Promise<ScmClient>`) mirrors `state.ts`'s `resolveScmClientForDoctor()`
+    dispatch pattern exactly, so `GITHUB_TOKEN`/`GITEA_TOKEN`/`GITLAB_TOKEN` resolution and error
+    messages stay identical across every task that adopts it — deliberately not duplicated a sixth
+    time the way the old `GithubClientFactory` shape had been duplicated five times already.
+    `RepositoryRow` in both tasks gained `provider`/`base_url`; `github-reconciliation.ts` resolves
+    one client per invocation (not per-candidate — every candidate in a batch shares the same
+    project, and this task already assumed one repository per project via its own `LIMIT 1` query).
+    Both existing test suites needed **zero** changes to their pre-existing fake-factory call
+    sites (`async () => client`) — TypeScript's function-type compatibility allows a function
+    declared with fewer parameters to satisfy a type requiring more, so every prior no-arg fake
+    kept compiling unchanged; only `RunReviewDeps.githubClientFactory` was renamed to
+    `resolveScmClient` (mirroring the new shared name), which did require updating its handful of
+    real call sites (12 in `run-review.test.ts`, 3 in `packages/testing/src/scenarios/
+disagreement-arbiter.ts`, 3 more in `review-fix-loop.ts` — `review-fix-loop.ts`'s sibling
+    `runRunCoder` call at the same file's coder-fix-cycle step was left untouched, since
+    `run-coder.ts` itself is still on the old, unconverted shape). New regression coverage: a
+    13-case `scm-client-resolver.test.ts` (all three providers' happy paths, blank-token
+    rejection for all three, missing-`base_url` rejection for Gitea/GitLab, unknown-provider
+    rejection, `taskName` interpolation), plus 3 new `github-reconciliation.test.ts` cases and 1
+    new `run-review.test.ts` case each asserting the resolver receives the seeded repository row's
+    real `provider`/`base_url` (Gitea/GitLab/GitHub) rather than a hardcoded `'github'`. All 13
+    `minicoder test system` scenarios (including the two edited ones,
+    `review-fix-loop`/`disagreement-arbiter`) still pass unchanged.
+  - **Destructive/security-sensitive call sites — still deliberately deferred.** `run-coder.ts`
+    (coder push, plus its hardcoded `github.com` clone URL and `GITHUB_TOKEN`-only sandbox
+    credential), `run-merge-gate.ts` (status-check publication), `merge.ts` and both of its API
+    route twins (the real merge call) remain on the old, GitHub-only `GithubClientFactory` shape.
+    These touch production paths that have each been through three-to-six rounds of careful
+    concurrency/security bug-fixing historically, and a merge/push mistake is far more expensive
+    than a missed observation — they warrant their own, separately-reviewed follow-up pass (using
+    this same `scm-client-resolver.ts`/`RepositoryRow` pattern) rather than being rushed in
+    alongside the read-only fix above. Recorded here as real, tracked follow-up work, not silently
+    dropped: whoever picks this up next should follow with `run-coder.ts`/`run-merge-gate.ts`/
+    `merge.ts`/the two merge routes as one consistent pass, adding a `provider`/`base_url`-seeded
+    Gitea/GitLab fixture to each call site's existing test suite as proof, the same way this
+    follow-up did for the two read-only sites.
 - **Documentation corrected to reflect the interface/schema/diagnostic layer being genuinely
   shipped, while being explicit about the write-pipeline exception** — the "GitLab and Gitea are
   staged, not-yet-built providers" framing in `CLAUDE.md` (decision #3), `docs/00`, `docs/01`
@@ -2618,17 +2646,30 @@ config`) but this environment had no reachable Docker daemon. GitLab CE is a sub
   prior stage) Prettier formatting warning was fixed as a side effect of touching the file, leaving
   every Markdown file in the repository Prettier-clean for the first time across this whole plan's
   six stages.
-- Full monorepo `pnpm typecheck`, `pnpm lint`, `pnpm format:check` (now 100% clean — no remaining
+- Full monorepo `pnpm typecheck`, `pnpm lint`, `pnpm format:check` (100% clean — no remaining
   warnings anywhere, including `README.md`'s long-standing pre-existing one), `pnpm build:web`
   (`next build` succeeds), and `pnpm test` (115 test files, 1056 tests passed, 26 skipped —
-  Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass.
+  Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass at the point this stage
+  was first closed out.
+- **Same-day follow-up** closed the two read-only write-pipeline call sites
+  (`github-reconciliation.ts`, `run-review.ts`) per the addendum above. Re-ran the full suite
+  afterward: `pnpm typecheck`/`pnpm lint`/`pnpm format:check` still 100% clean, `minicoder test
+system` (13 scenarios, including the two edited scenario files) all pass, and `pnpm test` now
+  reports 116 test files / 1073 tests passed, 26 skipped (up from 115/1056 — the new
+  `scm-client-resolver.test.ts` plus the new provider-dispatch regressions added to
+  `github-reconciliation.test.ts`/`run-review.test.ts`).
 
-Acceptance (whole item): **partially met, honestly.** At least one alternative SCM provider (Gitea,
-then GitLab) was added without changing core orchestration, the `pull_requests`/`feature_runs`
-schema, or the feature-execution state matrix — the literal schema/state-matrix clause holds, and
-the `ScmClient` interface itself, its webhook receivers, and its read/diagnostic call sites are
-genuine "swap the implementation behind an unchanged interface" successes, proven by the Stage 5
-cross-provider conformance suite. The stronger, implied reading of that sentence — that a
+Acceptance (whole item): **partially met, honestly — improved by the same-day follow-up, still not
+complete.** At least one alternative SCM provider (Gitea, then GitLab) was added without changing
+core orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution state
+matrix — the literal schema/state-matrix clause holds, and the `ScmClient` interface itself, its
+webhook receivers, and its read/diagnostic call sites (now including `github-reconciliation.ts`'s
+own scheduled observation and `run-review.ts`'s diff fetch) are genuine "swap the implementation
+behind an unchanged interface" successes, proven by the Stage 5 cross-provider conformance suite
+and the new regressions above. The stronger, implied reading of that sentence — that a
 Gitea/GitLab-configured project can actually be _driven_ through the automated pipeline the way a
-GitHub-configured one can — does **not** yet hold, per the write-pipeline gap documented above.
-This is the accurate, as-built status at the end of Stage 6, not a claim of full completion.
+GitHub-configured one can — is closer to true than at Stage 6's initial close (a GitLab/Gitea
+project's scheduled reconciliation and AI review now genuinely work against the right provider),
+but still does **not** fully hold: the coder-push, merge-gate, and real-merge call sites remain
+GitHub-only, per the deferred half of the addendum above. This is the accurate, as-built status
+after the same-day follow-up, not a claim of full completion.
