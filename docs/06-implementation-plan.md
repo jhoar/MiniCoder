@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.35
+> Version: 1.0.36
 > Last-updated: 2026-08-27
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -2252,7 +2252,7 @@ Gitea only, GitLab deferred) is a complete, shippable state rather than a half-f
   `pnpm test` (921 tests, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this
   environment) all pass.
 
-**Stage 3 — Gitea provider (first new provider).**
+**Stage 3 — Gitea provider (first new provider). ✓ Complete (2026-08-27), with caveats below.**
 
 Chosen first because Gitea's API and webhook shapes are the closest of the two to GitHub's, making
 it the cheapest real proof that the `ScmClient` abstraction holds for a second provider.
@@ -2272,6 +2272,70 @@ it the cheapest real proof that the `ScmClient` abstraction holds for a second p
 - Acceptance: an end-to-end feature-run scenario (mirroring the existing `github-reconciliation`
   system-test scenario) passes against a real Gitea instance (docker-compose fixture in CI, same
   posture as the mandatory Postgres-matrix suites).
+
+**Delivered, plus honest caveats on what could and could not be verified in this implementation
+session.**
+
+- `packages/gitea` — `GiteaScmClient` implements all seven `ScmClient` methods against Gitea's
+  documented REST API (a hand-rolled `fetch`-based client, injectable `fetchImpl`, mirroring
+  `HttpCodeGenerationProvider`'s seam — Gitea has no vendor SDK in this dependency set the way
+  GitHub has Octokit). `deriveReviewState()`/`deriveCiStatus()` are Gitea's own analogues of
+  `OctokitGitHubClient`'s identically-named functions — a sticky-per-reviewer algorithm for the
+  former (Gitea's review states closely mirror GitHub's), a direct one-field mapping for the
+  latter (Gitea's combined-status `state` is the entire CI signal, no Checks-API merge needed).
+  `webhook-signature.ts`/`normalize.ts`/`webhook-app.ts`/`inbox-handlers.ts` mirror
+  `@minicoder/github`'s equivalents structurally.
+- **Lowest-common-denominator reductions, documented in `gitea-client.ts`'s own header comment
+  (this is expected per the Phase 18 framing, not a defect):** `conversationsResolved` is a
+  hardcoded `false` placeholder (Gitea's REST API has no documented resolved-thread field, and
+  unlike GitHub there is no GraphQL API to fall back to); `getRemainingRateLimit()` returns a
+  sentinel (`Number.MAX_SAFE_INTEGER`); `mergePullRequest()`'s `expectedHeadSha` optimistic-
+  concurrency guard is a no-op (Gitea's merge endpoint has no such parameter), so every Gitea merge
+  rejection classifies as `'not_mergeable'`/`autoClearable: false` — never the auto-clearing
+  `'sha_mismatch'` GitHub's 409 handling produces; `listPullRequestsForBranch()` filters by head
+  branch client-side (no documented server-side filter).
+- **The "verify the capacity pre-flight caller tolerates this" instruction turned out to have no
+  real caller to verify against.** `getRemainingRateLimit()` has zero production callers anywhere
+  in this codebase today — docs/01 §4.3/§5.7's "capacity pre-flight" is documented but not yet
+  wired to an actual check, the same category of pre-existing, undocumented-until-now gap already
+  found for `createGithubInboxHandlers()` (also built and tested, also with no production wiring
+  yet). This is not a Stage 3 regression; there was simply nothing to verify tolerance against.
+- **Webhook auth model verified against Gitea's real documented format, not assumed identical to
+  GitHub's.** `X-Gitea-Signature` carries a bare hex HMAC-SHA256 digest with no `sha256=` prefix,
+  unlike GitHub's `X-Hub-Signature-256` — `webhook-signature.ts` is a hand-rolled Node-`crypto`
+  verifier for exactly this reason, not a reuse of `@minicoder/github`'s
+  `verifyWebhookSignature()` (which expects the prefixed format and is built on
+  `@octokit/webhooks-methods`, an Octokit-namespaced dependency a peer, non-GitHub provider package
+  should not import). A regression test asserts a GitHub-style prefixed signature does _not_
+  verify against Gitea's format.
+- **CLI naming decided: `minicoder gitea serve`/`simulate-*`, mirroring `minicoder github
+...` exactly — not a generalized `minicoder scm ... --provider <p>`.** Applied consistently in the
+  sense that both providers now follow the identical "own top-level command group named after
+  itself" pattern; GitHub's existing commands were not changed, since that pattern is already what
+  they follow. `simulate-branch-protection-ok` has no Gitea sibling — it is GitHub-only
+  dev-tooling with no real webhook event behind it even on the GitHub side.
+- **API wiring is opt-in, unlike GitHub's required `webhookSecrets`.** `BuildAppOptions` gained an
+  optional `giteaWebhookSecrets` — `/webhooks/gitea` is mounted only when set (`minicoder api
+serve` reads `GITEA_WEBHOOK_SECRET`/`_PREVIOUS`, absent by default), since Gitea is a staged,
+  optional provider (unlike GitHub, whose webhook secret `minicoder api serve` still requires).
+  `/webhooks/gitea` was added to `openapi/openapi.yaml` (required by
+  `registerOpenApiHooks`'s onRoute enforcement — every registered route needs a matching spec
+  entry, whether or not it happens to be mounted in a given deployment).
+- **Acceptance criterion not met as originally written — documented, not silently dropped.**
+  `infra/docker-compose.gitea.yml` exists (a single Gitea 1.22 service, SQLite-backed, with a
+  healthcheck) and its syntax was validated with `docker compose config`, but this implementation
+  session had no reachable Docker daemon (`docker info` reported "Cannot connect to the Docker
+  daemon") to actually run it or exercise `GiteaScmClient`/the webhook receiver against a live
+  server — the identical constraint CLAUDE.md already documents for the Coder sandbox
+  (`infra/docker-compose.coder-sandbox.yml`). Unit tests exercise `GiteaScmClient` against a fake
+  `fetchImpl` (19 tests) and the normalizer/signature verifier against payload/signature fixtures
+  (16 + 7 tests) — real coverage of this module's own logic, but not proof that Gitea's actual API
+  responses match the shapes assumed here. A Docker-daemon-gated end-to-end scenario (the same
+  category of test already tracked as missing for the Coder sandbox) remains real, tracked future
+  work, not silently assumed done.
+- Full monorepo `pnpm typecheck` (19 workspace packages, `@minicoder/gitea` added to the ordered
+  chain right after `@minicoder/github`), `pnpm lint`, `pnpm format:check`, and `pnpm test` (965
+  tests, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass.
 
 **Stage 4 — GitLab provider (largest lowest-common-denominator compromise).**
 

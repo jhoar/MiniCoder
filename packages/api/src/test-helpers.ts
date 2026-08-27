@@ -29,6 +29,7 @@ export async function buildTestApp(opts?: {
     db,
     apiKeyProvider: testApiKeyProvider(),
     webhookSecrets: ['test-webhook-secret'],
+    giteaWebhookSecrets: ['test-gitea-webhook-secret'],
     taskTriggerClient: opts?.taskTriggerClient,
     githubClientFactory: opts?.githubClientFactory,
   });

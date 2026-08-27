@@ -22,10 +22,21 @@ export async function serve(opts: ServeOptions): Promise<string> {
   const previousSecret = process.env['GITHUB_WEBHOOK_SECRET_PREVIOUS'];
   const webhookSecrets = previousSecret ? [secret, previousSecret] : [secret];
 
+  // Gitea is a staged, optional provider (docs/06 §Phase 18) — unlike GITHUB_WEBHOOK_SECRET, its
+  // absence does not fail `minicoder api serve`; `/webhooks/gitea` is simply left unmounted.
+  const giteaSecret = process.env['GITEA_WEBHOOK_SECRET'];
+  const giteaPreviousSecret = process.env['GITEA_WEBHOOK_SECRET_PREVIOUS'];
+  const giteaWebhookSecrets = giteaSecret
+    ? giteaPreviousSecret
+      ? [giteaSecret, giteaPreviousSecret]
+      : [giteaSecret]
+    : undefined;
+
   const app = await buildApp({
     db,
     apiKeyProvider,
     webhookSecrets,
+    giteaWebhookSecrets,
     taskTriggerClient: resolveDefaultTaskTriggerClient(),
   });
   return app.listen({ port: opts.port, host: opts.host });

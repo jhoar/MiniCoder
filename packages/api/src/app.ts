@@ -25,6 +25,8 @@ export interface BuildAppOptions {
   db: DbClient;
   apiKeyProvider: ApiKeyProvider;
   webhookSecrets: string[];
+  /** Opt-in — Gitea is a staged provider (docs/06 §Phase 18); omit to leave `/webhooks/gitea` unmounted. */
+  giteaWebhookSecrets?: string[];
   githubClientFactory?: GithubClientFactory;
   taskTriggerClient?: TaskTriggerClient;
 }
@@ -41,7 +43,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
 
   registerHealthRoutes(app);
-  await registerWebhookRoutes(app, { db: opts.db, webhookSecrets: opts.webhookSecrets });
+  await registerWebhookRoutes(app, {
+    db: opts.db,
+    webhookSecrets: opts.webhookSecrets,
+    giteaWebhookSecrets: opts.giteaWebhookSecrets,
+  });
   registerAllReadRoutes(app, opts.db);
 
   const registry = buildCommandRegistry();

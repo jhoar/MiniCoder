@@ -108,6 +108,11 @@ paths:
       operationId: githubWebhook
       security: []
       responses: { '200': { description: Accepted } }
+  /webhooks/gitea:
+    post:
+      operationId: giteaWebhook
+      security: []
+      responses: { '200': { description: Accepted } }
   /commands:
     get:
       operationId: listCommands

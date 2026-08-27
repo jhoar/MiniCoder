@@ -15,6 +15,7 @@
     "@minicoder/api": "workspace:*",
     "@minicoder/core": "workspace:*",
     "@minicoder/github": "workspace:*",
+    "@minicoder/gitea": "workspace:*",
     "@minicoder/migrations": "workspace:*",
     "@minicoder/testing": "workspace:*",
     "@minicoder/triggerdev": "workspace:*",

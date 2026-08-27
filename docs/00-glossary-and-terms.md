@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.0
+> Version: 1.2.1
 > Last-updated: 2026-08-27
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -545,6 +545,20 @@ minicoder github simulate-branch-protection-ok
 
 # GitHub webhook receiver (Phase 7; not env-guarded — intended for real deployments)
 minicoder github serve                                  # POST /webhooks/github; standalone Fastify app
+
+# Gitea simulation (test/dev only) — docs/06 §Phase 18 Stage 3; mirrors the GitHub group above,
+# minus simulate-branch-protection-ok (no Gitea equivalent — that command is GitHub-only
+# dev-tooling with no real webhook event behind it even on the GitHub side)
+minicoder gitea simulate-pr-opened
+minicoder gitea simulate-pr-closed
+minicoder gitea simulate-pr-merged
+minicoder gitea simulate-check-passed
+minicoder gitea simulate-check-failed
+minicoder gitea simulate-review-approved
+minicoder gitea simulate-review-changes-requested
+
+# Gitea webhook receiver (docs/06 §Phase 18 Stage 3; not env-guarded, same posture as `github serve`)
+minicoder gitea serve                                   # POST /webhooks/gitea; standalone Fastify app
 
 # Human escalation disposition (Phase 11; human_required exit commands)
 minicoder human resolve-disagreement --feature-run <id> --project <id> --actor <id> --resolution <text> [--disagreement <id>]

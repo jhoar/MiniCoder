@@ -13,6 +13,7 @@
     "@minicoder/adapters-coder": "workspace:*",
     "@minicoder/core": "workspace:*",
     "@minicoder/github": "workspace:*",
+    "@minicoder/gitea": "workspace:*",
     "@minicoder/triggerdev": "workspace:*",
     "ajv": "^8.17.1",
     "js-yaml": "^4.1.0",
