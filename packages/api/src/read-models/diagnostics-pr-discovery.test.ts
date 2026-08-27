@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { createTestDb } from '@minicoder/testing';
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import { checkPrDiscoveryDivergence } from './diagnostics.js';
 
 /**
  * Issue #35: unit coverage for the opt-in `checkPrDiscoveryDivergence` doctor check —
- * `runDoctorChecks()` itself is pure-DB and untouched; this check needs a live `GitHubClient`
+ * `runDoctorChecks()` itself is pure-DB and untouched; this check needs a live `ScmClient`
  * (a fake here, mirroring `MockGitHubClient`'s shape) to ask GitHub whether an untracked
  * `code_pushed` feature run's branch already has an open PR.
  */
@@ -48,7 +48,7 @@ async function seedCodePushedFeatureRunWithNoTrackedPr(db: DbClient): Promise<st
 
 function fakeGithubClient(
   matches: Record<string, Array<{ prNumber: number; state: 'open' | 'closed' | 'merged' }>>,
-): GitHubClient {
+): ScmClient {
   return {
     async createBranch() {
       throw new Error('not used');

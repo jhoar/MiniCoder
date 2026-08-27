@@ -57,7 +57,7 @@ export const coderAdapterRunScenario: Scenario = {
   description:
     'run-coder invokes the registered CoderAgentAdapter through AgentRunRecorder (context pack, ' +
     'cost/tool-operation provenance), dispatches RecordCodePushedCommand, and opens a pull ' +
-    'request via GitHubClient; an adapter failure leaves the feature run at coding with an ' +
+    'request via ScmClient; an adapter failure leaves the feature run at coding with an ' +
     'agent_errors row instead of a false code_pushed transition',
   fixtureName: 'coder-adapter-run',
 

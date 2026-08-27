@@ -8,7 +8,7 @@
  * local file (`~/.minicoder/pending-repair-token.json`) that does not translate to a stateless
  * HTTP API (see CLAUDE.md's Orchestrator API Operational Constraints).
  */
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import { FEATURE_EXECUTION_MATRIX, ProjectState, defaultRedactor } from '@minicoder/core';
 import type { FeatureExecutionState } from '@minicoder/core';
 import { evaluateProjectAcceptance } from '@minicoder/core';
@@ -376,7 +376,7 @@ export interface PrDiscoveryDivergence {
 /**
  * Issue #35: an opt-in doctor check, deliberately NOT part of `runDoctorChecks()` above — every
  * other check there is a pure DB query with no external dependency, while this one needs a live
- * `GitHubClient` credential to ask GitHub directly whether an untracked `code_pushed` feature
+ * `ScmClient` credential to ask GitHub directly whether an untracked `code_pushed` feature
  * run's branch already has an open PR. `github-reconciliation`'s scheduled task now auto-heals
  * most of this class of divergence on its own (the same `discoverMissingPullRequests()` query
  * shape this check mirrors), but an operator may want to check for it on demand — without waiting
@@ -384,7 +384,7 @@ export interface PrDiscoveryDivergence {
  */
 export async function checkPrDiscoveryDivergence(
   db: DbClient,
-  client: GitHubClient,
+  client: ScmClient,
   projectId?: string,
 ): Promise<PrDiscoveryDivergence[]> {
   const projectFilter = projectId ? `AND freq.project_id = ?` : '';

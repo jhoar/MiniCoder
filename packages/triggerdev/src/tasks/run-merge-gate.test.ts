@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import { FeatureExecutionState } from '@minicoder/core';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
 import { runImpl } from './run-merge-gate.js';
@@ -72,7 +72,7 @@ async function seedFeatureRun(
   return { featureRunId };
 }
 
-function fakeGithubClient(): GitHubClient & {
+function fakeGithubClient(): ScmClient & {
   publishedChecks: Array<{ state: string; description?: string }>;
 } {
   const publishedChecks: Array<{ state: string; description?: string }> = [];

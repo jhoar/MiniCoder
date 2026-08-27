@@ -1,5 +1,5 @@
 import type {
-  GitHubClient,
+  ScmClient,
   ReviewerAgentAdapter,
   ReviewerInput,
   ReviewerOutput,
@@ -9,7 +9,7 @@ import type { ReviewProvider } from './review-provider.js';
 export interface ClaudeReviewerAdapterOptions {
   readonly owner: string;
   readonly repo: string;
-  readonly githubClient: GitHubClient;
+  readonly githubClient: ScmClient;
   readonly reviewProvider: ReviewProvider;
 }
 

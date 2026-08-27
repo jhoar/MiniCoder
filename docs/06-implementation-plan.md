@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.33
+> Version: 1.0.34
 > Last-updated: 2026-08-27
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
@@ -2187,7 +2187,7 @@ Gitea only, GitLab deferred) is a complete, shippable state rather than a half-f
   text lands.
 - Acceptance: docs internally consistent; no code touched yet.
 
-**Stage 1 — Core interface generalization (mechanical).**
+**Stage 1 — Core interface generalization (mechanical). ✓ Complete (2026-08-27).**
 
 - Move `packages/core/src/github/{client,reconcile}.ts` → `packages/core/src/scm/`; rename
   `GitHubClient`→`ScmClient`, `GithubPrState`→`ScmPrState`, `GithubCiStatus`→`ScmCiStatus`,
@@ -2202,6 +2202,17 @@ Gitea only, GitLab deferred) is a complete, shippable state rather than a half-f
   import path and `implements` clause only — zero behavior change.
 - Acceptance: full existing test suite green with only renames. This stage is the checkpoint that
   proves the interface needs relabeling, not reshaping, before any new provider is built.
+- **Delivered as planned**, with one scoping decision made during implementation:
+  `GithubMergeMethod`→`ScmMergeMethod` was renamed too (not listed above, but the same category of
+  type with no external consumers by name, so free to include). `GithubClientFactory` — the
+  per-task-file local factory-type alias (`run-coder.ts`, `run-review.ts`, `run-merge-gate.ts`,
+  `github-reconciliation.ts`, `merge-if-ready-route.ts`) wrapping `Promise<ScmClient>` — was
+  deliberately **not** renamed, unlike the interface it wraps: it still means exactly what it says
+  ("a factory that builds a client for the currently-configured provider, which is GitHub"), the
+  same category of name kept as `OctokitGitHubClient`/`packages/github` themselves. Full monorepo
+  `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, and `pnpm test` (921 tests, 26 skipped —
+  Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass with only the rename
+  applied — no behavior change, confirming the interface needed relabeling, not reshaping.
 
 **Stage 2 — Schema and config generalization.**
 

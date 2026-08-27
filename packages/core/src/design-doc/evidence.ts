@@ -2,7 +2,7 @@ import type { DbClient } from '../persistence/types.js';
 
 /**
  * Evidence collected from the database (and, transitively, GitHub — via the already-tracked
- * `pull_requests` mirror table rather than a fresh live `GitHubClient` call: every merged PR this
+ * `pull_requests` mirror table rather than a fresh live `ScmClient` call: every merged PR this
  * project produced was already durably recorded by `reconcileGithubState()`/`RecordMergedHandler`
  * during execution, so re-fetching from GitHub live would just duplicate data this deployment
  * already has, with no new information — a deliberate simplification, not a missing integration).

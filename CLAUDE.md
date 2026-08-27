@@ -678,9 +678,22 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   `dryRun` return; the transactional apply path keeps its own existence re-check inside the
   transaction as defense-in-depth against a plan/project deleted between preview and apply.
 
-## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/github/`, migration 0009)
+## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/scm/`, migration 0009)
 
-- **`GitHubClient` is an interface in `packages/core/src/github/client.ts`; the Octokit
+**Renamed by Stage 1 of the Generic SCM Interface plan (docs/06 §Phase 18):** the interface
+formerly called `GitHubClient` (`packages/core/src/github/client.ts`) is now `ScmClient`
+(`packages/core/src/scm/client.ts`); `GithubPrState`/`GithubCiStatus`/`GithubMergeRejectedError`/
+`GithubMergeMethod` are now `ScmPrState`/`ScmCiStatus`/`ScmMergeRejectedError`/`ScmMergeMethod`.
+`reconcileGithubState()`, `packages/github`, `OctokitGitHubClient`, `MockGitHubClient`, and the
+`github-reconciliation` task ID all keep their names unchanged (GitHub remains the only shipped
+provider; renaming the concrete implementation buys nothing — same precedent as keeping
+`@minicoder/triggerdev` after the Trigger.dev removal). The bullets below and throughout this
+document's other GitHub-related sections were written before this rename and still say
+`GitHubClient` — read every such mention as `ScmClient` under its new name and location; they are
+otherwise still accurate, since the actual GitHub implementation and behavior they describe has
+not changed, only the interface's name and package location.
+
+- **`ScmClient` is an interface in `packages/core/src/scm/client.ts`; the Octokit
   implementation lives only in `packages/github`.** Orchestrator Core never imports Octokit
   (enforced by the `no-provider-imports` fitness test's `@octokit`/`octokit` banned-import
   entries) — the same "interface in core, implementation elsewhere" pattern Phase 5 used for
@@ -691,10 +704,10 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   is CommonJS (`module: "CommonJS"` in `tsconfig.base.json`). Upgrading either package requires
   either moving the whole build to ESM or using dynamic `import()` at the call site — do not bump
   past a CJS-compatible major without one of those changes.
-- **`reconcileGithubState()` (`packages/core/src/github/reconcile.ts`) is the single
+- **`reconcileGithubState()` (`packages/core/src/scm/reconcile.ts`) is the single
   reconciliation algorithm** — both `packages/github`'s webhook-triggered `InboxHandler`s and the
   scheduled `github-reconciliation` Trigger.dev task call it with an already-fetched
-  `ObservedPullRequestState`. Core never calls `GitHubClient` itself; the caller (inbox handler or
+  `ObservedPullRequestState`. Core never calls `ScmClient` itself; the caller (inbox handler or
   task) fetches observed state first. Do not duplicate the compare/dispatch logic in either
   caller.
 - **`pull_requests.review_state`/`ci_status` are observed mirrors of GitHub, not

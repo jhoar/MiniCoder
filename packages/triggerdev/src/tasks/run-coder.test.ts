@@ -4,7 +4,7 @@ import type {
   CoderInput,
   CoderOutput,
   DbClient,
-  GitHubClient,
+  ScmClient,
 } from '@minicoder/core';
 import { EVENT_SCHEMAS, FeatureExecutionState } from '@minicoder/core';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
@@ -94,7 +94,7 @@ function fakeCoderAdapter(behavior: 'success' | 'fail' = 'success'): CoderAgentA
   };
 }
 
-function fakeGithubClient(opts: { fail?: boolean } = {}): GitHubClient & {
+function fakeGithubClient(opts: { fail?: boolean } = {}): ScmClient & {
   createdPullRequests: Array<{
     owner: string;
     repo: string;

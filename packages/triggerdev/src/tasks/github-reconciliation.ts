@@ -1,4 +1,4 @@
-import type { DbClient, GitHubClient, FeatureExecutionState } from '@minicoder/core';
+import type { DbClient, ScmClient, FeatureExecutionState } from '@minicoder/core';
 import {
   reconcileGithubState,
   requiresExecutionLock,
@@ -19,7 +19,7 @@ export interface GithubReconciliationResult {
   projectId: string;
   reconciled: number;
   humanRequired: number;
-  /** Candidates skipped this pass because GitHubClient.getPullRequest() failed for them
+  /** Candidates skipped this pass because ScmClient.getPullRequest() failed for them
    * (issue #42) — surfaced so an operator can notice a skip rather than it being silently
    * dropped. A later scheduled pass retries these. */
   fetchFailures: number;
@@ -53,10 +53,10 @@ function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
-export type GithubClientFactory = () => Promise<GitHubClient>;
+export type GithubClientFactory = () => Promise<ScmClient>;
 
 /**
- * No live GitHubClient is injectable at the task boundary the way a
+ * No live ScmClient is injectable at the task boundary the way a
  * PlannerAgentAdapter is (see resolveDefaultPlannerAdapter in task-registry.ts) — this task
  * constructs an OctokitGitHubClient directly from env, since GitHub credentials (unlike agent
  * adapters) are a single deployment-wide secret, not a per-call injected dependency. Fails fast
@@ -96,7 +96,7 @@ interface FeatureRunCandidateRow {
 // missed — that candidate must reach `reconcileGithubState` so it can catch up. The
 // `candidate.pr_number === null` guard immediately below still `continue`s past a genuinely
 // brand-new `code_pushed` row with no tracked PR yet, which remains out of this task's scope
-// (discovering never-before-seen PRs requires a "list PRs by branch" GitHubClient method that
+// (discovering never-before-seen PRs requires a "list PRs by branch" ScmClient method that
 // does not exist yet).
 const EXCLUDED_STATES = [
   'approved_pending_execution',
@@ -129,7 +129,7 @@ interface UndiscoveredCandidateRow {
  */
 async function discoverMissingPullRequests(
   db: DbClient,
-  client: GitHubClient,
+  client: ScmClient,
   repo: RepositoryRow,
   projectId: string,
   featureRunId: string | undefined,
@@ -164,7 +164,7 @@ async function discoverMissingPullRequests(
 
   for (const candidate of candidates) {
     const branchName = branchNameFor(candidate.id);
-    let matches: Awaited<ReturnType<GitHubClient['listPullRequestsForBranch']>>;
+    let matches: Awaited<ReturnType<ScmClient['listPullRequestsForBranch']>>;
     try {
       matches = await client.listPullRequestsForBranch(repo.owner, repo.name, branchName, 'open');
     } catch (err) {

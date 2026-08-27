@@ -6,7 +6,7 @@ import {
   generateId,
   publishMergeGateStatusCheck,
 } from '@minicoder/core';
-import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
+import type { CommandEnvelope, DbClient, ScmClient } from '@minicoder/core';
 import type { RunMergeGatePayload } from './types.js';
 import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
@@ -22,7 +22,7 @@ export interface RunMergeGateResult {
   reasons: string[];
 }
 
-export type GithubClientFactory = () => Promise<GitHubClient>;
+export type GithubClientFactory = () => Promise<ScmClient>;
 
 export interface RunMergeGateDeps {
   githubClientFactory?: GithubClientFactory;

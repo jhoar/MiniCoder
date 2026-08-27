@@ -12,7 +12,7 @@ import type {
   CoderAgentAdapter,
   CoderInput,
   DbClient,
-  GitHubClient,
+  ScmClient,
 } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import type { AcquiredLock } from '@minicoder/workflow';
@@ -46,14 +46,14 @@ function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
-export type GithubClientFactory = () => Promise<GitHubClient>;
+export type GithubClientFactory = () => Promise<ScmClient>;
 /** Builds a fresh `CoderAgentAdapter` instance for this one run, given the project's repo URL —
  * a factory (not a singleton) because a single deployment can serve multiple projects with
  * different repos, and `CoderInput` itself carries no repo/credential fields (docs/06 Phase 9). */
 export type CoderAdapterFactory = (repoUrl: string) => Promise<CoderAgentAdapter>;
 
 /**
- * No live GitHubClient is injectable at the Trigger.dev task boundary the way an adapter
+ * No live ScmClient is injectable at the Trigger.dev task boundary the way an adapter
  * instance is — constructs an OctokitGitHubClient directly from env, mirroring
  * github-reconciliation.ts's resolveDefaultGithubClientFactory (GitHub credentials are a single
  * deployment-wide secret, not a per-call injected dependency). `requireNonBlankEnvVar` is shared

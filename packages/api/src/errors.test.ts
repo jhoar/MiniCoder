@@ -4,7 +4,7 @@ import {
   AuthorizationError,
   TransitionError,
   UserRole,
-  GithubMergeRejectedError,
+  ScmMergeRejectedError,
   SerializationFailureError,
 } from '@minicoder/core';
 import {
@@ -72,15 +72,15 @@ describe('toProblemDetails', () => {
     expect(body.type).toBe('request-does-not-match-schema');
   });
 
-  it('maps GithubMergeRejectedError sha_mismatch to 409', () => {
-    const err = new GithubMergeRejectedError('sha moved', 'sha_mismatch', true);
+  it('maps ScmMergeRejectedError sha_mismatch to 409', () => {
+    const err = new ScmMergeRejectedError('sha moved', 'sha_mismatch', true);
     const { status, body } = toProblemDetails(err, INSTANCE);
     expect(status).toBe(409);
     expect(body.type).toBe('github-merge-sha_mismatch');
   });
 
-  it('maps an unrecognized GithubMergeRejectedError reason to 502', () => {
-    const err = new GithubMergeRejectedError('mystery', 'unknown', false);
+  it('maps an unrecognized ScmMergeRejectedError reason to 502', () => {
+    const err = new ScmMergeRejectedError('mystery', 'unknown', false);
     const { status } = toProblemDetails(err, INSTANCE);
     expect(status).toBe(502);
   });

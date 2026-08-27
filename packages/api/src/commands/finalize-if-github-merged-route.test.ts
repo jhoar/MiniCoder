@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import {
   buildTestApp,
   TEST_OPERATOR_KEY,
@@ -52,7 +52,7 @@ async function seedRepoAndPr(db: DbClient, featureRunId: string, projectId: stri
   );
 }
 
-function githubClientConfirmingMerged(): GitHubClient {
+function githubClientConfirmingMerged(): ScmClient {
   return {
     async createBranch() {
       return { branchName: 'unused', sha: 'unused' };
@@ -93,7 +93,7 @@ function githubClientConfirmingMerged(): GitHubClient {
   };
 }
 
-function githubClientNotMerged(): GitHubClient {
+function githubClientNotMerged(): ScmClient {
   return {
     async createBranch() {
       return { branchName: 'unused', sha: 'unused' };

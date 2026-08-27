@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import { buildTestApp, TEST_APPROVER_KEY, seedProjectWithWorkflowState } from '../test-helpers.js';
 
-const fakeGithubClientFactory = async (): Promise<GitHubClient> =>
+const fakeGithubClientFactory = async (): Promise<ScmClient> =>
   ({
     createBranch: async () => ({ branchName: 'unused', sha: 'unused' }),
     createPullRequest: async () => ({ prNumber: 1, branchName: 'unused' }),
@@ -10,7 +10,7 @@ const fakeGithubClientFactory = async (): Promise<GitHubClient> =>
     publishStatusCheck: async () => undefined,
     getRemainingRateLimit: async () => ({ remaining: 5000, resetAt: new Date().toISOString() }),
     mergePullRequest: async () => ({ mergeSha: 'unused' }),
-  }) as unknown as GitHubClient;
+  }) as unknown as ScmClient;
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -224,7 +224,7 @@ describe('POST /commands/merge-if-ready', () => {
     // A mutable holder so the fake client's mergePullRequest (defined before the DB/featureRunId
     // exist) can reach into the same DB and row the route itself uses.
     const ctx: { db?: DbClient; featureRunId?: string } = {};
-    const raceGithubClientFactory = async (): Promise<GitHubClient> =>
+    const raceGithubClientFactory = async (): Promise<ScmClient> =>
       ({
         publishStatusCheck: async () => undefined,
         mergePullRequest: async () => {
@@ -238,7 +238,7 @@ describe('POST /commands/merge-if-ready', () => {
           );
           return { mergeSha: 'race-merge-sha' };
         },
-      }) as unknown as GitHubClient;
+      }) as unknown as ScmClient;
 
     const { app, db } = await buildTestApp({ githubClientFactory: raceGithubClientFactory });
     ctx.db = db;

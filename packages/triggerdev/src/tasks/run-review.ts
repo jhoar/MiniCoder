@@ -26,7 +26,7 @@ import type {
   ArbiterInput,
   CommandEnvelope,
   DbClient,
-  GitHubClient,
+  ScmClient,
   ReviewerAgentAdapter,
   ReviewerInput,
   ReviewFindingInsert,
@@ -124,7 +124,7 @@ function resolveDefaultArbiterAdapterFactory(): ArbiterAdapterFactory {
   };
 }
 
-export type GithubClientFactory = () => Promise<GitHubClient>;
+export type GithubClientFactory = () => Promise<ScmClient>;
 /** Builds a fresh `ReviewerAgentAdapter` instance for this one run, given the project's repo
  * owner/repo — a factory (not a singleton) because one deployment can serve multiple projects
  * with different GitHub repos, and `ReviewerInput` itself carries no repo/credential fields,
@@ -132,7 +132,7 @@ export type GithubClientFactory = () => Promise<GitHubClient>;
 export type ReviewerAdapterFactory = (opts: {
   owner: string;
   repo: string;
-  githubClient: GitHubClient;
+  githubClient: ScmClient;
 }) => Promise<ReviewerAgentAdapter>;
 
 function resolveDefaultGithubClientFactory(): GithubClientFactory {

@@ -17,8 +17,8 @@ import {
 
 /**
  * `autoClearable` (docs/00 §3.2): classified by the caller from the real GitHub merge-API error
- * (`minicoder merge merge-if-ready` — see `GithubMergeRejectedError.autoClearable` in
- * `packages/core/src/github/client.ts`) — a stale head SHA (someone pushed after the gate
+ * (`minicoder merge merge-if-ready` — see `ScmMergeRejectedError.autoClearable` in
+ * `packages/core/src/scm/client.ts`) — a stale head SHA (someone pushed after the gate
  * re-evaluated) is auto-clearable (a re-push naturally resolves it), while a genuine
  * not-mergeable rejection (branch protection, real conflict) is not. This handler only records
  * the classification; it does not itself decide the next transition (`ReconcileMergeFailedCommand`

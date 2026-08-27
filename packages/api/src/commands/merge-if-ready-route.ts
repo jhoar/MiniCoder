@@ -1,11 +1,11 @@
 /**
  * `POST /commands/merge-if-ready` — a dedicated route, not generic dispatch, because it chains
- * multiple command dispatches around a real `GitHubClient.mergePullRequest()` call. Mirrors
+ * multiple command dispatches around a real `ScmClient.mergePullRequest()` call. Mirrors
  * `packages/cli/src/commands/merge.ts`'s `merge-if-ready` sequence exactly: (1) `MergeIfReadyCommand`
  * re-gates and transitions `approved_by_policy -> merge_ready`; (2) only on success, the real
  * GitHub merge call runs; (3) the outcome is recorded via `RecordMergedCommand` (success) or
  * `RecordMergeFailedCommand` + `ReconcileMergeFailedCommand`/`EscalateToHumanCommand` (rejection,
- * classified by `GithubMergeRejectedError.autoClearable`).
+ * classified by `ScmMergeRejectedError.autoClearable`).
  *
  * The three follow-up commands dispatched after the real GitHub call
  * (`RecordMergedCommand`/`RecordMergeFailedCommand`/`ReconcileMergeFailedCommand`) all require an
@@ -49,13 +49,13 @@ import {
   RecordMergeFailedHandler,
   ReconcileMergeFailedHandler,
   EscalateToHumanHandler,
-  GithubMergeRejectedError,
+  ScmMergeRejectedError,
   MergeGateBlockedError,
   FeatureExecutionState,
   generateId,
   publishMergeGateStatusCheck,
 } from '@minicoder/core';
-import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
+import type { CommandEnvelope, DbClient, ScmClient } from '@minicoder/core';
 import { requireNonBlankEnvVar, systemActor } from '@minicoder/triggerdev';
 import {
   MissingIdempotencyKeyError,
@@ -73,9 +73,9 @@ import {
 const ROUTE_IDEMPOTENCY_SCOPE = 'merge-if-ready-route';
 const ROUTE_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export type GithubClientFactory = () => Promise<GitHubClient>;
+export type GithubClientFactory = () => Promise<ScmClient>;
 
-async function defaultGithubClientFactory(): Promise<GitHubClient> {
+async function defaultGithubClientFactory(): Promise<ScmClient> {
   const token = requireNonBlankEnvVar(
     'GITHUB_TOKEN',
     'The Orchestrator API requires a GitHub credential (GitHub App installation token or PAT) to ' +
@@ -121,7 +121,7 @@ async function fetchFeatureRun(
 }
 
 async function publishStatusCheckSafely(
-  githubClient: GitHubClient,
+  githubClient: ScmClient,
   opts: Parameters<typeof publishMergeGateStatusCheck>[1],
   featureRunId: string,
 ): Promise<void> {
@@ -282,7 +282,7 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
         await respond(200, body);
         return;
       } catch (err) {
-        if (!(err instanceof GithubMergeRejectedError)) throw err;
+        if (!(err instanceof ScmMergeRejectedError)) throw err;
 
         const failedEnvelope: CommandEnvelope<Record<string, unknown>> = {
           commandId: generateId(),

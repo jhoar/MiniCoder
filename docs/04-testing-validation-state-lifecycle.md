@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.6.0
-> Last-updated: 2026-07-13
+> Version: 1.6.1
+> Last-updated: 2026-08-27
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -812,7 +812,8 @@ see `07-security-and-secrets.md` for the overlap procedure.
 
 This runbook covers the GitHub App/webhook setup, the standalone webhook receiver
 (`minicoder github serve`), webhook-secret rotation, and reconciliation diagnostics delivered in
-Phase 7 (`packages/github`, `packages/core/src/github/`, migration `0009_pull_requests`). The
+Phase 7 (`packages/github`, `packages/core/src/scm/` — renamed from `packages/core/src/github/` by
+docs/06 §Phase 18 Stage 1, migration `0009_pull_requests`). The
 Phase 3 runbook above described a _separate_ Trigger.dev webhook-secret rotation procedure
 (`TRIGGERDEV_WEBHOOK_SECRET`) that protected a different endpoint; that secret and its rotation
 procedure no longer exist (Trigger.dev has been removed — see the superseded banner at the top of

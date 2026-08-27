@@ -1,6 +1,6 @@
 import type { TxClient } from '../../../persistence/types.js';
 import { generateId, isoNow } from '../../helpers.js';
-import type { ObservedPullRequestState } from '../../../github/client.js';
+import type { ObservedPullRequestState } from '../../../scm/client.js';
 
 export interface PullRequestRow {
   id: string;

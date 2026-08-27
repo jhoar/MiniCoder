@@ -16,13 +16,13 @@ import {
   UserRole,
   generateId,
 } from '@minicoder/core';
-import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
+import type { CommandEnvelope, DbClient, ScmClient } from '@minicoder/core';
 import { requireNonBlankEnvVar, systemActor } from '@minicoder/triggerdev';
 import { NotFoundError, RequestValidationError } from '../errors.js';
 import { requireRole } from '../auth/require-role.js';
 import type { GithubClientFactory } from './merge-if-ready-route.js';
 
-async function defaultGithubClientFactory(): Promise<GitHubClient> {
+async function defaultGithubClientFactory(): Promise<ScmClient> {
   const token = requireNonBlankEnvVar(
     'GITHUB_TOKEN',
     'The Orchestrator API requires a GitHub credential (GitHub App installation token or PAT) to ' +

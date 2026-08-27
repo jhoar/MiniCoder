@@ -1,19 +1,19 @@
 import type {
   CreateBranchOptions,
   CreatePullRequestOptions,
-  GithubPrState,
-  GitHubClient,
+  ScmPrState,
+  ScmClient,
   MergePullRequestOptions,
   ObservedPullRequestState,
 } from '@minicoder/core';
-import { GithubMergeRejectedError, PrReviewState } from '@minicoder/core';
+import { ScmMergeRejectedError, PrReviewState } from '@minicoder/core';
 import type { MockGitHubProvider, MockPrState } from './mock-github-provider.js';
 
 /**
- * Deterministic test seam for `GitHubClient` (packages/core/src/github/client.ts), parallel to
+ * Deterministic test seam for `ScmClient` (packages/core/src/scm/client.ts), parallel to
  * `MockGitHubProvider`'s simulate-* CLI-facing surface. Wraps a `MockGitHubProvider` instance so
  * scenario tests can drive GitHub state via `simulatePrOpened`/`simulateCheckPassed`/etc. and have
- * `reconcileGithubState` observe it through the same `GitHubClient` interface the real
+ * `reconcileGithubState` observe it through the same `ScmClient` interface the real
  * `OctokitGitHubClient` implements — no live GitHub calls (docs/04 §3.2 "Mock Providers by
  * Default").
  *
@@ -23,7 +23,7 @@ import type { MockGitHubProvider, MockPrState } from './mock-github-provider.js'
  * feature-run id from the `minicoder/<featureRunId>` branch-naming convention — docs/00 §3.11) so
  * `getPullRequest`/`reconcileGithubState` observe it exactly as they would a real GitHub PR.
  */
-export class MockGitHubClient implements GitHubClient {
+export class MockGitHubClient implements ScmClient {
   readonly branches: Array<CreateBranchOptions> = [];
   readonly pullRequests: Array<CreatePullRequestOptions & { prNumber: number }> = [];
   private nextPrNumber = 1;
@@ -70,21 +70,17 @@ export class MockGitHubClient implements GitHubClient {
   async mergePullRequest(options: MergePullRequestOptions): Promise<{ mergeSha: string }> {
     const pr = this.provider.getPrState(options.prNumber);
     if (!pr) {
-      throw new GithubMergeRejectedError(
-        `PR #${options.prNumber} not found`,
-        'not_mergeable',
-        false,
-      );
+      throw new ScmMergeRejectedError(`PR #${options.prNumber} not found`, 'not_mergeable', false);
     }
     if (pr.mergeShouldFail === 'sha_mismatch') {
-      throw new GithubMergeRejectedError(
+      throw new ScmMergeRejectedError(
         `PR #${options.prNumber} head moved since the merge gate was evaluated`,
         'sha_mismatch',
         true,
       );
     }
     if (pr.mergeShouldFail === 'not_mergeable' || pr.state !== 'open') {
-      throw new GithubMergeRejectedError(
+      throw new ScmMergeRejectedError(
         `PR #${options.prNumber} is not mergeable`,
         'not_mergeable',
         false,
@@ -120,7 +116,7 @@ export class MockGitHubClient implements GitHubClient {
     _repo: string,
     branchName: string,
     state: 'open' | 'closed' | 'all' = 'open',
-  ): Promise<Array<{ prNumber: number; state: GithubPrState }>> {
+  ): Promise<Array<{ prNumber: number; state: ScmPrState }>> {
     return (
       this.provider
         .allPrs()

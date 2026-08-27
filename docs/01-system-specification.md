@@ -3,7 +3,7 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.2.0
+> Version: 1.2.1
 > Last-updated: 2026-08-27
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
@@ -231,7 +231,8 @@ Gitea are staged (`06-implementation-plan.md` §Phase 18), and the contract belo
 current implementation of that interface, not yet a cross-provider description.
 
 **GitHub integration contract** (finalized in implementation Phase 7 against
-`packages/github`, `packages/core/src/github/`, and migration `0009_pull_requests`):
+`packages/github`, `packages/core/src/scm/` (renamed from `packages/core/src/github/` by docs/06
+§Phase 18 Stage 1), and migration `0009_pull_requests`):
 
 - **Webhook events consumed:** `pull_request`, `pull_request_review`,
   `pull_request_review_comment`, `check_suite`, `check_run`, `status`, `push`. Each delivery is
@@ -314,7 +315,7 @@ branchName, state?)` lists PRs whose head matches a given branch, filtered by st
     wiring conversation-resolution into a real merge decision remains separate, deliberate future
     work (see §12 and CLAUDE.md's Merge Gate constraints), independent of this field now being a
     real observation instead of a placeholder.
-- **Reconciliation algorithm:** `reconcileGithubState()` (`packages/core/src/github/reconcile.ts`)
+- **Reconciliation algorithm:** `reconcileGithubState()` (`packages/core/src/scm/reconcile.ts`)
   is the single implementation both the webhook-triggered inbox handlers
   (`packages/github/src/inbox-handlers.ts`) and the scheduled fallback
   (`github-reconciliation` Workflow Layer task) call — they can never diverge in behavior. Given an

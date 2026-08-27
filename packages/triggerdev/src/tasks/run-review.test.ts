@@ -3,7 +3,7 @@ import type {
   CommandEnvelope,
   DbClient,
   EscalateToHumanPayload,
-  GitHubClient,
+  ScmClient,
   RecordChangesRequestedPayload,
   ReviewerAgentAdapter,
   ReviewerInput,
@@ -98,7 +98,7 @@ function fakeReviewerAdapter(output: ReviewerOutput): ReviewerAgentAdapter {
   };
 }
 
-function fakeGithubClient(): GitHubClient {
+function fakeGithubClient(): ScmClient {
   return {
     async createBranch() {
       return { branchName: 'minicoder/x', sha: 'abc' };
