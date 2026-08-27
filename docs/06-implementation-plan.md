@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_combined_implementation_plan.md,
 > minicoder_combined_implementation_plan_testing_updated.md
-> Version: 1.0.32
-> Last-updated: 2026-07-13
+> Version: 1.0.33
+> Last-updated: 2026-08-27
 
 This is the single canonical phase plan (18 phases). State names, adapter names, and the CLI
 surface are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md); architecture is
@@ -2149,9 +2149,138 @@ revision_requested -> generating -> ready_for_review -> approved -> project_comp
 
 Deferred: parallel feature execution, multi-repository orchestration, additional coder/reviewer
 adapters and their provider-adapter conformance fixtures (the conformance **framework** and mock
-conformance ship in Phase 5), additional SCM providers, optional advanced RBAC, and optional
-PDF/DOCX export. (Trigger.dev backend tiers — self-host single-node default, self-host HA cluster,
-Cloud — are a Phase 3 deployment concern, not a deferred extension.)
+conformance ship in Phase 5), additional SCM providers (staged plan below), optional advanced RBAC,
+and optional PDF/DOCX export. (Trigger.dev backend tiers — self-host single-node default, self-host
+HA cluster, Cloud — are a Phase 3 deployment concern, not a deferred extension.)
 
 Acceptance: at least one alternative adapter can be added without changing core orchestration; future
 extensions do not change the baseline architecture.
+
+### Generic SCM Interface (GitHub / GitLab / Gitea)
+
+The one item from the deferred list above with a concrete staged plan, since it was requested
+explicitly. Goal: generalize `GitHubClient` (`packages/core/src/github/`) into a provider-neutral
+`ScmClient` seam and add GitLab and Gitea implementations alongside the existing
+`OctokitGitHubClient`, reducing to lowest-common-denominator functionality where the three
+providers' models genuinely diverge. `ObservedPullRequestState` and the rest of the interface's
+method shapes were already written at a provider-neutral level of abstraction (opaque
+owner/repo/branch/sha, enum-shaped review/CI state) — this is mostly extension and renaming, not a
+redesign. Staged so each step is separately testable and revertible, and a partial rollout (e.g.
+Gitea only, GitLab deferred) is a complete, shippable state rather than a half-finished one.
+
+**Stage 0 — Vocabulary and docs (no code).**
+
+- Update `00-glossary-and-terms.md`: `ScmClient`/`ScmPrState`/`ScmCiStatus` naming and
+  `repositories.provider` values. Keep "pull request" — not "merge request" — as MiniCoder's
+  canonical noun regardless of backing provider, matching the existing `pull_requests` table and
+  `PrReviewState` naming; a GitLab client translates its own "merge request" API responses onto this
+  internal vocabulary, not the other way around.
+- Reword CLAUDE.md decision #3 and docs/01 §5.7/§9/§12 from "GitHub webhooks"/"GitHub API" to "SCM
+  webhooks"/"the configured SCM provider" wherever the prose is provider-generic; leave
+  GitHub-specific detail (GraphQL review-thread resolution, the Checks API) as GitHub-implementation
+  detail inside `packages/github`'s own doc comments, not in the cross-provider spec.
+- Add a docs/07 section on webhook-auth models per provider: GitHub and Gitea use HMAC-SHA256
+  signature verification (`verifyWebhookSignature()`, reusable as-is for Gitea); GitLab uses a bare
+  shared-secret token (`X-Gitlab-Token`) compared directly, with no signature scheme — its verifier
+  must use a constant-time string compare, not the HMAC path.
+- Grep sweep (per this document's own editing rule) for stale GitHub-only claims once this stage's
+  text lands.
+- Acceptance: docs internally consistent; no code touched yet.
+
+**Stage 1 — Core interface generalization (mechanical).**
+
+- Move `packages/core/src/github/{client,reconcile}.ts` → `packages/core/src/scm/`; rename
+  `GitHubClient`→`ScmClient`, `GithubPrState`→`ScmPrState`, `GithubCiStatus`→`ScmCiStatus`,
+  `GithubMergeRejectedError`→`ScmMergeRejectedError`. `ObservedPullRequestState` and every option
+  type keep their current shape unchanged.
+- `reconcileGithubState()` keeps its name, and `github-reconciliation` keeps its literal
+  canonical task-ID string unchanged — the same precedent as keeping `@minicoder/triggerdev` after
+  the Trigger.dev removal: renaming an already-shipped, no-drift-permitted task ID (docs/00 §3.12)
+  buys nothing and breaks historical `triggerdev_runs` rows for a cosmetic win. Its escalation-reason
+  strings drop the literal word "GitHub" in favor of "the linked repository."
+- `packages/github`'s `OctokitGitHubClient` and `packages/testing`'s `MockGitHubClient` update their
+  import path and `implements` clause only — zero behavior change.
+- Acceptance: full existing test suite green with only renames. This stage is the checkpoint that
+  proves the interface needs relabeling, not reshaping, before any new provider is built.
+
+**Stage 2 — Schema and config generalization.**
+
+- Additive migration: `repositories.provider` (`'github'|'gitlab'|'gitea'`, defaulting existing rows
+  to `'github'`) and `repositories.base_url` (nullable — self-hosted GitLab/Gitea need a configurable
+  API endpoint; github.com doesn't). Rename `github_links` → `scm_links`, keeping `installation_id`/
+  `app_id` as GitHub-App-specific nullable columns with no GitLab/Gitea equivalent.
+- `resolveProjectId()` (`packages/github/src/webhook-app.ts` and its future gitlab/gitea siblings)
+  scopes its `repositories` lookup by `provider` as well as `full_name`, since owner/repo strings are
+  no longer guaranteed unique across providers.
+- Config: replace the single global `GITHUB_TOKEN` assumption with a per-repository connection
+  descriptor (provider + base_url + token-reference + webhook-secret-reference) resolved through the
+  existing secrets backend — no plaintext tokens land in `scm_links` itself.
+- Acceptance: existing GitHub-only deployments are unaffected (provider defaults to `'github'`,
+  `base_url` null means api.github.com); migration applies cleanly on both SQLite and PostgreSQL per
+  the mandatory cross-dialect suite.
+
+**Stage 3 — Gitea provider (first new provider).**
+
+Chosen first because Gitea's API and webhook shapes are the closest of the two to GitHub's, making
+it the cheapest real proof that the `ScmClient` abstraction holds for a second provider.
+
+- `packages/gitea`: `GiteaScmClient implements ScmClient` over Gitea's REST API — branches, PRs,
+  reviews, commit statuses (Gitea has no separate Checks-API concept, only commit statuses, so its
+  CI-status derivation is simpler than GitHub's), diff retrieval, merge.
+- `/webhooks/gitea` route: HMAC-SHA256 verification (`X-Gitea-Signature`, same shape as GitHub's
+  verifier), with its own `normalize.ts` mapping Gitea's webhook events onto the existing internal
+  taxonomy (`pr.opened|pr.closed|...`) unchanged.
+- `getRemainingRateLimit()` becomes best-effort for this client (Gitea has no standard rate-limit
+  endpoint) — returns a large sentinel; verify the capacity pre-flight caller tolerates this rather
+  than assuming every provider reports a real number.
+- CLI/task wiring: either `minicoder gitea serve`/`simulate-*` siblings or a generalized
+  `minicoder scm serve --provider <p>` — decide and apply consistently to GitHub's existing commands
+  in the same pass, not as a later cleanup.
+- Acceptance: an end-to-end feature-run scenario (mirroring the existing `github-reconciliation`
+  system-test scenario) passes against a real Gitea instance (docker-compose fixture in CI, same
+  posture as the mandatory Postgres-matrix suites).
+
+**Stage 4 — GitLab provider (largest lowest-common-denominator compromise).**
+
+- `packages/gitlab`: `GitlabScmClient implements ScmClient` over GitLab's REST API (merge requests,
+  discussions, pipelines/commit statuses, approvals).
+- Review-state synthesis: GitLab has no discrete "changes requested" review state — only approvals
+  and resolvable discussions. `reviewState` is approximated from approval count vs. required
+  approvals plus unresolved blocking discussions; this fidelity loss is deliberate and must be
+  documented in `packages/gitlab`'s own doc comments, not silently absorbed.
+- Webhook auth: a **new**, non-HMAC verifier (`X-Gitlab-Token` compared with a constant-time string
+  compare) — not a reuse of `verifyWebhookSignature()`'s HMAC path.
+- `normalize.ts`: Merge Request Hook / Pipeline Hook / Note Hook → the existing internal taxonomy.
+  GitLab has no webhook corresponding to a discrete "reviewer requested changes" event the way
+  GitHub's `pull_request_review` does, so `review.changes_requested` may never fire natively for a
+  GitLab-backed project — the scheduled reconciliation fallback (generalized in Stage 1) becomes the
+  primary, not just backup, path for catching that condition on GitLab. This is an operational
+  difference to call out to operators (docs/04 runbook), not just an implementation footnote.
+- Acceptance: end-to-end feature-run scenario passes against a real GitLab instance (or a throwaway
+  GitLab-hosted test group); a dedicated regression proves the reconciliation fallback — not a
+  webhook — is what advances a GitLab-backed feature run out of `under_review` when GitLab reports
+  insufficient approvals with no corresponding webhook.
+
+**Stage 5 — Cross-provider conformance.**
+
+- A provider-conformance suite (same shape as Phase 5's six-role adapter conformance suite) drives
+  one fixture PR lifecycle through `OctokitGitHubClient`/`GiteaScmClient`/`GitlabScmClient` in turn,
+  asserting the `ObservedPullRequestState` contract holds identically for all three.
+- Added to CI as a new matrix dimension alongside the existing mandatory SQLite/PostgreSQL matrix
+  (docs/04 §12's "Cross-Dialect Testing" convention, extended to cross-provider).
+- `checkPrDiscoveryDivergence()`/`state doctor --check-github` generalize their naming and become
+  provider-aware (still opt-in, still requiring a live credential).
+
+**Stage 6 — Operator-facing rollout.**
+
+- Web UI / Text UI: hardcoded "PR #"/GitHub-specific link formatting on the pull-requests and
+  feature-detail views becomes provider-aware (link paths differ: GitHub `/pull/N`, GitLab
+  `/-/merge_requests/N`, Gitea `/pulls/N`).
+- `USER-MANUAL.md`: a new "connecting a GitLab/Gitea project" section alongside the existing GitHub
+  setup instructions.
+- Final grep sweep for any remaining GitHub-only assumption missed by earlier stages.
+
+Acceptance (whole item): at least one alternative SCM provider (Gitea, then GitLab) is added without
+changing core orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution
+state matrix — the same "swap the implementation behind an unchanged interface" property this
+document already requires of adapters.
