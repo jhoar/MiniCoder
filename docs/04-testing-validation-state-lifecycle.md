@@ -915,11 +915,18 @@ mismatch predates issue #35 and remains unreconciled here), and calls the new
 reconcile loop. **Automated discovery is now primary** — it runs on every scheduled
 `github-reconciliation` invocation with no operator action required.
 
-**On-demand check**: `minicoder state doctor --check-github` (opt-in — the only `state doctor`
-check requiring a live `GITHUB_TOKEN`) runs `checkPrDiscoveryDivergence()` directly, without
+**On-demand check**: `minicoder state doctor --check-scm` (docs/06 §Phase 18 Stage 5 —
+`--check-github` remains a deprecated but supported alias; opt-in — the only `state doctor` check
+requiring a live provider credential) runs `checkPrDiscoveryDivergence()` directly, without
 waiting for the next scheduled `github-reconciliation` run, and reports any `code_pushed` feature
-run whose branch already has an open PR on GitHub as a `pr_discovery_divergence` warning (not an
-error — the scheduled task will normally clear it on its own).
+run whose branch already has an open PR on its linked SCM provider as a `pr_discovery_divergence`
+warning (not an error — GitHub's own scheduled `github-reconciliation` task will normally clear a
+GitHub-provider divergence on its own; Gitea/GitLab have no equivalent scheduled discovery pass
+yet, so this on-demand check is currently the _only_ automated discovery path for those two
+providers — see this check's own `resolveScmClientForDoctor()`
+(`packages/cli/src/commands/state.ts`), which resolves the correct `ScmClient` implementation and
+credential — `GITHUB_TOKEN`/`GITEA_TOKEN`/`GITLAB_TOKEN` — from the candidate repository's own
+`provider`/`base_url` columns).
 
 **Manual fallback (only if automated discovery cannot reach the candidate)** — e.g.
 `listPullRequestsForBranch` fails repeatedly (rate limiting, a credential issue), or the candidate
@@ -1519,11 +1526,14 @@ diagnostics going forward instead.
 `code_pushed_no_pull_request` (Phase 16, closes the previously-deferred LOW-3 observability gap —
 CLAUDE.md's Reference Coder Adapter Operational Constraints) flags a `code_pushed` feature run
 with no tracked `pull_requests` row after a 30-minute grace period. Manual recovery: confirm via
-`minicoder state doctor --project <id> --check-github` (`checkPrDiscoveryDivergence()`) whether
-GitHub actually has an open PR for the run's branch that a webhook missed — if so, the next
-scheduled `github-reconciliation` pass auto-heals it via `discoverMissingPullRequests()`; if the
-push itself never produced a PR (e.g. a swallowed `createPullRequest` failure), re-trigger
-`run-coder` for the feature run once it is confirmed still at `code_pushed`.
+`minicoder state doctor --project <id> --check-scm` (`--check-github` remains a deprecated alias;
+`checkPrDiscoveryDivergence()`) whether the linked SCM provider actually has an open PR for the
+run's branch that a webhook missed — for a GitHub-provider repository, the next scheduled
+`github-reconciliation` pass also auto-heals it via `discoverMissingPullRequests()` on its own; for
+a Gitea/GitLab-provider repository, there is no equivalent scheduled discovery pass yet (docs/06
+§Phase 18 Stage 5), so this on-demand check is currently the only automated way to find such a
+divergence. If the push itself never produced a PR (e.g. a swallowed `createPullRequest` failure),
+re-trigger `run-coder` for the feature run once it is confirmed still at `code_pushed`.
 
 `secret_leak_scan` (Phase 16, docs/07 "private chain-of-thought is never stored" automated
 verification) samples the 50 most-recently-written `agent_context_packs`/`agent_runs` rows and

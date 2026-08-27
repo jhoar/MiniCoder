@@ -11,22 +11,68 @@ import {
   exportDiagnostics,
 } from '@minicoder/api';
 import { requireNonBlankEnvVar } from '@minicoder/triggerdev';
+import type { ScmClient } from '@minicoder/core';
 import { createDbClientFromEnv } from '../db-client.js';
 
 /**
- * Issue #35: `--check-github` is opt-in specifically because — unlike every other `state doctor`
- * check — it needs a live GitHub credential, mirroring `github-reconciliation.ts`'s/`merge.ts`'s
- * `resolveDefaultGithubClientFactory`/`resolveGithubClient` pattern (a GitHub credential is a
- * single deployment-wide secret, not a per-call injected dependency).
+ * Issue #35 (generalized in docs/06 §Phase 18 Stage 5): `--check-scm` is opt-in specifically
+ * because — unlike every other `state doctor` check — it needs a live SCM-provider credential,
+ * mirroring `github-reconciliation.ts`'s/`merge.ts`'s `resolveDefaultGithubClientFactory`/
+ * `resolveGithubClient` pattern (a provider credential is a single deployment-wide secret per
+ * provider, not a per-call injected dependency). Resolves the concrete `ScmClient` implementation
+ * from the candidate repository's own `provider`/`base_url` columns rather than always
+ * constructing `OctokitGitHubClient` — a deployment whose projects span more than one provider
+ * needs the right client (and the right credential) per candidate, not just for GitHub.
+ * `--check-github` remains a supported, undocumented alias for `--check-scm` (see the `doctor`
+ * command below) purely for backward compatibility with existing scripts/runbooks.
  */
-async function resolveGithubClientForDoctor() {
-  const token = requireNonBlankEnvVar(
-    'GITHUB_TOKEN',
-    'state doctor --check-github requires a GitHub credential (GitHub App installation token ' +
-      'or PAT) to check for undiscovered PRs — see docs/07-security-and-secrets.md §3.',
-  );
-  const { OctokitGitHubClient } = await import('@minicoder/github');
-  return new OctokitGitHubClient({ auth: token });
+async function resolveScmClientForDoctor(
+  provider: string,
+  baseUrl: string | null,
+): Promise<ScmClient> {
+  switch (provider) {
+    case 'github': {
+      const token = requireNonBlankEnvVar(
+        'GITHUB_TOKEN',
+        'state doctor --check-scm requires a GitHub credential (GitHub App installation token ' +
+          'or PAT) to check for undiscovered PRs — see docs/07-security-and-secrets.md §3.',
+      );
+      const { OctokitGitHubClient } = await import('@minicoder/github');
+      return new OctokitGitHubClient({ auth: token });
+    }
+    case 'gitea': {
+      const token = requireNonBlankEnvVar(
+        'GITEA_TOKEN',
+        'state doctor --check-scm requires a Gitea personal/organization access token to check ' +
+          'for undiscovered PRs on a Gitea-provider repository — see docs/07-security-and-secrets.md §3.2.',
+      );
+      if (!baseUrl) {
+        throw new Error(
+          `state doctor --check-scm: a Gitea-provider repository has no base_url recorded; ` +
+            `cannot resolve which Gitea instance to query.`,
+        );
+      }
+      const { GiteaScmClient } = await import('@minicoder/gitea');
+      return new GiteaScmClient({ baseUrl, token });
+    }
+    case 'gitlab': {
+      const token = requireNonBlankEnvVar(
+        'GITLAB_TOKEN',
+        'state doctor --check-scm requires a GitLab personal/project access token to check ' +
+          'for undiscovered PRs on a GitLab-provider repository — see docs/07-security-and-secrets.md §3.2.',
+      );
+      if (!baseUrl) {
+        throw new Error(
+          `state doctor --check-scm: a GitLab-provider repository has no base_url recorded; ` +
+            `cannot resolve which GitLab instance to query.`,
+        );
+      }
+      const { GitlabScmClient } = await import('@minicoder/gitlab');
+      return new GitlabScmClient({ baseUrl, token });
+    }
+    default:
+      throw new Error(`state doctor --check-scm: unknown SCM provider "${provider}"`);
+  }
 }
 
 function isoNow(): string {
@@ -199,19 +245,25 @@ export function createStateCommand(): Command {
     .description('Detect stale locks, stuck outbox/inbox events, and orphaned runs')
     .option('--project <id>', 'Project ID')
     .option(
-      '--check-github',
-      'Also check GitHub directly for undiscovered PRs (issue #35) — opt-in, requires GITHUB_TOKEN',
+      '--check-scm',
+      'Also check the linked SCM provider(s) directly for undiscovered PRs (issue #35, ' +
+        'generalized in Stage 5) — opt-in, requires a provider credential ' +
+        '(GITHUB_TOKEN/GITEA_TOKEN/GITLAB_TOKEN as applicable)',
     )
-    .action(async (opts: { project?: string; checkGithub?: boolean }) => {
+    .option('--check-github', '[Deprecated alias for --check-scm, kept for backward compatibility]')
+    .action(async (opts: { project?: string; checkScm?: boolean; checkGithub?: boolean }) => {
       const db = await createDbClientFromEnv();
       try {
         const result = await runDoctorChecks(db, opts.project);
         const checks = [...result.checks];
         const healthy = result.healthy;
 
-        if (opts.checkGithub) {
-          const client = await resolveGithubClientForDoctor();
-          const divergences = await checkPrDiscoveryDivergence(db, client, opts.project);
+        if (opts.checkScm || opts.checkGithub) {
+          const divergences = await checkPrDiscoveryDivergence(
+            db,
+            resolveScmClientForDoctor,
+            opts.project,
+          );
           checks.push({
             name: 'pr_discovery_divergence',
             severity: divergences.length > 0 ? 'warning' : 'ok',
@@ -219,9 +271,9 @@ export function createStateCommand(): Command {
             count: divergences.length,
             details: divergences,
           });
-          // A live-GitHub divergence is a warning, not an error — github-reconciliation's own
-          // scheduled discovery pass will normally clear it on its own; report it here without
-          // failing the exit code the way a real error-severity check does.
+          // A live-SCM divergence is a warning, not an error — github-reconciliation's own
+          // scheduled discovery pass will normally clear it on its own (GitHub only, today); report
+          // it here without failing the exit code the way a real error-severity check does.
         }
 
         const output = {

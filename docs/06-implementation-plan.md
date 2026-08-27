@@ -2429,15 +2429,82 @@ config`) but this environment had no reachable Docker daemon. GitLab CE is a sub
   chain right after `@minicoder/gitea`), `pnpm lint`, `pnpm format:check`, and `pnpm test` (1019
   tests, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass.
 
-**Stage 5 — Cross-provider conformance.**
+**Stage 5 — Cross-provider conformance. ✓ Complete (2026-08-27), with caveats below.**
 
-- A provider-conformance suite (same shape as Phase 5's six-role adapter conformance suite) drives
-  one fixture PR lifecycle through `OctokitGitHubClient`/`GiteaScmClient`/`GitlabScmClient` in turn,
-  asserting the `ObservedPullRequestState` contract holds identically for all three.
-- Added to CI as a new matrix dimension alongside the existing mandatory SQLite/PostgreSQL matrix
-  (docs/04 §12's "Cross-Dialect Testing" convention, extended to cross-provider).
-- `checkPrDiscoveryDivergence()`/`state doctor --check-github` generalize their naming and become
-  provider-aware (still opt-in, still requiring a live credential).
+- **`packages/testing/src/scm-conformance.test.ts`** drives one fixture PR lifecycle (freshly
+  opened/pending review, approved+CI-passing, merged, plus merge/diff/list-branch/rate-limit calls
+  — 24 `describe.each`-parametrized tests total) through all three shipped `ScmClient`
+  implementations, asserting `ObservedPullRequestState`'s field types and enum membership hold
+  identically across all three. The suite deliberately asserts _shape_, not cross-provider value
+  equality, for three fields this plan's own "lowest common denominator, documented not silently
+  absorbed" framing already established as legitimately provider-specific:
+  `conversationsResolved` (Gitea's hardcoded `false` vs. GitHub/GitLab's real observations),
+  `getRemainingRateLimit()` (a concrete number for GitHub's mock vs. a large sentinel for
+  Gitea/GitLab), and `getPullRequestDiff()` (a real diff for Gitea's `.diff` endpoint vs. GitLab's
+  synthesized approximation) — the test file's own header comment documents each in full.
+- **Scope decision, made explicitly rather than defaulting to the plan text's literal wording**:
+  this is a single, directly-scoped Vitest file, not a Phase-5-style `runConformanceSuite()`/
+  `AdapterRegistry`-driven framework persisting results to a DB table. That framework's entire
+  reason to exist — auditing an _open, swappable set_ of independently-authored adapters against a
+  historical DB-backed record — doesn't apply here: there are exactly three `ScmClient`
+  implementations, ever, one per real named provider, and no live caller needing a historical audit
+  trail of "did each implementation conform on this date." Building a second
+  `*_conformance_results`-style table and registry for a fixed set of three would be exactly the
+  kind of unused, half-finished abstraction this repository's own operating principles warn
+  against. A parametrized suite that runs on every ordinary `pnpm test`/CI invocation is the
+  proportionate shape.
+- **GitHub substitution, not a live/Octokit-driven run.** `OctokitGitHubClient` has no injectable
+  HTTP-mocking seam in this codebase (confirmed: its own test file only unit-tests two pure helper
+  functions, never drives the class itself against mocked HTTP) and this environment has no live
+  GitHub credential. `MockGitHubClient` (`packages/testing/src/services/mock-github-client.ts`)
+  stands in instead — the identical deterministic `ScmClient` test seam every other GitHub-facing
+  scenario in this codebase already substitutes for a live Octokit call. Documented explicitly in
+  the test file's own header comment, not silently presented as having exercised
+  `OctokitGitHubClient` itself.
+- **`checkPrDiscoveryDivergence()` is now provider-aware**, closing the real, concrete gap this
+  stage's text pointed at: it took a `resolveClient: (provider, baseUrl) => Promise<ScmClient>`
+  factory instead of a single `client: ScmClient`; its SQL query now selects
+  `repositories.provider`/`.base_url` alongside the existing candidate columns; its result field
+  was renamed `prNumberOnGithub` → `prNumber` plus a new `provider` field (the old name no longer
+  made sense once the check itself is multi-provider), and resolved clients are cached per distinct
+  `(provider, baseUrl)` pair encountered so a project with several candidates against the same
+  repository doesn't reconstruct the client repeatedly.
+- **`packages/cli/src/commands/state.ts`'s `resolveGithubClientForDoctor()` → `resolveScmClientForDoctor(provider, baseUrl)`** — the actual, concrete gap found during this stage's
+  investigation: it had unconditionally constructed `OctokitGitHubClient` regardless of a
+  candidate's real provider. Now dispatches to `OctokitGitHubClient`/`GiteaScmClient`/
+  `GitlabScmClient` based on the repository row's own `provider` column, reading
+  `GITHUB_TOKEN`/`GITEA_TOKEN`/`GITLAB_TOKEN` respectively (`GITEA_TOKEN`/`GITLAB_TOKEN` are new —
+  no prior stage had established these env-var names, since no prior production caller needed a
+  live Gitea/GitLab credential) and requiring `base_url` for the two self-hosted providers.
+- **CLI flag generalized, with a backward-compatible alias.** `--check-github` is renamed
+  `--check-scm`; `--check-github` remains a fully supported, working alias (both set the same
+  underlying check) rather than a hard break, since it is documented across `USER-MANUAL.md`/
+  docs/00/docs/04/CLAUDE.md — an operator's existing script or runbook keeps working unchanged.
+  Every one of those doc references was updated to describe `--check-scm` as primary and
+  `--check-github` as the deprecated alias, including a new observation surfaced while updating
+  them: `github-reconciliation`'s own always-on scheduled auto-discovery
+  (`discoverMissingPullRequests()`) is, and remains, GitHub-only — Gitea and GitLab have no
+  equivalent scheduled discovery pass at all. This makes `state doctor --check-scm` not just an
+  on-demand convenience for Gitea/GitLab-provider repositories the way it is for GitHub, but
+  currently the _only_ automated path to discover a `code_pushed`-with-no-tracked-PR divergence on
+  those two providers. This is a real, honest gap surfaced by this stage's own work, not fixed here
+  (building a provider-generic scheduled discovery pass was not part of this stage's scope) —
+  tracked here for whoever picks up Stage 6 or later.
+- **CI matrix — no new workflow dimension was added, and this is a deliberate reading of the plan
+  text, not an omission.** Unlike docs/04 §12's mandatory SQLite/PostgreSQL matrix (two genuinely
+  different database engines the same code must run against in CI), the cross-provider conformance
+  suite runs entirely against fake-`fetch`/in-memory fixtures with zero live-daemon dependency — it
+  already runs in every ordinary `pnpm test`/CI invocation with no extra wiring needed. A literal
+  live-instance matrix (real Gitea + real GitLab containers, GitHub against a live or sandboxed
+  target) remains a real, explicitly-not-built gap: this environment has no reachable Docker daemon
+  (`docker info` fails), the same constraint already documented for
+  `infra/docker-compose.{gitea,gitlab}.yml` in Stages 3/4 — that dimension could not be built or
+  verified here and is not represented by an aspirational, untested CI YAML file.
+- Full monorepo `pnpm typecheck` (`@minicoder/gitea` added to `packages/testing`'s dependencies so
+  the conformance suite can import it — a genuine, previously-missing dependency, not present
+  before this stage), `pnpm lint`, `pnpm format:check`, and `pnpm test` (113 test files, 1043
+  tests passed, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all
+  pass.
 
 **Stage 6 — Operator-facing rollout.**
 

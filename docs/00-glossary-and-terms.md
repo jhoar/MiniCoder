@@ -528,7 +528,8 @@ minicoder state validate
 minicoder state reconcile --project <id>               # project-scoped (stale locks only)
 minicoder state reconcile --all                        # global (stale locks + stuck queues)
 minicoder state doctor
-minicoder state doctor --check-github                  # opt-in; requires GITHUB_TOKEN (issue #35)
+minicoder state doctor --check-scm                     # opt-in; requires a provider credential (GITHUB_TOKEN/GITEA_TOKEN/GITLAB_TOKEN) (issue #35, generalized in Stage 5)
+minicoder state doctor --check-github                  # deprecated alias for --check-scm, kept for backward compatibility
 minicoder state export-diagnostics
 minicoder state repair --project <id> --dry-run        # preview only (non-destructive; --project required)
 minicoder state repair --project <id> --apply --confirmation <token>  # guarded destructive apply

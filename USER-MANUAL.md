@@ -129,7 +129,11 @@ scheduled reconciliation pass as a fallback) and mirrors what it sees.
 
 **`GITHUB_TOKEN`** — used by the coder/reviewer adapters (push branches, open PRs), `minicoder
 merge ...` (merge, publish the `minicoder/review-gate` status check), `github-reconciliation`
-(list/read PRs, checks, commit statuses), and `state doctor --check-github`.
+(list/read PRs, checks, commit statuses), and `state doctor --check-scm` (formerly
+`--check-github`, still supported as a deprecated alias) for a GitHub-provider repository. A
+Gitea- or GitLab-provider repository instead needs `GITEA_TOKEN`/`GITLAB_TOKEN` (a Gitea
+personal/organization access token, a GitLab personal/project access token) for the same
+on-demand check.
 
 Fine-grained personal access tokens are recommended over classic tokens (narrower blast radius if
 leaked):
@@ -162,17 +166,17 @@ an arbitrary shared secret both sides must agree on: MiniCoder verifies each web
    openssl rand -hex 32
    ```
 2. `export GITHUB_WEBHOOK_SECRET=<that value>` (or set it in `.env`).
-3. Register the *same* value on the GitHub side: repository → **Settings → Webhooks → Add
+3. Register the _same_ value on the GitHub side: repository → **Settings → Webhooks → Add
    webhook**.
    - **Payload URL**: `https://<your-minicoder-host>/webhooks/github` (whichever process is
      receiving it — see 3.5's "pick one, not both" note for `api serve` vs `github serve`).
    - **Content type**: `application/json`.
    - **Secret**: paste the same value from step 1.
    - **Which events**: either "Send me everything," or, to match exactly what MiniCoder consumes,
-     select individually: *Pull requests*, *Pull request reviews*, *Pull request review comments*,
-     *Check runs*, *Check suites*, *Statuses*, *Pushes*.
+     select individually: _Pull requests_, _Pull request reviews_, _Pull request review comments_,
+     _Check runs_, _Check suites_, _Statuses_, _Pushes_.
    - Leave **Active** checked, then **Add webhook**.
-4. Rotating later: set the new value as `GITHUB_WEBHOOK_SECRET` and the *old* one as
+4. Rotating later: set the new value as `GITHUB_WEBHOOK_SECRET` and the _old_ one as
    `GITHUB_WEBHOOK_SECRET_PREVIOUS` (both are accepted during the rotation window), update the
    webhook's secret on GitHub to the new value, then drop `GITHUB_WEBHOOK_SECRET_PREVIOUS` once
    you're confident no in-flight deliveries still use the old one.
@@ -224,7 +228,9 @@ minicoder db validate        # confirms every expected table/index exists
 | API auth (server)            | `MINICODER_API_KEYS`                                        | JSON array of `{key, id, role, actorKind, displayName?}`                                                                 |
 | API auth (client/CLI/UI)     | `MINICODER_API_KEY`                                         | One raw key from the array above                                                                                         |
 | API location (client/CLI/UI) | `MINICODER_API_URL`                                         | Defaults to `http://localhost:4000`                                                                                      |
-| GitHub                       | `GITHUB_TOKEN`                                              | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-github`                                          |
+| GitHub                       | `GITHUB_TOKEN`                                              | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-scm` (GitHub-provider repos)                     |
+| Gitea                        | `GITEA_TOKEN`                                               | Used by `state doctor --check-scm` (Gitea-provider repos)                                                                |
+| GitLab                       | `GITLAB_TOKEN`                                              | Used by `state doctor --check-scm` (GitLab-provider repos)                                                               |
 | GitHub webhooks              | `GITHUB_WEBHOOK_SECRET`                                     | Required by both `minicoder github serve` and `minicoder api serve`                                                      |
 | GitHub webhooks (rotation)   | `GITHUB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
 | LLM provider                 | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL` | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters |
@@ -283,6 +289,7 @@ export MINICODER_API_KEY=<your-issued-key>
 minicoder status --project <id>
 minicoder features --project <id>
 ```
+
 `DB_*`/`GITHUB_WEBHOOK_SECRET`/adapter env vars are irrelevant here — only the API client vars
 above matter, since every read/dashboard command in 5.5 and the generic-dispatch commands in 5.0
 talk over HTTP, never the database directly.
@@ -839,14 +846,14 @@ All subcommands take `--feature-run <id>` (required), `--project <id>` (required
 
 ### 5.12 Diagnostics and repair — `minicoder state ...` (DB)
 
-| Subcommand           | Purpose                                                                               | Key flags                                                                           |
-| -------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `inspect`            | Show one project's or feature run's current state, locks, findings, recent events.    | `--project` or `--feature-run` (one required)                                       |
-| `validate`           | Confirm every feature-run state is a recognized value.                                | `--project`                                                                         |
-| `doctor`             | Detect stale locks, stuck queues, orphaned runs. Exits 1 if unhealthy.                | `--project`, `--check-github` (opt-in, needs `GITHUB_TOKEN`)                        |
-| `reconcile`          | Clear the anomalies `doctor` found.                                                   | `--project <id>` (project-scoped) or `--all` (global; one is required)              |
-| `export-diagnostics` | Dump full diagnostics as JSON.                                                        | `--project`, `--output <path>`                                                      |
-| `repair`             | Guarded, two-step repair of orphaned runs (5-minute single-use token, project-bound). | `--project` (required always), then `--dry-run` or `--apply --confirmation <token>` |
+| Subcommand           | Purpose                                                                               | Key flags                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `inspect`            | Show one project's or feature run's current state, locks, findings, recent events.    | `--project` or `--feature-run` (one required)                                                            |
+| `validate`           | Confirm every feature-run state is a recognized value.                                | `--project`                                                                                              |
+| `doctor`             | Detect stale locks, stuck queues, orphaned runs. Exits 1 if unhealthy.                | `--project`, `--check-scm` (opt-in, needs a provider credential; `--check-github` is a deprecated alias) |
+| `reconcile`          | Clear the anomalies `doctor` found.                                                   | `--project <id>` (project-scoped) or `--all` (global; one is required)                                   |
+| `export-diagnostics` | Dump full diagnostics as JSON.                                                        | `--project`, `--output <path>`                                                                           |
+| `repair`             | Guarded, two-step repair of orphaned runs (5-minute single-use token, project-bound). | `--project` (required always), then `--dry-run` or `--apply --confirmation <token>`                      |
 
 ### 5.13 Observability — `minicoder observability export-otel` (DB)
 
@@ -887,8 +894,10 @@ the block, use `minicoder human unblock`.
 **GitHub shows a PR merged but MiniCoder still shows `merge_ready`.**
 Run `minicoder merge finalize-if-github-merged --feature-run <id> --project <project>`.
 
-**Suspected drift between MiniCoder and GitHub (stuck locks, a PR MiniCoder never noticed).**
-`minicoder state doctor --project <project> --check-github` (needs `GITHUB_TOKEN`), then
+**Suspected drift between MiniCoder and its linked SCM provider (stuck locks, a PR MiniCoder never
+noticed).**
+`minicoder state doctor --project <project> --check-scm` (needs the relevant provider credential —
+`GITHUB_TOKEN`/`GITEA_TOKEN`/`GITLAB_TOKEN`; `--check-github` remains a deprecated alias), then
 `minicoder state reconcile --project <project>` (or `--all` for a global sweep, which also clears
 stuck queue entries).
 

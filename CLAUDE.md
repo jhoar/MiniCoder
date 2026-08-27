@@ -751,6 +751,17 @@ branchName, state?)`.** Before the main reconcile loop's candidate query, a
   (`packages/api/src/read-models/diagnostics.ts`'s `checkPrDiscoveryDivergence()`) surfaces the
   same class of divergence on demand — the only doctor check needing a live GitHub credential,
   which is why it is not part of `runDoctorChecks()`'s always-on pure-DB check list.
+  **Superseded by Stage 5 of the Generic SCM Interface plan (docs/06 §Phase 18):**
+  `checkPrDiscoveryDivergence()` now takes a `resolveClient: (provider, baseUrl) =>
+Promise<ScmClient>` factory instead of a single `client: ScmClient`, and its SQL query selects
+  `repositories.provider`/`.base_url` so a project spanning repositories on different SCM
+  providers resolves the correct client (and credential) per candidate. The CLI flag was renamed
+  `--check-scm` (`packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()`); the old
+  `--check-github` name is kept as a supported, undocumented alias. `discoverMissingPullRequests()`
+  itself (the always-on scheduled part of `github-reconciliation`) is unchanged and remains
+  GitHub-only — Gitea/GitLab have no equivalent scheduled auto-discovery pass, so `--check-scm` is
+  currently the _only_ automated discovery path for a `code_pushed`-with-no-tracked-PR divergence
+  on those two providers, not just an on-demand convenience the way it is for GitHub.
 - **`github-reconciliation` treats a per-candidate transient concurrency loss as a skip, not a
   batch abort.** A lock-gated candidate (`code_pushed`/`pr_opened`) whose
   `execution-lane:{projectId}` lock is held by another actor (the `start-next-feature` task, a
@@ -2555,8 +2566,9 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   cursor-pagination's raw `WHERE`/`ORDER BY id`/`created_at` clauses, which this function has none
   of.
 - **The two new `state doctor` checks added to `runDoctorChecks()` follow the existing
-  always-on, pure-DB check contract — neither needs a live GitHub credential**, unlike the
-  separately opt-in `checkPrDiscoveryDivergence()` (`--check-github`).
+  always-on, pure-DB check contract — neither needs a live SCM-provider credential**, unlike the
+  separately opt-in `checkPrDiscoveryDivergence()` (`--check-scm`, generalized in Stage 5 of the
+  Generic SCM Interface plan — `--check-github` remains a supported alias).
   `code_pushed_no_pull_request` (closing the previously explicitly-deferred LOW-3 gap — CLAUDE.md's
   Reference Coder Adapter Operational Constraints) uses a longer grace period (30 minutes) than
   `github-reconciliation`'s own discovery-pass interval specifically so a routine, still-in-flight

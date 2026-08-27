@@ -4,10 +4,14 @@ import type { DbClient, ScmClient } from '@minicoder/core';
 import { checkPrDiscoveryDivergence } from './diagnostics.js';
 
 /**
- * Issue #35: unit coverage for the opt-in `checkPrDiscoveryDivergence` doctor check —
- * `runDoctorChecks()` itself is pure-DB and untouched; this check needs a live `ScmClient`
- * (a fake here, mirroring `MockGitHubClient`'s shape) to ask GitHub whether an untracked
- * `code_pushed` feature run's branch already has an open PR.
+ * Issue #35 (generalized in docs/06 §Phase 18 Stage 5): unit coverage for the opt-in
+ * `checkPrDiscoveryDivergence` doctor check — `runDoctorChecks()` itself is pure-DB and untouched;
+ * this check needs a live `ScmClient` (a fake here, mirroring `MockGitHubClient`'s shape) to ask
+ * the linked SCM provider whether an untracked `code_pushed` feature run's branch already has an
+ * open PR. Since Stage 5 the check takes a `resolveClient(provider, baseUrl)` factory rather than
+ * a single client, so a project spanning repositories on different providers resolves the right
+ * client per candidate — these tests all use a single-provider (`github`) fixture and assert the
+ * resolver is called with the expected `('github', null)` arguments.
  */
 
 const PROJECT_ID = 'proj-pr-discovery-doctor';
@@ -75,6 +79,18 @@ function fakeGithubClient(
   };
 }
 
+/** Wraps a single fake client in a `resolveClient` factory, asserting every call is for `github`
+ * with no `baseUrl` — these fixtures never seed a Gitea/GitLab repository row. */
+function singleProviderResolver(
+  client: ScmClient,
+): (provider: string, baseUrl: string | null) => Promise<ScmClient> {
+  return async (provider, baseUrl) => {
+    expect(provider).toBe('github');
+    expect(baseUrl).toBeNull();
+    return client;
+  };
+}
+
 describe('checkPrDiscoveryDivergence', () => {
   it('reports a divergence when GitHub already has an open PR for an untracked branch', async () => {
     const db = createTestDb() as unknown as DbClient;
@@ -82,9 +98,13 @@ describe('checkPrDiscoveryDivergence', () => {
     const branchName = `minicoder/${featureRunId}`;
     const client = fakeGithubClient({ [branchName]: [{ prNumber: 42, state: 'open' }] });
 
-    const divergences = await checkPrDiscoveryDivergence(db, client, PROJECT_ID);
+    const divergences = await checkPrDiscoveryDivergence(
+      db,
+      singleProviderResolver(client),
+      PROJECT_ID,
+    );
 
-    expect(divergences).toEqual([{ featureRunId, branchName, prNumberOnGithub: 42 }]);
+    expect(divergences).toEqual([{ featureRunId, branchName, provider: 'github', prNumber: 42 }]);
   });
 
   it('reports no divergence when GitHub has no PR for the branch', async () => {
@@ -92,7 +112,11 @@ describe('checkPrDiscoveryDivergence', () => {
     await seedCodePushedFeatureRunWithNoTrackedPr(db);
     const client = fakeGithubClient({});
 
-    const divergences = await checkPrDiscoveryDivergence(db, client, PROJECT_ID);
+    const divergences = await checkPrDiscoveryDivergence(
+      db,
+      singleProviderResolver(client),
+      PROJECT_ID,
+    );
 
     expect(divergences).toEqual([]);
   });
@@ -135,7 +159,11 @@ describe('checkPrDiscoveryDivergence', () => {
       [`minicoder/${otherFeatureRunId}`]: [{ prNumber: 99, state: 'open' }],
     });
 
-    const divergences = await checkPrDiscoveryDivergence(db, client, PROJECT_ID);
+    const divergences = await checkPrDiscoveryDivergence(
+      db,
+      singleProviderResolver(client),
+      PROJECT_ID,
+    );
     expect(divergences).toEqual([]);
   });
 });

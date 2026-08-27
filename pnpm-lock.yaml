@@ -303,6 +303,9 @@ importers:
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core
+      '@minicoder/gitea':
+        specifier: workspace:*
+        version: link:../gitea
       '@minicoder/github':
         specifier: workspace:*
         version: link:../github

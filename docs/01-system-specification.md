@@ -289,7 +289,9 @@ branchName, state?)` lists PRs whose head matches a given branch, filtered by st
   (`discoverMissingPullRequests()`) to find and auto-track a PR for any `code_pushed` feature run
   with no `pull_requests` row yet — closing the gap where a completely missed initial `pr.opened`
   webhook previously required manual recovery (docs/04's Phase 7 runbook). A separate, opt-in
-  `state doctor --check-github` diagnostic surfaces the same divergence class on demand.
+  `state doctor --check-scm` diagnostic (docs/06 §Phase 18 Stage 5 — `--check-github` remains a
+  backward-compatible alias) surfaces the same divergence class on demand, resolving the correct
+  `ScmClient` implementation and credential per candidate repository's own `provider`.
 - **PR labels / status check:** MiniCoder publishes the status check `minicoder/review-gate`;
   blocking labels prevent merge (see §12).
 - **Merge method:** squash by default (configurable); **force-push to MiniCoder branches is

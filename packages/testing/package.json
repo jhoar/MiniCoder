@@ -12,6 +12,7 @@
   "dependencies": {
     "@minicoder/core": "workspace:*",
     "@minicoder/github": "workspace:*",
+    "@minicoder/gitea": "workspace:*",
     "@minicoder/gitlab": "workspace:*",
     "@minicoder/migrations": "workspace:*",
     "@minicoder/persistence-postgres": "workspace:*",
