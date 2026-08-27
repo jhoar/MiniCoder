@@ -1015,11 +1015,15 @@ resolver receives the seeded repository's real provider/`base_url`) and the pre-
 `gitlab-reconcile-fallback.test.ts` together now cover both halves — the task resolves the right
 client, and the algorithm correctly acts on what that client reports.
 
-**What remains GitHub-only.** `run-coder`'s coder push, `run-merge-gate`'s status-check
-publication, and `minicoder merge ...`/its API routes' real merge call still unconditionally
-construct `OctokitGitHubClient` — real, tracked follow-up work, not yet fixed. `run-review`'s
-reviewer diff fetch was fixed in the same follow-up pass as `github-reconciliation.ts`. See
-docs/06 §Phase 18 Stage 6's completion notes for the full, up-to-date list.
+**What remains GitHub-only.** After two same-day Stage 6 follow-ups, only `run-coder`'s
+coder-adapter clone/push credential (`resolveDefaultCoderAdapterFactory()`) still unconditionally
+requires `GITHUB_TOKEN` and embeds it under GitHub's own HTTPS Basic-Auth username convention —
+real, tracked follow-up work, not yet fixed (it needs a per-provider auth-convention decision
+verified against a live Gitea/GitLab instance, which this environment cannot do). `run-review`'s
+reviewer diff fetch, `run-merge-gate`'s status-check publication, `run-coder`'s own post-push
+`createPullRequest()` call, and `minicoder merge ...`/its API routes' real merge call were all
+fixed across the two follow-ups. See docs/06 §Phase 18 Stage 6's completion notes for the full,
+up-to-date writeup.
 
 ### Phase 8 — Execution Orchestrator Runbook
 

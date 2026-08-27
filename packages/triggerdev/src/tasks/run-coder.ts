@@ -7,13 +7,7 @@ import {
   TransactionalCommandExecutor,
   generateId,
 } from '@minicoder/core';
-import type {
-  CommandEnvelope,
-  CoderAgentAdapter,
-  CoderInput,
-  DbClient,
-  ScmClient,
-} from '@minicoder/core';
+import type { CommandEnvelope, CoderAgentAdapter, CoderInput, DbClient } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import type { AcquiredLock } from '@minicoder/workflow';
 import type { RunCoderPayload } from './types.js';
@@ -21,6 +15,7 @@ import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 import { requireNonBlankEnvVar } from './env.js';
 import { budgetPreflightCheck, resolveEstimatedCostUsd } from './budget-preflight.js';
+import { resolveDefaultScmClient, type ScmClientResolver } from './scm-client-resolver.js';
 
 export type { RunCoderPayload };
 
@@ -46,38 +41,30 @@ function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
-export type GithubClientFactory = () => Promise<ScmClient>;
 /** Builds a fresh `CoderAgentAdapter` instance for this one run, given the project's repo URL —
  * a factory (not a singleton) because a single deployment can serve multiple projects with
  * different repos, and `CoderInput` itself carries no repo/credential fields (docs/06 Phase 9). */
 export type CoderAdapterFactory = (repoUrl: string) => Promise<CoderAgentAdapter>;
 
 /**
- * No live ScmClient is injectable at the Trigger.dev task boundary the way an adapter
- * instance is — constructs an OctokitGitHubClient directly from env, mirroring
- * github-reconciliation.ts's resolveDefaultGithubClientFactory (GitHub credentials are a single
- * deployment-wide secret, not a per-call injected dependency). `requireNonBlankEnvVar` is shared
- * with that task (LOW-1 code-review fix, round 5) so both entrypoints reject whitespace-only
- * required env vars identically instead of drifting apart.
- */
-function resolveDefaultGithubClientFactory(): GithubClientFactory {
-  return async () => {
-    const token = requireNonBlankEnvVar(
-      'GITHUB_TOKEN',
-      'run-coder requires a GitHub credential (GitHub App installation token or PAT) to open a ' +
-        'pull request after pushing — see docs/07-security-and-secrets.md §3.',
-    );
-    const { OctokitGitHubClient } = await import('@minicoder/github');
-    return new OctokitGitHubClient({ auth: token });
-  };
-}
-
-/**
  * Constructs the real reference `CodexCoderAdapter` from env config (sandbox image/network,
  * code-generation endpoint, GitHub token) — a dynamic import so `packages/triggerdev` only pays
- * for `@minicoder/adapters-coder` when this default path is actually exercised, the same posture
- * `resolveDefaultGithubClientFactory` takes for `@minicoder/github`. Test scenarios inject
- * `MockCoderAdapter` directly instead of going through this factory.
+ * for `@minicoder/adapters-coder` when this default path is actually exercised. Test scenarios
+ * inject `MockCoderAdapter` directly instead of going through this factory.
+ *
+ * **Known, tracked gap (docs/06 §Phase 18 Stage 6): this factory's clone/push credential path
+ * remains GitHub-only**, unlike `createPullRequest()`'s client resolution below (fixed in the
+ * same pass). `CodexCoderAdapterOptions.githubToken` is embedded into the clone/push remote URL by
+ * `workspace.ts`'s `authenticatedRemote()` under a hardcoded `x-access-token` HTTPS Basic-Auth
+ * username — GitHub's own documented convention, but not GitLab's (`oauth2:<token>`) or Gitea's
+ * (`<username>:<token>`, or a bare token as username). Fixing this correctly requires deciding a
+ * per-provider username convention and verifying it against a live Gitea/GitLab instance — this
+ * environment has no reachable Docker daemon (the same constraint documented for
+ * `infra/docker-compose.{gitea,gitlab}.yml` in Stages 3/4), so shipping an unverified guess at the
+ * auth convention risks a worse failure mode (a confusing 401 that looks like a token-permissions
+ * problem) than the current, honestly-broken "always targets github.com" behavior. The sandboxed
+ * egress-proxy allow-list (`infra/docker/coder-sandbox/egress-proxy/filter.txt`) is also still
+ * GitHub-host-only, for the same reason. Left as real, tracked follow-up work, not fixed here.
  */
 function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
   return async (repoUrl: string) => {
@@ -179,6 +166,8 @@ interface RepositoryRow {
   owner: string;
   name: string;
   default_branch: string;
+  provider: string;
+  base_url: string | null;
 }
 
 interface FeatureRunRow {
@@ -195,7 +184,12 @@ interface FeatureRequestRow {
 
 export interface RunCoderDeps {
   readonly coderAdapterFactory?: CoderAdapterFactory;
-  readonly githubClientFactory?: GithubClientFactory;
+  /** Resolves the `ScmClient` used to open the pull request after a successful push (Stage 6
+   * write-pipeline follow-up, docs/06 §Phase 18) — the correct implementation/credential for this
+   * run's repository's own `provider`/`base_url`, instead of unconditionally constructing
+   * `OctokitGitHubClient`. Does NOT affect the coder adapter's own clone/push credential, which
+   * remains GitHub-only (see `resolveDefaultCoderAdapterFactory()`'s doc comment above). */
+  readonly resolveScmClient?: ScmClientResolver;
 }
 
 /**
@@ -215,7 +209,7 @@ export async function runImpl(
   deps: RunCoderDeps = {},
 ): Promise<RunCoderResult> {
   const coderAdapterFactory = deps.coderAdapterFactory ?? resolveDefaultCoderAdapterFactory();
-  const githubClientFactory = deps.githubClientFactory ?? resolveDefaultGithubClientFactory();
+  const resolveScmClient = deps.resolveScmClient ?? resolveDefaultScmClient('run-coder');
   const { projectId, featureRunId, correlationId, coderAdapterName } = payload;
 
   const runRows = await db.query<FeatureRunRow>(
@@ -248,7 +242,7 @@ export async function runImpl(
     [run.feature_request_id],
   );
   const repoRows = await db.query<RepositoryRow>(
-    `SELECT owner, name, default_branch FROM repositories WHERE project_id = ? LIMIT 1`,
+    `SELECT owner, name, default_branch, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
     [projectId],
   );
   const repo = repoRows[0];
@@ -256,6 +250,9 @@ export async function runImpl(
   if (!repo || !feature) {
     return { projectId, featureRunId, pushed: false, prNumber: null };
   }
+  // Deliberately still hardcoded to github.com — see resolveDefaultCoderAdapterFactory()'s doc
+  // comment above for why generalizing this clone URL (and its paired auth convention) is a
+  // separate, not-yet-fixed piece of the Stage 6 write-pipeline follow-up.
   const repoUrl = `https://github.com/${repo.owner}/${repo.name}.git`;
 
   // Phase 16 pre-flight budget forecast (docs/01 §5.11 "Forecast before run"): opt-in via
@@ -423,7 +420,7 @@ export async function runImpl(
   // must not roll back or re-throw past the already-committed state transition above.
   let prNumber: number | null = null;
   try {
-    const client = await githubClientFactory();
+    const client = await resolveScmClient(repo.provider, repo.base_url);
     const created = await client.createPullRequest({
       owner: repo.owner,
       repo: repo.name,

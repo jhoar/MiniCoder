@@ -120,7 +120,7 @@ describe('run-merge-gate', () => {
         featureRunId,
       },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
 
     expect(result.evaluated).toBe(true);
@@ -150,7 +150,7 @@ describe('run-merge-gate', () => {
         featureRunId,
       },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
 
     expect(result.evaluated).toBe(true);
@@ -179,7 +179,7 @@ describe('run-merge-gate', () => {
     const result = await runImpl(
       { projectId: PROJECT_ID, correlationId: 'corr-3', idempotencyKey: 'idem-3', featureRunId },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
 
     expect(result.evaluated).toBe(false);
@@ -198,7 +198,7 @@ describe('run-merge-gate', () => {
     const result = await runImpl(
       { projectId: PROJECT_ID, correlationId: 'corr-4', idempotencyKey: 'idem-4', featureRunId },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
 
     expect(result.approved).toBe(true);
@@ -214,7 +214,7 @@ describe('run-merge-gate', () => {
     const firstResult = await runImpl(
       { projectId: PROJECT_ID, correlationId: 'corr-5a', idempotencyKey: 'idem-5a', featureRunId },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
     expect(firstResult.approved).toBe(true);
 
@@ -231,7 +231,7 @@ describe('run-merge-gate', () => {
     const secondResult = await runImpl(
       { projectId: PROJECT_ID, correlationId: 'corr-5b', idempotencyKey: 'idem-5b', featureRunId },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
     expect(secondResult.approved).toBe(true);
 
@@ -251,7 +251,7 @@ describe('run-merge-gate', () => {
     const result = await runImpl(
       { projectId: PROJECT_ID, correlationId: 'corr-6', idempotencyKey: 'idem-6', featureRunId },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
 
     expect(result.approved).toBe(false);
@@ -267,7 +267,7 @@ describe('run-merge-gate', () => {
     const result = await runImpl(
       { projectId: PROJECT_ID, correlationId: 'corr-7', idempotencyKey: 'idem-7', featureRunId },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
 
     expect(result.approved).toBe(false);
@@ -283,10 +283,81 @@ describe('run-merge-gate', () => {
     const result = await runImpl(
       { projectId: PROJECT_ID, correlationId: 'corr-8', idempotencyKey: 'idem-8', featureRunId },
       db,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
 
     expect(result.approved).toBe(false);
     expect(result.reasons.join(' ')).toContain('base branch');
+  });
+});
+
+/**
+ * Stage 6 write-pipeline follow-up (docs/06 §Phase 18): before this fix, `runImpl` always
+ * resolved a `GithubClientFactory` with no provider argument, so a GitLab/Gitea-provider
+ * project's status-check publication always went through `OctokitGitHubClient`. Asserts
+ * `resolveScmClient` now receives the repository row's own `provider`/`base_url`.
+ */
+describe('run-merge-gate (Stage 6: provider-aware client resolution)', () => {
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-run-merge-gate-provider-gitlab';
+    insertTestProject(db, projectId);
+
+    const planId = `plan-${projectId}`;
+    const frId = `fr-${projectId}-1`;
+    const featureRunId = `run-${projectId}-1`;
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Add widget', 'Description', 'feature', 1, 'under_review', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'under_review', 1, datetime('now'), datetime('now'))`,
+      [featureRunId, frId],
+    );
+    await db.execute(
+      `INSERT INTO pull_requests
+         (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state,
+          ci_status, mergeable, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES (?, ?, 21, 'minicoder/FR-001', 'main', 'headsha1', 'open', 'approved', 'passed', 1, '[]', 0, 1, datetime('now'), datetime('now'))`,
+      [`pr-${featureRunId}`, featureRunId],
+    );
+    await db.execute(
+      `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'running', 1, datetime('now'), datetime('now'))`,
+      [`ws-${projectId}`, projectId, featureRunId],
+    );
+
+    const client = fakeGithubClient();
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+
+    await runImpl(
+      {
+        projectId,
+        correlationId: 'corr-run-merge-gate-provider-1',
+        idempotencyKey: 'idem-run-merge-gate-provider-1',
+        featureRunId,
+      },
+      db,
+      {
+        resolveScmClient: async (provider: string, baseUrl: string | null) => {
+          resolveCalls.push({ provider, baseUrl });
+          return client;
+        },
+      },
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
   });
 });

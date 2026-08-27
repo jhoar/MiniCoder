@@ -160,19 +160,24 @@ These are locked decisions that appear throughout the docs. Do not contradict or
    `packages/core/src/scm/`); **Gitea and GitLab are also shipped** (`packages/gitea`,
    `packages/gitlab` — full `ScmClient` implementations, webhook receivers, CLI tooling, and a
    cross-provider conformance suite, docs/06 §Phase 18's "Generic SCM Interface" plan, Stages 0–5).
-   **A real, tracked gap remains in part of the production write pipeline.**
-   `run-coder`, `run-merge-gate`, and `minicoder merge ...`/its API routes still unconditionally
-   construct `OctokitGitHubClient` regardless of a project's actual `repositories.provider` — a
-   Gitea/GitLab-provider project can be diagnosed (`state doctor --check-scm`), receive webhooks,
-   have its scheduled reconciliation observe the right provider, and be AI-reviewed today, but
-   cannot yet be coded, merge-gated, or merged through the automated pipeline.
-   `github-reconciliation`'s scheduled task and `run-review`'s diff fetch were fixed as a same-day
-   Stage 6 follow-up (`packages/triggerdev/src/tasks/scm-client-resolver.ts`'s
-   `resolveDefaultScmClient()`, the same dispatch-by-`repositories.provider` pattern
-   `packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()` already establishes).
-   Making the three remaining call sites provider-aware is real, documented follow-up work — see
-   docs/06 §Phase 18 Stage 6's completion notes for the full list — not silently assumed done
-   because the interface and most read/observation paths already are. The scheduled reconciliation
+   **A single, narrow, tracked gap remains in the production write pipeline: a Gitea/GitLab-
+   provider project's coder adapter still cannot clone/push its own repository.**
+   `run-coder`'s coder-adapter credential path (`resolveDefaultCoderAdapterFactory()`) still
+   requires only `GITHUB_TOKEN` and embeds it into the git remote URL under a hardcoded
+   `x-access-token` HTTPS Basic-Auth username (GitHub's own convention, not GitLab's `oauth2:<token>`
+   or Gitea's `<username>:<token>`) — fixing it needs a per-provider auth-convention decision
+   verified against a live instance, which this environment cannot do (no reachable Docker daemon).
+   Every other production write-path call site — `github-reconciliation`'s scheduled task,
+   `run-review`'s diff fetch, `run-merge-gate`'s status-check publication, `run-coder`'s own
+   post-push `createPullRequest()` call, and `minicoder merge ...`/its two API routes' real merge
+   call — was made provider-aware across two same-day Stage 6 follow-ups
+   (`packages/triggerdev/src/tasks/scm-client-resolver.ts`'s `resolveDefaultScmClient()`, the same
+   dispatch-by-`repositories.provider` pattern `packages/cli/src/commands/state.ts`'s
+   `resolveScmClientForDoctor()` already establishes). A Gitea/GitLab-provider project can now be
+   diagnosed, receive webhooks, have its scheduled reconciliation and AI review run correctly, be
+   merge-gated, and be merged — the one remaining step it cannot do automatically is have its code
+   pushed by the coder adapter. See docs/06 §Phase 18 Stage 6's completion notes for the full
+   writeup — not silently assumed done because almost everything else already is. The scheduled reconciliation
    task keeps its literal name (`github-reconciliation`, one of the no-drift
    canonical task IDs, docs/00 §3.12) regardless of which provider it ends up reconciling — same
    precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.

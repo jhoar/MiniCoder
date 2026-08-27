@@ -3,21 +3,28 @@
  * `packages/api/src/read-models/diagnostics.ts`'s `ScmClientResolver` and
  * `packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()` already established for
  * `state doctor --check-scm` (docs/06 §Phase 18 Stage 5). This is the write-pipeline follow-up
- * flagged in that stage's completion notes: production write-path tasks (starting with
- * `github-reconciliation.ts`/`run-review.ts`) unconditionally constructed `OctokitGitHubClient`
- * regardless of a candidate repository's actual `repositories.provider`. This module is shared
- * (not copy-pasted per task, the way the pre-Stage-5 `GithubClientFactory` shape was duplicated
- * across five call sites) so `GITHUB_TOKEN`/`GITEA_TOKEN`/`GITLAB_TOKEN` resolution and error
- * messages stay identical across every task that adopts it.
+ * flagged in that stage's completion notes: every production write-path caller used to
+ * unconditionally construct `OctokitGitHubClient` regardless of a candidate repository's actual
+ * `repositories.provider`. This module is shared (not copy-pasted per call site, the way the
+ * pre-Stage-5 `GithubClientFactory` shape was duplicated five times) so
+ * `GITHUB_TOKEN`/`GITEA_TOKEN`/`GITLAB_TOKEN` resolution and error messages stay identical
+ * everywhere it's adopted.
  *
- * Only `github-reconciliation.ts` and `run-review.ts` use this so far — both are read-only
- * (fetch PR/MR state, never push code or execute a merge). `run-coder.ts`/`run-merge-gate.ts`/
- * `minicoder merge ...`/its API routes still use the older, GitHub-only `GithubClientFactory`
- * shape (`() => Promise<ScmClient>`, no provider argument) and were deliberately left unconverted
- * in this pass — they perform destructive/security-sensitive actions (pushing code, merging PRs)
- * that warrant their own, separately-reviewed follow-up rather than being folded into the same
- * change as the read-only paths. See docs/06 §Phase 18 Stage 6's completion notes for the full
- * list of remaining call sites.
+ * Adopted by `github-reconciliation.ts`, `run-review.ts` (reviewer diff fetch), `run-merge-gate.ts`
+ * (status-check publication), `run-coder.ts` (the post-push `createPullRequest()` call only — see
+ * below), `packages/cli/src/commands/merge.ts`, and its two API-route twins
+ * (`merge-if-ready-route.ts`/`finalize-if-github-merged-route.ts`) — every production
+ * `ScmClient`-consuming call site this codebase has, with one deliberate, documented exception:
+ * `run-coder.ts`'s coder-adapter clone/push credential path (`resolveDefaultCoderAdapterFactory()`)
+ * remains GitHub-only. That path embeds a token into the git remote URL under a hardcoded
+ * `x-access-token` HTTPS Basic-Auth username (`workspace.ts`'s `authenticatedRemote()`) — GitHub's
+ * own documented convention, but not GitLab's (`oauth2:<token>`) or Gitea's (`<username>:<token>`).
+ * Generalizing it correctly requires deciding a per-provider username convention and verifying it
+ * against a live Gitea/GitLab instance, which this environment cannot do (no reachable Docker
+ * daemon — the same constraint documented for `infra/docker-compose.{gitea,gitlab}.yml`), so it
+ * was left as real, tracked follow-up work rather than shipping an unverified guess. See
+ * `run-coder.ts`'s `resolveDefaultCoderAdapterFactory()` doc comment and docs/06 §Phase 18 Stage
+ * 6's completion notes for the full writeup.
  */
 import type { ScmClient } from '@minicoder/core';
 import { requireNonBlankEnvVar } from './env.js';

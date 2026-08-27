@@ -93,7 +93,7 @@ export const mergeGateScenario: Scenario = {
       },
       runRunMergeGate,
       undefined,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
     const fr201AfterGate = await getFeatureRunByFrId(ctx, 'FR-201');
     assertEqual(
@@ -179,7 +179,7 @@ export const mergeGateScenario: Scenario = {
       },
       runRunMergeGate,
       undefined,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
     assertEqual('FR-202 gate reports not approved', mgResult202.result.approved, false);
     const fr202AfterGate = await getFeatureRunByFrId(ctx, 'FR-202');

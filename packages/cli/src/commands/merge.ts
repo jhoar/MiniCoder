@@ -14,7 +14,7 @@ import {
   publishMergeGateStatusCheck,
 } from '@minicoder/core';
 import type { CommandEnvelope, ScmClient } from '@minicoder/core';
-import { humanActor, systemActor, requireNonBlankEnvVar } from '@minicoder/triggerdev';
+import { humanActor, systemActor, resolveDefaultScmClient } from '@minicoder/triggerdev';
 
 type DbClient = Awaited<ReturnType<typeof createDbClientFromEnv>>;
 
@@ -34,6 +34,8 @@ interface PullRequestRow {
 interface RepositoryRow {
   owner: string;
   name: string;
+  provider: string;
+  base_url: string | null;
 }
 
 async function fetchFeatureRun(
@@ -76,21 +78,6 @@ async function publishStatusCheckSafely(
       err,
     );
   }
-}
-
-/**
- * No live ScmClient is injectable at the CLI boundary — mirrors
- * `github-reconciliation.ts`/`run-coder.ts`'s `resolveDefaultGithubClientFactory` pattern (a
- * GitHub credential is a single deployment-wide secret, not a per-call injected dependency).
- */
-async function resolveGithubClient(): Promise<ScmClient> {
-  const token = requireNonBlankEnvVar(
-    'GITHUB_TOKEN',
-    'minicoder merge merge-if-ready requires a GitHub credential (GitHub App installation token ' +
-      'or PAT) to perform the real merge — see docs/07-security-and-secrets.md §3.',
-  );
-  const { OctokitGitHubClient } = await import('@minicoder/github');
-  return new OctokitGitHubClient({ auth: token });
 }
 
 /**
@@ -140,7 +127,7 @@ export function createMergeCommand(): Command {
             [opts.featureRun],
           );
           const repoRows = await db.query<RepositoryRow>(
-            `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+            `SELECT owner, name, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
             [opts.project],
           );
           const pr = prRows[0];
@@ -150,7 +137,10 @@ export function createMergeCommand(): Command {
               `Cannot merge feature run ${opts.featureRun}: no tracked pull request or repository`,
             );
           }
-          const githubClient = await resolveGithubClient();
+          const githubClient = await resolveDefaultScmClient('minicoder merge')(
+            repo.provider,
+            repo.base_url,
+          );
 
           const mergeReadyEnvelope: CommandEnvelope<Record<string, unknown>> = {
             commandId: generateId(),
@@ -356,7 +346,7 @@ export function createMergeCommand(): Command {
           [opts.featureRun],
         );
         const repoRows = await db.query<RepositoryRow>(
-          `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+          `SELECT owner, name, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
           [opts.project],
         );
         const pr = prRows[0];
@@ -369,7 +359,10 @@ export function createMergeCommand(): Command {
 
         // Re-verify against GitHub directly rather than trusting the caller's assumption — this
         // command must never record a merge that didn't actually happen.
-        const githubClient = await resolveGithubClient();
+        const githubClient = await resolveDefaultScmClient('minicoder merge')(
+          repo.provider,
+          repo.base_url,
+        );
         const observed = await githubClient.getPullRequest(repo.owner, repo.name, pr.pr_number);
         if (!observed || observed.state !== 'merged' || !observed.mergedAt) {
           throw new Error(

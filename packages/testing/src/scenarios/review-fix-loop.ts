@@ -118,7 +118,7 @@ export const reviewFixLoopScenario: Scenario = {
       },
       runRunCoder,
       undefined,
-      { coderAdapterFactory: async () => coder, githubClientFactory: async () => client },
+      { coderAdapterFactory: async () => coder, resolveScmClient: async () => client },
     );
 
     const fr1AfterCoder = await db.query<FeatureRunRow>(

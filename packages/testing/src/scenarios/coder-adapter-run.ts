@@ -82,7 +82,7 @@ export const coderAdapterRunScenario: Scenario = {
       },
       runRunCoder,
       undefined,
-      { coderAdapterFactory: async () => successAdapter, githubClientFactory: async () => client },
+      { coderAdapterFactory: async () => successAdapter, resolveScmClient: async () => client },
     );
 
     assertEqual('run-coder pushed', result.result.pushed, true);
@@ -143,7 +143,7 @@ export const coderAdapterRunScenario: Scenario = {
         undefined,
         {
           coderAdapterFactory: async () => failingAdapter,
-          githubClientFactory: async () => client,
+          resolveScmClient: async () => client,
         },
       );
     } catch (err) {

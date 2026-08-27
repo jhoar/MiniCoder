@@ -26,10 +26,10 @@ Subsystem names:
 - MiniCoder Agent Adapter Architecture
 - MiniCoder Workflow Layer (implemented by an in-repo DB-backed task queue, `packages/triggerdev/` — formerly Trigger.dev)
 - MiniCoder SCM Integration (`packages/github`, `packages/gitea`, `packages/gitlab` are all shipped
-  `ScmClient` implementations — see `06-implementation-plan.md` §Phase 18; the coder-push,
-  merge-gate, and real-merge write-path call sites remain GitHub-only, a real tracked gap
-  documented in that plan's Stage 6 completion notes — scheduled reconciliation and reviewer diff
-  fetch were made provider-aware as a same-day Stage 6 follow-up)
+  `ScmClient` implementations — see `06-implementation-plan.md` §Phase 18; every write-path call
+  site is provider-aware as of two same-day Stage 6 follow-ups except the coder adapter's own
+  clone/push credential, a real, narrowly-tracked gap documented in that plan's Stage 6 completion
+  notes)
 - MiniCoder Orchestrator API
 - MiniCoder Text UI
 - MiniCoder Web UI
@@ -47,11 +47,11 @@ SCM provider       = authoritative repository, branch, commit, PR, review, CI/ch
                      conversation, mergeability, and merge state. GitHub (`OctokitGitHubClient`,
                      `packages/github`), Gitea (`GiteaScmClient`, `packages/gitea`), and GitLab
                      (`GitlabScmClient`, `packages/gitlab`) are all shipped `ScmClient`
-                     implementations (see `06-implementation-plan.md` §Phase 18) for
-                     observation/diagnostics, scheduled reconciliation, and the reviewer's diff
-                     fetch (all provider-aware since Stage 6); the coder-push/merge-gate/
-                     real-merge write-path call sites are still GitHub-only — a real, tracked gap
-                     (Stage 6's completion notes).
+                     implementations (see `06-implementation-plan.md` §Phase 18); every write-path
+                     call site (scheduled reconciliation, reviewer diff fetch, merge-gate status
+                     checks, PR creation, the real merge call) is provider-aware since Stage 6,
+                     except the coder adapter's own clone/push credential — a real, narrowly-
+                     tracked gap (Stage 6's completion notes).
 SCM webhooks       = PRIMARY source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism. Implemented by the `github-reconciliation`
                      task (docs §3.12), which keeps that literal name regardless of which provider

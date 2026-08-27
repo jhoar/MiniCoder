@@ -9,10 +9,7 @@ import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAllReadRoutes } from './routes/reads/index.js';
 import { buildCommandRegistry } from './commands/registry.js';
 import { registerGenericDispatchRoute } from './commands/generic-dispatch-route.js';
-import {
-  registerMergeIfReadyRoute,
-  type GithubClientFactory,
-} from './commands/merge-if-ready-route.js';
+import { registerMergeIfReadyRoute } from './commands/merge-if-ready-route.js';
 import { registerFinalizeIfGithubMergedRoute } from './commands/finalize-if-github-merged-route.js';
 import {
   registerTaskTriggerRoutes,
@@ -20,16 +17,20 @@ import {
   type TaskTriggerClient,
 } from './commands/task-trigger-routes.js';
 import { registerDiagnosticsRoutes } from './commands/diagnostics-routes.js';
+import type { ScmClientResolver } from '@minicoder/triggerdev';
 
 export interface BuildAppOptions {
   db: DbClient;
   apiKeyProvider: ApiKeyProvider;
   webhookSecrets: string[];
-  /** Opt-in — Gitea is a staged provider (docs/06 §Phase 18); omit to leave `/webhooks/gitea` unmounted. */
+  /** Opt-in — omit to leave `/webhooks/gitea` unmounted (docs/06 §Phase 18 Stages 3–4). */
   giteaWebhookSecrets?: string[];
-  /** Opt-in — GitLab is a staged provider (docs/06 §Phase 18); omit to leave `/webhooks/gitlab` unmounted. */
+  /** Opt-in — omit to leave `/webhooks/gitlab` unmounted (docs/06 §Phase 18 Stages 3–4). */
   gitlabWebhookSecrets?: string[];
-  githubClientFactory?: GithubClientFactory;
+  /** Stage 6 write-pipeline follow-up (docs/06 §Phase 18): resolves the correct `ScmClient`
+   * implementation/credential per repository's own `provider`/`base_url`, instead of
+   * unconditionally constructing `OctokitGitHubClient`. */
+  resolveScmClient?: ScmClientResolver;
   taskTriggerClient?: TaskTriggerClient;
 }
 
@@ -55,10 +56,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 
   const registry = buildCommandRegistry();
   registerGenericDispatchRoute(app, { db: opts.db, registry });
-  registerMergeIfReadyRoute(app, { db: opts.db, githubClientFactory: opts.githubClientFactory });
+  registerMergeIfReadyRoute(app, { db: opts.db, resolveScmClient: opts.resolveScmClient });
   registerFinalizeIfGithubMergedRoute(app, {
     db: opts.db,
-    githubClientFactory: opts.githubClientFactory,
+    resolveScmClient: opts.resolveScmClient,
   });
   registerTaskTriggerRoutes(app, {
     taskTriggerClient: opts.taskTriggerClient ?? unconfiguredTaskTriggerClient(),

@@ -4,7 +4,7 @@ import { UserRole } from '@minicoder/core';
 import { buildApp } from './app.js';
 import { ApiKeyProvider } from './auth/api-key-provider.js';
 import type { TaskTriggerClient } from './commands/task-trigger-routes.js';
-import type { GithubClientFactory } from './commands/merge-if-ready-route.js';
+import type { ScmClientResolver } from '@minicoder/triggerdev';
 
 export const TEST_OPERATOR_KEY = 'test-operator-key';
 export const TEST_APPROVER_KEY = 'test-approver-key';
@@ -22,7 +22,7 @@ export function testApiKeyProvider(): ApiKeyProvider {
 
 export async function buildTestApp(opts?: {
   taskTriggerClient?: TaskTriggerClient;
-  githubClientFactory?: GithubClientFactory;
+  resolveScmClient?: ScmClientResolver;
 }) {
   const db = createTestDb() as unknown as DbClient;
   const app = await buildApp({
@@ -32,7 +32,7 @@ export async function buildTestApp(opts?: {
     giteaWebhookSecrets: ['test-gitea-webhook-secret'],
     gitlabWebhookSecrets: ['test-gitlab-webhook-secret'],
     taskTriggerClient: opts?.taskTriggerClient,
-    githubClientFactory: opts?.githubClientFactory,
+    resolveScmClient: opts?.resolveScmClient,
   });
   return { app, db };
 }

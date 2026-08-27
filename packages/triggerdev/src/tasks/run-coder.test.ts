@@ -176,7 +176,7 @@ describe('run-coder', () => {
     const client = fakeGithubClient();
     const deps: RunCoderDeps = {
       coderAdapterFactory: async () => adapter,
-      githubClientFactory: async () => client,
+      resolveScmClient: async () => client,
     };
 
     const result = await runImpl(
@@ -276,7 +276,7 @@ describe('run-coder', () => {
         coderAdapterName: 'FakeCoderAdapter',
       },
       db,
-      { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
+      { coderAdapterFactory: async () => adapter, resolveScmClient: async () => client },
     );
 
     expect(result.pushed).toBe(true);
@@ -308,7 +308,7 @@ describe('run-coder', () => {
           coderAdapterName: 'FakeCoderAdapter',
         },
         db,
-        { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
+        { coderAdapterFactory: async () => adapter, resolveScmClient: async () => client },
       ),
     ).rejects.toThrow('generation failed');
 
@@ -343,7 +343,7 @@ describe('run-coder', () => {
         coderAdapterName: 'FakeCoderAdapter',
       },
       db,
-      { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
+      { coderAdapterFactory: async () => adapter, resolveScmClient: async () => client },
     );
 
     expect(client.createdPullRequests).toHaveLength(1);
@@ -390,7 +390,7 @@ describe('run-coder', () => {
           db,
           {
             coderAdapterFactory: async () => fakeCoderAdapter('success'),
-            githubClientFactory: async () => fakeGithubClient(),
+            resolveScmClient: async () => fakeGithubClient(),
           },
         );
 
@@ -425,7 +425,7 @@ describe('run-coder', () => {
         db,
         {
           coderAdapterFactory: async () => fakeCoderAdapter('success'),
-          githubClientFactory: async () => fakeGithubClient(),
+          resolveScmClient: async () => fakeGithubClient(),
         },
       );
 
@@ -472,7 +472,7 @@ describe('run-coder', () => {
           db,
           {
             coderAdapterFactory: async () => fakeCoderAdapter('success'),
-            githubClientFactory: async () => fakeGithubClient(),
+            resolveScmClient: async () => fakeGithubClient(),
           },
         );
 
@@ -503,7 +503,7 @@ describe('run-coder', () => {
         db,
         {
           coderAdapterFactory: async () => fakeCoderAdapter('success'),
-          githubClientFactory: async () => fakeGithubClient(),
+          resolveScmClient: async () => fakeGithubClient(),
         },
       );
 
@@ -656,7 +656,7 @@ describe('run-coder', () => {
         db,
         {
           coderAdapterFactory: async () => fakeCoderAdapter('success'),
-          githubClientFactory: async () => githubClient,
+          resolveScmClient: async () => githubClient,
         },
       );
 
@@ -707,5 +707,81 @@ describe('run-coder', () => {
       );
       expect(workflowState[0]?.automation_state).toBe('paused_budget_exceeded');
     });
+  });
+});
+
+/**
+ * Stage 6 write-pipeline follow-up (docs/06 §Phase 18): before this fix, the post-push
+ * `createPullRequest()` call always resolved a `GithubClientFactory` with no provider argument, so
+ * a GitLab/Gitea-provider project's PR creation always went through `OctokitGitHubClient`. Asserts
+ * `resolveScmClient` now receives the repository row's own `provider`/`base_url`. (The coder
+ * adapter's own clone/push credential path remains GitHub-only — see `run-coder.ts`'s
+ * `resolveDefaultCoderAdapterFactory()` doc comment — so this test injects a fake
+ * `coderAdapterFactory`, as every other test in this file does, rather than exercising that path.)
+ */
+describe('run-coder (Stage 6: provider-aware PR-creation client resolution)', () => {
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-run-coder-provider-gitlab';
+    insertTestProject(db, projectId);
+
+    const planId = `plan-${projectId}`;
+    const frId = `fr-${projectId}-1`;
+    const featureRunId = `run-${projectId}-1`;
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Add widget', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO acceptance_criteria (id, feature_request_id, description, order_index, version, created_at, updated_at)
+       VALUES (?, ?, 'The widget renders', 0, 1, datetime('now'), datetime('now'))`,
+      [`ac-${frId}-1`, frId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [featureRunId, frId, FeatureExecutionState.CODING],
+    );
+    await db.execute(
+      `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'running', 1, datetime('now'), datetime('now'))`,
+      [`ws-${projectId}`, projectId, featureRunId],
+    );
+    await registerCoderAdapter(db);
+
+    const adapter = fakeCoderAdapter('success');
+    const client = fakeGithubClient();
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+
+    await runImpl(
+      {
+        projectId,
+        featureRunId,
+        correlationId: 'corr-run-coder-provider-1',
+        idempotencyKey: 'idem-run-coder-provider-1',
+        coderAdapterName: 'FakeCoderAdapter',
+      },
+      db,
+      {
+        coderAdapterFactory: async () => adapter,
+        resolveScmClient: async (provider: string, baseUrl: string | null) => {
+          resolveCalls.push({ provider, baseUrl });
+          return client;
+        },
+      },
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
   });
 });

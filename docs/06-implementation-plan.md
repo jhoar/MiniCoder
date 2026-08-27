@@ -2616,19 +2616,50 @@ disagreement-arbiter.ts`, 3 more in `review-fix-loop.ts` — `review-fix-loop.ts
     real `provider`/`base_url` (Gitea/GitLab/GitHub) rather than a hardcoded `'github'`. All 13
     `minicoder test system` scenarios (including the two edited ones,
     `review-fix-loop`/`disagreement-arbiter`) still pass unchanged.
-  - **Destructive/security-sensitive call sites — still deliberately deferred.** `run-coder.ts`
-    (coder push, plus its hardcoded `github.com` clone URL and `GITHUB_TOKEN`-only sandbox
-    credential), `run-merge-gate.ts` (status-check publication), `merge.ts` and both of its API
-    route twins (the real merge call) remain on the old, GitHub-only `GithubClientFactory` shape.
-    These touch production paths that have each been through three-to-six rounds of careful
-    concurrency/security bug-fixing historically, and a merge/push mistake is far more expensive
-    than a missed observation — they warrant their own, separately-reviewed follow-up pass (using
-    this same `scm-client-resolver.ts`/`RepositoryRow` pattern) rather than being rushed in
-    alongside the read-only fix above. Recorded here as real, tracked follow-up work, not silently
-    dropped: whoever picks this up next should follow with `run-coder.ts`/`run-merge-gate.ts`/
-    `merge.ts`/the two merge routes as one consistent pass, adding a `provider`/`base_url`-seeded
-    Gitea/GitLab fixture to each call site's existing test suite as proof, the same way this
-    follow-up did for the two read-only sites.
+  - **Second same-day follow-up: the remaining destructive/security-sensitive call sites.**
+    Having proven the pattern safe on the read-only sites, `run-merge-gate.ts` (status-check
+    publication), `packages/cli/src/commands/merge.ts` and both of its API route twins
+    (`merge-if-ready-route.ts`/`finalize-if-github-merged-route.ts` — the real merge call), and
+    `run-coder.ts`'s post-push `createPullRequest()` call were all converted to
+    `scm-client-resolver.ts`'s `resolveDefaultScmClient()`/`ScmClientResolver`, exactly mirroring
+    `github-reconciliation.ts`/`run-review.ts`'s earlier fix: each gained `provider`/`base_url` on
+    its `RepositoryRow`, updated its `SELECT owner, name, ...` query accordingly, and replaced its
+    local `GithubClientFactory`/`resolveDefaultGithubClientFactory()` pair with the shared resolver.
+    `MergeIfReadyDeps`/`FinalizeIfGithubMergedDeps`/`BuildAppOptions` (all in `packages/api`) and
+    `RunMergeGateDeps`/`RunCoderDeps` (in `packages/triggerdev`) all renamed their
+    `githubClientFactory` field to `resolveScmClient` for consistency with the earlier fix; every
+    pre-existing no-arg test/scenario fake (`async () => client`) needed only the property-name
+    rename at its call site, never a logic change — the same TypeScript function-arity
+    compatibility the first follow-up relied on. `packages/api/src/index.ts`'s public
+    `GithubClientFactory` re-export was removed outright (confirmed zero external consumers before
+    removing it). New regression coverage: a provider-dispatch test in each of
+    `run-merge-gate.test.ts`, `run-coder.test.ts`, `merge-if-ready-route.test.ts`, and
+    `finalize-if-github-merged-route.test.ts`, each seeding a GitLab-provider repository and
+    asserting the resolver receives that row's real `provider`/`base_url`. `minicoder merge.ts`
+    itself has no pre-existing unit-test harness (same posture as `state repair --apply` —
+    building one from scratch was judged disproportionate to this fix); its change was verified by
+    full typecheck plus code inspection instead.
+  - **One piece deliberately still not fixed, and now the last one: `run-coder.ts`'s coder-adapter
+    clone/push credential path.** `resolveDefaultCoderAdapterFactory()` still requires only
+    `GITHUB_TOKEN` and still constructs a literal `https://github.com/...` clone URL — unlike
+    `createPullRequest()` above, this path embeds the token into the git remote URL under a
+    hardcoded `x-access-token` HTTPS Basic-Auth username (`packages/adapters-coder/src/
+workspace.ts`'s `authenticatedRemote()`). That convention is GitHub's own documented one, but
+    not GitLab's (`oauth2:<token>`) or Gitea's (`<username>:<token>`, or a bare token as username) —
+    picking the wrong one produces a confusing 401 that reads like a token-permissions problem,
+    a worse failure mode than the current, honestly-broken "always targets github.com" behavior.
+    Fixing this correctly needs a per-provider username-convention decision verified against a live
+    instance, which this environment cannot do (no reachable Docker daemon, the same constraint
+    documented for `infra/docker-compose.{gitea,gitlab}.yml` since Stages 3/4). The sandboxed
+    egress-proxy allow-list (`infra/docker/coder-sandbox/egress-proxy/filter.txt`) is also still
+    GitHub-host-only, for the identical reason. This is now the **only** remaining GitHub-only
+    write-pipeline call site — recorded as real, tracked follow-up work (not silently dropped),
+    documented in both `run-coder.ts`'s own doc comment and `scm-client-resolver.ts`'s module doc
+    comment so it stays visible to the next person who touches either file.
+  - Re-ran the full suite after this second follow-up: `pnpm typecheck`/`pnpm lint`/
+    `pnpm format:check`/`pnpm build:web` all still pass, `minicoder test system` (13 scenarios)
+    all pass, and `pnpm test` now reports 116 test files / 1077 tests passed, 26 skipped (up from
+    116/1073 after the first follow-up).
 - **Documentation corrected to reflect the interface/schema/diagnostic layer being genuinely
   shipped, while being explicit about the write-pipeline exception** — the "GitLab and Gitea are
   staged, not-yet-built providers" framing in `CLAUDE.md` (decision #3), `docs/00`, `docs/01`
@@ -2659,17 +2690,19 @@ system` (13 scenarios, including the two edited scenario files) all pass, and `p
   `scm-client-resolver.test.ts` plus the new provider-dispatch regressions added to
   `github-reconciliation.test.ts`/`run-review.test.ts`).
 
-Acceptance (whole item): **partially met, honestly — improved by the same-day follow-up, still not
-complete.** At least one alternative SCM provider (Gitea, then GitLab) was added without changing
-core orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution state
-matrix — the literal schema/state-matrix clause holds, and the `ScmClient` interface itself, its
-webhook receivers, and its read/diagnostic call sites (now including `github-reconciliation.ts`'s
-own scheduled observation and `run-review.ts`'s diff fetch) are genuine "swap the implementation
-behind an unchanged interface" successes, proven by the Stage 5 cross-provider conformance suite
-and the new regressions above. The stronger, implied reading of that sentence — that a
-Gitea/GitLab-configured project can actually be _driven_ through the automated pipeline the way a
-GitHub-configured one can — is closer to true than at Stage 6's initial close (a GitLab/Gitea
-project's scheduled reconciliation and AI review now genuinely work against the right provider),
-but still does **not** fully hold: the coder-push, merge-gate, and real-merge call sites remain
-GitHub-only, per the deferred half of the addendum above. This is the accurate, as-built status
-after the same-day follow-up, not a claim of full completion.
+Acceptance (whole item): **nearly fully met after two same-day follow-ups, with one narrow,
+explicitly-documented exception.** At least one alternative SCM provider (Gitea, then GitLab) was
+added without changing core orchestration, the `pull_requests`/`feature_runs` schema, or the
+feature-execution state matrix — the literal schema/state-matrix clause holds, and the `ScmClient`
+interface itself, its webhook receivers, and (after both follow-ups) every read/diagnostic/write
+call site except one are genuine "swap the implementation behind an unchanged interface" successes,
+proven by the Stage 5 cross-provider conformance suite plus the provider-dispatch regressions added
+across both follow-ups. The stronger, implied reading of that sentence — that a Gitea/GitLab-
+configured project can actually be _driven_ through the automated pipeline the way a GitHub-
+configured one can — now holds for scheduled reconciliation, AI review, merge-gate status checks,
+and the real merge call itself. It does **not** yet fully hold for one specific step: a
+Gitea/GitLab-provider project's coder adapter still cannot clone/push its own repository, because
+that credential path requires a per-provider git-auth-convention decision this environment could
+not verify against a live instance (see the second follow-up's addendum above). This is the
+accurate, as-built status after both follow-ups — a single, well-scoped, explicitly-tracked gap,
+not a claim of full completion.

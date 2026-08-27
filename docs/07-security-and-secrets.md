@@ -53,14 +53,17 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 GitHub, Gitea, and GitLab are all shipped SCM providers as of `06-implementation-plan.md` §Phase
 18 Stages 3–4; §3.1 documents GitHub's real, current implementation and §3.2 documents the
 authentication and webhook-authenticity differences for Gitea/GitLab, since they are not uniform
-across providers and directly affect this document's security guarantees. **A real, tracked gap:
-coder push, merge-gate status checks, and the real merge call still unconditionally resolve a
-GitHub credential regardless of a project's actual provider** — a Gitea/GitLab-provider project's
-`GITEA_TOKEN`/`GITLAB_TOKEN` is consulted by the opt-in `state doctor --check-scm` diagnostic and
-(as a same-day Stage 6 follow-up) by the scheduled reconciliation task's own client resolution and
-the reviewer's diff fetch, but not yet by the three write-path callers named above. See Stage 6's
-completion notes in `06-implementation-plan.md` for the full, up-to-date list of affected call
-sites.
+across providers and directly affect this document's security guarantees. **A single, narrow,
+tracked gap remains: the coder adapter's own clone/push credential still unconditionally resolves
+`GITHUB_TOKEN` regardless of a project's actual provider**, embedding it into the git remote URL
+under GitHub's own HTTPS Basic-Auth username convention (`x-access-token`), which is not GitLab's
+(`oauth2:<token>`) or Gitea's (`<username>:<token>`) convention. A Gitea/GitLab-provider project's
+`GITEA_TOKEN`/`GITLAB_TOKEN` is now consulted by every other write-path caller — the opt-in
+`state doctor --check-scm` diagnostic, the scheduled reconciliation task, the reviewer's diff
+fetch, merge-gate status-check publication, PR creation, and the real merge call — across two
+same-day Stage 6 follow-ups. See Stage 6's completion notes in `06-implementation-plan.md` for the
+full, up-to-date writeup, including why this last piece was left unfixed (no live Gitea/GitLab
+instance available in this environment to verify the correct auth convention against).
 
 ### 3.1 GitHub (current implementation)
 
