@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_unified_system_specification.md,
 > minicoder_unified_system_specification_testing_updated.md
-> Version: 1.1.0
-> Last-updated: 2026-07-13
+> Version: 1.2.0
+> Last-updated: 2026-08-27
 
 Terms, state names, role/adapter names, and the CLI surface are defined in
 [`00-glossary-and-terms.md`](00-glossary-and-terms.md) and are authoritative there.
@@ -23,16 +23,22 @@ without human intervention**.
 
 MiniCoder includes Bootstrap planning, planning readiness assessment, clarification workflow,
 structured implementation plan generation, database-backed feature backlog, sequential feature
-execution, vendor-neutral agent adapters, GitHub branch and pull request workflow (webhook-driven
-with reconciliation fallback), structured review/fix loops, disagreement and human escalation,
+execution, vendor-neutral agent adapters, SCM branch and pull request workflow (webhook-driven
+with reconciliation fallback; GitHub is the only shipped provider today, see §4.3/§5.7), structured
+review/fix loops, disagreement and human escalation,
 durable Workflow Layer execution, automated testing and state-lifecycle tooling, cost
 management, observability and audit records, the Orchestrator API, a Node.js + Ink Text UI, a
 React / Next.js Web UI, Markdown artifact import/export, and final System Design Document
 generation.
 
-MiniCoder does **not** initially include parallel feature execution, SCM providers other than
-GitHub, multi-repository orchestration, PDF/DOCX exports, a plugin marketplace, or advanced
-enterprise RBAC. These are future extensions, not separate architectures.
+MiniCoder does **not** initially include parallel feature execution, multi-repository
+orchestration, PDF/DOCX exports, a plugin marketplace, or advanced enterprise RBAC. These are
+future extensions, not separate architectures. **SCM providers other than GitHub** are the one
+future extension with a concrete staged plan (`06-implementation-plan.md` §Phase 18's "Generic SCM
+Interface"): GitLab and Gitea are added behind the existing `ScmClient` seam, with lowest-common-
+denominator reductions in fidelity documented per provider — this is a staged rollout, not a
+redesign, since `ObservedPullRequestState` and the rest of the `ScmClient` contract were already
+written at a provider-neutral level of abstraction.
 
 > Note: **PostgreSQL is in scope** as the hosted/team state store (see §3, §14). It is not a
 > deferred "migration"; it is a first-class deployment profile supported by the persistence
@@ -48,11 +54,14 @@ MiniCoder database = authoritative planning, backlog, workflow, testing, review,
                      agent-run, cost, artifact, and design-document state.
 Workflow Layer     = durable workflow execution (tasks, retries, a polling queue); implemented by
                      an in-repo, DB-backed task queue (formerly Trigger.dev).
-GitHub             = authoritative repository, branch, commit, PR, review, CI/check,
-                     conversation, mergeability, and merge state.
-GitHub webhooks    = primary source for external GitHub changes.
+SCM provider       = authoritative repository, branch, commit, PR, review, CI/check,
+                     conversation, mergeability, and merge state. Implemented today by GitHub only
+                     (`ScmClient`'s `OctokitGitHubClient`); GitLab and Gitea are staged future
+                     providers behind the same interface (§4.3, §5.7, `06-implementation-plan.md`
+                     §Phase 18).
+SCM webhooks       = primary source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism.
-GitHub Actions     = CI, tests, and build validation.
+CI provider        = CI, tests, and build validation (GitHub Actions today).
 Orchestrator Core  = state machine, command handlers, policy checks, merge gates, database
                      writes, idempotency, and reconciliation.
 Orchestrator API   = safe command and query interface.
@@ -76,7 +85,7 @@ its own; it reads/writes whichever database the profile below already uses.
 
 - SQLite on local disk.
 - Workflow Layer: one `minicoder tasks worker` process against the same SQLite file (see §14).
-- GitHub repository.
+- SCM repository (GitHub today; GitLab/Gitea staged, `06-implementation-plan.md` §Phase 18).
 - Local API, local TUI, optional local Web UI.
 
 ### 3.2 Hosted / Team Profile
@@ -85,7 +94,7 @@ its own; it reads/writes whichever database the profile below already uses.
 - Workflow Layer: one or more `minicoder tasks worker` processes against the same PostgreSQL
   database (see §14).
 - Hosted API, Web UI.
-- GitHub OAuth (or equivalent) and GitHub webhooks.
+- SCM OAuth/App auth (or equivalent) and SCM webhooks.
 
 ### 3.3 Explicit SQLite Limitation
 
@@ -105,22 +114,31 @@ No runtime orchestration logic shall depend on parsing `backlog.md`.
 MiniCoder uses a durable Workflow Layer from the early implementation phases — an in-repo,
 DB-backed task queue (`packages/triggerdev/`; formerly implemented on Trigger.dev, see §14). The
 Workflow Layer owns durable task execution and retries via a polling queue. It does **not** own
-domain state, state-machine rules, merge policy, agent contracts, business logic, or GitHub truth.
+domain state, state-machine rules, merge policy, agent contracts, business logic, or SCM truth.
 Workflow Layer tasks are thin, idempotent wrappers that call Orchestrator Core commands. Because of
 this, running additional `minicoder tasks worker` processes against the same database is purely an
 operational/scaling decision; it requires no architectural change (see §14).
 
-### 4.3 GitHub as Repository Truth (webhook-driven)
+### 4.3 The SCM Provider as Repository Truth (webhook-driven)
 
-GitHub is authoritative for branches, commits, pull requests, reviews, comments, CI/check status,
-conversation resolution, mergeability, and merge result. **GitHub webhooks are the primary source
-for external GitHub changes; scheduled reconciliation is a fallback and repair mechanism.** Before
-expensive agent calls, MiniCoder performs pre-flight GitHub and database checks. These include a
-**capacity pre-flight**: before pulling a feature out of `approved_pending_execution`, the
-Orchestrator Core queries the remaining GitHub API rate limit (via Octokit) and the configured
-agent-provider token/quota limits, and defers the start — without stranding a branch mid-workflow —
-when remaining capacity is insufficient. SQLite/PostgreSQL is authoritative for orchestration
-intent, history, and policy decisions; MiniCoder reconciles its database state against GitHub state.
+The configured SCM provider is authoritative for branches, commits, pull requests, reviews,
+comments, CI/check status, conversation resolution, mergeability, and merge result. **SCM webhooks
+are the primary source for external changes; scheduled reconciliation is a fallback and repair
+mechanism.** Before expensive agent calls, MiniCoder performs pre-flight SCM and database checks.
+These include a **capacity pre-flight**: before pulling a feature out of
+`approved_pending_execution`, the Orchestrator Core queries the SCM provider's remaining API rate
+limit and the configured agent-provider token/quota limits, and defers the start — without
+stranding a branch mid-workflow — when remaining capacity is insufficient. SQLite/PostgreSQL is
+authoritative for orchestration intent, history, and policy decisions; MiniCoder reconciles its
+database state against the SCM provider's observed state.
+
+GitHub is the only shipped provider today (`OctokitGitHubClient`, `packages/github`, via Octokit),
+and the remainder of this section (§5.7) documents that implementation's real contract in detail.
+GitLab and Gitea are staged, not-yet-built implementations of the same `ScmClient` interface
+(`06-implementation-plan.md` §Phase 18) — some of what §5.7 describes below is GitHub-specific
+detail (e.g. GraphQL-derived conversation resolution, the Checks API) that a GitLab/Gitea
+implementation will satisfy differently, at a genuinely lower common-denominator fidelity in a few
+places (documented in the Phase 18 plan) rather than by replicating GitHub's exact mechanism.
 
 ### 4.4 Vendor-Neutral Agents
 
@@ -201,12 +219,16 @@ Role-based adapters: `PlannerAgentAdapter`, `CoderAgentAdapter`, `ReviewerAgentA
 capabilities, normalize outputs, normalize errors, and record agent runs. Detailed in
 [`03-agent-adapter-architecture.md`](03-agent-adapter-architecture.md).
 
-### 5.7 GitHub Integration
+### 5.7 SCM Integration
 
-Owns all GitHub API operations and the webhook receiver: repository inspection, branch
+Owns all SCM provider API operations and the webhook receiver: repository inspection, branch
 lookup/creation, PR lookup/creation, PR state reading, review reading, check/status reading,
 mergeability reading, status check publication, webhook ingestion into the inbox, and the merge
-operation when policy permits.
+operation when policy permits. Behind the provider-neutral `ScmClient` interface
+(`packages/core/src/scm/`, called `GitHubClient` until the Phase 18 rename); GitHub is the only
+shipped implementation as of this writing (`OctokitGitHubClient`, `packages/github`) — GitLab and
+Gitea are staged (`06-implementation-plan.md` §Phase 18), and the contract below is GitHub's real,
+current implementation of that interface, not yet a cross-provider description.
 
 **GitHub integration contract** (finalized in implementation Phase 7 against
 `packages/github`, `packages/core/src/github/`, and migration `0009_pull_requests`):
@@ -627,8 +649,10 @@ export plan, export backlog, generate final design document, approve final desig
 state/diagnostics actions (validate, reconcile, doctor, export-diagnostics) subject to
 authorization.
 
-**Webhook endpoints:** receive GitHub webhook deliveries, verify signatures, and persist them to
-the inbox for durable processing (reconciliation remains the fallback path).
+**Webhook endpoints:** receive SCM webhook deliveries (GitHub today; GitLab/Gitea staged,
+`06-implementation-plan.md` §Phase 18), verify signatures (or, for a provider with no signature
+scheme, a constant-time shared-secret comparison — see `07-security-and-secrets.md` §3), and
+persist them to the inbox for durable processing (reconciliation remains the fallback path).
 
 **API conventions** (defined now; the full OpenAPI-first contract is an implementation Phase 13
 deliverable):
@@ -682,7 +706,8 @@ and status. Severities are defined in glossary §3.7; only `blocking` findings p
 
 **Merge authorization model.** `approved_by_policy` is computed automatically by the merge gate. The
 actual merge is **initiated by an `approver`/`admin` via `merge-if-ready`**, which re-evaluates the
-full gate immediately before invoking GitHub. "Required human approvals exist" (below) refers to
+full gate immediately before invoking the configured SCM provider. "Required human approvals
+exist" (below) refers to
 upstream approvals recorded in `human_approvals` (e.g., assumption acceptance, budget override), not
 to the `merge-if-ready` invocation itself.
 
@@ -690,7 +715,7 @@ A pull request may be merged only when it belongs to the active feature, targets
 branch, matches the database branch record, CI checks pass, no unresolved blocking findings remain,
 no unresolved `requires_human_decision` findings remain, review-cycle limits are not exceeded, the
 PR is mergeable, no blocking labels exist, budget gates pass, required human approvals exist, and
-GitHub branch protection permits merge — implemented as `evaluateMergeGate()`
+the SCM provider's branch protection permits merge — implemented as `evaluateMergeGate()`
 (`packages/core/src/merge-gate/evaluate-merge-gate.ts`, Phase 12).
 
 **"Required conversations are resolved" remains a deliberate non-gate, not an oversight — even
@@ -764,11 +789,11 @@ it):
 
 | Merge-gate input                                     | Produced by                                 | Phase | Consumed by the gate  |
 | ---------------------------------------------------- | ------------------------------------------- | ----- | --------------------- |
-| CI result                                            | GitHub Actions → GitHub Integration         | 7     | ✓ (12)                |
+| CI result                                            | GitHub Actions → SCM Integration            | 7     | ✓ (12)                |
 | Review findings (blocking / requires_human_decision) | Reviewer adapter + Review/Fix Loop          | 10 ✓  | ✓ (12)                |
-| Conversation resolution                              | GitHub Integration                          | 7     | not gated — see above |
-| Branch protection / mergeability                     | GitHub Integration                          | 7     | ✓ (12)                |
-| Blocking labels                                      | GitHub Integration                          | 7     | ✓ (12)                |
+| Conversation resolution                              | SCM Integration                             | 7     | not gated — see above |
+| Branch protection / mergeability                     | SCM Integration                             | 7     | ✓ (12)                |
+| Blocking labels                                      | SCM Integration                             | 7     | ✓ (12)                |
 | Budget status                                        | Budget-gate primitive (Cost Manager)        | 8     | ✓ (12)                |
 | Human approvals                                      | Human-required workflow / `human_approvals` | 11    | ✓ (12)                |
 
@@ -844,8 +869,10 @@ question analogous to the old Cloud tier.
 Core principles (full specification in [`07-security-and-secrets.md`](07-security-and-secrets.md)):
 MiniCoder must scope provider credentials by adapter, avoid exposing all provider tokens to the
 orchestrator where not required, redact secrets, avoid storing secrets in the database, avoid
-writing secrets to Markdown artifacts, avoid storing private chain-of-thought, verify GitHub
-webhook signatures, use least-privilege GitHub tokens, and avoid secret-bearing workflows on
+writing secrets to Markdown artifacts, avoid storing private chain-of-thought, verify SCM webhook
+authenticity (signature or, where unavailable, constant-time shared-secret comparison — see
+`07-security-and-secrets.md` §3), use least-privilege SCM provider tokens, and avoid secret-bearing
+workflows on
 untrusted fork code. The security foundation (config/secrets abstraction, audit actor identity,
 local auth, webhook-secret management, redaction tests) is established early — implementation Phases
 1–3 — not deferred to the API phase. Workspace sandboxing, egress control, and prompt-injection

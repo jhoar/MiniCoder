@@ -153,8 +153,15 @@ These are locked decisions that appear throughout the docs. Do not contradict or
    locks/leases with fencing tokens (monotonically increasing; persistence layer rejects
    stale-fence writes), not a hard schema invariant.
 
-3. **GitHub webhooks are the primary event source.** Scheduled reconciliation is the fallback/
-   repair mechanism, not the primary path.
+3. **SCM webhooks are the primary event source.** Scheduled reconciliation is the fallback/repair
+   mechanism, not the primary path. **Today this means GitHub webhooks** — GitHub is the only
+   shipped SCM provider (`packages/github`, behind the `ScmClient` seam in
+   `packages/core/src/scm/`). GitLab and Gitea are staged, not-yet-built providers behind that same
+   seam (docs/06 §Phase 18's "Generic SCM Interface" plan) — this decision is written at the
+   provider-neutral level so it doesn't need to change again when they land. The scheduled
+   reconciliation task keeps its literal name (`github-reconciliation`, one of the no-drift
+   canonical task IDs, docs/00 §3.12) regardless of which provider it ends up reconciling — same
+   precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
 
 4. **Workflow Layer** is the subsystem name for durable workflow execution. **The implementation
    is an in-repo, DB-backed task queue** (`packages/triggerdev/src/task-registry.ts`'s
@@ -259,7 +266,9 @@ merge-if-ready, final design-document approval, and guarded/destructive lifecycl
 
 - Feature-request IDs: `FR-<zero-padded-int>` (e.g., `FR-002`)
 - Feature branches: `minicoder/FR-<n>` (e.g., `minicoder/FR-002`)
-- GitHub review-gate status check: `minicoder/review-gate`
+- SCM review-gate status check: `minicoder/review-gate` (published on GitHub today via
+  `GitHubClient.publishStatusCheck()`; the name itself is MiniCoder-chosen, not provider-imposed,
+  so it carries over unchanged to GitLab/Gitea once those providers land)
 
 ### Workflow Layer task IDs (exact strings, no drift)
 

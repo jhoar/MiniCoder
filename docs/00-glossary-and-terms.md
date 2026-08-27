@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.1.0
-> Last-updated: 2026-07-13
+> Version: 1.2.0
+> Last-updated: 2026-08-27
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -25,7 +25,9 @@ Subsystem names:
 - MiniCoder Execution Orchestrator
 - MiniCoder Agent Adapter Architecture
 - MiniCoder Workflow Layer (implemented by an in-repo DB-backed task queue, `packages/triggerdev/` — formerly Trigger.dev)
-- MiniCoder GitHub Integration
+- MiniCoder SCM Integration (implemented today by GitHub only, `packages/github`; GitLab and Gitea
+  are staged future providers behind the same `ScmClient` seam — see `06-implementation-plan.md`
+  §Phase 18)
 - MiniCoder Orchestrator API
 - MiniCoder Text UI
 - MiniCoder Web UI
@@ -39,10 +41,15 @@ Subsystem names:
 MiniCoder database = authoritative planning, backlog, workflow, testing, review, event,
                      agent-run, cost, artifact, and design-document state.
                      Local/single-node = SQLite on local disk. Hosted/team = PostgreSQL.
-GitHub             = authoritative repository, branch, commit, PR, review, CI/check,
-                     conversation, mergeability, and merge state.
-GitHub webhooks    = PRIMARY source for external GitHub changes.
-Scheduled reconciliation = fallback/repair mechanism.
+SCM provider       = authoritative repository, branch, commit, PR, review, CI/check,
+                     conversation, mergeability, and merge state. Implemented today by GitHub only
+                     (`ScmClient`'s `OctokitGitHubClient`, `packages/github`); GitLab and Gitea are
+                     staged future implementations of the same `ScmClient` interface
+                     (see `06-implementation-plan.md` §Phase 18).
+SCM webhooks       = PRIMARY source for external SCM changes.
+Scheduled reconciliation = fallback/repair mechanism. Implemented by the `github-reconciliation`
+                     task (docs §3.12), which keeps that literal name regardless of which provider
+                     it reconciles.
 Workflow Layer     = durable workflow execution (tasks, retries, a polling queue); implemented by
                      an in-repo DB-backed task queue (formerly Trigger.dev), which is authoritative
                      only for task-execution run metadata (correlated via run IDs).
@@ -114,7 +121,7 @@ approved_pending_execution → selected → coding → code_pushed → pr_opened
 
 `approved_by_policy` is computed automatically by the merge gate; `merge_ready → merged` is
 **initiated by an approver/admin via `merge-if-ready`** and the gate is re-evaluated immediately
-before the GitHub merge (see `01-system-specification.md` §12).
+before the SCM merge (see `01-system-specification.md` §12).
 
 **Every new push re-enters CI.** A fix always flows `fixing → code_pushed → ci_running` before
 returning to `under_review`; review and merge never act on un-tested code.
@@ -127,7 +134,7 @@ ci_running → [CI fail] → ci_failed → changes_requested → fixing
 ci_failed  → human_required        (when review-cycle / fix-attempt limits are exceeded)
 ```
 
-Merge can also fail **after** `merge_ready` (GitHub-side merge rejection, a late conflict, changed
+Merge can also fail **after** `merge_ready` (SCM-side merge rejection, a late conflict, changed
 branch protection, or stale mergeability):
 
 ```text
@@ -361,7 +368,10 @@ agent_run_state       : queued | running | succeeded | failed | cancelled
 workflow_run_state    : queued | running | waiting | succeeded | failed | cancelled
                         (correlated to task-queue run status; see triggerdev_runs)
 pr_review_state       : none | pending | commented | changes_requested | approved | dismissed
-                        (mirrors GitHub review status; GitHub remains authoritative)
+                        (mirrors the SCM provider's review status; the SCM provider remains
+                        authoritative. GitLab has no native "changes requested" state — a future
+                        GitLab `ScmClient` implementation synthesizes it from approval count plus
+                        unresolved blocking discussions; see `06-implementation-plan.md` §Phase 18)
 artifact_export_state : pending | generating | exported | stale | failed
 ```
 
@@ -658,7 +668,8 @@ HA cluster vs. Trigger.dev Cloud) — that entire axis is gone along with the Tr
 ### 6.1 State store
 
 - **Local / Single-Node** — SQLite on local disk; local API; local TUI; optional local Web UI.
-- **Hosted / Team** — PostgreSQL; hosted API; Web UI; GitHub OAuth; GitHub webhooks.
+- **Hosted / Team** — PostgreSQL; hosted API; Web UI; SCM OAuth/App auth (GitHub today; GitLab/Gitea
+  staged, `06-implementation-plan.md` §Phase 18); SCM webhooks.
 
 ### 6.2 Workflow Layer execution: `minicoder tasks worker`
 

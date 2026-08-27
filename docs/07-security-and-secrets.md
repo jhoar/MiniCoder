@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracts and expands `01-system-specification.md` §15)
-> Version: 1.1.0
-> Last-updated: 2026-07-13
+> Version: 1.2.0
+> Last-updated: 2026-08-27
 
 This document is the authoritative security and secrets specification. It expands the principles in
 [`01-system-specification.md`](01-system-specification.md) §15 and complements the Adapter Execution
@@ -48,14 +48,45 @@ webhooks (Phase 7) or real coder adapters (Phase 9) run.
 - **Encryption.** Secrets are encrypted at rest in the chosen backend and in transit (TLS); any
   encryption keys live in the secret backend, not the application database.
 
-## 3. GitHub Authentication Model
+## 3. SCM Authentication Model
+
+GitHub is the only shipped SCM provider today; §3.1 documents its real, current implementation.
+GitLab and Gitea are staged, not-yet-built providers behind the same `ScmClient` seam
+(`06-implementation-plan.md` §Phase 18) — §3.2 documents the authentication and webhook-authenticity
+differences that plan must account for, since they are not uniform across providers and directly
+affect this document's security guarantees.
+
+### 3.1 GitHub (current implementation)
 
 - **GitHub App preferred over PAT.** Production deployments use a **GitHub App** with installation
   tokens (short-lived, least-privilege); a PAT is acceptable only for local/single-node development.
 - **Least-privilege permissions:** contents (read/write), pull requests (read/write), checks
   (read/write), statuses (read/write), metadata (read), and webhooks — nothing broader.
-- **Webhook signatures.** All inbound webhook deliveries are signature-verified (HMAC) before inbox
-  persistence; unsigned/invalid deliveries are rejected and audited.
+- **Webhook signatures.** All inbound webhook deliveries are signature-verified (HMAC-SHA256 over
+  the raw request body, `X-Hub-Signature-256`) before inbox persistence; unsigned/invalid
+  deliveries are rejected and audited. See §5 for the current + previous secret rotation window.
+
+### 3.2 Staged providers: GitLab and Gitea
+
+- **Gitea** uses the same authenticity model as GitHub: HMAC-SHA256 over the raw request body
+  (`X-Gitea-Signature`). The existing verifier (`verifyWebhookSignature()`,
+  `packages/github/src/webhook-signature.ts`) is reusable as-is for a Gitea webhook receiver — same
+  algorithm, same current+previous secret-rotation contract, different header name only.
+- **GitLab has no HMAC signature scheme.** It authenticates a webhook delivery with a bare
+  shared-secret token (`X-Gitlab-Token`) that GitLab echoes back unmodified — there is no signing
+  of the request body, so payload tampering in transit is not detected the way it is for
+  GitHub/Gitea; only knowledge of the configured secret is checked. This is a materially weaker
+  authenticity model, not an equivalent one, and must be treated as such rather than silently
+  assumed to be "the same, just a different header." Its verifier must be a **new**, distinct
+  module doing a constant-time string comparison of the received token against the configured
+  secret (never `===`/simple equality, which leaks timing information about how many leading
+  bytes matched) — it is not a variant of `verifyWebhookSignature()`'s HMAC code path, and must not
+  be implemented as one.
+- **Auth-token model.** Each provider's `ScmClient` implementation resolves its own credential
+  (GitHub App installation token or PAT; a GitLab personal/project/deploy access token; a Gitea
+  access token) through the existing `SecretBackend` abstraction (§2) — no new secrets-management
+  concept is introduced, only a new per-repository connection descriptor (provider, base URL, token
+  reference, webhook-secret reference) recording which credential applies to which repository.
 
 ## 4. Authentication, Sessions, and Authorization
 
