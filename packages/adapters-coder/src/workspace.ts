@@ -15,7 +15,14 @@ export const FEATURE_RUN_TRAILER = 'MiniCoder-Feature-Run';
 export interface WorkspaceOptions {
   readonly workspaceDir: string;
   readonly repoUrl: string;
-  readonly githubToken: string;
+  readonly gitToken: string;
+  /** HTTPS Basic-Auth username to pair with `gitToken` when embedding it into the clone/push
+   * remote URL. The convention differs per SCM provider — GitHub's `x-access-token`, GitLab's
+   * `oauth2`, Gitea's token-in-password-field flow — so this module stays provider-agnostic and
+   * takes the caller's already-resolved choice rather than hardcoding one (docs/06 §Phase 18
+   * Stage 6's coder-adapter-credential follow-up; `run-coder.ts`'s
+   * `resolveDefaultCoderAdapterFactory()` is the real resolver). */
+  readonly remoteUsername: string;
   readonly featureRunId: string;
   /** Runs every command (git, file writes) — either locally (`ChildProcessCommandRunner`) or
    * inside the sandbox container (`CoderSandbox`, via `docker exec`). Everything in this module
@@ -35,15 +42,15 @@ export interface PushResult {
   readonly reusedExistingCommit: boolean;
 }
 
-function authenticatedRemote(repoUrl: string, githubToken: string): string {
+function authenticatedRemote(repoUrl: string, remoteUsername: string, gitToken: string): string {
   const url = new URL(repoUrl);
-  url.username = 'x-access-token';
-  url.password = githubToken;
+  url.username = remoteUsername;
+  url.password = gitToken;
   return url.toString();
 }
 
 /** Redacts userinfo (`user:token@`) from any URL embedded in `text` — HIGH-3 code-review fix:
- * `authenticatedRemote()` embeds the GitHub token in the clone/push remote URL, and a failed git
+ * `authenticatedRemote()` embeds the git token in the clone/push remote URL, and a failed git
  * command previously threw an error containing the full argv (and often echoed the URL again in
  * stderr), leaking the token into Trigger.dev logs/uncaught task errors. Applied to every error
  * this module throws, not just the clone/push call sites, since any git subcommand can be run
@@ -97,7 +104,7 @@ export function branchNameFor(featureRunId: string): string {
 /** Clones the repo (shallow) and checks out (creating or reusing) the feature's branch. */
 export async function prepareBranch(opts: WorkspaceOptions): Promise<{ repoDir: string }> {
   const repoDir = 'repo';
-  const remote = authenticatedRemote(opts.repoUrl, opts.githubToken);
+  const remote = authenticatedRemote(opts.repoUrl, opts.remoteUsername, opts.gitToken);
   const branch = branchNameFor(opts.featureRunId);
 
   await git(opts.runner, opts.workspaceDir, [

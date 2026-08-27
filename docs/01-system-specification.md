@@ -40,11 +40,14 @@ future extensions, not separate architectures. **SCM providers other than GitHub
 the interface/webhook/diagnostic layer — GitLab and Gitea are added behind the existing `ScmClient`
 seam, with lowest-common-denominator reductions in fidelity documented per provider, not a
 redesign, since `ObservedPullRequestState` and the rest of the `ScmClient` contract were already
-written at a provider-neutral level of abstraction. **One narrow, tracked exception remains: the
-coder adapter's own clone/push credential, still GitHub-only** — every other write-path call site
-(scheduled reconciliation, reviewer diff fetch, merge-gate status checks, PR creation, the real
-merge call) was made provider-aware across two same-day Stage 6 follow-ups; see §4.3/§5.7 and
-Stage 6's completion notes for the full, up-to-date writeup.
+written at a provider-neutral level of abstraction. Every write-path call site — scheduled
+reconciliation, reviewer diff fetch, merge-gate status checks, PR creation, the real merge call,
+and the coder adapter's own clone/push credential — is provider-aware as of three same-day Stage 6
+follow-ups. **One narrow, tracked gap remains: the coder-adapter path's Gitea/GitLab credential
+convention and actual clone/push have not been verified against a live instance** (no reachable
+Docker daemon in the implementation environment) — an implementation-complete, verification-open
+gap, not a missing feature; see §4.3/§5.7 and Stage 6's completion notes for the full, up-to-date
+writeup.
 
 > Note: **PostgreSQL is in scope** as the hosted/team state store (see §3, §14). It is not a
 > deferred "migration"; it is a first-class deployment profile supported by the persistence
@@ -63,9 +66,11 @@ Workflow Layer     = durable workflow execution (tasks, retries, a polling queue
 SCM provider       = authoritative repository, branch, commit, PR, review, CI/check,
                      conversation, mergeability, and merge state. GitHub, Gitea, and GitLab are all
                      shipped `ScmClient` implementations behind the same interface (§4.3, §5.7,
-                     `06-implementation-plan.md` §Phase 18); every write-path call site is
-                     provider-aware except the coder adapter's own clone/push credential — a real,
-                     narrowly-tracked gap, see §5.7 and Stage 6's completion notes.
+                     `06-implementation-plan.md` §Phase 18); every write-path call site, including
+                     the coder adapter's own clone/push credential, is provider-aware. The
+                     Gitea/GitLab coder-adapter credential and clone/push are unverified against a
+                     live instance — a real, narrowly-tracked verification gap, see §5.7 and
+                     Stage 6's completion notes.
 SCM webhooks       = primary source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism.
 CI provider        = CI, tests, and build validation (GitHub Actions today).
@@ -246,13 +251,16 @@ operation when policy permits. Behind the provider-neutral `ScmClient` interface
 (`06-implementation-plan.md` §Phase 18 Stages 3–4), and the contract below is GitHub's real,
 current implementation of that interface — Gitea/GitLab satisfy the same interface at a documented
 lowest-common-denominator fidelity in places (that stage's completion notes have the full
-per-field breakdown), not by replicating this description exactly. **One narrow, tracked gap
-remains: the coder adapter's clone/push credential path described in this section still
-unconditionally embeds a `GITHUB_TOKEN` under GitHub's own HTTPS Basic-Auth username convention,
-not yet generalized for Gitea/GitLab.** Every other write-path call site described in this
-section — the reviewer diff fetch, the scheduled reconciliation task's own client resolution,
-merge-gate status checks, PR creation, and the real merge call — was made provider-aware across
-two same-day Stage 6 follow-ups (Stage 6's completion notes have the full, up-to-date writeup).
+per-field breakdown), not by replicating this description exactly. Every write-path call site
+described in this section — the reviewer diff fetch, the scheduled reconciliation task's own
+client resolution, merge-gate status checks, PR creation, the real merge call, and the coder
+adapter's own clone/push credential path — resolves the matching provider's token
+(`GITHUB_TOKEN`/`GITLAB_TOKEN`/`GITEA_TOKEN`) and, for the coder adapter, the matching HTTPS
+Basic-Auth username convention, across three same-day Stage 6 follow-ups (Stage 6's completion
+notes have the full, up-to-date writeup). **One narrow, tracked gap remains: none of the
+Gitea/GitLab coder-adapter credential/clone-push work has been verified against a live instance**
+(no reachable Docker daemon in the implementation environment) — GitLab's convention is
+high-confidence; Gitea's username is a documented-but-unverified placeholder.
 
 **GitHub integration contract** (finalized in implementation Phase 7 against
 `packages/github`, `packages/core/src/scm/` (renamed from `packages/core/src/github/` by docs/06

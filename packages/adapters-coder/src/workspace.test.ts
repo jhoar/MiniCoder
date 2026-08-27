@@ -59,7 +59,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
     const { repoDir } = await prepareBranch({
       workspaceDir,
       repoUrl: repoFileUrl(),
-      githubToken: 'unused-for-file-remote',
+      gitToken: 'unused-for-file-remote',
+      remoteUsername: 'x-access-token',
       featureRunId: 'fr-123',
       runner,
     });
@@ -72,7 +73,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
     const { repoDir } = await prepareBranch({
       workspaceDir,
       repoUrl: repoFileUrl(),
-      githubToken: 'unused-for-file-remote',
+      gitToken: 'unused-for-file-remote',
+      remoteUsername: 'x-access-token',
       featureRunId: 'fr-abc',
       runner,
     });
@@ -81,7 +83,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
       {
         workspaceDir,
         repoUrl: repoFileUrl(),
-        githubToken: 'unused-for-file-remote',
+        gitToken: 'unused-for-file-remote',
+        remoteUsername: 'x-access-token',
         featureRunId: 'fr-abc',
         runner,
       },
@@ -116,7 +119,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
     const { repoDir } = await prepareBranch({
       workspaceDir,
       repoUrl: repoFileUrl(),
-      githubToken: 'unused-for-file-remote',
+      gitToken: 'unused-for-file-remote',
+      remoteUsername: 'x-access-token',
       featureRunId: 'fr-retry',
       runner,
     });
@@ -125,7 +129,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
       {
         workspaceDir,
         repoUrl: repoFileUrl(),
-        githubToken: 'unused-for-file-remote',
+        gitToken: 'unused-for-file-remote',
+        remoteUsername: 'x-access-token',
         featureRunId: 'fr-retry',
         runner,
       },
@@ -138,7 +143,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
       {
         workspaceDir,
         repoUrl: repoFileUrl(),
-        githubToken: 'unused-for-file-remote',
+        gitToken: 'unused-for-file-remote',
+        remoteUsername: 'x-access-token',
         featureRunId: 'fr-retry',
         runner,
       },
@@ -155,7 +161,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
     const { repoDir } = await prepareBranch({
       workspaceDir,
       repoUrl: repoFileUrl(),
-      githubToken: 'unused-for-file-remote',
+      gitToken: 'unused-for-file-remote',
+      remoteUsername: 'x-access-token',
       featureRunId: 'fr-bad-path',
       runner,
     });
@@ -165,7 +172,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
         {
           workspaceDir,
           repoUrl: repoFileUrl(),
-          githubToken: 'unused-for-file-remote',
+          gitToken: 'unused-for-file-remote',
+          remoteUsername: 'x-access-token',
           featureRunId: 'fr-bad-path',
           runner,
         },
@@ -183,7 +191,8 @@ describe('workspace git orchestration (local, Docker-free)', () => {
       await prepareBranch({
         workspaceDir,
         repoUrl: 'https://github-host-that-does-not-exist.invalid/acme/widgets.git',
-        githubToken: secretToken,
+        gitToken: secretToken,
+        remoteUsername: 'x-access-token',
         featureRunId: 'fr-leak-check',
         runner,
       });

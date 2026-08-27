@@ -2639,27 +2639,57 @@ disagreement-arbiter.ts`, 3 more in `review-fix-loop.ts` — `review-fix-loop.ts
     itself has no pre-existing unit-test harness (same posture as `state repair --apply` —
     building one from scratch was judged disproportionate to this fix); its change was verified by
     full typecheck plus code inspection instead.
-  - **One piece deliberately still not fixed, and now the last one: `run-coder.ts`'s coder-adapter
-    clone/push credential path.** `resolveDefaultCoderAdapterFactory()` still requires only
-    `GITHUB_TOKEN` and still constructs a literal `https://github.com/...` clone URL — unlike
-    `createPullRequest()` above, this path embeds the token into the git remote URL under a
-    hardcoded `x-access-token` HTTPS Basic-Auth username (`packages/adapters-coder/src/
-workspace.ts`'s `authenticatedRemote()`). That convention is GitHub's own documented one, but
-    not GitLab's (`oauth2:<token>`) or Gitea's (`<username>:<token>`, or a bare token as username) —
-    picking the wrong one produces a confusing 401 that reads like a token-permissions problem,
-    a worse failure mode than the current, honestly-broken "always targets github.com" behavior.
-    Fixing this correctly needs a per-provider username-convention decision verified against a live
-    instance, which this environment cannot do (no reachable Docker daemon, the same constraint
-    documented for `infra/docker-compose.{gitea,gitlab}.yml` since Stages 3/4). The sandboxed
-    egress-proxy allow-list (`infra/docker/coder-sandbox/egress-proxy/filter.txt`) is also still
-    GitHub-host-only, for the identical reason. This is now the **only** remaining GitHub-only
-    write-pipeline call site — recorded as real, tracked follow-up work (not silently dropped),
-    documented in both `run-coder.ts`'s own doc comment and `scm-client-resolver.ts`'s module doc
-    comment so it stays visible to the next person who touches either file.
-  - Re-ran the full suite after this second follow-up: `pnpm typecheck`/`pnpm lint`/
+  - **`run-coder.ts`'s coder-adapter clone/push credential path — implemented as a third
+    same-day follow-up, but deliberately not claimed as verified.** The second follow-up above
+    left this as the one remaining gap; a third pass closed the implementation, matching this
+    document's own "shipping an unverified guess is worse than an honest gap" bar from the second
+    follow-up's original writeup by being explicit about exactly what remains unverified rather
+    than silently upgrading the gap to "done." `packages/adapters-coder/src/workspace.ts`'s
+    `WorkspaceOptions`/`authenticatedRemote()` and `codex-coder-adapter.ts`'s
+    `CodexCoderAdapterOptions` both replaced the single `githubToken` field with `gitToken` +
+    `remoteUsername` — the module itself stays provider-agnostic; the per-provider convention is
+    resolved entirely by the caller. `run-coder.ts`'s `resolveDefaultCoderAdapterFactory()` now
+    dispatches on `repositories.provider` to read the matching token env var
+    (`GITHUB_TOKEN`/`GITLAB_TOKEN`/`GITEA_TOKEN` — the same names `scm-client-resolver.ts` already
+    established) and pair it with a `GIT_REMOTE_USERNAMES` username (`x-access-token`/`oauth2`/
+    `token`); `CoderAdapterFactory`'s signature widened from a bare `repoUrl: string` to a
+    `CoderRepoConnection { repoUrl, provider, baseUrl }` object (every pre-existing test/scenario
+    fake needed zero changes, since they were all already zero-argument — the same TypeScript
+    function-arity compatibility this document's earlier follow-ups relied on). A new
+    `buildCoderCloneUrl(provider, baseUrl, owner, name)` replaces the hardcoded
+    `` `https://github.com/${owner}/${name}.git` `` template with a provider-aware one
+    (`https://github.com/...` for GitHub; `{baseUrl}/{owner}/{name}.git` for self-hosted
+    Gitea/GitLab, requiring `base_url`). The coder-sandbox egress-proxy allow-list
+    (`infra/docker/coder-sandbox/egress-proxy/filter.txt`) gained a parallel optional
+    `SCM_ALLOWED_HOST` env var (mirroring the existing `CODE_GEN_ALLOWED_HOST`), so a self-hosted
+    Gitea/GitLab deployment can allow-list its own host for the sandbox's default-deny egress
+    proxy — without it, a Gitea/GitLab clone/push would still be network-blocked even with a
+    correct credential and URL. `infra/docker-compose.coder-sandbox.yml`'s syntax was verified via
+    `docker compose config` (no daemon needed for that check).
+  - **Confidence is asymmetric across the two new providers, and this is recorded as real,
+    tracked follow-up work rather than glossed over.** GitLab's `oauth2:<token>` convention is
+    high-confidence: it is GitLab's own long-documented, version-stable personal-access-token-
+    over-HTTPS convention, unchanged across GitLab.com and self-hosted CE/EE. Gitea's `token`
+    username is a documented-but-unverified placeholder: Gitea's git-http backend is documented to
+    authenticate on the Basic-Auth password field alone when it matches a valid access token,
+    regardless of the username supplied — but this environment has no reachable Docker daemon (the
+    same constraint documented for `infra/docker-compose.{gitea,gitlab}.yml` since Stages 3/4), so
+    none of this — Gitea's username-independence claim, GitLab's convention, the sandbox's egress
+    allow-list change, or a real clone/push round-trip against either provider — has been
+    exercised against a live instance. `resolveDefaultCoderAdapterFactory()`'s doc comment spells
+    out exactly what a future live-verification pass still needs to confirm (Gitea version
+    coverage, no instance-level username enforcement, an actual end-to-end clone/push), and names
+    the fallback if the placeholder proves insufficient (`GITEA_USERNAME` env var, mirroring
+    `GITEA_TOKEN`) rather than leaving the next person to rediscover that option from scratch. New
+    regression coverage: 10 new `run-coder.test.ts` cases (provider-dispatch for GitLab/Gitea
+    coder-adapter connections, a missing-`base_url` rejection, and a standalone
+    `buildCoderCloneUrl` unit-test suite), plus the mechanical `gitToken`/`remoteUsername` field
+    rename verified via `workspace.test.ts`/`codex-coder-adapter.test.ts` (unchanged assertions,
+    only fixture shape updated).
+  - Re-ran the full suite after this third follow-up: `pnpm typecheck`/`pnpm lint`/
     `pnpm format:check`/`pnpm build:web` all still pass, `minicoder test system` (13 scenarios)
-    all pass, and `pnpm test` now reports 116 test files / 1077 tests passed, 26 skipped (up from
-    116/1073 after the first follow-up).
+    all pass, and `pnpm test` now reports 116 test files / 1087 tests passed, 26 skipped (up from
+    116/1077 after the second follow-up).
 - **Documentation corrected to reflect the interface/schema/diagnostic layer being genuinely
   shipped, while being explicit about the write-pipeline exception** — the "GitLab and Gitea are
   staged, not-yet-built providers" framing in `CLAUDE.md` (decision #3), `docs/00`, `docs/01`
@@ -2690,19 +2720,24 @@ system` (13 scenarios, including the two edited scenario files) all pass, and `p
   `scm-client-resolver.test.ts` plus the new provider-dispatch regressions added to
   `github-reconciliation.test.ts`/`run-review.test.ts`).
 
-Acceptance (whole item): **nearly fully met after two same-day follow-ups, with one narrow,
-explicitly-documented exception.** At least one alternative SCM provider (Gitea, then GitLab) was
-added without changing core orchestration, the `pull_requests`/`feature_runs` schema, or the
-feature-execution state matrix — the literal schema/state-matrix clause holds, and the `ScmClient`
-interface itself, its webhook receivers, and (after both follow-ups) every read/diagnostic/write
-call site except one are genuine "swap the implementation behind an unchanged interface" successes,
-proven by the Stage 5 cross-provider conformance suite plus the provider-dispatch regressions added
-across both follow-ups. The stronger, implied reading of that sentence — that a Gitea/GitLab-
-configured project can actually be _driven_ through the automated pipeline the way a GitHub-
-configured one can — now holds for scheduled reconciliation, AI review, merge-gate status checks,
-and the real merge call itself. It does **not** yet fully hold for one specific step: a
-Gitea/GitLab-provider project's coder adapter still cannot clone/push its own repository, because
-that credential path requires a per-provider git-auth-convention decision this environment could
-not verify against a live instance (see the second follow-up's addendum above). This is the
-accurate, as-built status after both follow-ups — a single, well-scoped, explicitly-tracked gap,
-not a claim of full completion.
+Acceptance (whole item): **fully implemented after three same-day follow-ups, with one narrow,
+explicitly-documented verification gap (implementation vs. live-instance proof, not a missing
+feature).** At least one alternative SCM provider (Gitea, then GitLab) was added without changing
+core orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution state
+matrix — the literal schema/state-matrix clause holds, and the `ScmClient` interface itself, its
+webhook receivers, and every read/diagnostic/write call site — including, after the third
+follow-up, the coder adapter's own clone/push credential path — are genuine "swap the
+implementation behind an unchanged interface" successes, proven by the Stage 5 cross-provider
+conformance suite plus the provider-dispatch regressions added across all three follow-ups. The
+stronger, implied reading of that sentence — that a Gitea/GitLab-configured project can actually
+be _driven_ through the automated pipeline the way a GitHub-configured one can — now holds
+end-to-end in code for scheduled reconciliation, AI review, merge-gate status checks, the real
+merge call, and (as of the third follow-up) the coder adapter's clone/push. What remains open is
+narrower than "not fixed": GitLab's credential convention is high-confidence (a long-documented,
+version-stable convention); Gitea's is a documented-but-unverified placeholder, and neither has
+been exercised against a real Gitea/GitLab clone/push, because this environment has no reachable
+Docker daemon to verify against (see the third follow-up's addendum above for exactly what a
+live-verification pass still needs to confirm, and the documented fallback if it finds the
+placeholder wrong). This is the accurate, as-built status after all three follow-ups — a
+single, well-scoped, explicitly-tracked verification gap, not a claim that verification happened
+when it didn't.

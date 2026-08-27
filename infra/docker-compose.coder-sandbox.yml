@@ -46,6 +46,14 @@ version: '3.8'
 #                           CODE_GEN_API_KEY must not be reachable from the untrusted-code-
 #                           execution container). This entry is reserved for a future variant that
 #                           invokes code generation from inside the sandbox.
+#   SCM_ALLOWED_HOST      — a self-hosted Gitea/GitLab deployment's own host, appended to the same
+#                           allow-list (docs/06 §Phase 18 Stage 6's coder-adapter follow-up) —
+#                           needed because the coder adapter's clone/push runs inside this
+#                           sandbox, so its target SCM host must be allow-listed just like
+#                           github.com already is. Not needed for a GitHub-provider deployment.
+#                           Unverified against a live daemon, like the credential-convention fix
+#                           it accompanies (packages/triggerdev/src/tasks/run-coder.ts's
+#                           resolveDefaultCoderAdapterFactory() doc comment).
 
 services:
   coder-sandbox-egress-proxy:
@@ -54,6 +62,7 @@ services:
     restart: unless-stopped
     environment:
       CODE_GEN_ALLOWED_HOST: '${CODE_GEN_ALLOWED_HOST:-api.openai.com}'
+      SCM_ALLOWED_HOST: '${SCM_ALLOWED_HOST:-}'
     networks:
       - coder-sandbox
       - coder-egress

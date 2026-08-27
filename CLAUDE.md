@@ -160,27 +160,30 @@ These are locked decisions that appear throughout the docs. Do not contradict or
    `packages/core/src/scm/`); **Gitea and GitLab are also shipped** (`packages/gitea`,
    `packages/gitlab` — full `ScmClient` implementations, webhook receivers, CLI tooling, and a
    cross-provider conformance suite, docs/06 §Phase 18's "Generic SCM Interface" plan, Stages 0–5).
-   **A single, narrow, tracked gap remains in the production write pipeline: a Gitea/GitLab-
-   provider project's coder adapter still cannot clone/push its own repository.**
-   `run-coder`'s coder-adapter credential path (`resolveDefaultCoderAdapterFactory()`) still
-   requires only `GITHUB_TOKEN` and embeds it into the git remote URL under a hardcoded
-   `x-access-token` HTTPS Basic-Auth username (GitHub's own convention, not GitLab's `oauth2:<token>`
-   or Gitea's `<username>:<token>`) — fixing it needs a per-provider auth-convention decision
-   verified against a live instance, which this environment cannot do (no reachable Docker daemon).
-   Every other production write-path call site — `github-reconciliation`'s scheduled task,
-   `run-review`'s diff fetch, `run-merge-gate`'s status-check publication, `run-coder`'s own
-   post-push `createPullRequest()` call, and `minicoder merge ...`/its two API routes' real merge
-   call — was made provider-aware across two same-day Stage 6 follow-ups
-   (`packages/triggerdev/src/tasks/scm-client-resolver.ts`'s `resolveDefaultScmClient()`, the same
+   **Every production write-path call site is provider-aware, including the coder adapter's own
+   clone/push credential — but that path is implemented, not live-instance-verified.**
+   `github-reconciliation`'s scheduled task, `run-review`'s diff fetch, `run-merge-gate`'s
+   status-check publication, `run-coder`'s post-push `createPullRequest()` call,
+   `minicoder merge ...`/its two API routes' real merge call, and (as of a third same-day Stage 6
+   follow-up) `run-coder`'s coder-adapter clone/push itself all dispatch on
+   `repositories.provider`/`.base_url` — the coder-adapter credential path via
+   `resolveDefaultCoderAdapterFactory()`'s own per-provider token/username table, the rest via
+   `packages/triggerdev/src/tasks/scm-client-resolver.ts`'s `resolveDefaultScmClient()` (the same
    dispatch-by-`repositories.provider` pattern `packages/cli/src/commands/state.ts`'s
    `resolveScmClientForDoctor()` already establishes). A Gitea/GitLab-provider project can now be
    diagnosed, receive webhooks, have its scheduled reconciliation and AI review run correctly, be
-   merge-gated, and be merged — the one remaining step it cannot do automatically is have its code
-   pushed by the coder adapter. See docs/06 §Phase 18 Stage 6's completion notes for the full
-   writeup — not silently assumed done because almost everything else already is. The scheduled reconciliation
-   task keeps its literal name (`github-reconciliation`, one of the no-drift
-   canonical task IDs, docs/00 §3.12) regardless of which provider it ends up reconciling — same
-   precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
+   merge-gated, be merged, and have its coder adapter clone/push, all in code. **The tracked gap is
+   verification, not implementation:** GitLab's `oauth2:<token>` HTTPS Basic-Auth convention is
+   high-confidence (GitLab's own long-documented, version-stable convention); Gitea's `token`
+   username is a documented-but-unverified placeholder (Gitea's git-http backend is documented to
+   authenticate on the token in the password field regardless of username, but this has not been
+   proven against a real instance); and neither provider's actual clone/push has been exercised
+   end-to-end, because this environment has no reachable Docker daemon. See docs/06 §Phase 18
+   Stage 6's completion notes for the full writeup, including exactly what a live-verification
+   pass still needs to confirm and the fallback (`GITEA_USERNAME` env var) if the Gitea placeholder
+   proves wrong. The scheduled reconciliation task keeps its literal name (`github-reconciliation`,
+   one of the no-drift canonical task IDs, docs/00 §3.12) regardless of which provider it ends up
+   reconciling — same precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
 
 4. **Workflow Layer** is the subsystem name for durable workflow execution. **The implementation
    is an in-repo, DB-backed task queue** (`packages/triggerdev/src/task-registry.ts`'s

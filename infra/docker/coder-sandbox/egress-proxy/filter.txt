@@ -1,5 +1,7 @@
 # Default allow-list: GitHub only. The code-generation provider host is appended at container
-# start from CODE_GEN_ALLOWED_HOST (see entrypoint.sh) since it's deployment-specific.
+# start from CODE_GEN_ALLOWED_HOST, and a self-hosted Gitea/GitLab host from SCM_ALLOWED_HOST
+# (docs/06 §Phase 18 Stage 6's coder-adapter follow-up) — both are deployment-specific, so
+# neither is baked in here (see entrypoint.sh).
 ^github\.com$
 ^api\.github\.com$
 ^codeload\.github\.com$

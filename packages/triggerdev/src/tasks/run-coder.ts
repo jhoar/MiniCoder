@@ -41,37 +41,120 @@ function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
 }
 
-/** Builds a fresh `CoderAgentAdapter` instance for this one run, given the project's repo URL —
- * a factory (not a singleton) because a single deployment can serve multiple projects with
- * different repos, and `CoderInput` itself carries no repo/credential fields (docs/06 Phase 9). */
-export type CoderAdapterFactory = (repoUrl: string) => Promise<CoderAgentAdapter>;
+/** The repository connection a `CoderAdapterFactory` needs to build a clone/push credential for —
+ * `repoUrl` alone is not enough, since the correct HTTPS Basic-Auth username convention (and
+ * which token env var to read) depends on `provider`, and a self-hosted `provider` also needs
+ * `baseUrl` to have produced `repoUrl` in the first place (see `buildCoderCloneUrl()` below). */
+export interface CoderRepoConnection {
+  readonly repoUrl: string;
+  readonly provider: string;
+  readonly baseUrl: string | null;
+}
+
+/** Builds a fresh `CoderAgentAdapter` instance for this one run, given the project's repo
+ * connection — a factory (not a singleton) because a single deployment can serve multiple
+ * projects with different repos/providers, and `CoderInput` itself carries no repo/credential
+ * fields (docs/06 Phase 9). */
+export type CoderAdapterFactory = (repo: CoderRepoConnection) => Promise<CoderAgentAdapter>;
+
+/** Builds the clone/push URL for a repository given its SCM provider (docs/06 §Phase 18 Stage 6's
+ * coder-adapter follow-up). GitHub is always `github.com`; Gitea/GitLab are self-hosted, so
+ * `baseUrl` (`repositories.base_url`) is required for them — mirrors
+ * `scm-client-resolver.ts`'s identical requirement for REST client construction. */
+export function buildCoderCloneUrl(
+  provider: string,
+  baseUrl: string | null,
+  owner: string,
+  name: string,
+): string {
+  switch (provider) {
+    case 'github':
+      return `https://github.com/${owner}/${name}.git`;
+    case 'gitlab':
+    case 'gitea': {
+      if (!baseUrl) {
+        throw new Error(
+          `run-coder: a ${provider}-provider repository has no base_url recorded; cannot build a clone URL`,
+        );
+      }
+      return `${baseUrl.replace(/\/+$/, '')}/${owner}/${name}.git`;
+    }
+    default:
+      throw new Error(`run-coder: unknown SCM provider "${provider}" — cannot build a clone URL`);
+  }
+}
+
+/** The HTTPS Basic-Auth username each provider expects paired with its access token in a git
+ * remote URL (`workspace.ts`'s `authenticatedRemote()`). GitHub's `x-access-token` and GitLab's
+ * `oauth2` are both documented, stable conventions used identically across API versions. Gitea's
+ * entry is the one genuinely unverified choice — see `resolveDefaultCoderAdapterFactory()`'s doc
+ * comment below for why, and what a live-instance verification pass would need to confirm. */
+const GIT_REMOTE_USERNAMES: Record<'github' | 'gitlab' | 'gitea', string> = {
+  github: 'x-access-token',
+  gitlab: 'oauth2',
+  gitea: 'token',
+};
+
+const GIT_TOKEN_ENV_VARS: Record<'github' | 'gitlab' | 'gitea', string> = {
+  github: 'GITHUB_TOKEN',
+  gitlab: 'GITLAB_TOKEN',
+  gitea: 'GITEA_TOKEN',
+};
 
 /**
  * Constructs the real reference `CodexCoderAdapter` from env config (sandbox image/network,
- * code-generation endpoint, GitHub token) — a dynamic import so `packages/triggerdev` only pays
- * for `@minicoder/adapters-coder` when this default path is actually exercised. Test scenarios
- * inject `MockCoderAdapter` directly instead of going through this factory.
+ * code-generation endpoint, per-provider git credential) — a dynamic import so
+ * `packages/triggerdev` only pays for `@minicoder/adapters-coder` when this default path is
+ * actually exercised. Test scenarios inject `MockCoderAdapter` directly instead of going through
+ * this factory.
  *
- * **Known, tracked gap (docs/06 §Phase 18 Stage 6): this factory's clone/push credential path
- * remains GitHub-only**, unlike `createPullRequest()`'s client resolution below (fixed in the
- * same pass). `CodexCoderAdapterOptions.githubToken` is embedded into the clone/push remote URL by
- * `workspace.ts`'s `authenticatedRemote()` under a hardcoded `x-access-token` HTTPS Basic-Auth
- * username — GitHub's own documented convention, but not GitLab's (`oauth2:<token>`) or Gitea's
- * (`<username>:<token>`, or a bare token as username). Fixing this correctly requires deciding a
- * per-provider username convention and verifying it against a live Gitea/GitLab instance — this
- * environment has no reachable Docker daemon (the same constraint documented for
- * `infra/docker-compose.{gitea,gitlab}.yml` in Stages 3/4), so shipping an unverified guess at the
- * auth convention risks a worse failure mode (a confusing 401 that looks like a token-permissions
- * problem) than the current, honestly-broken "always targets github.com" behavior. The sandboxed
- * egress-proxy allow-list (`infra/docker/coder-sandbox/egress-proxy/filter.txt`) is also still
- * GitHub-host-only, for the same reason. Left as real, tracked follow-up work, not fixed here.
+ * **Provider-aware as of docs/06 §Phase 18 Stage 6's second follow-up**, closing the gap this
+ * factory's doc comment previously described (`GITHUB_TOKEN`-only, hardcoded `x-access-token`
+ * username). It now reads the matching token env var (`GITHUB_TOKEN`/`GITLAB_TOKEN`/`GITEA_TOKEN`
+ * — the same names `scm-client-resolver.ts` already established for REST client construction) and
+ * embeds it under the matching `GIT_REMOTE_USERNAMES` username.
+ *
+ * **Remaining verification work (not yet done, and explicitly tracked): none of this has been
+ * exercised against a live Gitea or GitLab instance.** This environment has no reachable Docker
+ * daemon (the same constraint documented for `infra/docker-compose.{gitea,gitlab}.yml` since
+ * Stages 3/4), so the fix is a documented-convention implementation, not an empirically-verified
+ * one. Confidence differs by provider:
+ * - **GitLab (`oauth2:<token>`) is high-confidence.** This is GitLab's own long-documented,
+ *   version-stable personal-access-token-over-HTTPS convention (used identically for git
+ *   operations across GitLab.com and self-hosted GitLab CE/EE) — the same convention already
+ *   cited (and left unimplemented) in this factory's prior doc comment and in CLAUDE.md/docs/07.
+ * - **Gitea (`token:<token>`) is the genuinely unverified part.** Gitea's git-http backend
+ *   authenticates a request whose Basic-Auth password matches a valid personal access token
+ *   regardless of the username supplied — so the literal username string `'token'` is a
+ *   placeholder, not a value Gitea itself requires, and should behave identically to any other
+ *   non-blank username under that documented behavior. What a live-instance pass still needs to
+ *   confirm: (1) that this holds across the Gitea versions this deployment targets, since access-
+ *   token authentication behavior has evolved across Gitea releases; (2) that no self-hosted
+ *   instance in practice has "require the username to match the token's owning account" configured
+ *   or enforced by an intermediating proxy; and (3) that a real clone/push round-trip against a
+ *   real Gitea repository succeeds end-to-end (workspace.ts's `prepareBranch()`/`commitAndPush()`
+ *   have only ever been exercised against `file://` local remotes and mocked sandboxes — see
+ *   `workspace.test.ts`'s own header comment). If a future pass with real Docker/Gitea access
+ *   finds the placeholder username insufficient, the fix is to add a `GITEA_USERNAME` env var
+ *   (mirroring `GITEA_TOKEN`) rather than guessing a second placeholder blind.
+ * - **The coder-sandbox egress-proxy allow-list is a separate, still-open piece.**
+ *   `infra/docker/coder-sandbox/egress-proxy/filter.txt` now accepts an optional
+ *   `SCM_ALLOWED_HOST` env var (mirroring the existing `CODE_GEN_ALLOWED_HOST`) so a self-hosted
+ *   Gitea/GitLab deployment can allow-list its own host — but that, too, is unverified against a
+ *   live daemon for the same reason.
  */
 function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
-  return async (repoUrl: string) => {
-    const githubToken = requireNonBlankEnvVar(
-      'GITHUB_TOKEN',
-      'run-coder requires a GitHub credential to clone/push — see docs/07-security-and-secrets.md §3.',
+  return async ({ repoUrl, provider }: CoderRepoConnection) => {
+    if (provider !== 'github' && provider !== 'gitlab' && provider !== 'gitea') {
+      throw new Error(
+        `run-coder: unknown SCM provider "${provider}" — cannot resolve a git credential`,
+      );
+    }
+    const gitToken = requireNonBlankEnvVar(
+      GIT_TOKEN_ENV_VARS[provider],
+      `run-coder requires a ${provider} credential to clone/push — see docs/07-security-and-secrets.md §3.`,
     );
+    const remoteUsername = GIT_REMOTE_USERNAMES[provider];
     const codeGenBaseUrl = requireNonBlankEnvVar(
       'CODE_GEN_BASE_URL',
       'run-coder requires an OpenAI-compatible code-generation endpoint — see ' +
@@ -91,7 +174,8 @@ function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
       await import('@minicoder/adapters-coder');
     return new CodexCoderAdapter({
       repoUrl,
-      githubToken,
+      gitToken,
+      remoteUsername,
       codeGenerationProvider: new HttpCodeGenerationProvider({
         baseUrl: codeGenBaseUrl,
         apiKey: codeGenApiKey,
@@ -187,8 +271,9 @@ export interface RunCoderDeps {
   /** Resolves the `ScmClient` used to open the pull request after a successful push (Stage 6
    * write-pipeline follow-up, docs/06 §Phase 18) — the correct implementation/credential for this
    * run's repository's own `provider`/`base_url`, instead of unconditionally constructing
-   * `OctokitGitHubClient`. Does NOT affect the coder adapter's own clone/push credential, which
-   * remains GitHub-only (see `resolveDefaultCoderAdapterFactory()`'s doc comment above). */
+   * `OctokitGitHubClient`. This is a separate resolution path from the coder adapter's own
+   * clone/push credential (`coderAdapterFactory`/`resolveDefaultCoderAdapterFactory()` above) —
+   * both are now provider-aware, but each resolves its own credential independently. */
   readonly resolveScmClient?: ScmClientResolver;
 }
 
@@ -250,10 +335,10 @@ export async function runImpl(
   if (!repo || !feature) {
     return { projectId, featureRunId, pushed: false, prNumber: null };
   }
-  // Deliberately still hardcoded to github.com — see resolveDefaultCoderAdapterFactory()'s doc
-  // comment above for why generalizing this clone URL (and its paired auth convention) is a
-  // separate, not-yet-fixed piece of the Stage 6 write-pipeline follow-up.
-  const repoUrl = `https://github.com/${repo.owner}/${repo.name}.git`;
+  // Provider-aware as of docs/06 §Phase 18 Stage 6's second follow-up — see
+  // resolveDefaultCoderAdapterFactory()'s doc comment above for the credential half of this fix
+  // and its documented, not-yet-live-verified confidence level per provider.
+  const repoUrl = buildCoderCloneUrl(repo.provider, repo.base_url, repo.owner, repo.name);
 
   // Phase 16 pre-flight budget forecast (docs/01 §5.11 "Forecast before run"): opt-in via
   // CODE_GEN_ESTIMATED_COST_USD — a no-op (always proceeds) unless a deployment configures it.
@@ -287,7 +372,11 @@ export async function runImpl(
   const registry = new AdapterRegistry(db);
   const recorder = new AgentRunRecorder(db, registry);
   const adapterRecord = await registry.resolve(AgentRole.CODER, coderAdapterName);
-  const adapter = await coderAdapterFactory(repoUrl);
+  const adapter = await coderAdapterFactory({
+    repoUrl,
+    provider: repo.provider,
+    baseUrl: repo.base_url,
+  });
 
   const input: CoderInput = {
     projectId,
