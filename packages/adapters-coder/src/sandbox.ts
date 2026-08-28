@@ -67,8 +67,23 @@ export class CoderSandbox implements Sandbox {
       NetworkingConfig: {
         EndpointsConfig: { [this.options.network]: {} },
       },
+      // Issue #84 live-verification fix: curl/git (via git-remote-http) deliberately ignores the
+      // uppercase `HTTP_PROXY` variable for plain-HTTP requests — a long-standing mitigation for
+      // the "httpoxy" CGI vulnerability class — and only honors lowercase `http_proxy`. Only
+      // `HTTPS_PROXY` has no such ambiguity and was already honored for TLS clone/push targets
+      // (github.com, a GitLab/Gitea instance over HTTPS), which is why this went unverified until
+      // a real HTTP-scheme SCM host (a self-hosted Gitea instance in this issue's live-daemon
+      // verification) was actually cloned through the sandbox: the clone connected directly and
+      // failed, since the sandbox network has no route to the outside world without the proxy.
+      // Setting both cases covers every git transport, matching how a real deployment's SCM host
+      // may be plain-HTTP (an internal Gitea/GitLab instance without its own TLS termination).
       Env: this.options.httpsProxy
-        ? [`HTTPS_PROXY=${this.options.httpsProxy}`, `HTTP_PROXY=${this.options.httpsProxy}`]
+        ? [
+            `HTTPS_PROXY=${this.options.httpsProxy}`,
+            `HTTP_PROXY=${this.options.httpsProxy}`,
+            `https_proxy=${this.options.httpsProxy}`,
+            `http_proxy=${this.options.httpsProxy}`,
+          ]
         : [],
       HostConfig: {
         NetworkMode: this.options.network,

@@ -13,8 +13,9 @@ fi
 # GitLab deployment's own host, needed because the coder adapter's clone/push happens from inside
 # this sandbox and the egress proxy is a default-deny allow-list. Not needed for a GitHub-provider
 # deployment — github.com/api.github.com/codeload.github.com/objects.githubusercontent.com are
-# already baked into filter.txt. Unverified against a live daemon, like the credential-convention
-# fix it accompanies (see run-coder.ts's resolveDefaultCoderAdapterFactory() doc comment).
+# already baked into filter.txt. Live-daemon-verified as of issue #84 (see run-coder.ts's
+# resolveDefaultCoderAdapterFactory() doc comment and
+# packages/adapters-coder/src/sandbox-live.integration.test.ts).
 if [ -n "$SCM_ALLOWED_HOST" ]; then
   ESCAPED=$(printf '%s' "$SCM_ALLOWED_HOST" | sed 's/[.[\*^$]/\\&/g')
   echo "^${ESCAPED}\$" >> /etc/tinyproxy/filter.txt

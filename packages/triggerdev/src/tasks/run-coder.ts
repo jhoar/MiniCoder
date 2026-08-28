@@ -157,12 +157,20 @@ const GIT_TOKEN_ENV_VARS: Record<'github' | 'gitlab' | 'gitea', string> = {
  * GitLab versions other than 17.5.2, or a self-managed instance with non-default authentication
  * settings.
  *
- * **The coder-sandbox egress-proxy allow-list remains the one unverified piece for both
- * providers** — `infra/docker/coder-sandbox/egress-proxy/filter.txt`'s optional `SCM_ALLOWED_HOST`
- * env var (mirroring the existing `CODE_GEN_ALLOWED_HOST`) was added but not exercised, since both
- * live-verification passes ran the coder-adapter's git operations directly on the host, not inside
- * the sandbox's own egress-proxied network. That piece still needs a real Docker daemon running
- * the full `docker-compose.coder-sandbox.yml` stack, which this pass did not attempt.
+ * **The coder-sandbox egress-proxy allow-list was live-verified as of issue #84** —
+ * `infra/docker/coder-sandbox/egress-proxy/filter.txt`'s optional `SCM_ALLOWED_HOST` env var
+ * (mirroring the existing `CODE_GEN_ALLOWED_HOST`) was exercised against a real Docker daemon and
+ * a real self-hosted Gitea instance, driving this module's git orchestration through the actual
+ * `CoderSandbox`/`dockerode` container (not the host): a sandboxed clone/commit/push succeeds once
+ * `SCM_ALLOWED_HOST` names the SCM host, and fails by default when it doesn't. That pass also
+ * found and fixed a real bug in `sandbox.ts` — the container's proxy env vars were uppercase-only
+ * (`HTTPS_PROXY`/`HTTP_PROXY`), which curl/git ignores for plain-HTTP requests (the "httpoxy"
+ * mitigation) — invisible against every prior HTTPS-remote-only verification. See docs/06 §Phase
+ * 18 Stage 6's sixth follow-up and `packages/adapters-coder/src/sandbox-live.integration.test.ts`
+ * (an env-var-gated regression, a no-op absent a live daemon) for the full writeup. Not yet
+ * exercised: `coder-sandbox-docker-proxy` (that verification session's own nested-container
+ * networking blocked it — `CoderSandbox` talked to the local Docker socket directly instead) and a
+ * permanent CI-integrated live-instance matrix.
  */
 function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
   return async ({ repoUrl, provider }: CoderRepoConnection) => {

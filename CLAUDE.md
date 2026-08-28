@@ -189,12 +189,33 @@ These are locked decisions that appear throughout the docs. Do not contradict or
 getPullRequestDiff()` crashing on a real GitLab-side pagination bug when `per_page` was supplied,
    and `GitlabScmClient.mergePullRequest()` silently failing to classify a 422 rejection triggered
    by an explicit empty `commitMessage`. See docs/06 §Phase 18 Stage 6's completion notes for the
-   full writeup. What remains unverified is narrower still: the coder-sandbox egress-proxy
-   allow-list's `SCM_ALLOWED_HOST` addition (both passes ran git operations on the host, not inside
-   the actual sandboxed network path) and a permanent CI-integrated live-instance matrix (both
-   passes were one-off manual runs, not wired into `pnpm test`/CI). The scheduled reconciliation
-   task keeps its literal name (`github-reconciliation`, one of the no-drift canonical task IDs,
-   docs/00 §3.12) regardless of which provider it ends up
+   full writeup. **Issue #84 (closed): a sixth follow-up live-verified the one gap the fifth
+   follow-up left open** — the coder-sandbox egress-proxy allow-list and `SCM_ALLOWED_HOST`,
+   against a real Docker daemon and a real Gitea instance, driving `CodexCoderAdapter`'s git
+   orchestration through the actual `CoderSandbox`/`dockerode` container rather than on the host.
+   Both directions were proven: a real sandboxed clone/commit/push succeeds once
+   `SCM_ALLOWED_HOST` names the Gitea host, and the identical attempt fails by default when it
+   doesn't (confirmed against Gitea's own API afterward, not just a passing exit code). The
+   sandbox's other Phase 9 isolation properties (non-root uid, `CapDrop: ['ALL']`, read-only
+   rootfs with the `/workspace` tmpfs, container removal in `finally`) were all confirmed
+   functionally from inside a real running container. This pass also found and fixed a real bug:
+   `sandbox.ts` set only uppercase `HTTPS_PROXY`/`HTTP_PROXY`, which curl/git's `git-remote-http`
+   deliberately ignores for plain-HTTP requests (the "httpoxy" CGI-vulnerability mitigation) —
+   invisible in every prior live pass since those used HTTPS remotes, but reproduced immediately
+   against this plain-HTTP Gitea instance; fixed by also setting lowercase `http_proxy`/
+   `https_proxy`. A permanent, repo-committed regression
+   (`packages/adapters-coder/src/sandbox-live.integration.test.ts`) now exists, gated the same way
+   `*.postgres.test.ts` gates on `MINICODER_TEST_PG_URL` — a no-op absent a live daemon/SCM host
+   (including in this repo's own CI today), but real coverage the next time one is available. See
+   docs/06 §Phase 18 Stage 6's sixth follow-up for the full writeup, including what this pass
+   deliberately did not build (the `coder-sandbox-docker-proxy` service, blocked by this
+   particular verification session's own nested-container networking limits — orthogonal to what
+   issue #84 asked to verify, and not a production gap) and why the production Dockerfiles
+   themselves were not modified (this session's own sandboxed environment blocks
+   `deb.debian.org`/`dl-cdn.alpinelinux.org` directly; the verification used functionally
+   equivalent, ABI-compatible images assembled via multi-stage `COPY` instead). The scheduled
+   reconciliation task keeps its literal name (`github-reconciliation`, one of the no-drift
+   canonical task IDs, docs/00 §3.12) regardless of which provider it ends up
    reconciling — same precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
 
 4. **Workflow Layer** is the subsystem name for durable workflow execution. **The implementation
@@ -1073,19 +1094,31 @@ failed`/`coding → blocked` matrix edge was added.** `RecordCodePushedCommand` 
   that `github-reconciliation.ts`/`run-coder.ts` don't). The `LockConflictError`/
   `OptimisticLockError`/`StaleFenceError` classification itself is identical across all three
   callers and lives only in this one function now.
-- **The sandbox is real container isolation, not yet daemon-verified in this repository's CI.**
+- **The sandbox is real container isolation, live-daemon-verified as of issue #84.**
   `packages/adapters-coder/src/sandbox.ts`'s `CoderSandbox` creates one ephemeral, non-root,
   capability-dropped (`CapDrop: ['ALL']`), read-only-root-filesystem container per run via
   `dockerode`, attached only to the `internal: true` `minicoder-coder-sandbox` network defined in
   `infra/docker-compose.coder-sandbox.yml`, with the `coder-sandbox-egress-proxy` (`tinyproxy`,
-  `FilterDefaultDeny yes`) as its only egress path. Unit tests exercise this against a fake
-  `dockerode` client (`DockerLike`), not a real daemon — the implementation session had no
-  reachable Docker daemon (`docker info` failed), so the compose stack was written and
-  syntax-validated (`docker compose config`) but never run end-to-end, and no Docker-daemon-gated
-  integration test exists yet proving egress denial actually blocks a disallowed host. Treat this
-  as real, reviewed infrastructure that needs a live-daemon verification pass, not as
-  aspirational/un-built — see docs/07 §6's "Phase 9 implementation status" for the exact real-vs-
-  aspirational split.
+  `FilterDefaultDeny yes`) as its only egress path. Unit tests still exercise this against a fake
+  `dockerode` client (`DockerLike`) for speed/determinism, but this is no longer the only coverage:
+  `packages/adapters-coder/src/sandbox-live.integration.test.ts` (issue #84,
+  `MINICODER_TEST_PG_URL`-style env-var-gated, a no-op in any environment with no Docker daemon —
+  including this repo's own CI today) proves the real thing against an actual daemon and a real
+  self-hosted SCM host: a genuine sandboxed clone/commit/push succeeds once `SCM_ALLOWED_HOST`
+  names the SCM host, the identical attempt fails by default when it doesn't (egress denial
+  genuinely blocks a disallowed host, not just "didn't error because it happened to work"), and
+  every isolation property above (non-root uid, all-zero `CapEff`, read-only rootfs, writable
+  `/workspace`, container removed in `finally`) was confirmed functionally from inside a real
+  running container in the verification session that authored this test. That same live pass
+  found and fixed a real bug: `sandbox.ts` originally set only uppercase `HTTPS_PROXY`/
+  `HTTP_PROXY`, which curl/git's `git-remote-http` deliberately ignores for plain-HTTP requests
+  (the "httpoxy" CGI-vulnerability mitigation) — invisible against every prior HTTPS-remote test
+  fixture, reproduced immediately against a real plain-HTTP Gitea instance. See docs/06 §Phase 18
+  Stage 6's sixth follow-up for the full writeup, including the (production-Dockerfile-unchanged)
+  workarounds that specific verification session's own sandboxed network needed and the one piece
+  still not exercised end-to-end (`coder-sandbox-docker-proxy`, blocked by that session's nested-
+  container networking, orthogonal to the egress-proxy/isolation properties issue #84 asked to
+  verify).
 - **`agent_context_packs`, `agent_tool_operations`, and `cost_records` get their first production
   writers in Phase 9.** All three tables (plus `agent_runs.provider`/`.model`/
   `.prompt_template_version`, migration `0010_agent_run_provider_tracking.*`) existed since

@@ -30,11 +30,19 @@ version: '3.8'
 # CODER_SANDBOX_HTTPS_PROXY (consumed by packages/triggerdev/src/tasks/run-coder.ts's default
 # resolver) at coder-sandbox-docker-proxy:2375 / coder-sandbox-egress-proxy:8888 respectively.
 #
-# Status: this stack has not been exercised against a live Docker daemon in this repository's CI
-# yet (docs/07 §6 and CLAUDE.md's Reference Coder Adapter Operational Constraints call this out
-# explicitly) — packages/adapters-coder's unit tests run against a fake dockerode client instead.
-# A Docker-daemon-gated integration test (see packages/adapters-coder's test suite) is the
-# intended place to prove this stack end to end once a daemon is available in CI.
+# Status: live-daemon-verified as of issue #84 (docs/06 §Phase 18 Stage 6's sixth follow-up) — a
+# real Docker daemon and a real self-hosted Gitea instance proved both the egress-proxy allow-list
+# (SCM_ALLOWED_HOST set -> sandboxed clone/commit/push succeeds; unset -> denied by default) and
+# the sandbox's isolation properties (non-root, CapDrop ALL, read-only rootfs, /workspace tmpfs,
+# container removal in finally), driving packages/adapters-coder's real workspace.ts git
+# orchestration through the actual CoderSandbox/dockerode container rather than a fake client.
+# packages/adapters-coder/src/sandbox-live.integration.test.ts is the permanent, env-var-gated
+# regression this pass added (a no-op absent a live daemon, same posture as this repo's
+# *.postgres.test.ts suites) — packages/adapters-coder's plain unit tests still run against a fake
+# dockerode client for speed/determinism. Not yet exercised: coder-sandbox-docker-proxy (blocked by
+# that verification session's own nested-container networking — CoderSandbox talked to the local
+# Docker socket directly instead, out of scope for what issue #84 asked to verify) and a permanent
+# CI-integrated live-instance matrix (the pass was a one-off manual run, not wired into CI).
 #
 # Optional env vars:
 #   CODE_GEN_ALLOWED_HOST — the code-generation provider's hostname, appended to the egress
@@ -51,9 +59,9 @@ version: '3.8'
 #                           needed because the coder adapter's clone/push runs inside this
 #                           sandbox, so its target SCM host must be allow-listed just like
 #                           github.com already is. Not needed for a GitHub-provider deployment.
-#                           Unverified against a live daemon, like the credential-convention fix
-#                           it accompanies (packages/triggerdev/src/tasks/run-coder.ts's
-#                           resolveDefaultCoderAdapterFactory() doc comment).
+#                           Live-daemon-verified as of issue #84 (packages/triggerdev/src/tasks/
+#                           run-coder.ts's resolveDefaultCoderAdapterFactory() doc comment;
+#                           packages/adapters-coder/src/sandbox-live.integration.test.ts).
 
 services:
   coder-sandbox-egress-proxy:
