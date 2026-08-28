@@ -2975,12 +2975,11 @@ egress proxy:
   images sharing the same Debian/Alpine base (so ABI-compatible) instead of live package installs
   — the production Dockerfiles themselves were not modified and remain what a normal CI/production
   environment (with ordinary apt/apk access) builds unmodified. `coder-sandbox-docker-proxy`
-  (`tecnativa/docker-socket-proxy`) could not be started in this same environment (its haproxy
-  frontend requires binding an IPv6 listener the nested-container environment's kernel does not
-  permit) — out of scope for this fix and orthogonal to what issue #84 asked to verify (the
-  egress-proxy allow-list and sandbox isolation properties), so `CoderSandbox` talked to the local
-  Docker socket directly for this pass rather than through that proxy. Neither gap affects the
-  production images/compose file, which are unchanged.
+  (`tecnativa/docker-socket-proxy`) could not be started in this same environment on this pass
+  (its haproxy frontend requires binding an IPv6 listener the nested-container environment's kernel
+  does not permit) — deferred to a seventh follow-up below rather than blocking this pass, so
+  `CoderSandbox` talked to the local Docker socket directly here rather than through that proxy.
+  This gap did not affect the production images/compose file, which were unchanged by this pass.
 - **A permanent, repo-committed regression now exists**: `packages/adapters-coder/src/
 sandbox-live.integration.test.ts`, gated the same way `*.postgres.test.ts` suites gate on
   `MINICODER_TEST_PG_URL` (a `describe.skipIf` on a set of `CODER_SANDBOX_LIVE_TEST`/
@@ -2990,3 +2989,62 @@ sandbox-live.integration.test.ts`, gated the same way `*.postgres.test.ts` suite
   permanent CI-integrated live-instance matrix exists" gap's test-infrastructure half; wiring it
   into an actual CI job (which would need a Docker-in-Docker runner and a throwaway SCM instance)
   remains real, tracked future work, not done here.
+
+**Seventh follow-up (issue #84, requested explicitly): the `coder-sandbox-docker-proxy` gap the
+sixth follow-up deferred, now closed.** Two real, previously-unverified problems were found and
+fixed:
+
+- **The proxy image's IPv6 bind failure has a real, documented fix — `DISABLE_IPV6=1`.**
+  `tecnativa/docker-socket-proxy`'s own `docker-entrypoint.sh` reads this env var (falling back to
+  binding `[::]:2375` — dual-stack — when unset) specifically to support environments with no IPv6
+  route, which is exactly the class of environment the sixth follow-up's session hit ("protocol
+  tcpv6: cannot create receiving socket"). This is not a workaround specific to one sandboxed CI
+  session — any host/container runtime without IPv6 support hits the identical failure — so the
+  fix was made in the production compose file itself:
+  `infra/docker-compose.coder-sandbox.yml`'s `coder-sandbox-docker-proxy` service now sets
+  `DISABLE_IPV6: '1'`. With that set, the container started cleanly and served the same
+  restricted-API proxy behavior confirmed directly: `GET /containers/json` (an allow-listed
+  endpoint) returned `200`, `GET /volumes` (not on the `CONTAINERS`/`POST`/`EXEC`/`NETWORKS`/
+  `IMAGES` allow-list) returned `403` — proving the socket proxy's own scoping is real, not just
+  configured.
+- **A second, independent bug in `CoderSandbox` itself — `dockerHost` silently connected to the
+  wrong port.** `packages/adapters-coder/src/sandbox.ts` passed the caller's `dockerHost` string
+  straight through as dockerode's `host` option alone (`new Docker({ host: options.dockerHost })`).
+  `docker-modem` (dockerode's transport) only ever reads a port from a *separate* `opts.port`
+  field — its request-building code does `port: this.port` verbatim, never extracting a port from
+  the parsed `host` URL even when that string is a fully-qualified `tcp://host:port`. Worse, Node's
+  legacy `url.parse` (which `docker-modem` uses internally) actively misparses a bare `host:port`
+  string with no scheme — `url.parse('coder-sandbox-docker-proxy:2375')` returns
+  `{hostname: null, host: '2375', pathname: null}`, treating the part before the colon as a
+  protocol and the part after as an opaque host — so passing the exact, documented
+  `CODER_SANDBOX_DOCKER_HOST=coder-sandbox-docker-proxy:2375` convention (this compose file's own
+  header comment) would have silently targeted the wrong hostname *and* the wrong port. This is
+  precisely why the sixth follow-up's live-daemon test suite, even once it could reach a running
+  `coder-sandbox-docker-proxy`, needed a fix here before `CoderSandbox` could actually connect to
+  it — confirmed by reproducing the failure first (a bare `dockerHost` value connects to port 80,
+  not 2375) and then proving the fix (`docker-modem`'s `dial()` genuinely never reads a port out of
+  the host string, verified by reading its source directly, not just inferred from the symptom).
+  Fixed with a new, exported `parseDockerHost()` helper (`packages/adapters-coder/src/sandbox.ts`)
+  that splits `host:port`/`tcp://host:port`/bare-host forms itself before constructing `Docker`,
+  passing `host` and `port` as separate fields the way `docker-modem` actually requires. Unit-
+  tested directly (`sandbox.test.ts`, five cases including an IPv4 `host:port` pair and a
+  no-valid-port fallback).
+- **Live-verified end to end**: with both fixes applied, `CoderSandbox` created and controlled a
+  real ephemeral container — driving `workspace.ts`'s full clone/commit/push against the same live
+  Gitea instance the sixth follow-up used — entirely *through* `coder-sandbox-docker-proxy` (a
+  container the vitest process reached via a host-published port, mirroring how a real
+  `run-coder` Trigger.dev task process would reach it over the `minicoder-coder-docker-proxy`
+  Docker network in production), not the local Docker socket. `docker ps -a` after the run showed
+  no orphaned sandbox containers, only the long-lived proxy containers, confirming
+  removal-in-`finally` holds through the proxy path too, not only the direct-socket path the sixth
+  follow-up covered.
+- **Test infrastructure extended, not replaced**: `packages/adapters-coder/src/
+sandbox-live.integration.test.ts` gained an optional `CODER_SANDBOX_TEST_DOCKER_HOST` env var
+  (passed through to every existing case's `dockerHost` option) plus one new, independently gated
+  test proving container creation/control specifically routes through the given Docker host —
+  still a no-op absent that var, so every environment that only exercises the sixth follow-up's
+  original (non-proxy) path is unaffected.
+- **What remains open**: a permanent CI-integrated live-instance matrix wiring all of this
+  (sandbox image, both egress-proxy variants, the Docker socket proxy, and a throwaway SCM
+  instance) into an actual CI job — the seventh follow-up, like the sixth, was a one-off manual
+  verification pass, not a CI job.

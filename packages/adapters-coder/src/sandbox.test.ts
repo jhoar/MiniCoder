@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import {
   CoderSandbox,
+  parseDockerHost,
   type DockerLike,
   type DockerContainerLike,
   type DockerExecLike,
@@ -119,5 +120,35 @@ describe('CoderSandbox', () => {
     await sandbox.start();
     await sandbox.remove();
     await expect(sandbox.remove()).resolves.toBeUndefined();
+  });
+});
+
+describe('parseDockerHost (issue #84 fix: coder-sandbox-docker-proxy connectivity)', () => {
+  it('splits a documented `host:port` value (the CODER_SANDBOX_DOCKER_HOST convention)', () => {
+    expect(parseDockerHost('coder-sandbox-docker-proxy:2375')).toEqual({
+      host: 'coder-sandbox-docker-proxy',
+      port: 2375,
+    });
+  });
+
+  it('returns a bare hostname unchanged when no port is present', () => {
+    expect(parseDockerHost('coder-sandbox-docker-proxy')).toEqual({
+      host: 'coder-sandbox-docker-proxy',
+    });
+  });
+
+  it('strips a tcp:// scheme and still extracts the port', () => {
+    expect(parseDockerHost('tcp://coder-sandbox-docker-proxy:2375')).toEqual({
+      host: 'coder-sandbox-docker-proxy',
+      port: 2375,
+    });
+  });
+
+  it('does not misparse an IPv4 host:port pair', () => {
+    expect(parseDockerHost('127.0.0.1:2375')).toEqual({ host: '127.0.0.1', port: 2375 });
+  });
+
+  it('falls back to the whole string when the suffix after the last colon is not a valid port', () => {
+    expect(parseDockerHost('some:weird:value')).toEqual({ host: 'some:weird:value' });
   });
 });

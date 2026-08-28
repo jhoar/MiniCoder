@@ -207,13 +207,23 @@ getPullRequestDiff()` crashing on a real GitLab-side pagination bug when `per_pa
    (`packages/adapters-coder/src/sandbox-live.integration.test.ts`) now exists, gated the same way
    `*.postgres.test.ts` gates on `MINICODER_TEST_PG_URL` — a no-op absent a live daemon/SCM host
    (including in this repo's own CI today), but real coverage the next time one is available. See
-   docs/06 §Phase 18 Stage 6's sixth follow-up for the full writeup, including what this pass
-   deliberately did not build (the `coder-sandbox-docker-proxy` service, blocked by this
-   particular verification session's own nested-container networking limits — orthogonal to what
-   issue #84 asked to verify, and not a production gap) and why the production Dockerfiles
-   themselves were not modified (this session's own sandboxed environment blocks
+   docs/06 §Phase 18 Stage 6's sixth follow-up for the full writeup, including why the production
+   Dockerfiles themselves were not modified (this session's own sandboxed environment blocks
    `deb.debian.org`/`dl-cdn.alpinelinux.org` directly; the verification used functionally
-   equivalent, ABI-compatible images assembled via multi-stage `COPY` instead). The scheduled
+   equivalent, ABI-compatible images assembled via multi-stage `COPY` instead). **A seventh
+   follow-up closed this gap's one remaining piece — `coder-sandbox-docker-proxy` itself** — and
+   found a second real bug while doing so: `sandbox.ts`'s `dockerHost` option passed the documented
+   `host:port` value straight through as dockerode's `host` field alone, but `docker-modem` only
+   ever reads a port from a *separate* field, and Node's legacy `url.parse` actively misparses a
+   bare `host:port` string with no scheme — so the exact documented
+   `CODER_SANDBOX_DOCKER_HOST=coder-sandbox-docker-proxy:2375` convention silently targeted the
+   wrong host and port. Fixed with a new, exported `parseDockerHost()` helper. Separately, the
+   proxy image itself needed `DISABLE_IPV6=1` (a real env var that image's own entrypoint already
+   supports) since its default dual-stack bind fails outright on any IPv4-only host/container
+   runtime — now set in `infra/docker-compose.coder-sandbox.yml`. With both fixes, `CoderSandbox`
+   created and controlled a real container, driving a full clone/commit/push against the same live
+   Gitea instance, entirely through `coder-sandbox-docker-proxy` rather than the local socket — see
+   docs/06 §Phase 18 Stage 6's seventh follow-up for the full writeup. The scheduled
    reconciliation task keeps its literal name (`github-reconciliation`, one of the no-drift
    canonical task IDs, docs/00 §3.12) regardless of which provider it ends up
    reconciling — same precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
@@ -1115,10 +1125,18 @@ failed`/`coding → blocked` matrix edge was added.** `RecordCodePushedCommand` 
   (the "httpoxy" CGI-vulnerability mitigation) — invisible against every prior HTTPS-remote test
   fixture, reproduced immediately against a real plain-HTTP Gitea instance. See docs/06 §Phase 18
   Stage 6's sixth follow-up for the full writeup, including the (production-Dockerfile-unchanged)
-  workarounds that specific verification session's own sandboxed network needed and the one piece
-  still not exercised end-to-end (`coder-sandbox-docker-proxy`, blocked by that session's nested-
-  container networking, orthogonal to the egress-proxy/isolation properties issue #84 asked to
-  verify).
+  workarounds that specific verification session's own sandboxed network needed. **A seventh
+  follow-up closed the one piece the sixth left unexercised — `coder-sandbox-docker-proxy` —
+  finding a second real bug in the process**: `sandbox.ts`'s `dockerHost` handling passed the
+  documented `host:port` value straight through as dockerode's `host` field alone, but
+  `docker-modem` only reads a port from a separate field and Node's legacy `url.parse` misparses a
+  bare `host:port` string with no scheme — so the exact documented `CODER_SANDBOX_DOCKER_HOST`
+  convention silently connected to the wrong host and port. Fixed with `parseDockerHost()`
+  (exported from `sandbox.ts`); the proxy image separately needed `DISABLE_IPV6=1` (a real,
+  already-supported env var on that image) since its default dual-stack bind fails on an IPv4-only
+  runtime. `CoderSandbox` was then proven to create/control a real container, and drive a full
+  clone/commit/push, entirely through `coder-sandbox-docker-proxy` rather than the local socket —
+  see docs/06 §Phase 18 Stage 6's seventh follow-up for the full writeup.
 - **`agent_context_packs`, `agent_tool_operations`, and `cost_records` get their first production
   writers in Phase 9.** All three tables (plus `agent_runs.provider`/`.model`/
   `.prompt_template_version`, migration `0010_agent_run_provider_tracking.*`) existed since

@@ -5,7 +5,7 @@ export type {
   CodexToolOperation,
 } from './codex-coder-adapter.js';
 
-export { CoderSandbox } from './sandbox.js';
+export { CoderSandbox, parseDockerHost } from './sandbox.js';
 export type {
   Sandbox,
   SandboxOptions,

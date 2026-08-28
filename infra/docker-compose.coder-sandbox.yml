@@ -30,19 +30,25 @@ version: '3.8'
 # CODER_SANDBOX_HTTPS_PROXY (consumed by packages/triggerdev/src/tasks/run-coder.ts's default
 # resolver) at coder-sandbox-docker-proxy:2375 / coder-sandbox-egress-proxy:8888 respectively.
 #
-# Status: live-daemon-verified as of issue #84 (docs/06 §Phase 18 Stage 6's sixth follow-up) — a
-# real Docker daemon and a real self-hosted Gitea instance proved both the egress-proxy allow-list
-# (SCM_ALLOWED_HOST set -> sandboxed clone/commit/push succeeds; unset -> denied by default) and
-# the sandbox's isolation properties (non-root, CapDrop ALL, read-only rootfs, /workspace tmpfs,
-# container removal in finally), driving packages/adapters-coder's real workspace.ts git
-# orchestration through the actual CoderSandbox/dockerode container rather than a fake client.
+# Status: live-daemon-verified as of issue #84 (docs/06 §Phase 18 Stage 6's sixth and seventh
+# follow-ups) — a real Docker daemon and a real self-hosted Gitea instance proved the egress-proxy
+# allow-list (SCM_ALLOWED_HOST set -> sandboxed clone/commit/push succeeds; unset -> denied by
+# default), the sandbox's isolation properties (non-root, CapDrop ALL, read-only rootfs, /workspace
+# tmpfs, container removal in finally), and — as of the seventh follow-up — coder-sandbox-docker-
+# proxy itself: CoderSandbox creating/controlling the real ephemeral container *through* this proxy
+# (not the local Docker socket directly), with the proxy's own scoped-API allow-list (CONTAINERS/
+# POST/EXEC/NETWORKS/IMAGES only — no VOLUMES) confirmed still enforced while doing so.
 # packages/adapters-coder/src/sandbox-live.integration.test.ts is the permanent, env-var-gated
-# regression this pass added (a no-op absent a live daemon, same posture as this repo's
+# regression these passes added (a no-op absent a live daemon, same posture as this repo's
 # *.postgres.test.ts suites) — packages/adapters-coder's plain unit tests still run against a fake
-# dockerode client for speed/determinism. Not yet exercised: coder-sandbox-docker-proxy (blocked by
-# that verification session's own nested-container networking — CoderSandbox talked to the local
-# Docker socket directly instead, out of scope for what issue #84 asked to verify) and a permanent
-# CI-integrated live-instance matrix (the pass was a one-off manual run, not wired into CI).
+# dockerode client for speed/determinism. A real bug was found and fixed along the way:
+# packages/adapters-coder/src/sandbox.ts's dockerHost handling passed the documented `host:port`
+# value straight through as dockerode's `host` option alone — docker-modem never reads a port out
+# of that string (even a fully-qualified `tcp://host:port` URL), so every non-default-port target,
+# including this exact `coder-sandbox-docker-proxy:2375` convention, silently connected to the
+# wrong port. Fixed with a `parseDockerHost()` helper that splits host/port before construction.
+# Not yet wired into CI: a permanent CI-integrated live-instance matrix (both passes were one-off
+# manual runs).
 #
 # Optional env vars:
 #   CODE_GEN_ALLOWED_HOST — the code-generation provider's hostname, appended to the egress
@@ -97,6 +103,13 @@ services:
       EXEC: '1'
       NETWORKS: '1'
       IMAGES: '1'
+      # Issue #84 live-verification fix: this image's haproxy frontend binds an IPv6 wildcard
+      # listener ([::]:2375) by default, which fails outright on a host/container runtime with no
+      # IPv6 support (confirmed against a real nested-container environment: "protocol tcpv6:
+      # cannot create receiving socket") — the container never starts at all, not a degraded-but-
+      # working state. DISABLE_IPV6=1 makes it bind IPv4-only (:2375), which every other service in
+      # this compose file's own networks already only needs.
+      DISABLE_IPV6: '1'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
