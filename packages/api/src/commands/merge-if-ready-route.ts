@@ -1,11 +1,11 @@
 /**
  * `POST /commands/merge-if-ready` — a dedicated route, not generic dispatch, because it chains
- * multiple command dispatches around a real `GitHubClient.mergePullRequest()` call. Mirrors
+ * multiple command dispatches around a real `ScmClient.mergePullRequest()` call. Mirrors
  * `packages/cli/src/commands/merge.ts`'s `merge-if-ready` sequence exactly: (1) `MergeIfReadyCommand`
  * re-gates and transitions `approved_by_policy -> merge_ready`; (2) only on success, the real
  * GitHub merge call runs; (3) the outcome is recorded via `RecordMergedCommand` (success) or
  * `RecordMergeFailedCommand` + `ReconcileMergeFailedCommand`/`EscalateToHumanCommand` (rejection,
- * classified by `GithubMergeRejectedError.autoClearable`).
+ * classified by `ScmMergeRejectedError.autoClearable`).
  *
  * The three follow-up commands dispatched after the real GitHub call
  * (`RecordMergedCommand`/`RecordMergeFailedCommand`/`ReconcileMergeFailedCommand`) all require an
@@ -49,14 +49,18 @@ import {
   RecordMergeFailedHandler,
   ReconcileMergeFailedHandler,
   EscalateToHumanHandler,
-  GithubMergeRejectedError,
+  ScmMergeRejectedError,
   MergeGateBlockedError,
   FeatureExecutionState,
   generateId,
   publishMergeGateStatusCheck,
 } from '@minicoder/core';
-import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
-import { requireNonBlankEnvVar, systemActor } from '@minicoder/triggerdev';
+import type { CommandEnvelope, DbClient, ScmClient } from '@minicoder/core';
+import {
+  systemActor,
+  resolveDefaultScmClient,
+  type ScmClientResolver,
+} from '@minicoder/triggerdev';
 import {
   MissingIdempotencyKeyError,
   NotFoundError,
@@ -72,18 +76,6 @@ import {
 
 const ROUTE_IDEMPOTENCY_SCOPE = 'merge-if-ready-route';
 const ROUTE_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-export type GithubClientFactory = () => Promise<GitHubClient>;
-
-async function defaultGithubClientFactory(): Promise<GitHubClient> {
-  const token = requireNonBlankEnvVar(
-    'GITHUB_TOKEN',
-    'The Orchestrator API requires a GitHub credential (GitHub App installation token or PAT) to ' +
-      'perform merges — see docs/07-security-and-secrets.md §3.',
-  );
-  const { OctokitGitHubClient } = await import('@minicoder/github');
-  return new OctokitGitHubClient({ auth: token });
-}
 
 interface FeatureRunRow {
   id: string;
@@ -101,6 +93,8 @@ interface PullRequestRow {
 interface RepositoryRow {
   owner: string;
   name: string;
+  provider: string;
+  base_url: string | null;
 }
 
 async function fetchFeatureRun(
@@ -121,7 +115,7 @@ async function fetchFeatureRun(
 }
 
 async function publishStatusCheckSafely(
-  githubClient: GitHubClient,
+  githubClient: ScmClient,
   opts: Parameters<typeof publishMergeGateStatusCheck>[1],
   featureRunId: string,
 ): Promise<void> {
@@ -137,7 +131,10 @@ async function publishStatusCheckSafely(
 
 export interface MergeIfReadyDeps {
   db: DbClient;
-  githubClientFactory?: GithubClientFactory;
+  /** Stage 6 write-pipeline follow-up (docs/06 §Phase 18): resolves the correct `ScmClient`
+   * implementation/credential for this run's repository's own `provider`/`base_url`, instead of
+   * unconditionally constructing `OctokitGitHubClient`. */
+  resolveScmClient?: ScmClientResolver;
 }
 
 interface MergeIfReadyBody {
@@ -147,7 +144,8 @@ interface MergeIfReadyBody {
 }
 
 export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfReadyDeps): void {
-  const githubClientFactory = deps.githubClientFactory ?? defaultGithubClientFactory;
+  const resolveScmClient =
+    deps.resolveScmClient ?? resolveDefaultScmClient('POST /commands/merge-if-ready');
 
   app.post<{ Body: MergeIfReadyBody }>('/commands/merge-if-ready', async (request, reply) => {
     const { featureRunId, projectId, mergeMethod = 'squash' } = request.body ?? {};
@@ -192,7 +190,7 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
         [featureRunId],
       );
       const repoRows = await db.query<RepositoryRow>(
-        `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+        `SELECT owner, name, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
         [projectId],
       );
       const pr = prRows[0];
@@ -200,7 +198,7 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
       if (!pr || !repo) {
         throw new NotFoundError('pull-request-or-repository', featureRunId);
       }
-      const githubClient = await githubClientFactory();
+      const githubClient = await resolveScmClient(repo.provider, repo.base_url);
 
       const mergeReadyEnvelope: CommandEnvelope<Record<string, unknown>> = {
         commandId: generateId(),
@@ -282,7 +280,7 @@ export function registerMergeIfReadyRoute(app: FastifyInstance, deps: MergeIfRea
         await respond(200, body);
         return;
       } catch (err) {
-        if (!(err instanceof GithubMergeRejectedError)) throw err;
+        if (!(err instanceof ScmMergeRejectedError)) throw err;
 
         const failedEnvelope: CommandEnvelope<Record<string, unknown>> = {
           commandId: generateId(),

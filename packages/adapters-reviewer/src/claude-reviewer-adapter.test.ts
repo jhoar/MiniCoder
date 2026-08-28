@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import type { GitHubClient, ReviewerInput } from '@minicoder/core';
+import type { ScmClient, ReviewerInput } from '@minicoder/core';
 import { ClaudeReviewerAdapter } from './claude-reviewer-adapter.js';
 import type { ReviewProvider, ReviewRequest } from './review-provider.js';
 
-function fakeGithubClient(diff: string): GitHubClient {
+function fakeGithubClient(diff: string): ScmClient {
   return {
     async createBranch() {
       return { branchName: 'x', sha: 'abc' };

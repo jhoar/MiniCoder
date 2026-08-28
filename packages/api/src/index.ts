@@ -11,6 +11,5 @@ export {
 export { buildCommandRegistry, buildCommandSlugMap } from './commands/registry.js';
 export type { TaskTriggerClient, TriggeredRun } from './commands/task-trigger-routes.js';
 export { unconfiguredTaskTriggerClient } from './commands/task-trigger-routes.js';
-export type { GithubClientFactory } from './commands/merge-if-ready-route.js';
 export * from './read-models/index.js';
 export * from './pagination.js';

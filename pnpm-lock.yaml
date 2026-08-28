@@ -103,9 +103,15 @@ importers:
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core
+      '@minicoder/gitea':
+        specifier: workspace:*
+        version: link:../gitea
       '@minicoder/github':
         specifier: workspace:*
         version: link:../github
+      '@minicoder/gitlab':
+        specifier: workspace:*
+        version: link:../gitlab
       '@minicoder/triggerdev':
         specifier: workspace:*
         version: link:../triggerdev
@@ -152,9 +158,15 @@ importers:
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core
+      '@minicoder/gitea':
+        specifier: workspace:*
+        version: link:../gitea
       '@minicoder/github':
         specifier: workspace:*
         version: link:../github
+      '@minicoder/gitlab':
+        specifier: workspace:*
+        version: link:../gitlab
       '@minicoder/migrations':
         specifier: workspace:*
         version: link:../migrations
@@ -190,6 +202,18 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  packages/gitea:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      '@minicoder/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      fastify:
+        specifier: ^5.9.0
+        version: 5.9.0
+
   packages/github:
     dependencies:
       '@minicoder/core':
@@ -210,6 +234,18 @@ importers:
       zod:
         specifier: ^3.23.8
         version: 3.25.76
+
+  packages/gitlab:
+    dependencies:
+      '@minicoder/core':
+        specifier: workspace:*
+        version: link:../core
+      '@minicoder/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      fastify:
+        specifier: ^5.9.0
+        version: 5.9.0
 
   packages/migrations:
     dependencies:
@@ -267,9 +303,15 @@ importers:
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core
+      '@minicoder/gitea':
+        specifier: workspace:*
+        version: link:../gitea
       '@minicoder/github':
         specifier: workspace:*
         version: link:../github
+      '@minicoder/gitlab':
+        specifier: workspace:*
+        version: link:../gitlab
       '@minicoder/migrations':
         specifier: workspace:*
         version: link:../migrations
@@ -322,9 +364,15 @@ importers:
       '@minicoder/core':
         specifier: workspace:*
         version: link:../core
+      '@minicoder/gitea':
+        specifier: workspace:*
+        version: link:../gitea
       '@minicoder/github':
         specifier: workspace:*
         version: link:../github
+      '@minicoder/gitlab':
+        specifier: workspace:*
+        version: link:../gitlab
       '@minicoder/migrations':
         specifier: workspace:*
         version: link:../migrations

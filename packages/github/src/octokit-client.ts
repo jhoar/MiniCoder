@@ -1,6 +1,6 @@
 /**
- * OctokitGitHubClient — the real, Octokit-backed implementation of the `GitHubClient` seam
- * defined in `packages/core/src/github/client.ts`. Core stays provider-SDK-free; this is the
+ * OctokitGitHubClient — the real, Octokit-backed implementation of the `ScmClient` seam
+ * defined in `packages/core/src/scm/client.ts`. Core stays provider-SDK-free; this is the
  * only place in the codebase that imports Octokit.
  *
  * Auth: a GitHub App installation token is preferred (docs/07-security-and-secrets.md §3); a
@@ -11,13 +11,13 @@ import { Octokit } from '@octokit/rest';
 import type {
   CreateBranchOptions,
   CreatePullRequestOptions,
-  GithubPrState,
-  GitHubClient,
+  ScmPrState,
+  ScmClient,
   MergePullRequestOptions,
   ObservedPullRequestState,
   PublishStatusCheckOptions,
 } from '@minicoder/core';
-import { GithubMergeRejectedError, PrReviewState } from '@minicoder/core';
+import { ScmMergeRejectedError, PrReviewState } from '@minicoder/core';
 import { classifyCheckConclusion } from './check-conclusion.js';
 
 export interface OctokitGitHubClientOptions {
@@ -25,7 +25,7 @@ export interface OctokitGitHubClientOptions {
   auth: string;
 }
 
-export class OctokitGitHubClient implements GitHubClient {
+export class OctokitGitHubClient implements ScmClient {
   private readonly octokit: Octokit;
 
   constructor(options: OctokitGitHubClientOptions) {
@@ -238,14 +238,14 @@ export class OctokitGitHubClient implements GitHubClient {
       const status = (err as { status?: number }).status;
       const message = err instanceof Error ? err.message : String(err);
       if (status === 409) {
-        throw new GithubMergeRejectedError(
+        throw new ScmMergeRejectedError(
           `PR #${options.prNumber} head moved since the merge gate was evaluated: ${message}`,
           'sha_mismatch',
           true,
         );
       }
       if (status === 405) {
-        throw new GithubMergeRejectedError(
+        throw new ScmMergeRejectedError(
           `PR #${options.prNumber} is not mergeable (branch protection or conflict): ${message}`,
           'not_mergeable',
           false,
@@ -256,7 +256,7 @@ export class OctokitGitHubClient implements GitHubClient {
       // a merge-gate rejection at all — rethrow the original error so the caller fails loudly
       // instead of misrecording an operational failure as a merge_failed state transition
       // (code-review fix: this previously wrapped every other status into
-      // `GithubMergeRejectedError('unknown', false)`, which drove `RecordMergeFailedCommand` +
+      // `ScmMergeRejectedError('unknown', false)`, which drove `RecordMergeFailedCommand` +
       // `EscalateToHumanCommand` for e.g. a transient 500 or a bad-credentials 401).
       throw err;
     }
@@ -288,7 +288,7 @@ export class OctokitGitHubClient implements GitHubClient {
     repo: string,
     branchName: string,
     state: 'open' | 'closed' | 'all' = 'open',
-  ): Promise<Array<{ prNumber: number; state: GithubPrState }>> {
+  ): Promise<Array<{ prNumber: number; state: ScmPrState }>> {
     const paginate = this.octokit.paginate as (
       method: unknown,
       params: Record<string, unknown>,

@@ -5,6 +5,7 @@ export * from './task-ids.js';
 export * from './tasks/types.js';
 export * from './tasks/actor.js';
 export * from './tasks/env.js';
+export * from './tasks/scm-client-resolver.js';
 export * from './task-registry.js';
 export * from './task-worker.js';
 

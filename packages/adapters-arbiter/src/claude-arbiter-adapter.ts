@@ -21,7 +21,7 @@ export interface ClaudeArbiterOutput extends ArbiterOutput {
  * LLM call over text already assembled by `run-review.ts`
  * (`ArbiterInput.findingDescription`/`coderPosition`/`reviewerPosition`), so there is no code
  * execution or container isolation to isolate, and no diff to fetch (unlike the Reviewer, which
- * fetches the PR diff itself via `GitHubClient`).
+ * fetches the PR diff itself via `ScmClient`).
  */
 export class ClaudeArbiterAdapter implements ArbiterAgentAdapter {
   readonly role = 'ArbiterAgentAdapter' as const;

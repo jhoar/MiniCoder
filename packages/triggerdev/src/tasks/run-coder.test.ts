@@ -4,11 +4,12 @@ import type {
   CoderInput,
   CoderOutput,
   DbClient,
-  GitHubClient,
+  ScmClient,
 } from '@minicoder/core';
 import { EVENT_SCHEMAS, FeatureExecutionState } from '@minicoder/core';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
-import { runImpl, type RunCoderDeps } from './run-coder.js';
+import type { SqliteDbClient } from '@minicoder/persistence-sqlite';
+import { runImpl, buildCoderCloneUrl, type RunCoderDeps } from './run-coder.js';
 
 const PROJECT_ID = 'proj-run-coder-001';
 
@@ -94,7 +95,7 @@ function fakeCoderAdapter(behavior: 'success' | 'fail' = 'success'): CoderAgentA
   };
 }
 
-function fakeGithubClient(opts: { fail?: boolean } = {}): GitHubClient & {
+function fakeGithubClient(opts: { fail?: boolean } = {}): ScmClient & {
   createdPullRequests: Array<{
     owner: string;
     repo: string;
@@ -176,7 +177,7 @@ describe('run-coder', () => {
     const client = fakeGithubClient();
     const deps: RunCoderDeps = {
       coderAdapterFactory: async () => adapter,
-      githubClientFactory: async () => client,
+      resolveScmClient: async () => client,
     };
 
     const result = await runImpl(
@@ -276,7 +277,7 @@ describe('run-coder', () => {
         coderAdapterName: 'FakeCoderAdapter',
       },
       db,
-      { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
+      { coderAdapterFactory: async () => adapter, resolveScmClient: async () => client },
     );
 
     expect(result.pushed).toBe(true);
@@ -308,7 +309,7 @@ describe('run-coder', () => {
           coderAdapterName: 'FakeCoderAdapter',
         },
         db,
-        { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
+        { coderAdapterFactory: async () => adapter, resolveScmClient: async () => client },
       ),
     ).rejects.toThrow('generation failed');
 
@@ -343,7 +344,7 @@ describe('run-coder', () => {
         coderAdapterName: 'FakeCoderAdapter',
       },
       db,
-      { coderAdapterFactory: async () => adapter, githubClientFactory: async () => client },
+      { coderAdapterFactory: async () => adapter, resolveScmClient: async () => client },
     );
 
     expect(client.createdPullRequests).toHaveLength(1);
@@ -390,7 +391,7 @@ describe('run-coder', () => {
           db,
           {
             coderAdapterFactory: async () => fakeCoderAdapter('success'),
-            githubClientFactory: async () => fakeGithubClient(),
+            resolveScmClient: async () => fakeGithubClient(),
           },
         );
 
@@ -425,7 +426,7 @@ describe('run-coder', () => {
         db,
         {
           coderAdapterFactory: async () => fakeCoderAdapter('success'),
-          githubClientFactory: async () => fakeGithubClient(),
+          resolveScmClient: async () => fakeGithubClient(),
         },
       );
 
@@ -472,7 +473,7 @@ describe('run-coder', () => {
           db,
           {
             coderAdapterFactory: async () => fakeCoderAdapter('success'),
-            githubClientFactory: async () => fakeGithubClient(),
+            resolveScmClient: async () => fakeGithubClient(),
           },
         );
 
@@ -503,7 +504,7 @@ describe('run-coder', () => {
         db,
         {
           coderAdapterFactory: async () => fakeCoderAdapter('success'),
-          githubClientFactory: async () => fakeGithubClient(),
+          resolveScmClient: async () => fakeGithubClient(),
         },
       );
 
@@ -656,7 +657,7 @@ describe('run-coder', () => {
         db,
         {
           coderAdapterFactory: async () => fakeCoderAdapter('success'),
-          githubClientFactory: async () => githubClient,
+          resolveScmClient: async () => githubClient,
         },
       );
 
@@ -707,5 +708,234 @@ describe('run-coder', () => {
       );
       expect(workflowState[0]?.automation_state).toBe('paused_budget_exceeded');
     });
+  });
+});
+
+/**
+ * Stage 6 write-pipeline follow-up (docs/06 §Phase 18): before this fix, the post-push
+ * `createPullRequest()` call always resolved a `GithubClientFactory` with no provider argument, so
+ * a GitLab/Gitea-provider project's PR creation always went through `OctokitGitHubClient`. Asserts
+ * `resolveScmClient` now receives the repository row's own `provider`/`base_url`. (The coder
+ * adapter's own clone/push credential path remains GitHub-only — see `run-coder.ts`'s
+ * `resolveDefaultCoderAdapterFactory()` doc comment — so this test injects a fake
+ * `coderAdapterFactory`, as every other test in this file does, rather than exercising that path.)
+ */
+describe('run-coder (Stage 6: provider-aware PR-creation client resolution)', () => {
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-run-coder-provider-gitlab';
+    insertTestProject(db, projectId);
+
+    const planId = `plan-${projectId}`;
+    const frId = `fr-${projectId}-1`;
+    const featureRunId = `run-${projectId}-1`;
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Add widget', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO acceptance_criteria (id, feature_request_id, description, order_index, version, created_at, updated_at)
+       VALUES (?, ?, 'The widget renders', 0, 1, datetime('now'), datetime('now'))`,
+      [`ac-${frId}-1`, frId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [featureRunId, frId, FeatureExecutionState.CODING],
+    );
+    await db.execute(
+      `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'running', 1, datetime('now'), datetime('now'))`,
+      [`ws-${projectId}`, projectId, featureRunId],
+    );
+    await registerCoderAdapter(db);
+
+    const adapter = fakeCoderAdapter('success');
+    const client = fakeGithubClient();
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+
+    await runImpl(
+      {
+        projectId,
+        featureRunId,
+        correlationId: 'corr-run-coder-provider-1',
+        idempotencyKey: 'idem-run-coder-provider-1',
+        coderAdapterName: 'FakeCoderAdapter',
+      },
+      db,
+      {
+        coderAdapterFactory: async () => adapter,
+        resolveScmClient: async (provider: string, baseUrl: string | null) => {
+          resolveCalls.push({ provider, baseUrl });
+          return client;
+        },
+      },
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
+  });
+});
+
+/**
+ * Stage 6 write-pipeline follow-up (docs/06 §Phase 18), coder-adapter half: before this fix,
+ * `coderAdapterFactory` was always called with a bare `repoUrl` string built from a hardcoded
+ * `https://github.com/...` template, so a Gitea/GitLab-provider project's coder adapter always
+ * targeted github.com. Asserts `coderAdapterFactory` now receives the full `CoderRepoConnection`
+ * (provider-correct `repoUrl`, plus `provider`/`baseUrl`) built from the repository row's own
+ * columns. See `resolveDefaultCoderAdapterFactory()`'s doc comment for the still-open, explicitly
+ * tracked live-instance verification work this implementation has not yet had (no reachable
+ * Docker daemon in this environment).
+ */
+describe('run-coder (Stage 6 second follow-up: provider-aware coder-adapter credential resolution)', () => {
+  async function seedProviderProject(
+    db: SqliteDbClient,
+    projectId: string,
+    provider: string,
+    baseUrl: string | null,
+  ): Promise<{ featureRunId: string }> {
+    insertTestProject(db, projectId);
+    const planId = `plan-${projectId}`;
+    const frId = `fr-${projectId}-1`;
+    const featureRunId = `run-${projectId}-1`;
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', ?, ?, 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId, provider, baseUrl],
+    );
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Add widget', 'Description', 'feature', 1, 'approved_pending_execution', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO acceptance_criteria (id, feature_request_id, description, order_index, version, created_at, updated_at)
+       VALUES (?, ?, 'The widget renders', 0, 1, datetime('now'), datetime('now'))`,
+      [`ac-${frId}-1`, frId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, version, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 1, datetime('now'), datetime('now'))`,
+      [featureRunId, frId, FeatureExecutionState.CODING],
+    );
+    await db.execute(
+      `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'running', 1, datetime('now'), datetime('now'))`,
+      [`ws-${projectId}`, projectId, featureRunId],
+    );
+    await registerCoderAdapter(db);
+    return { featureRunId };
+  }
+
+  it.each([
+    ['gitlab', 'https://gitlab.example.test', 'https://gitlab.example.test/acme/widgets.git'],
+    ['gitea', 'https://gitea.example.test', 'https://gitea.example.test/acme/widgets.git'],
+  ] as const)(
+    "passes coderAdapterFactory the repository row's own provider/baseUrl and a matching clone URL (%s)",
+    async (provider, baseUrl, expectedRepoUrl) => {
+      const db = createTestDb();
+      const projectId = `proj-run-coder-coder-adapter-${provider}`;
+      const { featureRunId } = await seedProviderProject(db, projectId, provider, baseUrl);
+
+      const adapter = fakeCoderAdapter('success');
+      const client = fakeGithubClient();
+      const connections: Array<{ repoUrl: string; provider: string; baseUrl: string | null }> = [];
+
+      await runImpl(
+        {
+          projectId,
+          featureRunId,
+          correlationId: `corr-coder-adapter-${provider}`,
+          idempotencyKey: `idem-coder-adapter-${provider}`,
+          coderAdapterName: 'FakeCoderAdapter',
+        },
+        db,
+        {
+          coderAdapterFactory: async (repo) => {
+            connections.push(repo);
+            return adapter;
+          },
+          resolveScmClient: async () => client,
+        },
+      );
+
+      expect(connections).toEqual([{ repoUrl: expectedRepoUrl, provider, baseUrl }]);
+    },
+  );
+
+  it('rejects a Gitea/GitLab-provider repository with no base_url before ever invoking the coder adapter', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-run-coder-coder-adapter-no-base-url';
+    const { featureRunId } = await seedProviderProject(db, projectId, 'gitlab', null);
+
+    let adapterInvoked = false;
+
+    await expect(
+      runImpl(
+        {
+          projectId,
+          featureRunId,
+          correlationId: 'corr-coder-adapter-no-base-url',
+          idempotencyKey: 'idem-coder-adapter-no-base-url',
+          coderAdapterName: 'FakeCoderAdapter',
+        },
+        db,
+        {
+          coderAdapterFactory: async () => {
+            adapterInvoked = true;
+            return fakeCoderAdapter('success');
+          },
+          resolveScmClient: async () => fakeGithubClient(),
+        },
+      ),
+    ).rejects.toThrow(/has no base_url recorded/);
+
+    expect(adapterInvoked).toBe(false);
+  });
+});
+
+describe('buildCoderCloneUrl', () => {
+  it('builds the GitHub clone URL without needing a base_url', () => {
+    expect(buildCoderCloneUrl('github', null, 'acme', 'widgets')).toBe(
+      'https://github.com/acme/widgets.git',
+    );
+  });
+
+  it.each([
+    ['gitlab', 'https://gitlab.example.test', 'https://gitlab.example.test/acme/widgets.git'],
+    ['gitlab', 'https://gitlab.example.test/', 'https://gitlab.example.test/acme/widgets.git'],
+    ['gitea', 'https://gitea.example.test', 'https://gitea.example.test/acme/widgets.git'],
+  ] as const)('builds the %s clone URL from base_url (%s)', (provider, baseUrl, expected) => {
+    expect(buildCoderCloneUrl(provider, baseUrl, 'acme', 'widgets')).toBe(expected);
+  });
+
+  it.each(['gitlab', 'gitea'] as const)(
+    'throws for a %s repository with no base_url',
+    (provider) => {
+      expect(() => buildCoderCloneUrl(provider, null, 'acme', 'widgets')).toThrow(
+        /has no base_url recorded/,
+      );
+    },
+  );
+
+  it('throws for an unknown provider', () => {
+    expect(() => buildCoderCloneUrl('bitbucket', null, 'acme', 'widgets')).toThrow(
+      /unknown SCM provider/,
+    );
   });
 });

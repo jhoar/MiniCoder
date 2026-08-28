@@ -26,7 +26,7 @@ import type {
   ArbiterInput,
   CommandEnvelope,
   DbClient,
-  GitHubClient,
+  ScmClient,
   ReviewerAgentAdapter,
   ReviewerInput,
   ReviewFindingInsert,
@@ -38,6 +38,7 @@ import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
 import { requireNonBlankEnvVar } from './env.js';
 import { budgetPreflightCheck, resolveEstimatedCostUsd } from './budget-preflight.js';
+import { resolveDefaultScmClient, type ScmClientResolver } from './scm-client-resolver.js';
 
 export type { RunReviewPayload };
 
@@ -124,28 +125,21 @@ function resolveDefaultArbiterAdapterFactory(): ArbiterAdapterFactory {
   };
 }
 
-export type GithubClientFactory = () => Promise<GitHubClient>;
 /** Builds a fresh `ReviewerAgentAdapter` instance for this one run, given the project's repo
  * owner/repo — a factory (not a singleton) because one deployment can serve multiple projects
- * with different GitHub repos, and `ReviewerInput` itself carries no repo/credential fields,
- * mirroring `CoderAdapterFactory` in run-coder.ts (docs/06 Phase 10). */
+ * with different repos, and `ReviewerInput` itself carries no repo/credential fields,
+ * mirroring `CoderAdapterFactory` in run-coder.ts (docs/06 Phase 10). The `githubClient` field
+ * name is a legacy label from before the Stage 1 `ScmClient` rename (docs/06 §Phase 18) — it now
+ * holds whichever provider's `ScmClient` implementation this run's repository actually resolves
+ * to, not necessarily an `OctokitGitHubClient`; left as-is rather than renamed purely
+ * cosmetically, since `packages/adapters-reviewer`'s `ClaudeReviewerAdapter` constructor option
+ * carries the identical name and renaming it would touch a second package for no functional
+ * benefit. */
 export type ReviewerAdapterFactory = (opts: {
   owner: string;
   repo: string;
-  githubClient: GitHubClient;
+  githubClient: ScmClient;
 }) => Promise<ReviewerAgentAdapter>;
-
-function resolveDefaultGithubClientFactory(): GithubClientFactory {
-  return async () => {
-    const token = requireNonBlankEnvVar(
-      'GITHUB_TOKEN',
-      'run-review requires a GitHub credential (GitHub App installation token or PAT) to fetch ' +
-        'the pull request diff — see docs/07-security-and-secrets.md §3.',
-    );
-    const { OctokitGitHubClient } = await import('@minicoder/github');
-    return new OctokitGitHubClient({ auth: token });
-  };
-}
 
 /**
  * Constructs the real reference `ClaudeReviewerAdapter` from env config. Deliberately reuses the
@@ -224,6 +218,8 @@ function computeCostUsd(inputTokens: number, outputTokens: number): number {
 interface RepositoryRow {
   owner: string;
   name: string;
+  provider: string;
+  base_url: string | null;
 }
 
 interface FeatureRunRow {
@@ -241,7 +237,10 @@ interface PullRequestRow {
 
 export interface RunReviewDeps {
   readonly reviewerAdapterFactory?: ReviewerAdapterFactory;
-  readonly githubClientFactory?: GithubClientFactory;
+  /** Stage 6 write-pipeline fix (docs/06 §Phase 18): resolves the correct `ScmClient`
+   * implementation/credential for this run's repository's own `provider`/`base_url`, instead of
+   * unconditionally constructing `OctokitGitHubClient`. */
+  readonly resolveScmClient?: ScmClientResolver;
   readonly arbiterAdapterFactory?: ArbiterAdapterFactory;
 }
 
@@ -294,7 +293,7 @@ export async function runImpl(
   db: DbClient,
   deps: RunReviewDeps = {},
 ): Promise<RunReviewResult> {
-  const githubClientFactory = deps.githubClientFactory ?? resolveDefaultGithubClientFactory();
+  const resolveScmClient = deps.resolveScmClient ?? resolveDefaultScmClient('run-review');
   const { projectId, featureRunId, correlationId, reviewerAdapterName, arbiterAdapterName } =
     payload;
 
@@ -335,7 +334,7 @@ export async function runImpl(
   }
 
   const repoRows = await db.query<RepositoryRow>(
-    `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+    `SELECT owner, name, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
     [projectId],
   );
   const prRows = await db.query<PullRequestRow>(
@@ -390,7 +389,7 @@ export async function runImpl(
   );
   const reviewCycle = (cycleRows[0]?.maxCycle ?? 0) + 1;
 
-  const githubClient = await githubClientFactory();
+  const githubClient = await resolveScmClient(repo.provider, repo.base_url);
   const reviewerAdapterFactory =
     deps.reviewerAdapterFactory ?? resolveDefaultReviewerAdapterFactory();
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import {
   buildTestApp,
   TEST_OPERATOR_KEY,
@@ -52,7 +52,7 @@ async function seedRepoAndPr(db: DbClient, featureRunId: string, projectId: stri
   );
 }
 
-function githubClientConfirmingMerged(): GitHubClient {
+function githubClientConfirmingMerged(): ScmClient {
   return {
     async createBranch() {
       return { branchName: 'unused', sha: 'unused' };
@@ -93,7 +93,7 @@ function githubClientConfirmingMerged(): GitHubClient {
   };
 }
 
-function githubClientNotMerged(): GitHubClient {
+function githubClientNotMerged(): ScmClient {
   return {
     async createBranch() {
       return { branchName: 'unused', sha: 'unused' };
@@ -162,7 +162,7 @@ describe('POST /commands/finalize-if-github-merged', () => {
 
   it('returns alreadyRecorded:true without calling GitHub when the run is already merged', async () => {
     const { app, db } = await buildTestApp({
-      githubClientFactory: async () => githubClientNotMerged(),
+      resolveScmClient: async () => githubClientNotMerged(),
     });
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId, 'merged');
@@ -191,7 +191,7 @@ describe('POST /commands/finalize-if-github-merged', () => {
 
   it('refuses to record when GitHub does not confirm the PR as merged', async () => {
     const { app, db } = await buildTestApp({
-      githubClientFactory: async () => githubClientNotMerged(),
+      resolveScmClient: async () => githubClientNotMerged(),
     });
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId, 'merge_ready');
@@ -214,7 +214,7 @@ describe('POST /commands/finalize-if-github-merged', () => {
 
   it('records the merge after re-verifying with GitHub', async () => {
     const { app, db } = await buildTestApp({
-      githubClientFactory: async () => githubClientConfirmingMerged(),
+      resolveScmClient: async () => githubClientConfirmingMerged(),
     });
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId, 'merge_ready');
@@ -236,5 +236,47 @@ describe('POST /commands/finalize-if-github-merged', () => {
       [featureRunId],
     );
     expect(rows[0]?.current_execution_state).toBe('merged');
+  });
+});
+
+/**
+ * Stage 6 write-pipeline follow-up (docs/06 §Phase 18): before this fix, the route always resolved
+ * a `GithubClientFactory` with no provider argument, so a GitLab/Gitea-provider project's
+ * re-verification-before-recording call always went through `OctokitGitHubClient`. Asserts
+ * `resolveScmClient` now receives the repository row's own `provider`/`base_url`.
+ */
+describe('POST /commands/finalize-if-github-merged (Stage 6: provider-aware client resolution)', () => {
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return githubClientConfirmingMerged();
+    };
+    const { app, db } = await buildTestApp({ resolveScmClient });
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId } = await seedFeatureRun(db, projectId, 'merge_ready');
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, ?, ?)`,
+      [generateId(), projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO pull_requests (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES (?, ?, 9, 'minicoder/FR-001', 'main', 'abc123', 'open', 'approved', 'passed', TRUE, '[]', FALSE, 1, ?, ?)`,
+      [generateId(), featureRunId, now, now],
+    );
+
+    await app.inject({
+      method: 'POST',
+      url: '/commands/finalize-if-github-merged',
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+      payload: { featureRunId, projectId },
+    });
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
   });
 });

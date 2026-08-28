@@ -44,7 +44,7 @@ import { runStartNextFeature, runGithubReconciliation } from '@minicoder/trigger
  *
  * `github-reconciliation` is included to satisfy the issue's "all three actors" wording; with no
  * `repositories` row seeded, `runImpl` returns a safe no-op before ever needing a live
- * `GitHubClient` (it only constructs one after finding a tracked repo) — exactly the
+ * `ScmClient` (it only constructs one after finding a tracked repo) — exactly the
  * scheduled-fallback behavior a project with no GitHub integration configured yet would see.
  */
 

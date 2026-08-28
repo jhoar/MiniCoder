@@ -8,7 +8,7 @@
  * local file (`~/.minicoder/pending-repair-token.json`) that does not translate to a stateless
  * HTTP API (see CLAUDE.md's Orchestrator API Operational Constraints).
  */
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import { FEATURE_EXECUTION_MATRIX, ProjectState, defaultRedactor } from '@minicoder/core';
 import type { FeatureExecutionState } from '@minicoder/core';
 import { evaluateProjectAcceptance } from '@minicoder/core';
@@ -370,21 +370,40 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
 export interface PrDiscoveryDivergence {
   featureRunId: string;
   branchName: string;
-  prNumberOnGithub: number;
+  provider: string;
+  prNumber: number;
 }
 
 /**
- * Issue #35: an opt-in doctor check, deliberately NOT part of `runDoctorChecks()` above — every
- * other check there is a pure DB query with no external dependency, while this one needs a live
- * `GitHubClient` credential to ask GitHub directly whether an untracked `code_pushed` feature
- * run's branch already has an open PR. `github-reconciliation`'s scheduled task now auto-heals
- * most of this class of divergence on its own (the same `discoverMissingPullRequests()` query
- * shape this check mirrors), but an operator may want to check for it on demand — without waiting
- * for or depending on that scheduled task having run — via `minicoder state doctor --check-github`.
+ * Resolves a live `ScmClient` for one `(provider, baseUrl)` pair — `provider` is
+ * `repositories.provider` (`'github' | 'gitea' | 'gitlab'`, migration 0018) and `baseUrl` is
+ * `repositories.base_url` (`NULL` for GitHub's fixed `api.github.com`; required for a
+ * self-hosted Gitea/GitLab instance). `checkPrDiscoveryDivergence()` below caches the result of
+ * this resolver per distinct `(provider, baseUrl)` pair it actually encounters, so a project with
+ * several `code_pushed` candidates against the same repository never reconstructs the client more
+ * than once.
+ */
+export type ScmClientResolver = (provider: string, baseUrl: string | null) => Promise<ScmClient>;
+
+/**
+ * Issue #35 (generalized in docs/06 §Phase 18 Stage 5): an opt-in doctor check, deliberately NOT
+ * part of `runDoctorChecks()` above — every other check there is a pure DB query with no external
+ * dependency, while this one needs a live `ScmClient` credential to ask the linked SCM provider
+ * directly whether an untracked `code_pushed` feature run's branch already has an open PR.
+ * `github-reconciliation`'s scheduled task now auto-heals most of this class of divergence on its
+ * own (the same `discoverMissingPullRequests()` query shape this check mirrors, GitHub-only for
+ * now), but an operator may want to check for it on demand across any provider — without waiting
+ * for or depending on that scheduled task having run — via `minicoder state doctor --check-scm`.
+ *
+ * Takes a `resolveClient` factory rather than a single `client: ScmClient` (the pre-Stage-5
+ * shape) because a deployment's `code_pushed` candidates can span repositories on different SCM
+ * providers, each needing its own credential and, for a self-hosted Gitea/GitLab instance, its own
+ * `baseUrl` — a single caller-constructed client can no longer answer every candidate the way it
+ * could when GitHub was the only shipped provider.
  */
 export async function checkPrDiscoveryDivergence(
   db: DbClient,
-  client: GitHubClient,
+  resolveClient: ScmClientResolver,
   projectId?: string,
 ): Promise<PrDiscoveryDivergence[]> {
   const projectFilter = projectId ? `AND freq.project_id = ?` : '';
@@ -395,8 +414,10 @@ export async function checkPrDiscoveryDivergence(
     project_id: string;
     owner: string;
     name: string;
+    provider: string;
+    base_url: string | null;
   }>(
-    `SELECT fr.id, freq.project_id, repo.owner, repo.name
+    `SELECT fr.id, freq.project_id, repo.owner, repo.name, repo.provider, repo.base_url
      FROM feature_runs fr
      JOIN feature_requests freq ON fr.feature_request_id = freq.id
      JOIN repositories repo ON repo.project_id = freq.project_id
@@ -405,9 +426,21 @@ export async function checkPrDiscoveryDivergence(
     params,
   );
 
+  const clientCache = new Map<string, Promise<ScmClient>>();
+  function resolveClientCached(provider: string, baseUrl: string | null): Promise<ScmClient> {
+    const cacheKey = `${provider}::${baseUrl ?? ''}`;
+    let cached = clientCache.get(cacheKey);
+    if (!cached) {
+      cached = resolveClient(provider, baseUrl);
+      clientCache.set(cacheKey, cached);
+    }
+    return cached;
+  }
+
   const divergences: PrDiscoveryDivergence[] = [];
   for (const candidate of candidates) {
     const branchName = branchNameFor(candidate.id);
+    const client = await resolveClientCached(candidate.provider, candidate.base_url);
     const matches = await client.listPullRequestsForBranch(
       candidate.owner,
       candidate.name,
@@ -419,7 +452,8 @@ export async function checkPrDiscoveryDivergence(
       divergences.push({
         featureRunId: candidate.id,
         branchName,
-        prNumberOnGithub: match.prNumber,
+        provider: candidate.provider,
+        prNumber: match.prNumber,
       });
     }
   }

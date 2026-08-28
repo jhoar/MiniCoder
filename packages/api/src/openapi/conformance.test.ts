@@ -35,10 +35,12 @@ describe('OpenAPI conformance', () => {
     expect(JSON.parse(tooHigh.body).type).toBe('request-does-not-match-schema');
   });
 
-  it('every documented operation set is non-empty and includes the webhook route', () => {
+  it('every documented operation set is non-empty and includes the webhook routes', () => {
     const spec = loadOpenApiSpec();
     const ops = allDocumentedOperations(spec);
     expect(ops.has('POST /webhooks/github')).toBe(true);
+    expect(ops.has('POST /webhooks/gitea')).toBe(true);
+    expect(ops.has('POST /webhooks/gitlab')).toBe(true);
     expect(ops.has('GET /healthz')).toBe(true);
   });
 

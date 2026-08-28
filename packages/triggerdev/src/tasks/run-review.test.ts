@@ -3,7 +3,7 @@ import type {
   CommandEnvelope,
   DbClient,
   EscalateToHumanPayload,
-  GitHubClient,
+  ScmClient,
   RecordChangesRequestedPayload,
   ReviewerAgentAdapter,
   ReviewerInput,
@@ -98,7 +98,7 @@ function fakeReviewerAdapter(output: ReviewerOutput): ReviewerAgentAdapter {
   };
 }
 
-function fakeGithubClient(): GitHubClient {
+function fakeGithubClient(): ScmClient {
   return {
     async createBranch() {
       return { branchName: 'minicoder/x', sha: 'abc' };
@@ -161,7 +161,7 @@ describe('run-review', () => {
     });
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     const result = await runImpl(
@@ -227,7 +227,7 @@ describe('run-review', () => {
     };
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     await runImpl(
@@ -280,7 +280,7 @@ describe('run-review', () => {
     };
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     await runImpl(
@@ -323,7 +323,7 @@ describe('run-review', () => {
     };
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     const first = await runImpl(
@@ -382,7 +382,7 @@ describe('run-review', () => {
     });
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     const result = await runImpl(
@@ -428,7 +428,7 @@ describe('run-review', () => {
     });
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     const result = await runImpl(
@@ -466,7 +466,7 @@ describe('run-review', () => {
     });
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     const result = await runImpl(
@@ -504,7 +504,7 @@ describe('run-review', () => {
     });
     const deps: RunReviewDeps = {
       reviewerAdapterFactory: async () => adapter,
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     const result = await runImpl(
@@ -541,7 +541,7 @@ describe('run-review', () => {
       reviewerAdapterFactory: async () => {
         throw new Error('reviewer must not be invoked when resuming from changes_requested');
       },
-      githubClientFactory: async () => fakeGithubClient(),
+      resolveScmClient: async () => fakeGithubClient(),
     };
 
     const result = await runImpl(
@@ -680,7 +680,7 @@ describe('run-review', () => {
         {
           reviewerAdapterFactory: async () =>
             fakeReviewerAdapter({ decision: 'approved', findings: [] }),
-          githubClientFactory: async () => fakeGithubClient(),
+          resolveScmClient: async () => fakeGithubClient(),
         },
       );
 
@@ -719,7 +719,7 @@ describe('run-review', () => {
             adapterInvoked = true;
             return fakeReviewerAdapter({ decision: 'approved', findings: [] });
           },
-          githubClientFactory: async () => fakeGithubClient(),
+          resolveScmClient: async () => fakeGithubClient(),
         },
       );
 
@@ -748,7 +748,7 @@ describe('run-review', () => {
           adapterInvocations += 1;
           return fakeReviewerAdapter({ decision: 'approved', findings: [] });
         },
-        githubClientFactory: async () => fakeGithubClient(),
+        resolveScmClient: async () => fakeGithubClient(),
       };
 
       const first = await runImpl(
@@ -801,5 +801,78 @@ describe('run-review', () => {
       );
       expect(workflowState[0]?.automation_state).toBe('running');
     });
+  });
+});
+
+/**
+ * Stage 6 write-pipeline fix (docs/06 §Phase 18): before this fix, `runImpl` always resolved a
+ * `GithubClientFactory` with no provider argument, so a GitLab/Gitea-provider project's reviewer
+ * diff fetch always went through `OctokitGitHubClient`. Asserts `resolveScmClient` now receives
+ * the repository row's own `provider`/`base_url`.
+ */
+describe('run-review (Stage 6: provider-aware client resolution)', () => {
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-run-review-provider-gitlab';
+    insertTestProject(db, projectId);
+
+    const planId = `plan-${projectId}`;
+    const frId = `fr-${projectId}-1`;
+    const featureRunId = `run-${projectId}-1`;
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+    await db.execute(
+      `INSERT INTO implementation_plans (id, project_id, assessment_id, state, title, summary, version, created_at, updated_at)
+       VALUES (?, ?, NULL, 'activated_for_execution', 'Plan', 'Summary', 1, datetime('now'), datetime('now'))`,
+      [planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_requests (id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'FR-001', 'Add widget', 'Description', 'feature', 1, 'under_review', 0, 1, datetime('now'), datetime('now'))`,
+      [frId, planId, projectId],
+    );
+    await db.execute(
+      `INSERT INTO feature_runs (id, feature_request_id, attempt_no, current_execution_state, fix_attempt_count, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'under_review', 0, 1, datetime('now'), datetime('now'))`,
+      [featureRunId, frId],
+    );
+    await db.execute(
+      `INSERT INTO pull_requests (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES (?, ?, 21, 'minicoder/x', 'main', 'sha1', 'open', 'none', 'pending', '[]', 0, 1, datetime('now'), datetime('now'))`,
+      [`pr-${featureRunId}`, featureRunId],
+    );
+    await db.execute(
+      `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'running', 1, datetime('now'), datetime('now'))`,
+      [`ws-${projectId}`, projectId, featureRunId],
+    );
+    await registerReviewerAdapter(db);
+
+    const adapter = fakeReviewerAdapter({ decision: 'approved', findings: [] });
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const deps: RunReviewDeps = {
+      reviewerAdapterFactory: async () => adapter,
+      resolveScmClient: async (provider: string, baseUrl: string | null) => {
+        resolveCalls.push({ provider, baseUrl });
+        return fakeGithubClient();
+      },
+    };
+
+    await runImpl(
+      {
+        projectId,
+        featureRunId,
+        correlationId: 'corr-run-review-provider-1',
+        idempotencyKey: 'idem-run-review-provider-1',
+        reviewerAdapterName: 'FakeReviewerAdapter',
+      },
+      db,
+      deps,
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
   });
 });

@@ -5,7 +5,7 @@
  *  review.comment | push | branch.protection_ok).
  *
  * Each handler resolves the affected feature_run, fetches *current* authoritative state via
- * GitHubClient, and delegates to the same `reconcileGithubState` function the scheduled
+ * ScmClient, and delegates to the same `reconcileGithubState` function the scheduled
  * `github-reconciliation` task uses (packages/triggerdev/src/tasks/github-reconciliation.ts) —
  * both paths must run the identical algorithm (docs/01 §5.7). This module has no dependency on
  * `@minicoder/workflow`'s `InboxHandler` type: the returned objects satisfy that interface
@@ -22,7 +22,7 @@
  * the current state can never need it (MEDIUM-3 code-review fix).
  */
 
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import {
   reconcileGithubState,
   requiresExecutionLock,
@@ -121,7 +121,7 @@ export interface ResolvedFeatureRun {
  *      (packages/github/src/normalize.ts's `status` case) — resolved via pull_requests.head_sha.
  *
  * Returns null (and, distinctly, a resolved run with `prNumber` unset) only when no PR number can
- * be determined at all — the caller needs a concrete PR number to call GitHubClient.getPullRequest.
+ * be determined at all — the caller needs a concrete PR number to call ScmClient.getPullRequest.
  */
 export async function resolveFeatureRunId(
   db: DbClient,
@@ -201,7 +201,7 @@ const LOCK_HOLDER_ID = 'github-inbox-handler';
 
 export function createGithubInboxHandlers(
   db: DbClient,
-  githubClientFactory: () => Promise<GitHubClient>,
+  githubClientFactory: () => Promise<ScmClient>,
 ): Map<string, GithubInboxHandler> {
   const handlers = new Map<string, GithubInboxHandler>();
   const lockManager = new WorkflowLockManager(db);

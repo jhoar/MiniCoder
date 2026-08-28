@@ -27,7 +27,7 @@ import * as path from 'path';
  */
 
 const CORE_HANDLERS_SRC = path.resolve(__dirname, '../commands/handlers');
-const CORE_GITHUB_SRC = path.resolve(__dirname, '../github');
+const CORE_SCM_SRC = path.resolve(__dirname, '../scm');
 // __dirname is packages/core/src/fitness; '../../..' reaches packages/, then 'github/src'.
 const GITHUB_PACKAGE_SRC = path.resolve(__dirname, '../../../github/src');
 
@@ -67,7 +67,7 @@ function collectTsFiles(dir: string): string[] {
 }
 
 describe('Architectural fitness: conversationsResolved is not yet consumed by a decision', () => {
-  const scanDirs = [CORE_HANDLERS_SRC, CORE_GITHUB_SRC, GITHUB_PACKAGE_SRC];
+  const scanDirs = [CORE_HANDLERS_SRC, CORE_SCM_SRC, GITHUB_PACKAGE_SRC];
   const files = scanDirs.flatMap((dir) => collectTsFiles(dir));
 
   it('scan directories are reachable', () => {

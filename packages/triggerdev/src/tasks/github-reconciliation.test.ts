@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { DbClient, GitHubClient, ObservedPullRequestState } from '@minicoder/core';
+import type { DbClient, ScmClient, ObservedPullRequestState } from '@minicoder/core';
 import { PrReviewState } from '@minicoder/core';
 import { ExecutionLane } from '@minicoder/workflow';
 import { createTestDb, insertTestProject } from '../test-helpers.js';
@@ -33,7 +33,7 @@ async function seedCodePushedFeatureRunWithTrackedPr(db: DbClient): Promise<stri
   );
 
   // The candidate's execution state is 'code_pushed' — the HIGH-2 regression: this must still be
-  // scanned (and reach GitHubClient.getPullRequest) because it already has a tracked
+  // scanned (and reach ScmClient.getPullRequest) because it already has a tracked
   // pull_requests row, i.e. this is a fix-cycle re-push whose pr.opened webhook was missed, not a
   // brand-new not-yet-opened PR.
   await db.execute(
@@ -79,7 +79,7 @@ function observedPrOpenedState(headSha: string): ObservedPullRequestState {
  * `pr.opened` webhook was missed could never be caught up by the scheduled fallback, even though
  * it already has a tracked `pull_requests` row and `reconcileGithubState` knows exactly how to
  * advance it (the `CODE_PUSHED -> pr_opened` branch). This test seeds exactly that scenario and
- * asserts the scheduled scan reaches `GitHubClient.getPullRequest` for it and reconciles.
+ * asserts the scheduled scan reaches `ScmClient.getPullRequest` for it and reconciles.
  */
 describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a tracked PR are scanned)', () => {
   it('includes a code_pushed feature run with an existing pull_requests row in the scheduled batch', async () => {
@@ -88,7 +88,7 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
     const featureRunId = await seedCodePushedFeatureRunWithTrackedPr(db);
 
     const getPullRequestCalls: Array<{ owner: string; repo: string; prNumber: number }> = [];
-    const client: GitHubClient = {
+    const client: ScmClient = {
       async createBranch() {
         throw new Error('not used in this test');
       },
@@ -122,7 +122,7 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
       async () => client,
     );
 
-    // The candidate reached GitHubClient.getPullRequest at all — proof it was not filtered out of
+    // The candidate reached ScmClient.getPullRequest at all — proof it was not filtered out of
     // the SQL scan by EXCLUDED_STATES before the pr_number-null guard could even run.
     expect(getPullRequestCalls).toEqual([
       { owner: 'minicoder-test', repo: 'hr2-repo', prNumber: PR_NUMBER },
@@ -168,7 +168,7 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
     );
 
     let getPullRequestCallCount = 0;
-    const client: GitHubClient = {
+    const client: ScmClient = {
       async createBranch() {
         throw new Error('not used in this test');
       },
@@ -216,7 +216,7 @@ describe('github-reconciliation runImpl (HIGH-2: code_pushed candidates with a t
  * next scheduled fallback reconciles it once the lane frees.
  */
 describe('github-reconciliation runImpl (concurrency: a held execution lane skips the candidate, not the batch)', () => {
-  function prOpenedClient(): GitHubClient {
+  function prOpenedClient(): ScmClient {
     return {
       async createBranch() {
         throw new Error('not used in this test');
@@ -295,7 +295,7 @@ describe('github-reconciliation runImpl (concurrency: a held execution lane skip
  * later with a less actionable Octokit auth error.
  */
 /**
- * Issue #42: a `GitHubClient.getPullRequest()` failure on one candidate must not prevent other
+ * Issue #42: a `ScmClient.getPullRequest()` failure on one candidate must not prevent other
  * candidates in the same scheduled pass from being reconciled.
  */
 async function seedTwoTrackedCandidates(
@@ -351,7 +351,7 @@ describe('github-reconciliation runImpl (issue #42: per-candidate GitHub API fai
     insertTestProject(db, PROJECT_ID);
     const { okRunId, failPrNumber } = await seedTwoTrackedCandidates(db);
 
-    const client: GitHubClient = {
+    const client: ScmClient = {
       async createBranch() {
         return { branchName: 'x', sha: 'abc' };
       },
@@ -414,7 +414,7 @@ describe('github-reconciliation runImpl (issue #42: per-candidate GitHub API fai
     await seedTwoTrackedCandidates(db);
 
     const authError = Object.assign(new Error('Bad credentials'), { status: 401 });
-    const client: GitHubClient = {
+    const client: ScmClient = {
       async createBranch() {
         return { branchName: 'x', sha: 'abc' };
       },
@@ -544,7 +544,7 @@ describe('github-reconciliation runImpl (issue #35: automated PR discovery)', ()
 
     const listCalls: Array<{ owner: string; repo: string; branchName: string; state?: string }> =
       [];
-    const client: GitHubClient = {
+    const client: ScmClient = {
       async createBranch() {
         throw new Error('not used in this test');
       },
@@ -607,7 +607,7 @@ describe('github-reconciliation runImpl (issue #35: automated PR discovery)', ()
     insertTestProject(db, DISCOVERY_PROJECT_ID);
     const featureRunId = await seedCodePushedFeatureRunWithNoTrackedPr(db);
 
-    const client: GitHubClient = {
+    const client: ScmClient = {
       async createBranch() {
         throw new Error('not used in this test');
       },
@@ -657,7 +657,7 @@ describe('github-reconciliation runImpl (issue #35: automated PR discovery)', ()
     insertTestProject(db, DISCOVERY_PROJECT_ID);
     await seedCodePushedFeatureRunWithNoTrackedPr(db);
 
-    const client: GitHubClient = {
+    const client: ScmClient = {
       async createBranch() {
         throw new Error('not used in this test');
       },
@@ -695,5 +695,123 @@ describe('github-reconciliation runImpl (issue #35: automated PR discovery)', ()
     );
 
     expect(result.discovered).toBe(0);
+  });
+});
+
+/**
+ * Stage 6 write-pipeline fix (docs/06 §Phase 18): before this fix, `runImpl` always constructed
+ * `OctokitGitHubClient` via the no-argument `GithubClientFactory` shape, regardless of the
+ * project's actual `repositories.provider` — a real GitLab/Gitea-provider project's scheduled
+ * reconciliation pass called the GitHub API against it. This asserts the resolver now receives
+ * the repository row's own `provider`/`base_url`, not a hardcoded `'github'`.
+ */
+describe('github-reconciliation runImpl (Stage 6: provider-aware client resolution)', () => {
+  const fakeClient: ScmClient = {
+    async createBranch() {
+      throw new Error('not used');
+    },
+    async createPullRequest() {
+      throw new Error('not used');
+    },
+    async getPullRequest() {
+      return null;
+    },
+    async publishStatusCheck() {},
+    async mergePullRequest() {
+      throw new Error('not used');
+    },
+    async getRemainingRateLimit() {
+      return 5000;
+    },
+    async getPullRequestDiff() {
+      return '';
+    },
+    async listPullRequestsForBranch() {
+      return [];
+    },
+  };
+
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-hr-provider-gitlab';
+    insertTestProject(db, projectId);
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return fakeClient;
+    };
+
+    await runImpl(
+      { projectId, correlationId: 'corr-hr-provider-1', idempotencyKey: 'idem-hr-provider-1' },
+      db,
+      resolveScmClient,
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
+  });
+
+  it("resolves the ScmClient using the repository row's own provider for a Gitea-provider project with no base_url override needed", async () => {
+    const db = createTestDb();
+    const projectId = 'proj-hr-provider-gitea';
+    insertTestProject(db, projectId);
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitea', 'https://gitea.example.test', 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return fakeClient;
+    };
+
+    await runImpl(
+      { projectId, correlationId: 'corr-hr-provider-2', idempotencyKey: 'idem-hr-provider-2' },
+      db,
+      resolveScmClient,
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'gitea', baseUrl: 'https://gitea.example.test' }]);
+  });
+
+  it('still resolves github with a null base_url for a github-provider project (the pre-Stage-6 default)', async () => {
+    const db = createTestDb();
+    const projectId = 'proj-hr-provider-github';
+    insertTestProject(db, projectId);
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'github', NULL, 1, datetime('now'), datetime('now'))`,
+      [`repo-${projectId}`, projectId],
+    );
+
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return fakeClient;
+    };
+
+    await runImpl(
+      { projectId, correlationId: 'corr-hr-provider-3', idempotencyKey: 'idem-hr-provider-3' },
+      db,
+      resolveScmClient,
+    );
+
+    expect(resolveCalls).toEqual([{ provider: 'github', baseUrl: null }]);
   });
 });

@@ -85,7 +85,7 @@ export const reviewFixLoopScenario: Scenario = {
       },
       runRunReview,
       undefined,
-      { reviewerAdapterFactory: async () => reviewer, githubClientFactory: async () => client },
+      { reviewerAdapterFactory: async () => reviewer, resolveScmClient: async () => client },
     );
 
     const fr1AfterReview = await db.query<FeatureRunRow>(
@@ -118,7 +118,7 @@ export const reviewFixLoopScenario: Scenario = {
       },
       runRunCoder,
       undefined,
-      { coderAdapterFactory: async () => coder, githubClientFactory: async () => client },
+      { coderAdapterFactory: async () => coder, resolveScmClient: async () => client },
     );
 
     const fr1AfterCoder = await db.query<FeatureRunRow>(
@@ -181,7 +181,7 @@ export const reviewFixLoopScenario: Scenario = {
       },
       runRunReview,
       undefined,
-      { reviewerAdapterFactory: async () => reviewer, githubClientFactory: async () => client },
+      { reviewerAdapterFactory: async () => reviewer, resolveScmClient: async () => client },
     );
     assertEqual('run-review approve decision', approveResult.result.decision, 'approved');
 
@@ -211,7 +211,7 @@ export const reviewFixLoopScenario: Scenario = {
       },
       runRunReview,
       undefined,
-      { reviewerAdapterFactory: async () => reviewer2, githubClientFactory: async () => client },
+      { reviewerAdapterFactory: async () => reviewer2, resolveScmClient: async () => client },
     );
 
     const fr2After = await db.query<FeatureRunRow>(

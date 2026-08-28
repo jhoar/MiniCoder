@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.1.0
-> Last-updated: 2026-07-13
+> Version: 1.2.2
+> Last-updated: 2026-08-27
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -25,7 +25,14 @@ Subsystem names:
 - MiniCoder Execution Orchestrator
 - MiniCoder Agent Adapter Architecture
 - MiniCoder Workflow Layer (implemented by an in-repo DB-backed task queue, `packages/triggerdev/` — formerly Trigger.dev)
-- MiniCoder GitHub Integration
+- MiniCoder SCM Integration (`packages/github`, `packages/gitea`, `packages/gitlab` are all shipped
+  `ScmClient` implementations — see `06-implementation-plan.md` §Phase 18; every write-path call
+  site, including the coder adapter's own clone/push credential, is provider-aware as of three
+  same-day Stage 6 follow-ups. A fourth and fifth follow-up live-verified Gitea's and GitLab's
+  credential/clone-push and every `GiteaScmClient`/`GitlabScmClient` method against real Gitea and
+  GitLab instances respectively, closing what verification gap remained — see that plan's Stage 6
+  completion notes for the full writeup, including two real GitLab bugs found and fixed along the
+  way)
 - MiniCoder Orchestrator API
 - MiniCoder Text UI
 - MiniCoder Web UI
@@ -39,10 +46,21 @@ Subsystem names:
 MiniCoder database = authoritative planning, backlog, workflow, testing, review, event,
                      agent-run, cost, artifact, and design-document state.
                      Local/single-node = SQLite on local disk. Hosted/team = PostgreSQL.
-GitHub             = authoritative repository, branch, commit, PR, review, CI/check,
-                     conversation, mergeability, and merge state.
-GitHub webhooks    = PRIMARY source for external GitHub changes.
-Scheduled reconciliation = fallback/repair mechanism.
+SCM provider       = authoritative repository, branch, commit, PR, review, CI/check,
+                     conversation, mergeability, and merge state. GitHub (`OctokitGitHubClient`,
+                     `packages/github`), Gitea (`GiteaScmClient`, `packages/gitea`), and GitLab
+                     (`GitlabScmClient`, `packages/gitlab`) are all shipped `ScmClient`
+                     implementations (see `06-implementation-plan.md` §Phase 18); every write-path
+                     call site (scheduled reconciliation, reviewer diff fetch, merge-gate status
+                     checks, PR creation, the real merge call, and the coder adapter's own
+                     clone/push credential) is provider-aware since Stage 6. Both Gitea's and
+                     GitLab's credential conventions and the coder adapter's actual clone/push are
+                     live-verified against real instances (Stage 6's fourth and fifth follow-ups,
+                     the latter also finding and fixing two real GitLab-specific bugs).
+SCM webhooks       = PRIMARY source for external SCM changes.
+Scheduled reconciliation = fallback/repair mechanism. Implemented by the `github-reconciliation`
+                     task (docs §3.12), which keeps that literal name regardless of which provider
+                     it reconciles.
 Workflow Layer     = durable workflow execution (tasks, retries, a polling queue); implemented by
                      an in-repo DB-backed task queue (formerly Trigger.dev), which is authoritative
                      only for task-execution run metadata (correlated via run IDs).
@@ -114,7 +132,7 @@ approved_pending_execution → selected → coding → code_pushed → pr_opened
 
 `approved_by_policy` is computed automatically by the merge gate; `merge_ready → merged` is
 **initiated by an approver/admin via `merge-if-ready`** and the gate is re-evaluated immediately
-before the GitHub merge (see `01-system-specification.md` §12).
+before the SCM merge (see `01-system-specification.md` §12).
 
 **Every new push re-enters CI.** A fix always flows `fixing → code_pushed → ci_running` before
 returning to `under_review`; review and merge never act on un-tested code.
@@ -127,7 +145,7 @@ ci_running → [CI fail] → ci_failed → changes_requested → fixing
 ci_failed  → human_required        (when review-cycle / fix-attempt limits are exceeded)
 ```
 
-Merge can also fail **after** `merge_ready` (GitHub-side merge rejection, a late conflict, changed
+Merge can also fail **after** `merge_ready` (SCM-side merge rejection, a late conflict, changed
 branch protection, or stale mergeability):
 
 ```text
@@ -361,7 +379,10 @@ agent_run_state       : queued | running | succeeded | failed | cancelled
 workflow_run_state    : queued | running | waiting | succeeded | failed | cancelled
                         (correlated to task-queue run status; see triggerdev_runs)
 pr_review_state       : none | pending | commented | changes_requested | approved | dismissed
-                        (mirrors GitHub review status; GitHub remains authoritative)
+                        (mirrors the SCM provider's review status; the SCM provider remains
+                        authoritative. GitLab has no native "changes requested" state — a future
+                        GitLab `ScmClient` implementation synthesizes it from approval count plus
+                        unresolved blocking discussions; see `06-implementation-plan.md` §Phase 18)
 artifact_export_state : pending | generating | exported | stale | failed
 ```
 
@@ -518,7 +539,8 @@ minicoder state validate
 minicoder state reconcile --project <id>               # project-scoped (stale locks only)
 minicoder state reconcile --all                        # global (stale locks + stuck queues)
 minicoder state doctor
-minicoder state doctor --check-github                  # opt-in; requires GITHUB_TOKEN (issue #35)
+minicoder state doctor --check-scm                     # opt-in; requires a provider credential (GITHUB_TOKEN/GITEA_TOKEN/GITLAB_TOKEN) (issue #35, generalized in Stage 5)
+minicoder state doctor --check-github                  # deprecated alias for --check-scm, kept for backward compatibility
 minicoder state export-diagnostics
 minicoder state repair --project <id> --dry-run        # preview only (non-destructive; --project required)
 minicoder state repair --project <id> --apply --confirmation <token>  # guarded destructive apply
@@ -535,6 +557,35 @@ minicoder github simulate-branch-protection-ok
 
 # GitHub webhook receiver (Phase 7; not env-guarded — intended for real deployments)
 minicoder github serve                                  # POST /webhooks/github; standalone Fastify app
+
+# Gitea simulation (test/dev only) — docs/06 §Phase 18 Stage 3; mirrors the GitHub group above,
+# minus simulate-branch-protection-ok (no Gitea equivalent — that command is GitHub-only
+# dev-tooling with no real webhook event behind it even on the GitHub side)
+minicoder gitea simulate-pr-opened
+minicoder gitea simulate-pr-closed
+minicoder gitea simulate-pr-merged
+minicoder gitea simulate-check-passed
+minicoder gitea simulate-check-failed
+minicoder gitea simulate-review-approved
+minicoder gitea simulate-review-changes-requested
+
+# Gitea webhook receiver (docs/06 §Phase 18 Stage 3; not env-guarded, same posture as `github serve`)
+minicoder gitea serve                                   # POST /webhooks/gitea; standalone Fastify app
+
+# GitLab simulation (test/dev only) — docs/06 §Phase 18 Stage 4; mirrors the GitHub/Gitea groups
+# above, minus simulate-review-changes-requested (GitLab has no webhook event for a discrete
+# "changes requested" review action, and no inbox handler is registered for it on this provider —
+# see @minicoder/gitlab's normalize.ts) and simulate-branch-protection-ok (no GitLab equivalent,
+# same reason as Gitea's)
+minicoder gitlab simulate-pr-opened
+minicoder gitlab simulate-pr-closed
+minicoder gitlab simulate-pr-merged
+minicoder gitlab simulate-check-passed
+minicoder gitlab simulate-check-failed
+minicoder gitlab simulate-review-approved
+
+# GitLab webhook receiver (docs/06 §Phase 18 Stage 4; not env-guarded, same posture as `github serve`)
+minicoder gitlab serve                                  # POST /webhooks/gitlab; standalone Fastify app
 
 # Human escalation disposition (Phase 11; human_required exit commands)
 minicoder human resolve-disagreement --feature-run <id> --project <id> --actor <id> --resolution <text> [--disagreement <id>]
@@ -658,7 +709,10 @@ HA cluster vs. Trigger.dev Cloud) — that entire axis is gone along with the Tr
 ### 6.1 State store
 
 - **Local / Single-Node** — SQLite on local disk; local API; local TUI; optional local Web UI.
-- **Hosted / Team** — PostgreSQL; hosted API; Web UI; GitHub OAuth; GitHub webhooks.
+- **Hosted / Team** — PostgreSQL; hosted API; Web UI; a token-based SCM credential per provider
+  (GitHub App/PAT, Gitea token, GitLab token — `06-implementation-plan.md` §Phase 18; real
+  end-user OAuth/SSO session auth is deferred future work regardless of provider, docs/07 §4);
+  SCM webhooks.
 
 ### 6.2 Workflow Layer execution: `minicoder tasks worker`
 

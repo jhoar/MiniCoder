@@ -1,0 +1,17 @@
+{
+  "name": "@minicoder/gitlab",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run packages/gitlab/src/"
+  },
+  "dependencies": {
+    "@minicoder/core": "workspace:*",
+    "@minicoder/workflow": "workspace:*",
+    "fastify": "^5.9.0"
+  }
+}

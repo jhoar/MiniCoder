@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { deriveCiStatus, deriveReviewState } from './octokit-client.js';
-import { GithubMergeRejectedError, PrReviewState } from '@minicoder/core';
+import { ScmMergeRejectedError, PrReviewState } from '@minicoder/core';
 
 /**
  * HIGH-4 code-review fix: OctokitGitHubClient.getPullRequest() combines GitHub Checks
@@ -450,12 +450,12 @@ describe('OctokitGitHubClient.getPullRequest (issue #36 conversationsResolved vi
 
 /**
  * Phase 12 (Merge Gate): `mergePullRequest` classifies GitHub's merge-rejection status codes
- * into `GithubMergeRejectedError.reason`/`.autoClearable` — 409 (head moved since the gate
+ * into `ScmMergeRejectedError.reason`/`.autoClearable` — 409 (head moved since the gate
  * re-evaluated) is auto-clearable, 405 (branch protection or a real conflict — GitHub does not
  * distinguish the two) is not, and *any other* error (no HTTP status, or a status other than
  * 409/405 — e.g. 401/403/404/422/429/5xx) is rethrown as-is rather than misclassified as a
  * merge-gate rejection (code-review fix: an earlier version wrapped every other status into
- * `GithubMergeRejectedError('unknown', false)`, which would have driven `RecordMergeFailedCommand`
+ * `ScmMergeRejectedError('unknown', false)`, which would have driven `RecordMergeFailedCommand`
  * for a routine operational failure like a transient 500 or bad credentials).
  */
 describe('OctokitGitHubClient.mergePullRequest', () => {
@@ -535,7 +535,7 @@ describe('OctokitGitHubClient.mergePullRequest', () => {
         prNumber: 9,
         mergeMethod: 'squash',
       }),
-    ).rejects.not.toBeInstanceOf(GithubMergeRejectedError);
+    ).rejects.not.toBeInstanceOf(ScmMergeRejectedError);
   });
 
   it.each([401, 403, 404, 422, 429, 500, 503])(
@@ -553,7 +553,7 @@ describe('OctokitGitHubClient.mergePullRequest', () => {
           prNumber: 9,
           mergeMethod: 'squash',
         }),
-      ).rejects.not.toBeInstanceOf(GithubMergeRejectedError);
+      ).rejects.not.toBeInstanceOf(ScmMergeRejectedError);
     },
   );
 });

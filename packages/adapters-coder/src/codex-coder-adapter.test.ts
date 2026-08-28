@@ -90,7 +90,8 @@ describe('CodexCoderAdapter', () => {
     const { sandbox, started, removed } = fakeSandbox();
     const adapter = new CodexCoderAdapter({
       repoUrl: 'https://github.com/acme/repo.git',
-      githubToken: 'tok',
+      gitToken: 'tok',
+      remoteUsername: 'x-access-token',
       codeGenerationProvider: workingProvider,
       createSandbox: () => sandbox,
     });
@@ -122,7 +123,8 @@ describe('CodexCoderAdapter', () => {
     const provider = recordingProvider();
     const adapter = new CodexCoderAdapter({
       repoUrl: 'https://github.com/acme/repo.git',
-      githubToken: 'tok',
+      gitToken: 'tok',
+      remoteUsername: 'x-access-token',
       codeGenerationProvider: provider,
       createSandbox: () => sandbox,
     });
@@ -149,7 +151,8 @@ describe('CodexCoderAdapter', () => {
     };
     const adapter = new CodexCoderAdapter({
       repoUrl: 'https://github.com/acme/repo.git',
-      githubToken: 'tok',
+      gitToken: 'tok',
+      remoteUsername: 'x-access-token',
       codeGenerationProvider: failingProvider,
       createSandbox: () => sandbox,
     });
@@ -173,7 +176,8 @@ describe('CodexCoderAdapter', () => {
     const { sandbox } = fakeSandbox({ existingCommitTrailer: 'MiniCoder-Feature-Run: fr-3' });
     const adapter = new CodexCoderAdapter({
       repoUrl: 'https://github.com/acme/repo.git',
-      githubToken: 'tok',
+      gitToken: 'tok',
+      remoteUsername: 'x-access-token',
       codeGenerationProvider: workingProvider,
       createSandbox: () => sandbox,
     });
@@ -195,7 +199,8 @@ describe('CodexCoderAdapter', () => {
     const sandboxes = [first.sandbox, second.sandbox];
     const adapter = new CodexCoderAdapter({
       repoUrl: 'https://github.com/acme/repo.git',
-      githubToken: 'tok',
+      gitToken: 'tok',
+      remoteUsername: 'x-access-token',
       codeGenerationProvider: workingProvider,
       createSandbox: () => sandboxes.shift() as Sandbox,
     });

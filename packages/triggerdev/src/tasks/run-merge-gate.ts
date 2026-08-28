@@ -6,11 +6,11 @@ import {
   generateId,
   publishMergeGateStatusCheck,
 } from '@minicoder/core';
-import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
+import type { CommandEnvelope, DbClient } from '@minicoder/core';
 import type { RunMergeGatePayload } from './types.js';
 import { systemActor } from './actor.js';
 import { isTransientRace as isTransientRaceShared } from './transient-race.js';
-import { requireNonBlankEnvVar } from './env.js';
+import { resolveDefaultScmClient, type ScmClientResolver } from './scm-client-resolver.js';
 
 export type { RunMergeGatePayload };
 
@@ -22,10 +22,11 @@ export interface RunMergeGateResult {
   reasons: string[];
 }
 
-export type GithubClientFactory = () => Promise<GitHubClient>;
-
 export interface RunMergeGateDeps {
-  githubClientFactory?: GithubClientFactory;
+  /** Stage 6 write-pipeline follow-up (docs/06 §Phase 18): resolves the correct `ScmClient`
+   * implementation/credential for this run's repository's own `provider`/`base_url`, instead of
+   * unconditionally constructing `OctokitGitHubClient`. */
+  resolveScmClient?: ScmClientResolver;
 }
 
 const recordApprovedByPolicyHandler = new RecordApprovedByPolicyHandler();
@@ -38,20 +39,6 @@ const EXPECTED_COMMAND_ERROR_TYPES = new Set(['concurrent-command', 'not-found']
 
 function isTransientRace(err: unknown): boolean {
   return isTransientRaceShared(err, EXPECTED_COMMAND_ERROR_TYPES);
-}
-
-/** Mirrors `github-reconciliation.ts`/`run-coder.ts`'s `resolveDefaultGithubClientFactory` — a
- * GitHub credential is a single deployment-wide secret, not a per-call injected dependency. */
-function resolveDefaultGithubClientFactory(): GithubClientFactory {
-  return async () => {
-    const token = requireNonBlankEnvVar(
-      'GITHUB_TOKEN',
-      'run-merge-gate requires a GitHub credential (GitHub App installation token or PAT) to ' +
-        'publish the minicoder/review-gate status check — see docs/07-security-and-secrets.md §3.',
-    );
-    const { OctokitGitHubClient } = await import('@minicoder/github');
-    return new OctokitGitHubClient({ auth: token });
-  };
 }
 
 interface FeatureRunRow {
@@ -67,6 +54,8 @@ interface PullRequestRow {
 interface RepositoryRow {
   owner: string;
   name: string;
+  provider: string;
+  base_url: string | null;
 }
 
 /**
@@ -92,7 +81,7 @@ export async function runImpl(
   deps: RunMergeGateDeps = {},
 ): Promise<RunMergeGateResult> {
   const { projectId, featureRunId, correlationId } = payload;
-  const githubClientFactory = deps.githubClientFactory ?? resolveDefaultGithubClientFactory();
+  const resolveScmClient = deps.resolveScmClient ?? resolveDefaultScmClient('run-merge-gate');
 
   const runRows = await db.query<FeatureRunRow>(
     `SELECT fr.id, fr.current_execution_state, fr.version
@@ -135,7 +124,7 @@ export async function runImpl(
   }
 
   if (outcome.evaluated) {
-    await publishStatusCheckSafely(db, githubClientFactory, {
+    await publishStatusCheckSafely(db, resolveScmClient, {
       projectId,
       featureRunId,
       decision: outcome.approved ? 'approved' : 'rejected',
@@ -148,7 +137,7 @@ export async function runImpl(
 
 async function publishStatusCheckSafely(
   db: DbClient,
-  githubClientFactory: GithubClientFactory,
+  resolveScmClient: ScmClientResolver,
   opts: {
     projectId: string;
     featureRunId: string;
@@ -162,14 +151,14 @@ async function publishStatusCheckSafely(
       [opts.featureRunId],
     );
     const repoRows = await db.query<RepositoryRow>(
-      `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+      `SELECT owner, name, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
       [opts.projectId],
     );
     const pr = prRows[0];
     const repo = repoRows[0];
     if (!pr?.head_sha || !repo) return;
 
-    const githubClient = await githubClientFactory();
+    const githubClient = await resolveScmClient(repo.provider, repo.base_url);
     await publishMergeGateStatusCheck(githubClient, {
       owner: repo.owner,
       repo: repo.name,

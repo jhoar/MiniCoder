@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: minicoder_testing_validation_state_lifecycle_specification.md
-> Version: 1.6.0
-> Last-updated: 2026-07-13
+> Version: 1.6.2
+> Last-updated: 2026-08-27
 
 The canonical CLI surface is defined once in [`00-glossary-and-terms.md`](00-glossary-and-terms.md)
 §5; commands referenced here are a subset of that surface.
@@ -812,7 +812,8 @@ see `07-security-and-secrets.md` for the overlap procedure.
 
 This runbook covers the GitHub App/webhook setup, the standalone webhook receiver
 (`minicoder github serve`), webhook-secret rotation, and reconciliation diagnostics delivered in
-Phase 7 (`packages/github`, `packages/core/src/github/`, migration `0009_pull_requests`). The
+Phase 7 (`packages/github`, `packages/core/src/scm/` — renamed from `packages/core/src/github/` by
+docs/06 §Phase 18 Stage 1, migration `0009_pull_requests`). The
 Phase 3 runbook above described a _separate_ Trigger.dev webhook-secret rotation procedure
 (`TRIGGERDEV_WEBHOOK_SECRET`) that protected a different endpoint; that secret and its rotation
 procedure no longer exist (Trigger.dev has been removed — see the superseded banner at the top of
@@ -914,11 +915,18 @@ mismatch predates issue #35 and remains unreconciled here), and calls the new
 reconcile loop. **Automated discovery is now primary** — it runs on every scheduled
 `github-reconciliation` invocation with no operator action required.
 
-**On-demand check**: `minicoder state doctor --check-github` (opt-in — the only `state doctor`
-check requiring a live `GITHUB_TOKEN`) runs `checkPrDiscoveryDivergence()` directly, without
+**On-demand check**: `minicoder state doctor --check-scm` (docs/06 §Phase 18 Stage 5 —
+`--check-github` remains a deprecated but supported alias; opt-in — the only `state doctor` check
+requiring a live provider credential) runs `checkPrDiscoveryDivergence()` directly, without
 waiting for the next scheduled `github-reconciliation` run, and reports any `code_pushed` feature
-run whose branch already has an open PR on GitHub as a `pr_discovery_divergence` warning (not an
-error — the scheduled task will normally clear it on its own).
+run whose branch already has an open PR on its linked SCM provider as a `pr_discovery_divergence`
+warning (not an error — GitHub's own scheduled `github-reconciliation` task will normally clear a
+GitHub-provider divergence on its own; Gitea/GitLab have no equivalent scheduled discovery pass
+yet, so this on-demand check is currently the _only_ automated discovery path for those two
+providers — see this check's own `resolveScmClientForDoctor()`
+(`packages/cli/src/commands/state.ts`), which resolves the correct `ScmClient` implementation and
+credential — `GITHUB_TOKEN`/`GITEA_TOKEN`/`GITLAB_TOKEN` — from the candidate repository's own
+`provider`/`base_url` columns).
 
 **Manual fallback (only if automated discovery cannot reach the candidate)** — e.g.
 `listPullRequestsForBranch` fails repeatedly (rate limiting, a credential issue), or the candidate
@@ -961,6 +969,70 @@ insert is the production-safe fallback:
 
 This manual path is now the exception, not the norm: automated discovery (above) handles the
 common case of a missed `pr.opened` webhook without any operator involvement.
+
+#### Gitea and GitLab (docs/06 §Phase 18 Stages 3–4)
+
+Everything above this point describes the GitHub implementation specifically. Gitea and GitLab are
+staged, additional `ScmClient` providers behind the same seam — most of this runbook's shape
+carries over directly (webhook receiver, secret-rotation procedure, `repositories.full_name`
+linking, `state doctor`/`state inspect` diagnostics), with these provider-specific env vars and one
+operational difference worth calling out explicitly:
+
+| Variable                         | Provider | Description                                                                             |
+| -------------------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `GITEA_WEBHOOK_SECRET`           | Gitea    | Current webhook signing secret — optional; `/webhooks/gitea` is left unmounted if unset |
+| `GITEA_WEBHOOK_SECRET_PREVIOUS`  | Gitea    | Previous secret, set only during a rotation overlap window                              |
+| `GITLAB_WEBHOOK_SECRET`          | GitLab   | Current webhook token — optional; `/webhooks/gitlab` is left unmounted if unset         |
+| `GITLAB_WEBHOOK_SECRET_PREVIOUS` | GitLab   | Previous token, set only during a rotation overlap window                               |
+
+Both are opt-in, unlike `GITHUB_WEBHOOK_SECRET`: `minicoder api serve` starts successfully with
+neither set, simply leaving the corresponding webhook route unmounted (docs/06 §Phase 18 Stage 3's
+own reasoning: a deployment with no repository linked to a given provider has no reason to expose
+that provider's webhook route at all).
+
+**Operational difference for GitLab — reconciliation, not webhook delivery, is the intended
+latency bound for a "changes requested" transition.** GitLab has no webhook event corresponding to
+a discrete "reviewer requested changes" action (unlike GitHub's `pull_request_review` or Gitea's
+`pull_request_review_reject`) — the condition is discovered by the scheduled
+`github-reconciliation` task's own `getPullRequest()` observation on its normal polling cadence,
+feeding the shared `reconcileGithubState()` algorithm.
+
+**History, for context (docs/06 §Phase 18 Stage 6's grep sweep, since fixed).** For a window
+between Stage 5 and Stage 6, this was not actually true in production:
+`github-reconciliation.ts`'s client resolution unconditionally constructed a single
+`OctokitGitHubClient` for the entire scheduled pass, so a real GitLab-provider repository's
+scheduled pass called the GitHub API against it, not GitLab's, and this transition had no working
+automated path. `packages/testing/src/gitlab-reconcile-fallback.test.ts` proved only the
+_algorithm_ (`reconcileGithubState()`) — its own header comment is explicit that it calls
+`reconcileGithubState()` directly, bypassing the task (and its then-bug) entirely. This was fixed
+as a same-day Stage 6 follow-up: `github-reconciliation.ts` now resolves its `ScmClient` via
+`packages/triggerdev/src/tasks/scm-client-resolver.ts`'s `resolveDefaultScmClient()`, reading the
+candidate repository's own `provider`/`base_url` (mirroring
+`packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()`), so a real GitLab-backed
+project's scheduled reconciliation now genuinely calls GitLab's API and can reach this transition.
+Regression coverage: `github-reconciliation.test.ts`'s new provider-dispatch cases (asserting the
+resolver receives the seeded repository's real provider/`base_url`) and the pre-existing
+`gitlab-reconcile-fallback.test.ts` together now cover both halves — the task resolves the right
+client, and the algorithm correctly acts on what that client reports.
+
+**Both providers are now fully live-verified — no remaining gap.** After three same-day Stage 6
+follow-ups, every write-path call site is provider-aware — `run-review`'s reviewer diff fetch,
+`run-merge-gate`'s status-check publication, `run-coder`'s post-push `createPullRequest()` call,
+`minicoder merge ...`/its API routes' real merge call, and `run-coder`'s coder-adapter clone/push
+credential (`resolveDefaultCoderAdapterFactory()`) all resolve the matching provider's token and,
+for the coder adapter, its matching HTTPS Basic-Auth username. A fourth follow-up live-verified
+Gitea's half of this: a real, directly-downloaded Gitea 1.22.3 binary (no Docker needed) confirmed
+the `token:<PAT>` convention works for clone and push, that the username value is genuinely
+irrelevant once the password is a valid token, and that every `GiteaScmClient` REST method works
+end-to-end against real API responses. A fifth follow-up did the same for GitLab, running a real
+GitLab CE 17.5.2 instance (`docker compose up`, using the `mirror.gcr.io` Docker Hub mirror to
+work around this environment's blocked CDN access) — confirming the `oauth2:<PAT>` convention
+works identically, that GitLab too ignores the Basic-Auth username entirely once the password is a
+valid token (a new finding), and every `GitlabScmClient` REST method end-to-end. That pass also
+found and fixed three real bugs: `infra/docker-compose.gitlab.yml`'s wrong nginx port mapping,
+`GitlabScmClient.getPullRequestDiff()`'s crash under explicit pagination (a genuine GitLab-side
+bug), and `GitlabScmClient.mergePullRequest()`'s unclassified rejection on an empty commit message.
+See docs/06 §Phase 18 Stage 6's completion notes for the full, up-to-date writeup.
 
 ### Phase 8 — Execution Orchestrator Runbook
 
@@ -1486,11 +1558,14 @@ diagnostics going forward instead.
 `code_pushed_no_pull_request` (Phase 16, closes the previously-deferred LOW-3 observability gap —
 CLAUDE.md's Reference Coder Adapter Operational Constraints) flags a `code_pushed` feature run
 with no tracked `pull_requests` row after a 30-minute grace period. Manual recovery: confirm via
-`minicoder state doctor --project <id> --check-github` (`checkPrDiscoveryDivergence()`) whether
-GitHub actually has an open PR for the run's branch that a webhook missed — if so, the next
-scheduled `github-reconciliation` pass auto-heals it via `discoverMissingPullRequests()`; if the
-push itself never produced a PR (e.g. a swallowed `createPullRequest` failure), re-trigger
-`run-coder` for the feature run once it is confirmed still at `code_pushed`.
+`minicoder state doctor --project <id> --check-scm` (`--check-github` remains a deprecated alias;
+`checkPrDiscoveryDivergence()`) whether the linked SCM provider actually has an open PR for the
+run's branch that a webhook missed — for a GitHub-provider repository, the next scheduled
+`github-reconciliation` pass also auto-heals it via `discoverMissingPullRequests()` on its own; for
+a Gitea/GitLab-provider repository, there is no equivalent scheduled discovery pass yet (docs/06
+§Phase 18 Stage 5), so this on-demand check is currently the only automated way to find such a
+divergence. If the push itself never produced a PR (e.g. a swallowed `createPullRequest` failure),
+re-trigger `run-coder` for the feature run once it is confirmed still at `code_pushed`.
 
 `secret_leak_scan` (Phase 16, docs/07 "private chain-of-thought is never stored" automated
 verification) samples the 50 most-recently-written `agent_context_packs`/`agent_runs` rows and

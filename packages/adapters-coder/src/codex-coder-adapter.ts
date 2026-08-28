@@ -21,7 +21,10 @@ export interface CodexCoderOutput extends CoderOutput {
 
 export interface CodexCoderAdapterOptions {
   readonly repoUrl: string;
-  readonly githubToken: string;
+  readonly gitToken: string;
+  /** HTTPS Basic-Auth username paired with `gitToken` — see `workspace.ts`'s `WorkspaceOptions`
+   * doc comment; resolved per-provider by the caller (`run-coder.ts`), not by this adapter. */
+  readonly remoteUsername: string;
   /** Working directory inside the sandbox container (or a local throwaway dir in tests).
    * Defaults to `/workspace` — the pre-baked sandbox image's writable scratch mount. */
   readonly workspaceDir?: string;
@@ -66,7 +69,8 @@ export class CodexCoderAdapter implements CoderAgentAdapter {
         prepareBranch({
           workspaceDir,
           repoUrl: this.options.repoUrl,
-          githubToken: this.options.githubToken,
+          gitToken: this.options.gitToken,
+          remoteUsername: this.options.remoteUsername,
           featureRunId: input.featureRunId,
           runner: sandbox,
           diffGuard: this.options.diffGuard,
@@ -111,7 +115,8 @@ export class CodexCoderAdapter implements CoderAgentAdapter {
             {
               workspaceDir,
               repoUrl: this.options.repoUrl,
-              githubToken: this.options.githubToken,
+              gitToken: this.options.gitToken,
+              remoteUsername: this.options.remoteUsername,
               featureRunId: input.featureRunId,
               runner: sandbox,
               diffGuard: this.options.diffGuard,

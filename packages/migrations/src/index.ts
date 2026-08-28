@@ -1,7 +1,7 @@
 export const EXPECTED_TABLES = [
   'projects',
   'repositories',
-  'github_links',
+  'scm_links',
   'specification_inputs',
   'planning_readiness_assessments',
   'planning_gaps',

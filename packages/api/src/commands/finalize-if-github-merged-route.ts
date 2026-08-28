@@ -16,21 +16,14 @@ import {
   UserRole,
   generateId,
 } from '@minicoder/core';
-import type { CommandEnvelope, DbClient, GitHubClient } from '@minicoder/core';
-import { requireNonBlankEnvVar, systemActor } from '@minicoder/triggerdev';
+import type { CommandEnvelope, DbClient } from '@minicoder/core';
+import {
+  systemActor,
+  resolveDefaultScmClient,
+  type ScmClientResolver,
+} from '@minicoder/triggerdev';
 import { NotFoundError, RequestValidationError } from '../errors.js';
 import { requireRole } from '../auth/require-role.js';
-import type { GithubClientFactory } from './merge-if-ready-route.js';
-
-async function defaultGithubClientFactory(): Promise<GitHubClient> {
-  const token = requireNonBlankEnvVar(
-    'GITHUB_TOKEN',
-    'The Orchestrator API requires a GitHub credential (GitHub App installation token or PAT) to ' +
-      'finalize a merge — see docs/07-security-and-secrets.md §3.',
-  );
-  const { OctokitGitHubClient } = await import('@minicoder/github');
-  return new OctokitGitHubClient({ auth: token });
-}
 
 interface FeatureRunRow {
   id: string;
@@ -45,6 +38,8 @@ interface PullRequestRow {
 interface RepositoryRow {
   owner: string;
   name: string;
+  provider: string;
+  base_url: string | null;
 }
 
 async function fetchFeatureRun(
@@ -66,7 +61,10 @@ async function fetchFeatureRun(
 
 export interface FinalizeIfGithubMergedDeps {
   db: DbClient;
-  githubClientFactory?: GithubClientFactory;
+  /** Stage 6 write-pipeline follow-up (docs/06 §Phase 18): resolves the correct `ScmClient`
+   * implementation/credential for this run's repository's own `provider`/`base_url`, instead of
+   * unconditionally constructing `OctokitGitHubClient`. */
+  resolveScmClient?: ScmClientResolver;
 }
 
 interface FinalizeIfGithubMergedBody {
@@ -78,7 +76,8 @@ export function registerFinalizeIfGithubMergedRoute(
   app: FastifyInstance,
   deps: FinalizeIfGithubMergedDeps,
 ): void {
-  const githubClientFactory = deps.githubClientFactory ?? defaultGithubClientFactory;
+  const resolveScmClient =
+    deps.resolveScmClient ?? resolveDefaultScmClient('POST /commands/finalize-if-github-merged');
 
   app.post<{ Body: FinalizeIfGithubMergedBody }>(
     '/commands/finalize-if-github-merged',
@@ -111,7 +110,7 @@ export function registerFinalizeIfGithubMergedRoute(
         [featureRunId],
       );
       const repoRows = await db.query<RepositoryRow>(
-        `SELECT owner, name FROM repositories WHERE project_id = ? LIMIT 1`,
+        `SELECT owner, name, provider, base_url FROM repositories WHERE project_id = ? LIMIT 1`,
         [projectId],
       );
       const pr = prRows[0];
@@ -122,7 +121,7 @@ export function registerFinalizeIfGithubMergedRoute(
         );
       }
 
-      const githubClient = await githubClientFactory();
+      const githubClient = await resolveScmClient(repo.provider, repo.base_url);
       const observed = await githubClient.getPullRequest(repo.owner, repo.name, pr.pr_number);
       if (!observed || observed.state !== 'merged' || !observed.mergedAt) {
         throw new RequestValidationError(

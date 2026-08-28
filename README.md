@@ -23,16 +23,16 @@ specification to a merged, documented result.
 
 The authoritative specification lives entirely under [`docs/`](docs/). Read in order:
 
-| Document | Purpose |
-| --- | --- |
-| [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md) | Single source of truth for the state machines/tokens, agent roles, user/auth roles, adapter names, identifiers, deployment profiles, the CLI surface, and the locked tech stack. |
-| [`docs/01-system-specification.md`](docs/01-system-specification.md) | Canonical architecture: scope, principles, subsystems, data design, API conventions, merge policy + gate evidence, and Project Acceptance Validation. |
-| [`docs/02-bootstrap-planner-clarification.md`](docs/02-bootstrap-planner-clarification.md) | Bootstrap Planner, readiness assessment, the Clarification Workflow, and the discovery backlog. |
-| [`docs/03-agent-adapter-architecture.md`](docs/03-agent-adapter-architecture.md) | Vendor-neutral agent adapter roles, capabilities, conformance, and the Adapter Execution Contract (workspaces, I/O schemas, retries, error taxonomy). |
-| [`docs/04-testing-validation-state-lifecycle.md`](docs/04-testing-validation-state-lifecycle.md) | Automated testing (incl. cross-dialect), validation, state-lifecycle tooling, and operations runbooks. |
-| [`docs/05-ui-specification.md`](docs/05-ui-specification.md) | Ink Text UI and Next.js Web UI, including state-health and admin views. |
-| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md) | The single canonical 18-phase implementation plan, with per-phase acceptance criteria and a global Definition of Done. |
-| [`docs/07-security-and-secrets.md`](docs/07-security-and-secrets.md) | Security and secrets: secret backend, GitHub App auth, workspace sandboxing/egress, payload hygiene/residency, prompt-injection, untrusted code. |
+| Document                                                                                         | Purpose                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`docs/00-glossary-and-terms.md`](docs/00-glossary-and-terms.md)                                 | Single source of truth for the state machines/tokens, agent roles, user/auth roles, adapter names, identifiers, deployment profiles, the CLI surface, and the locked tech stack. |
+| [`docs/01-system-specification.md`](docs/01-system-specification.md)                             | Canonical architecture: scope, principles, subsystems, data design, API conventions, merge policy + gate evidence, and Project Acceptance Validation.                            |
+| [`docs/02-bootstrap-planner-clarification.md`](docs/02-bootstrap-planner-clarification.md)       | Bootstrap Planner, readiness assessment, the Clarification Workflow, and the discovery backlog.                                                                                  |
+| [`docs/03-agent-adapter-architecture.md`](docs/03-agent-adapter-architecture.md)                 | Vendor-neutral agent adapter roles, capabilities, conformance, and the Adapter Execution Contract (workspaces, I/O schemas, retries, error taxonomy).                            |
+| [`docs/04-testing-validation-state-lifecycle.md`](docs/04-testing-validation-state-lifecycle.md) | Automated testing (incl. cross-dialect), validation, state-lifecycle tooling, and operations runbooks.                                                                           |
+| [`docs/05-ui-specification.md`](docs/05-ui-specification.md)                                     | Ink Text UI and Next.js Web UI, including state-health and admin views.                                                                                                          |
+| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md)                               | The single canonical 18-phase implementation plan, with per-phase acceptance criteria and a global Definition of Done.                                                           |
+| [`docs/07-security-and-secrets.md`](docs/07-security-and-secrets.md)                             | Security and secrets: secret backend, GitHub App auth, workspace sandboxing/egress, payload hygiene/residency, prompt-injection, untrusted code.                                 |
 
 ## Precedence rule
 
@@ -51,8 +51,10 @@ The authoritative specification lives entirely under [`docs/`](docs/). Read in o
   (`packages/triggerdev/`); tasks are thin, idempotent wrappers over Orchestrator Core commands.
   Scaling is "run more `minicoder tasks worker` processes against the same database," not a
   separate backend choice.
-- **GitHub is repository truth**; webhooks are the primary event source, with scheduled
-  reconciliation as the fallback/repair path.
+- **The linked SCM provider is repository truth**; webhooks are the primary event source, with
+  scheduled reconciliation as the fallback/repair path. GitHub is the original and most complete
+  implementation; Gitea and GitLab are also shipped behind the same provider-neutral interface
+  (docs/06 §Phase 18).
 - **Sequential execution is a policy** (locks/lanes with fencing tokens), not a schema limitation —
   one feature is worked on per project at a time, by design.
 - **Vendor-neutral agent adapters** (planner, coder, reviewer, arbiter, documentation, human) run

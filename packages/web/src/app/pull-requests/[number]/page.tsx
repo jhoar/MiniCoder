@@ -42,6 +42,20 @@ export default async function PullRequestDetailPage({
             value: pr.mergeable === null ? 'unknown' : pr.mergeable ? 'yes' : 'no',
           },
           {
+            // Provider-aware external link (docs/06 §Phase 18 Stage 6) — `pr.provider_url` is
+            // built server-side (`packages/api/src/read-models/scm-url.ts`'s
+            // `buildScmPullRequestUrl()`) since this package only carries `@minicoder/api` as a
+            // type-only devDependency and cannot call a runtime formatter from it directly.
+            label: `View on ${pr.provider}`,
+            value: pr.provider_url ? (
+              <a href={pr.provider_url} target="_blank" rel="noreferrer noopener">
+                {pr.provider_url}
+              </a>
+            ) : (
+              '(link unavailable)'
+            ),
+          },
+          {
             // `/features/[id]` expects a feature *request* ID, not a feature *run* ID — these are
             // distinct identifiers (a feature request can have multiple runs across retries). The
             // link must resolve through the run's `feature_request_id`, not use `pr.feature_run_id`

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import type { DbClient, GitHubClient } from '@minicoder/core';
+import type { DbClient, ScmClient } from '@minicoder/core';
 import { buildTestApp, TEST_APPROVER_KEY, seedProjectWithWorkflowState } from '../test-helpers.js';
 
-const fakeGithubClientFactory = async (): Promise<GitHubClient> =>
+const fakeGithubClientFactory = async (): Promise<ScmClient> =>
   ({
     createBranch: async () => ({ branchName: 'unused', sha: 'unused' }),
     createPullRequest: async () => ({ prNumber: 1, branchName: 'unused' }),
@@ -10,7 +10,7 @@ const fakeGithubClientFactory = async (): Promise<GitHubClient> =>
     publishStatusCheck: async () => undefined,
     getRemainingRateLimit: async () => ({ remaining: 5000, resetAt: new Date().toISOString() }),
     mergePullRequest: async () => ({ mergeSha: 'unused' }),
-  }) as unknown as GitHubClient;
+  }) as unknown as ScmClient;
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -74,7 +74,7 @@ describe('POST /commands/merge-if-ready', () => {
   });
 
   it('returns 409 with structured reasons when the merge gate rejects (not the active feature run)', async () => {
-    const { app, db } = await buildTestApp({ githubClientFactory: fakeGithubClientFactory });
+    const { app, db } = await buildTestApp({ resolveScmClient: fakeGithubClientFactory });
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId);
     const now = new Date().toISOString();
@@ -107,7 +107,7 @@ describe('POST /commands/merge-if-ready', () => {
   });
 
   it('succeeds end-to-end for an approver actor and replays the cached response on retry (findings 1 & 4)', async () => {
-    const { app, db } = await buildTestApp({ githubClientFactory: fakeGithubClientFactory });
+    const { app, db } = await buildTestApp({ resolveScmClient: fakeGithubClientFactory });
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId);
     const now = new Date().toISOString();
@@ -165,7 +165,7 @@ describe('POST /commands/merge-if-ready', () => {
   });
 
   it('returns 409 for a same-key request while another is still in-flight (finding 1, re-review)', async () => {
-    const { app, db } = await buildTestApp({ githubClientFactory: fakeGithubClientFactory });
+    const { app, db } = await buildTestApp({ resolveScmClient: fakeGithubClientFactory });
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId);
     const { claimRouteIdempotencyKey } = await import('../route-idempotency.js');
@@ -189,7 +189,7 @@ describe('POST /commands/merge-if-ready', () => {
   });
 
   it('releases the claim when a pre-check fails, so a corrected retry is not stuck as in-progress', async () => {
-    const { app, db } = await buildTestApp({ githubClientFactory: fakeGithubClientFactory });
+    const { app, db } = await buildTestApp({ resolveScmClient: fakeGithubClientFactory });
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId);
     // No pull_requests/repositories row yet — this request will fail with 404.
@@ -224,7 +224,7 @@ describe('POST /commands/merge-if-ready', () => {
     // A mutable holder so the fake client's mergePullRequest (defined before the DB/featureRunId
     // exist) can reach into the same DB and row the route itself uses.
     const ctx: { db?: DbClient; featureRunId?: string } = {};
-    const raceGithubClientFactory = async (): Promise<GitHubClient> =>
+    const raceGithubClientFactory = async (): Promise<ScmClient> =>
       ({
         publishStatusCheck: async () => undefined,
         mergePullRequest: async () => {
@@ -238,9 +238,9 @@ describe('POST /commands/merge-if-ready', () => {
           );
           return { mergeSha: 'race-merge-sha' };
         },
-      }) as unknown as GitHubClient;
+      }) as unknown as ScmClient;
 
-    const { app, db } = await buildTestApp({ githubClientFactory: raceGithubClientFactory });
+    const { app, db } = await buildTestApp({ resolveScmClient: raceGithubClientFactory });
     ctx.db = db;
     const { projectId } = await seedProjectWithWorkflowState(db);
     const { featureRunId } = await seedFeatureRun(db, projectId);
@@ -288,5 +288,54 @@ describe('POST /commands/merge-if-ready', () => {
     });
     expect(retry.statusCode).toBe(409);
     expect(JSON.parse(retry.body).type).toBe('request-in-progress');
+  });
+});
+
+/**
+ * Stage 6 write-pipeline follow-up (docs/06 §Phase 18): before this fix, the route always resolved
+ * a `GithubClientFactory` with no provider argument, so a GitLab/Gitea-provider project's real
+ * merge call always went through `OctokitGitHubClient`. Asserts `resolveScmClient` now receives
+ * the repository row's own `provider`/`base_url`.
+ */
+describe('POST /commands/merge-if-ready (Stage 6: provider-aware client resolution)', () => {
+  it("resolves the ScmClient using the repository row's own provider and base_url for a GitLab-provider project", async () => {
+    const resolveCalls: Array<{ provider: string; baseUrl: string | null }> = [];
+    const resolveScmClient = async (
+      provider: string,
+      baseUrl: string | null,
+    ): Promise<ScmClient> => {
+      resolveCalls.push({ provider, baseUrl });
+      return fakeGithubClientFactory();
+    };
+    const { app, db } = await buildTestApp({ resolveScmClient });
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId } = await seedFeatureRun(db, projectId);
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO repositories (id, project_id, owner, name, full_name, default_branch, provider, base_url, version, created_at, updated_at)
+       VALUES (?, ?, 'acme', 'widgets', 'acme/widgets', 'main', 'gitlab', 'https://gitlab.example.test', 1, ?, ?)`,
+      [generateId(), projectId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO pull_requests (id, feature_run_id, pr_number, branch_name, base_branch, head_sha, state, review_state, ci_status, mergeable, blocking_labels, conversations_resolved, version, created_at, updated_at)
+       VALUES (?, ?, 1, 'minicoder/FR-001', 'main', 'abc123', 'open', 'approved', 'passed', TRUE, '[]', FALSE, 1, ?, ?)`,
+      [generateId(), featureRunId, now, now],
+    );
+    await db.execute(`UPDATE workflow_states SET active_feature_run_id = ? WHERE project_id = ?`, [
+      featureRunId,
+      projectId,
+    ]);
+
+    await app.inject({
+      method: 'POST',
+      url: '/commands/merge-if-ready',
+      headers: {
+        authorization: `Bearer ${TEST_APPROVER_KEY}`,
+        'idempotency-key': 'merge-provider-1',
+      },
+      payload: { featureRunId, projectId },
+    });
+
+    expect(resolveCalls).toEqual([{ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' }]);
   });
 });

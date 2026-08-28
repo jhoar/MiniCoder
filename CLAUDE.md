@@ -153,8 +153,49 @@ These are locked decisions that appear throughout the docs. Do not contradict or
    locks/leases with fencing tokens (monotonically increasing; persistence layer rejects
    stale-fence writes), not a hard schema invariant.
 
-3. **GitHub webhooks are the primary event source.** Scheduled reconciliation is the fallback/
-   repair mechanism, not the primary path.
+3. **SCM webhooks are the primary event source.** Scheduled reconciliation is the fallback/repair
+   mechanism, not the primary path. This decision is written at the provider-neutral level so it
+   doesn't need to change again as providers land. **GitHub is the original and most complete
+   shipped SCM provider** (`packages/github`, behind the `ScmClient` seam in
+   `packages/core/src/scm/`); **Gitea and GitLab are also shipped** (`packages/gitea`,
+   `packages/gitlab` — full `ScmClient` implementations, webhook receivers, CLI tooling, and a
+   cross-provider conformance suite, docs/06 §Phase 18's "Generic SCM Interface" plan, Stages 0–5).
+   **Every production write-path call site is provider-aware, including the coder adapter's own
+   clone/push credential — and, as of two live-verification follow-ups, both Gitea's and GitLab's
+   have been proven against real instances, not just documented.**
+   `github-reconciliation`'s scheduled task, `run-review`'s diff fetch, `run-merge-gate`'s
+   status-check publication, `run-coder`'s post-push `createPullRequest()` call,
+   `minicoder merge ...`/its two API routes' real merge call, and (as of a third same-day Stage 6
+   follow-up) `run-coder`'s coder-adapter clone/push itself all dispatch on
+   `repositories.provider`/`.base_url` — the coder-adapter credential path via
+   `resolveDefaultCoderAdapterFactory()`'s own per-provider token/username table, the rest via
+   `packages/triggerdev/src/tasks/scm-client-resolver.ts`'s `resolveDefaultScmClient()` (the same
+   dispatch-by-`repositories.provider` pattern `packages/cli/src/commands/state.ts`'s
+   `resolveScmClientForDoctor()` already establishes). A Gitea/GitLab-provider project can now be
+   diagnosed, receive webhooks, have its scheduled reconciliation and AI review run correctly, be
+   merge-gated, be merged, and have its coder adapter clone/push, all in code — and, unlike every
+   earlier phase of this project, this is no longer just a code-level claim. **A fourth follow-up
+   live-verified Gitea** (a real Gitea 1.22.3 instance — a directly-downloaded static binary, no
+   Docker needed) **and a fifth live-verified GitLab** (a real GitLab CE 17.5.2 instance, run via
+   `docker compose up` using the `mirror.gcr.io` Docker Hub mirror to work around this
+   environment's blocked CDN access). Both confirmed: the actual clone/push using each provider's
+   documented credential convention (`token:<PAT>` for Gitea, `oauth2:<PAT>` for GitLab); that
+   **both providers ignore the HTTPS Basic-Auth username entirely once the password is a valid
+   token** — a genuinely new finding for GitLab, not merely re-confirming Gitea's already-documented
+   behavior; and every REST method (`GiteaScmClient`/`GitlabScmClient`) working correctly against
+   real API responses. The GitLab pass also found and fixed three real bugs no amount of code
+   review could have surfaced: `infra/docker-compose.gitlab.yml`'s wrong nginx port mapping (GitLab
+   listens on whatever port `external_url` specifies, not always 80), `GitlabScmClient.
+getPullRequestDiff()` crashing on a real GitLab-side pagination bug when `per_page` was supplied,
+   and `GitlabScmClient.mergePullRequest()` silently failing to classify a 422 rejection triggered
+   by an explicit empty `commitMessage`. See docs/06 §Phase 18 Stage 6's completion notes for the
+   full writeup. What remains unverified is narrower still: the coder-sandbox egress-proxy
+   allow-list's `SCM_ALLOWED_HOST` addition (both passes ran git operations on the host, not inside
+   the actual sandboxed network path) and a permanent CI-integrated live-instance matrix (both
+   passes were one-off manual runs, not wired into `pnpm test`/CI). The scheduled reconciliation
+   task keeps its literal name (`github-reconciliation`, one of the no-drift canonical task IDs,
+   docs/00 §3.12) regardless of which provider it ends up
+   reconciling — same precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
 
 4. **Workflow Layer** is the subsystem name for durable workflow execution. **The implementation
    is an in-repo, DB-backed task queue** (`packages/triggerdev/src/task-registry.ts`'s
@@ -259,7 +300,9 @@ merge-if-ready, final design-document approval, and guarded/destructive lifecycl
 
 - Feature-request IDs: `FR-<zero-padded-int>` (e.g., `FR-002`)
 - Feature branches: `minicoder/FR-<n>` (e.g., `minicoder/FR-002`)
-- GitHub review-gate status check: `minicoder/review-gate`
+- SCM review-gate status check: `minicoder/review-gate` (published on GitHub today via
+  `GitHubClient.publishStatusCheck()`; the name itself is MiniCoder-chosen, not provider-imposed,
+  so it carries over unchanged to GitLab/Gitea once those providers land)
 
 ### Workflow Layer task IDs (exact strings, no drift)
 
@@ -669,9 +712,22 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   `dryRun` return; the transactional apply path keeps its own existence re-check inside the
   transaction as defense-in-depth against a plan/project deleted between preview and apply.
 
-## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/github/`, migration 0009)
+## GitHub Integration Operational Constraints (`packages/github/`, `packages/core/src/scm/`, migration 0009)
 
-- **`GitHubClient` is an interface in `packages/core/src/github/client.ts`; the Octokit
+**Renamed by Stage 1 of the Generic SCM Interface plan (docs/06 §Phase 18):** the interface
+formerly called `GitHubClient` (`packages/core/src/github/client.ts`) is now `ScmClient`
+(`packages/core/src/scm/client.ts`); `GithubPrState`/`GithubCiStatus`/`GithubMergeRejectedError`/
+`GithubMergeMethod` are now `ScmPrState`/`ScmCiStatus`/`ScmMergeRejectedError`/`ScmMergeMethod`.
+`reconcileGithubState()`, `packages/github`, `OctokitGitHubClient`, `MockGitHubClient`, and the
+`github-reconciliation` task ID all keep their names unchanged (GitHub remains the only shipped
+provider; renaming the concrete implementation buys nothing — same precedent as keeping
+`@minicoder/triggerdev` after the Trigger.dev removal). The bullets below and throughout this
+document's other GitHub-related sections were written before this rename and still say
+`GitHubClient` — read every such mention as `ScmClient` under its new name and location; they are
+otherwise still accurate, since the actual GitHub implementation and behavior they describe has
+not changed, only the interface's name and package location.
+
+- **`ScmClient` is an interface in `packages/core/src/scm/client.ts`; the Octokit
   implementation lives only in `packages/github`.** Orchestrator Core never imports Octokit
   (enforced by the `no-provider-imports` fitness test's `@octokit`/`octokit` banned-import
   entries) — the same "interface in core, implementation elsewhere" pattern Phase 5 used for
@@ -682,10 +738,10 @@ backlog_validated_version = backlog_version` — checking unresolved blocking `p
   is CommonJS (`module: "CommonJS"` in `tsconfig.base.json`). Upgrading either package requires
   either moving the whole build to ESM or using dynamic `import()` at the call site — do not bump
   past a CJS-compatible major without one of those changes.
-- **`reconcileGithubState()` (`packages/core/src/github/reconcile.ts`) is the single
+- **`reconcileGithubState()` (`packages/core/src/scm/reconcile.ts`) is the single
   reconciliation algorithm** — both `packages/github`'s webhook-triggered `InboxHandler`s and the
   scheduled `github-reconciliation` Trigger.dev task call it with an already-fetched
-  `ObservedPullRequestState`. Core never calls `GitHubClient` itself; the caller (inbox handler or
+  `ObservedPullRequestState`. Core never calls `ScmClient` itself; the caller (inbox handler or
   task) fetches observed state first. Do not duplicate the compare/dispatch logic in either
   caller.
 - **`pull_requests.review_state`/`ci_status` are observed mirrors of GitHub, not
@@ -729,6 +785,17 @@ branchName, state?)`.** Before the main reconcile loop's candidate query, a
   (`packages/api/src/read-models/diagnostics.ts`'s `checkPrDiscoveryDivergence()`) surfaces the
   same class of divergence on demand — the only doctor check needing a live GitHub credential,
   which is why it is not part of `runDoctorChecks()`'s always-on pure-DB check list.
+  **Superseded by Stage 5 of the Generic SCM Interface plan (docs/06 §Phase 18):**
+  `checkPrDiscoveryDivergence()` now takes a `resolveClient: (provider, baseUrl) =>
+Promise<ScmClient>` factory instead of a single `client: ScmClient`, and its SQL query selects
+  `repositories.provider`/`.base_url` so a project spanning repositories on different SCM
+  providers resolves the correct client (and credential) per candidate. The CLI flag was renamed
+  `--check-scm` (`packages/cli/src/commands/state.ts`'s `resolveScmClientForDoctor()`); the old
+  `--check-github` name is kept as a supported, undocumented alias. `discoverMissingPullRequests()`
+  itself (the always-on scheduled part of `github-reconciliation`) is unchanged and remains
+  GitHub-only — Gitea/GitLab have no equivalent scheduled auto-discovery pass, so `--check-scm` is
+  currently the _only_ automated discovery path for a `code_pushed`-with-no-tracked-PR divergence
+  on those two providers, not just an on-demand convenience the way it is for GitHub.
 - **`github-reconciliation` treats a per-candidate transient concurrency loss as a skip, not a
   batch abort.** A lock-gated candidate (`code_pushed`/`pr_opened`) whose
   `execution-lane:{projectId}` lock is held by another actor (the `start-next-feature` task, a
@@ -2533,8 +2600,9 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   cursor-pagination's raw `WHERE`/`ORDER BY id`/`created_at` clauses, which this function has none
   of.
 - **The two new `state doctor` checks added to `runDoctorChecks()` follow the existing
-  always-on, pure-DB check contract — neither needs a live GitHub credential**, unlike the
-  separately opt-in `checkPrDiscoveryDivergence()` (`--check-github`).
+  always-on, pure-DB check contract — neither needs a live SCM-provider credential**, unlike the
+  separately opt-in `checkPrDiscoveryDivergence()` (`--check-scm`, generalized in Stage 5 of the
+  Generic SCM Interface plan — `--check-github` remains a supported alias).
   `code_pushed_no_pull_request` (closing the previously explicitly-deferred LOW-3 gap — CLAUDE.md's
   Reference Coder Adapter Operational Constraints) uses a longer grace period (30 minutes) than
   `github-reconciliation`'s own discovery-pass interval specifically so a routine, still-in-flight

@@ -5,7 +5,7 @@ import {
   RecordMergeFailedHandler,
   ReconcileMergeFailedHandler,
   EscalateToHumanHandler,
-  GithubMergeRejectedError,
+  ScmMergeRejectedError,
   generateId,
 } from '@minicoder/core';
 import type { CommandEnvelope } from '@minicoder/core';
@@ -93,7 +93,7 @@ export const mergeGateScenario: Scenario = {
       },
       runRunMergeGate,
       undefined,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
     const fr201AfterGate = await getFeatureRunByFrId(ctx, 'FR-201');
     assertEqual(
@@ -179,7 +179,7 @@ export const mergeGateScenario: Scenario = {
       },
       runRunMergeGate,
       undefined,
-      { githubClientFactory: async () => client },
+      { resolveScmClient: async () => client },
     );
     assertEqual('FR-202 gate reports not approved', mgResult202.result.approved, false);
     const fr202AfterGate = await getFeatureRunByFrId(ctx, 'FR-202');
@@ -222,7 +222,7 @@ export const mergeGateScenario: Scenario = {
       'merge_ready',
     );
 
-    let fr203CaughtRejection: GithubMergeRejectedError | undefined;
+    let fr203CaughtRejection: ScmMergeRejectedError | undefined;
     try {
       await client.mergePullRequest({
         owner: 'minicoder-test',
@@ -231,7 +231,7 @@ export const mergeGateScenario: Scenario = {
         mergeMethod: 'squash',
       });
     } catch (err) {
-      if (err instanceof GithubMergeRejectedError) fr203CaughtRejection = err;
+      if (err instanceof ScmMergeRejectedError) fr203CaughtRejection = err;
       else throw err;
     }
     if (!fr203CaughtRejection) throw new Error('Expected FR-203 merge to be rejected');
@@ -292,7 +292,7 @@ export const mergeGateScenario: Scenario = {
     await executor.execute(new MergeIfReadyHandler(), mergeReady204Envelope);
     const fr204AtMergeReady = await getFeatureRunByFrId(ctx, 'FR-204');
 
-    let fr204CaughtRejection: GithubMergeRejectedError | undefined;
+    let fr204CaughtRejection: ScmMergeRejectedError | undefined;
     try {
       await client.mergePullRequest({
         owner: 'minicoder-test',
@@ -301,7 +301,7 @@ export const mergeGateScenario: Scenario = {
         mergeMethod: 'squash',
       });
     } catch (err) {
-      if (err instanceof GithubMergeRejectedError) fr204CaughtRejection = err;
+      if (err instanceof ScmMergeRejectedError) fr204CaughtRejection = err;
       else throw err;
     }
     if (!fr204CaughtRejection) throw new Error('Expected FR-204 merge to be rejected');

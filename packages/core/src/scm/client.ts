@@ -1,24 +1,28 @@
 /**
- * GitHubClient — the provider-facing seam for GitHub-observed state (docs/01 §5.7).
+ * ScmClient — the provider-neutral, provider-facing seam for SCM-observed state (docs/01 §5.7).
+ * GitHub is the only shipped implementation as of this writing (`OctokitGitHubClient`,
+ * `packages/github`); GitLab and Gitea are staged future implementations of this same interface
+ * (docs/06 §Phase 18's "Generic SCM Interface" plan) — the doc comments below still describe
+ * GitHub's real, current behavior in detail rather than a hypothetical cross-provider one, since
+ * that is the only implementation that exists today.
  *
  * Orchestrator Core is provider-SDK-free (CLAUDE.md "Key Architectural Decisions" #7): this
- * interface has no Octokit import. The real implementation (`OctokitGitHubClient`) lives in
- * `packages/github`; `MockGitHubClient` (packages/testing) is the deterministic test seam.
- * Reconciliation logic in core consumes only this interface and an already-fetched
+ * interface has no Octokit import. `MockGitHubClient` (packages/testing) is the deterministic test
+ * seam. Reconciliation logic in core consumes only this interface and an already-fetched
  * `ObservedPullRequestState` — it never calls a provider SDK directly.
  */
 
 import type { PrReviewState } from '../domain/states.js';
 
 /** GitHub's PR-level open/closed/merged state (distinct from the review state). */
-export type GithubPrState = 'open' | 'closed' | 'merged';
+export type ScmPrState = 'open' | 'closed' | 'merged';
 
 /** CI status mirrored onto pull_requests.ci_status. */
-export type GithubCiStatus = 'pending' | 'running' | 'passed' | 'failed';
+export type ScmCiStatus = 'pending' | 'running' | 'passed' | 'failed';
 
 /**
  * Observed, already-fetched GitHub state for a single pull request. Callers (webhook inbox
- * handlers, the scheduled reconciliation task) fetch this via GitHubClient *before* invoking the
+ * handlers, the scheduled reconciliation task) fetch this via ScmClient *before* invoking the
  * shared reconciliation function in core — core itself never talks to GitHub.
  */
 export interface ObservedPullRequestState {
@@ -26,9 +30,9 @@ export interface ObservedPullRequestState {
   branchName: string;
   baseBranch: string;
   headSha: string | null;
-  state: GithubPrState;
+  state: ScmPrState;
   reviewState: PrReviewState;
-  ciStatus: GithubCiStatus;
+  ciStatus: ScmCiStatus;
   mergeable: boolean | null;
   blockingLabels: string[];
   conversationsResolved: boolean;
@@ -64,13 +68,13 @@ export interface PublishStatusCheckOptions {
   targetUrl?: string;
 }
 
-export type GithubMergeMethod = 'merge' | 'squash' | 'rebase';
+export type ScmMergeMethod = 'merge' | 'squash' | 'rebase';
 
 export interface MergePullRequestOptions {
   owner: string;
   repo: string;
   prNumber: number;
-  mergeMethod: GithubMergeMethod;
+  mergeMethod: ScmMergeMethod;
   commitTitle?: string;
   commitMessage?: string;
   /** Optimistic-concurrency guard against GitHub's own head-sha check (docs/01 §12). */
@@ -78,7 +82,7 @@ export interface MergePullRequestOptions {
 }
 
 /**
- * Thrown by `GitHubClient.mergePullRequest()` (Phase 12 — Merge Gate) when GitHub rejects a
+ * Thrown by `ScmClient.mergePullRequest()` (Phase 12 — Merge Gate) when GitHub rejects a
  * merge attempt. `autoClearable` distinguishes a transient condition a re-push naturally resolves
  * (`'sha_mismatch'` — GitHub's 409 when the supplied `expectedHeadSha` no longer matches the PR's
  * real head, i.e. someone pushed after the gate re-evaluated) from one that cannot self-clear
@@ -86,19 +90,19 @@ export interface MergePullRequestOptions {
  * conflict) — see the `merge_failed -> under_review` / `merge_failed -> human_required` matrix
  * rows (docs/00 §3.2) this classification feeds.
  */
-export class GithubMergeRejectedError extends Error {
+export class ScmMergeRejectedError extends Error {
   constructor(
     message: string,
     public readonly reason: 'sha_mismatch' | 'not_mergeable' | 'unknown',
     public readonly autoClearable: boolean,
   ) {
     super(message);
-    this.name = 'GithubMergeRejectedError';
+    this.name = 'ScmMergeRejectedError';
   }
 }
 
-/** GitHub API client seam. Real implementation is Octokit-backed (`packages/github`). */
-export interface GitHubClient {
+/** SCM provider API client seam. The shipped implementation is Octokit-backed (`packages/github`). */
+export interface ScmClient {
   createBranch(options: CreateBranchOptions): Promise<{ branchName: string; sha: string }>;
 
   createPullRequest(
@@ -116,7 +120,7 @@ export interface GitHubClient {
 
   /**
    * Performs the real GitHub merge (Phase 12 — `minicoder merge merge-if-ready`'s only
-   * GitHub-facing call). Throws `GithubMergeRejectedError` on rejection; the caller classifies
+   * GitHub-facing call). Throws `ScmMergeRejectedError` on rejection; the caller classifies
    * `autoClearable` from that error to decide between `ReconcileMergeFailedCommand` and
    * `EscalateToHumanCommand`.
    */
@@ -145,5 +149,5 @@ export interface GitHubClient {
     repo: string,
     branchName: string,
     state?: 'open' | 'closed' | 'all',
-  ): Promise<Array<{ prNumber: number; state: GithubPrState }>>;
+  ): Promise<Array<{ prNumber: number; state: ScmPrState }>>;
 }

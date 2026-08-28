@@ -7,7 +7,7 @@
  *
  * This function takes an *already-fetched* ObservedPullRequestState (the caller — a webhook
  * inbox handler or the github-reconciliation scheduled task — is responsible for calling
- * GitHubClient first) and never imports a provider SDK, keeping Orchestrator Core
+ * ScmClient first) and never imports a provider SDK, keeping Orchestrator Core
  * provider-SDK-free. Both the webhook-triggered path and the scheduled-fallback path
  * (packages/triggerdev/src/tasks/github-reconciliation.ts) call this same function so they can
  * never diverge in behavior.
@@ -291,7 +291,7 @@ async function runStep(
       featureRunId,
       projectId,
       expectedVersion,
-      reason: `GitHub PR #${observed.prNumber} closed without merging while feature run was in state '${currentState}'`,
+      reason: `The linked repository's PR #${observed.prNumber} closed without merging while feature run was in state '${currentState}'`,
     });
   }
 
@@ -304,7 +304,7 @@ async function runStep(
     // comment on 'lock_required').
     if (!lockContext) return { action: 'lock_required' };
     // HIGH-1: no longer gated on `!hasPrRow` — reconcileGithubState is only ever called with an
-    // already-fetched `observed` (callers return early if GitHubClient.getPullRequest returned
+    // already-fetched `observed` (callers return early if ScmClient.getPullRequest returned
     // null), so a PR is confirmed to exist by the time this branch runs regardless of whether a
     // local pull_requests row exists yet. This also makes a fix-cycle re-push
     // (changes_requested -> fixing -> code_pushed, reusing the *same* PR) reachable again — the

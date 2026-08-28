@@ -8,7 +8,7 @@ import {
   AuthorizationError,
   CommandError,
   TransitionError,
-  GithubMergeRejectedError,
+  ScmMergeRejectedError,
   SerializationFailureError,
   type ProblemDetail,
 } from '@minicoder/core';
@@ -84,7 +84,7 @@ export function toProblemDetails(err: unknown, instance: string): ProblemRespons
       body: { ...err.problem, instance: err.problem.instance ?? instance },
     };
   }
-  if (err instanceof GithubMergeRejectedError) {
+  if (err instanceof ScmMergeRejectedError) {
     const status = err.reason === 'sha_mismatch' || err.reason === 'not_mergeable' ? 409 : 502;
     return problem(
       status,
