@@ -43,11 +43,12 @@ redesign, since `ObservedPullRequestState` and the rest of the `ScmClient` contr
 written at a provider-neutral level of abstraction. Every write-path call site — scheduled
 reconciliation, reviewer diff fetch, merge-gate status checks, PR creation, the real merge call,
 and the coder adapter's own clone/push credential — is provider-aware as of three same-day Stage 6
-follow-ups. **One narrow, tracked gap remains: the coder-adapter path's Gitea/GitLab credential
-convention and actual clone/push have not been verified against a live instance** (no reachable
-Docker daemon in the implementation environment) — an implementation-complete, verification-open
-gap, not a missing feature; see §4.3/§5.7 and Stage 6's completion notes for the full, up-to-date
-writeup.
+follow-ups. **Gitea's coder-adapter credential convention and actual clone/push are live-verified
+against a real Gitea instance (a fourth Stage 6 follow-up); GitLab's remain a narrow, tracked
+gap** — self-hosted GitLab CE has no equivalent lightweight, Docker-free verification path the way
+Gitea's single-binary distribution does. This is an implementation-complete, verification-open gap
+for GitLab specifically, not a missing feature; see §4.3/§5.7 and Stage 6's completion notes for
+the full, up-to-date writeup.
 
 > Note: **PostgreSQL is in scope** as the hosted/team state store (see §3, §14). It is not a
 > deferred "migration"; it is a first-class deployment profile supported by the persistence
@@ -67,10 +68,10 @@ SCM provider       = authoritative repository, branch, commit, PR, review, CI/ch
                      conversation, mergeability, and merge state. GitHub, Gitea, and GitLab are all
                      shipped `ScmClient` implementations behind the same interface (§4.3, §5.7,
                      `06-implementation-plan.md` §Phase 18); every write-path call site, including
-                     the coder adapter's own clone/push credential, is provider-aware. The
-                     Gitea/GitLab coder-adapter credential and clone/push are unverified against a
-                     live instance — a real, narrowly-tracked verification gap, see §5.7 and
-                     Stage 6's completion notes.
+                     the coder adapter's own clone/push credential, is provider-aware. Gitea's
+                     coder-adapter credential and clone/push are live-verified against a real
+                     instance; GitLab's are not — a real, narrowly-tracked verification gap, see
+                     §5.7 and Stage 6's completion notes.
 SCM webhooks       = primary source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism.
 CI provider        = CI, tests, and build validation (GitHub Actions today).
@@ -257,10 +258,13 @@ client resolution, merge-gate status checks, PR creation, the real merge call, a
 adapter's own clone/push credential path — resolves the matching provider's token
 (`GITHUB_TOKEN`/`GITLAB_TOKEN`/`GITEA_TOKEN`) and, for the coder adapter, the matching HTTPS
 Basic-Auth username convention, across three same-day Stage 6 follow-ups (Stage 6's completion
-notes have the full, up-to-date writeup). **One narrow, tracked gap remains: none of the
-Gitea/GitLab coder-adapter credential/clone-push work has been verified against a live instance**
-(no reachable Docker daemon in the implementation environment) — GitLab's convention is
-high-confidence; Gitea's username is a documented-but-unverified placeholder.
+notes have the full, up-to-date writeup). **A fourth follow-up live-verified Gitea's
+coder-adapter credential/clone-push against a real Gitea 1.22.3 instance** (a directly-downloaded
+binary — no Docker needed), including every `GiteaScmClient` REST method end-to-end. **One narrow,
+tracked gap remains: GitLab's coder-adapter credential/clone-push has not been verified against a
+live instance** — its `oauth2:<token>` convention is high-confidence (a long-documented,
+version-stable one), but self-hosted GitLab CE has no equivalent lightweight, Docker-free
+verification path.
 
 **GitHub integration contract** (finalized in implementation Phase 7 against
 `packages/github`, `packages/core/src/scm/` (renamed from `packages/core/src/github/` by docs/06

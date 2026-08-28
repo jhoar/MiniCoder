@@ -2333,6 +2333,22 @@ serve` reads `GITEA_WEBHOOK_SECRET`/`_PREVIOUS`, absent by default), since Gitea
   responses match the shapes assumed here. A Docker-daemon-gated end-to-end scenario (the same
   category of test already tracked as missing for the Coder sandbox) remains real, tracked future
   work, not silently assumed done.
+  **Superseded by Stage 6's fourth follow-up:** a later session found `dockerd` itself functional
+  in its execution environment (the "no reachable Docker daemon" constraint above was specific to
+  the environment those sessions ran in, not a universal one), but Docker Hub image pulls were
+  blocked by that session's network egress policy — so the `docker-compose.gitea.yml` stack
+  specifically still wasn't runnable that way. Gitea ships as a single static binary published on
+  GitHub Releases, though, and `github.com` was reachable — so that session downloaded the real
+  Gitea 1.22.3 binary directly (no Docker/image pull needed at all) and ran a genuine, non-Docker
+  Gitea instance to close this exact gap: `GiteaScmClient`'s `createPullRequest`/`getPullRequest`/
+  `getPullRequestDiff`/`publishStatusCheck`/`mergePullRequest`/`listPullRequestsForBranch` were all
+  exercised end-to-end against real Gitea API responses and all worked correctly with zero
+  surprises versus the fake-`fetchImpl`-based unit tests. See Stage 6's fourth follow-up below for
+  the full writeup (this was done as part of that pass, alongside the coder-adapter credential
+  live-verification it was primarily aimed at, since both needed the same live instance). The
+  Docker-based `infra/docker-compose.gitea.yml` stack itself remains unexercised against a live
+  daemon — the verification used a directly-run binary instead, which proves `GiteaScmClient`'s own
+  logic but not the compose stack's webhook-receiver container wiring.
 - Full monorepo `pnpm typecheck` (19 workspace packages, `@minicoder/gitea` added to the ordered
   chain right after `@minicoder/github`), `pnpm lint`, `pnpm format:check`, and `pnpm test` (965
   tests, 26 skipped — Postgres-gated, no `MINICODER_TEST_PG_URL` in this environment) all pass.
@@ -2690,6 +2706,77 @@ disagreement-arbiter.ts`, 3 more in `review-fix-loop.ts` — `review-fix-loop.ts
     `pnpm format:check`/`pnpm build:web` all still pass, `minicoder test system` (13 scenarios)
     all pass, and `pnpm test` now reports 116 test files / 1087 tests passed, 26 skipped (up from
     116/1077 after the second follow-up).
+  - **Fourth follow-up, same day: the "no reachable Docker daemon" premise itself turned out to be
+    environment-specific, not universal — and Gitea got a genuine live-verification pass as a
+    result.** A later session in a different execution environment found `dockerd` installed and
+    fully functional (`docker info` reported real overlayfs storage and bridge/overlay network
+    drivers; a manually-started daemon created and ran containers correctly) — contradicting the
+    blanket "this environment has no reachable Docker daemon" claim this document had accumulated
+    across every earlier Stage 3–6 pass. The actual remaining obstacle was narrower: that session's
+    network egress policy blocked Docker Hub image pulls specifically (`docker run hello-world`
+    failed with a 403 policy denial reaching Docker Hub's CDN), which would have stopped
+    `infra/docker-compose.{gitea,gitlab}.yml` from working via `docker compose up` regardless of the
+    daemon itself being healthy. The workaround: Gitea ships as a single static binary published on
+    GitHub Releases, and `github.com` was reachable through that session's egress policy — so it
+    downloaded the real Gitea 1.22.3 binary directly (no Docker, no image pull) and ran a genuine,
+    non-containerized Gitea instance (SQLite backend, a real admin user, a real personal access
+    token, real public and private test repositories).
+  - **What was actually proven, with real evidence, not just re-asserted:** (1) `workspace.ts`'s
+    real, shipped `prepareBranch()`/`commitAndPush()`/`findExistingRunCommit()` — the exact
+    production code `CodexCoderAdapter` calls, invoked directly via `ChildProcessCommandRunner`,
+    not a hand-rolled git-CLI approximation — successfully cloned, wrote files, committed with the
+    `MiniCoder-Feature-Run` trailer, and pushed to the live Gitea remote using the `token:<PAT>`
+    convention `GIT_REMOTE_USERNAMES.gitea` resolves to, and a second call for the same
+    `featureRunId` correctly detected the existing trailer-tagged commit and reused it rather than
+    double-pushing (docs/03 §11.6's idempotent-retry contract) — verified by re-fetching the pushed
+    branch, file content, and commit message straight from the Gitea server's own REST API
+    afterward, not just trusting the local git client's exit code. (2) A clone/push attempt using a
+    completely different, unrelated Basic-Auth username with the same correct token authenticated
+    identically to the `'token'` placeholder — confirming Gitea's documented "the password field
+    alone is checked against a valid access token, regardless of username" behavior empirically,
+    the exact claim `resolveDefaultCoderAdapterFactory()`'s doc comment had previously cited as
+    unverified. (3) The same wrong-token and no-credentials cases correctly failed authentication
+    against a private repository, ruling out the possibility that step (2)'s success was really
+    "any Basic-Auth header at all works" rather than "the token specifically is checked." (4) Since
+    the same live instance was already running, `packages/gitea/src/gitea-client.ts`'s
+    `GiteaScmClient` — unit-tested only against a fake `fetchImpl` since Stage 3, with Stage 3's own
+    completion notes explicitly flagging "no live Gitea instance available" as an open gap — was
+    also exercised end-to-end for the first time: `createPullRequest`, `listPullRequestsForBranch`,
+    `getPullRequest`, `getPullRequestDiff`, `publishStatusCheck`, `mergePullRequest`, and
+    `getRemainingRateLimit` all ran against the real instance and returned correctly-shaped,
+    correct results with zero surprises versus the mocked unit tests — closing Stage 3's original
+    caveat too, not just this stage's coder-adapter-credential one.
+  - **What is still not proven, stated precisely rather than silently expanded past what was
+    actually tested:** only Gitea 1.22.3's default configuration was exercised — not other Gitea
+    versions, not an instance with non-default auth settings (e.g. built-in Basic-Auth disabled in
+    favor of external auth only), and not the Docker-based `infra/docker-compose.gitea.yml` stack
+    itself (the live pass used a directly-run binary, which proves `GiteaScmClient`'s and
+    `workspace.ts`'s own logic but says nothing about that compose stack's webhook-receiver
+    container or its networking). GitLab remains completely unverified — self-hosted GitLab CE has
+    no equivalent lightweight, Docker-free path the way Gitea's single binary does (it typically
+    wants an omnibus package or container image, both meaningfully heavier to stand up), and no
+    such attempt was made in this pass. The coder-sandbox egress-proxy allow-list's new
+    `SCM_ALLOWED_HOST` env var also remains unverified — the live pass ran the coder adapter's git
+    operations directly on the host, not inside the actual sandbox container's egress-proxied
+    network path, since that would have needed the same blocked Docker Hub image pull
+    (`minicoder/coder-sandbox` isn't a real published image, but the stack's `tinyproxy`-based
+    egress proxy image would still need to build/pull from a registry). This is real, tracked
+    future work, not silently assumed covered by the Gitea binary test above.
+  - This verification was exploratory manual testing (a throwaway scratch script driving
+    `workspace.ts` and `GiteaScmClient` directly against the live instance, plus direct git-CLI
+    calls against the same server for the username/token-independence checks), not a new committed
+    automated test — no source, test, or fixture files changed as part of it, and every temporary
+    resource (the Gitea binary, its data/config directories, the throwaway OS user it ran as, the
+    scratch verification scripts) was deleted afterward. Building a permanent, CI-gated integration
+    test around this same "download the Gitea binary from GitHub Releases, run it directly, skip if
+    unreachable" pattern (mirroring the existing `MINICODER_TEST_PG_URL`-gated Postgres suites'
+    "skip if the dependency isn't available" posture) is real, valuable, tracked future work — not
+    built in this pass, since it was scoped as a one-off exploratory check of whether live
+    verification was possible at all, not as a request to add permanent CI infrastructure.
+  - Doc-comment updates only for this follow-up (`resolveDefaultCoderAdapterFactory()`'s and
+    `GIT_REMOTE_USERNAMES`'s doc comments in `run-coder.ts`, plus this document, CLAUDE.md, and
+    docs/00/01/04/07 below) — no production code changed, since nothing was found wrong. Re-ran
+    `pnpm typecheck`/`pnpm format:check` after the doc-comment edits; both pass.
 - **Documentation corrected to reflect the interface/schema/diagnostic layer being genuinely
   shipped, while being explicit about the write-pipeline exception** — the "GitLab and Gitea are
   staged, not-yet-built providers" framing in `CLAUDE.md` (decision #3), `docs/00`, `docs/01`
@@ -2720,24 +2807,27 @@ system` (13 scenarios, including the two edited scenario files) all pass, and `p
   `scm-client-resolver.test.ts` plus the new provider-dispatch regressions added to
   `github-reconciliation.test.ts`/`run-review.test.ts`).
 
-Acceptance (whole item): **fully implemented after three same-day follow-ups, with one narrow,
-explicitly-documented verification gap (implementation vs. live-instance proof, not a missing
-feature).** At least one alternative SCM provider (Gitea, then GitLab) was added without changing
-core orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution state
-matrix — the literal schema/state-matrix clause holds, and the `ScmClient` interface itself, its
-webhook receivers, and every read/diagnostic/write call site — including, after the third
-follow-up, the coder adapter's own clone/push credential path — are genuine "swap the
-implementation behind an unchanged interface" successes, proven by the Stage 5 cross-provider
-conformance suite plus the provider-dispatch regressions added across all three follow-ups. The
-stronger, implied reading of that sentence — that a Gitea/GitLab-configured project can actually
-be _driven_ through the automated pipeline the way a GitHub-configured one can — now holds
-end-to-end in code for scheduled reconciliation, AI review, merge-gate status checks, the real
-merge call, and (as of the third follow-up) the coder adapter's clone/push. What remains open is
-narrower than "not fixed": GitLab's credential convention is high-confidence (a long-documented,
-version-stable convention); Gitea's is a documented-but-unverified placeholder, and neither has
-been exercised against a real Gitea/GitLab clone/push, because this environment has no reachable
-Docker daemon to verify against (see the third follow-up's addendum above for exactly what a
-live-verification pass still needs to confirm, and the documented fallback if it finds the
-placeholder wrong). This is the accurate, as-built status after all three follow-ups — a
-single, well-scoped, explicitly-tracked verification gap, not a claim that verification happened
-when it didn't.
+Acceptance (whole item): **fully implemented after three same-day follow-ups; Gitea is now
+genuinely live-verified after a fourth, GitLab remains a narrow, explicitly-documented verification
+gap.** At least one alternative SCM provider (Gitea, then GitLab) was added without changing core
+orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution state matrix —
+the literal schema/state-matrix clause holds, and the `ScmClient` interface itself, its webhook
+receivers, and every read/diagnostic/write call site — including, after the third follow-up, the
+coder adapter's own clone/push credential path — are genuine "swap the implementation behind an
+unchanged interface" successes, proven by the Stage 5 cross-provider conformance suite plus the
+provider-dispatch regressions added across all three follow-ups. The stronger, implied reading of
+that sentence — that a Gitea/GitLab-configured project can actually be _driven_ through the
+automated pipeline the way a GitHub-configured one can — now holds end-to-end in code for scheduled
+reconciliation, AI review, merge-gate status checks, the real merge call, and (as of the third
+follow-up) the coder adapter's clone/push, for both providers. **For Gitea specifically, "in code"
+is no longer the ceiling: a fourth follow-up ran a real Gitea 1.22.3 instance (a directly-downloaded
+binary, no Docker needed) and proved the actual clone/push, the username-independent token
+authentication, and every `GiteaScmClient` REST method end-to-end against real API responses** —
+closing both this stage's coder-adapter-credential gap and Stage 3's original "no live Gitea
+instance available" caveat with real evidence, not just documentation. **GitLab is the one
+provider with no live verification at all**: its `oauth2:<token>` credential convention is still
+only documented-and-high-confidence, since self-hosted GitLab CE has no equivalent lightweight,
+Docker-free path the way Gitea's single binary does, and this environment's Docker Hub access was
+blocked by network policy. This is the accurate, as-built status after all four follow-ups — one
+well-scoped, explicitly-tracked verification gap (GitLab), not a claim that verification happened
+for a provider it didn't.

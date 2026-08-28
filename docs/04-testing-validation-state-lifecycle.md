@@ -1015,19 +1015,19 @@ resolver receives the seeded repository's real provider/`base_url`) and the pre-
 `gitlab-reconcile-fallback.test.ts` together now cover both halves — the task resolves the right
 client, and the algorithm correctly acts on what that client reports.
 
-**What remains unverified (not unimplemented).** After three same-day Stage 6 follow-ups, every
-write-path call site is provider-aware — `run-review`'s reviewer diff fetch, `run-merge-gate`'s
-status-check publication, `run-coder`'s post-push `createPullRequest()` call, `minicoder
-merge ...`/its API routes' real merge call, and `run-coder`'s coder-adapter clone/push credential
-(`resolveDefaultCoderAdapterFactory()`) all resolve the matching provider's token and, for the
-coder adapter, its matching HTTPS Basic-Auth username. The remaining gap is verification: none of
-the Gitea/GitLab coder-adapter credential/clone-push work has been exercised against a live
-instance, since this environment has no reachable Docker daemon. GitLab's `oauth2:<token>`
-convention is high-confidence (a long-documented, version-stable one); Gitea's `token` username is
-a documented-but-unverified placeholder — see `resolveDefaultCoderAdapterFactory()`'s doc comment
-for exactly what a live-verification pass still needs to confirm, and the fallback
-(`GITEA_USERNAME` env var) if it proves insufficient. See docs/06 §Phase 18 Stage 6's completion
-notes for the full, up-to-date writeup.
+**What remains unverified (not unimplemented) — now GitLab only.** After three same-day Stage 6
+follow-ups, every write-path call site is provider-aware — `run-review`'s reviewer diff fetch,
+`run-merge-gate`'s status-check publication, `run-coder`'s post-push `createPullRequest()` call,
+`minicoder merge ...`/its API routes' real merge call, and `run-coder`'s coder-adapter clone/push
+credential (`resolveDefaultCoderAdapterFactory()`) all resolve the matching provider's token and,
+for the coder adapter, its matching HTTPS Basic-Auth username. A fourth follow-up live-verified
+Gitea's half of this: a real, directly-downloaded Gitea 1.22.3 binary (no Docker needed) confirmed
+the `token:<PAT>` convention works for clone and push, that the username value is genuinely
+irrelevant once the password is a valid token, and that every `GiteaScmClient` REST method works
+end-to-end against real API responses. GitLab's `oauth2:<token>` convention remains unverified
+against a live instance — high-confidence (a long-documented, version-stable one), but self-hosted
+GitLab CE has no equivalent lightweight, Docker-free verification path the way Gitea's single
+binary does. See docs/06 §Phase 18 Stage 6's completion notes for the full, up-to-date writeup.
 
 ### Phase 8 — Execution Orchestrator Runbook
 
