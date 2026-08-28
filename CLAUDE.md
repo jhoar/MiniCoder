@@ -214,7 +214,7 @@ getPullRequestDiff()` crashing on a real GitLab-side pagination bug when `per_pa
    follow-up closed this gap's one remaining piece — `coder-sandbox-docker-proxy` itself** — and
    found a second real bug while doing so: `sandbox.ts`'s `dockerHost` option passed the documented
    `host:port` value straight through as dockerode's `host` field alone, but `docker-modem` only
-   ever reads a port from a *separate* field, and Node's legacy `url.parse` actively misparses a
+   ever reads a port from a _separate_ field, and Node's legacy `url.parse` actively misparses a
    bare `host:port` string with no scheme — so the exact documented
    `CODER_SANDBOX_DOCKER_HOST=coder-sandbox-docker-proxy:2375` convention silently targeted the
    wrong host and port. Fixed with a new, exported `parseDockerHost()` helper. Separately, the
@@ -3161,15 +3161,28 @@ clarification answer` (`RecordClarificationAnswerCommand`), `minicoder plan
   This is a deliberate, uniform addition across every new command in this PR — including
   `design-doc.ts`'s pre-existing `request-run` subcommand, which the same review round flagged as
   inconsistent with the manual's own claim that all task-enqueue commands support the flag.
-- **Four more generic-dispatch, human-actorKind, operator-role commands were found during review to
-  still be curl-only, but were judged out of scope for this PR and tracked separately (issue
-  #81)**: `ExportPlanCommand` (`export-plan`), `ExportBacklogCommand` (`export-backlog`),
+- **Four more generic-dispatch, human-actorKind, operator-role commands were found during PR #79's
+  review to still be curl-only, tracked separately as issue #81 and closed in a follow-up PR**:
+  `ExportPlanCommand` (`export-plan`), `ExportBacklogCommand` (`export-backlog`),
   `StartClarificationCommand` (`start-clarification`), and `CompleteClarificationCommand`
-  (`complete-clarification`) — none of `minicoder plan`/`minicoder clarification`/`minicoder
-artifacts` (read-only) wrap them. PR #79 only closed the specific 11-operation gap
-  `USER-MANUAL.md` already documented; this newly-discovered fourth category is real but was not
-  part of that documented set, so it's tracked as its own follow-up rather than silently expanding
-  this PR's scope mid-review.
+  (`complete-clarification`). PR #79 only closed the specific 11-operation gap `USER-MANUAL.md`
+  already documented; this fourth category was real but not part of that documented set, so it was
+  deliberately tracked as its own follow-up rather than expanding PR #79's scope mid-review.
+  **Issue #81 (closed)**: `minicoder plan export`/`minicoder plan export-backlog` and `minicoder
+clarification start`/`minicoder clarification complete` now wrap all four, mirroring PR #79's
+  exact conventions — typed `ApiClient` methods (`exportPlan`/`exportBacklog`/
+  `startClarification`/`completeClarification`), `resolveIdempotencyKey()`/`--idempotency-key`
+  support, and `renderOrJson()`/`--json`. `export`/`export-backlog` need no `expectedVersion` fetch
+  (they operate on a fresh `artifact_exports` row's own state machine, not the plan's version — the
+  same reason `ExportPlanHandler`'s payload has no `expectedVersion` field at all); `start`/
+  `complete` fetch `ClarificationSessionRow.version` via the existing `getClarificationSession()`
+  call, the same "fetch live version, don't ask the caller to know it" pattern
+  `submit-for-approval`/`approve`/`activate` already established for plans. Unit tests mirror
+  `spec.test.ts`/`plan.test.ts`'s exact shape. `docs/00-glossary-and-terms.md` §5 and
+  `USER-MANUAL.md` §5.0 were updated to list all four and drop them from the "no CLI wrapper yet"
+  fallback framing — that escape hatch (`POST /commands/:commandSlug` via `curl`) remains
+  documented for any future command added to the registry before its own wrapper lands, just no
+  longer naming these four as the example.
 
 ## Cross-Dialect Testing (Mandatory)
 

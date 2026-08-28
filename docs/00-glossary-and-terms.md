@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.2
-> Last-updated: 2026-08-27
+> Version: 1.2.3
+> Last-updated: 2026-08-28
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -642,9 +642,13 @@ minicoder design-doc request-run --project <id> --documentation-adapter <name> [
 # safely retrying after a timeout/lost response) instead of minting a fresh one per invocation.
 minicoder spec ingest <file> --project <id> [--content-type <type>]           # operator+
 minicoder clarification answer --project <id> --session <id> --question <id> --text <answer>  # operator+
+minicoder clarification start --project <id> --session <id>                  # operator+; clarification_required -> clarification_in_progress
+minicoder clarification complete --project <id> --session <id>               # operator+; clarification_in_progress -> clarification_complete
 minicoder plan submit-for-approval --project <id> --plan <id>                 # operator+; draft -> pending_approval
 minicoder plan approve --project <id> --plan <id> --yes [--notes <text>]      # approver+; pending_approval -> approved
 minicoder plan activate --project <id> --plan <id> --yes                     # approver+; approved -> activated_for_execution
+minicoder plan export --project <id> --plan <id>                             # operator+; renders plan.md-equivalent markdown into a new artifact_exports row
+minicoder plan export-backlog --project <id> --plan <id>                     # operator+; renders backlog.md-equivalent markdown into a new artifact_exports row
 minicoder budget approve-override --project <id> --policy <id> --reason <text> --yes  # approver+
 minicoder run coder --project <id> --feature-run <id> --coder-adapter <name>          # operator+; enqueues run-coder
 minicoder run review --project <id> --feature-run <id> --reviewer-adapter <name> [--arbiter-adapter <name>]  # operator+; enqueues run-review

@@ -276,5 +276,63 @@ export function createPlanCommand(): Command {
       },
     );
 
+  plan
+    .command('export')
+    .description(
+      'Render plan.md-equivalent markdown into a new artifact_exports row (operator+, issue #81)',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--plan <id>', 'Implementation plan ID')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { project: string; plan: string } & IdempotencyKeyOption & JsonOption) => {
+      const client = buildApiClient();
+      await renderOrJson(
+        opts,
+        async () => {
+          const idempotencyKey = resolveIdempotencyKey(`export-plan:${opts.plan}`, opts);
+          const result = await client.exportPlan(opts.plan, opts.project, idempotencyKey);
+          return {
+            command: 'export-plan',
+            projectId: opts.project,
+            resultingState: result.resulting_state,
+          };
+        },
+        (data) => renderCommandResultView(data),
+      );
+    });
+
+  plan
+    .command('export-backlog')
+    .description(
+      'Render backlog.md-equivalent markdown into a new artifact_exports row (operator+, issue #81)',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--plan <id>', 'Implementation plan ID')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { project: string; plan: string } & IdempotencyKeyOption & JsonOption) => {
+      const client = buildApiClient();
+      await renderOrJson(
+        opts,
+        async () => {
+          const idempotencyKey = resolveIdempotencyKey(`export-backlog:${opts.plan}`, opts);
+          const result = await client.exportBacklog(opts.plan, opts.project, idempotencyKey);
+          return {
+            command: 'export-backlog',
+            projectId: opts.project,
+            resultingState: result.resulting_state,
+          };
+        },
+        (data) => renderCommandResultView(data),
+      );
+    });
+
   return plan;
 }
