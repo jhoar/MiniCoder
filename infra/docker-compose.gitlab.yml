@@ -40,8 +40,11 @@ services:
         gitlab_rails['gitlab_email_enabled'] = false
         gitlab_rails['usage_ping_enabled'] = false
         prometheus_monitoring['enable'] = false
+    # nginx listens internally on whatever port `external_url` specifies (3400 above), not on 80 —
+    # a live-verification pass found the original `3400:80` mapping forwarded to a port nothing was
+    # listening on. Keep both sides of this mapping equal to `external_url`'s port.
     ports:
-      - '3400:80'
+      - '3400:3400'
       - '3422:22'
     volumes:
       - minicoder-gitlab-config:/etc/gitlab
