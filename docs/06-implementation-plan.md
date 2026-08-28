@@ -1188,8 +1188,8 @@ section for detail.
 
 Acceptance: the adapter implements `CoderAgentAdapter`; the orchestrator does not call provider APIs
 directly (adapter resolution is always via `AdapterRegistry`); a coder run executes inside an
-isolated, egress-restricted, ephemeral container (infra written; not yet daemon-verified — see
-Deviations) and can update a branch; changed files/commits are recorded on both `feature_runs` (via
+isolated, egress-restricted, ephemeral container (infra written; live-daemon-verified as of issue
+#84 — see §Phase 18 Stage 6's sixth follow-up) and can update a branch; changed files/commits are recorded on both `feature_runs` (via
 the extended `RecordCodePushedCommand`) and `agent_runs`/`agent_context_packs`/
 `agent_tool_operations`; coder-run cost/token usage is recorded in `cost_records` before any budget
 evaluation runs against it; a PR is opened via the (previously uncalled)
@@ -2923,9 +2923,70 @@ coder-adapter-credential gap, all with real evidence rather than documentation a
 way, three real, previously-undiscoverable bugs were found and fixed: `infra/docker-compose.gitlab.yml`'s
 wrong nginx port mapping, `GitlabScmClient.getPullRequestDiff()`'s crash on this GitLab version
 when `per_page` was supplied, and `GitlabScmClient.mergePullRequest()`'s unclassified rejection on
-an explicit empty `commitMessage`. What remains open is narrower still: the coder-sandbox
-egress-proxy allow-list's `SCM_ALLOWED_HOST` addition is unverified (both live passes ran git
-operations directly on the host, not inside the actual sandboxed network path), and no permanent
-CI-integrated live-instance matrix exists — both live-verification passes were one-off manual runs,
-torn down afterward, not wired into `pnpm test`/CI. This is the accurate, as-built status after all
-five follow-ups.
+an explicit empty `commitMessage`. What remained open after the fifth follow-up was narrower still:
+the coder-sandbox egress-proxy allow-list's `SCM_ALLOWED_HOST` addition was unverified (both live
+passes ran git operations directly on the host, not inside the actual sandboxed network path), and
+no permanent CI-integrated live-instance matrix existed.
+
+**Sixth follow-up (issue #84): the sandbox-network/egress-proxy path itself, live-verified against
+a real Docker daemon and a real Gitea instance — the one gap the fifth follow-up's own closing note
+named.** A session with a genuinely reachable Docker daemon (`dockerd` started directly; confirmed
+via `docker info`) built the coder-sandbox topology and drove `CodexCoderAdapter`'s real
+`workspace.ts` git orchestration through the actual `CoderSandbox`/`dockerode` container — not
+`ChildProcessCommandRunner` on the host, closing exactly what the fourth/fifth follow-ups'
+"ran git operations directly on the host" caveat left open. Both the positive and negative cases
+from the issue were proven with a real, running Gitea 1.22.3 instance (a directly-downloaded
+static binary, the same technique the fourth follow-up established) reachable only through the
+egress proxy:
+
+- **Positive case**: with `SCM_ALLOWED_HOST` set to the Gitea host, a real ephemeral sandbox
+  container cloned, committed, and pushed a branch to the live Gitea repo, and a same-feature-run
+  retry correctly reused the existing commit rather than double-pushing (docs/03 §11.6). Confirmed
+  directly against Gitea's API afterward: the pushed branches and file content were genuinely
+  present, not merely a passing exit code.
+- **Negative case**: with `SCM_ALLOWED_HOST` unset, the identical clone attempt through the same
+  proxy topology failed — proving the allow-list's default-deny actually denies by default, not
+  merely "didn't error because it happened to work." A bare `curl` through the proxy without
+  `SCM_ALLOWED_HOST` returned `403`; with it set, `200` — isolating the allow-list behavior from
+  git/sandbox specifics before layering the real git flow on top.
+- **Isolation properties**, checked functionally from inside the real running container (no new
+  introspection API added): `id -u` reports the non-root `10001` uid; `/proc/self/status`'s
+  `CapEff` is the all-zero bitmask `CapDrop: ['ALL']` promises; writing outside `/workspace`/`/tmp`
+  fails against the read-only root filesystem; writing inside `/workspace` succeeds against its
+  writable tmpfs mount. Container-removal-in-`finally` was confirmed by inspecting `docker ps -a`
+  after the test run: no orphaned sandbox containers remained, only the long-lived egress-proxy
+  containers.
+- **A real bug this live pass found and fixed**: `sandbox.ts` set only the uppercase `HTTPS_PROXY`/
+  `HTTP_PROXY` container env vars. curl/git (`git-remote-http`) deliberately ignores uppercase
+  `HTTP_PROXY` for plain-HTTP requests — a long-standing mitigation for the "httpoxy" CGI
+  vulnerability class — honoring only lowercase `http_proxy`; only `HTTPS_PROXY` has no such
+  ambiguity. Every prior live-verification pass (Gitea, GitLab) used an HTTPS remote, so this never
+  surfaced; a plain-HTTP self-hosted SCM host (this Gitea instance, deliberately run without TLS)
+  reproduced it immediately as a direct-connection failure from inside the isolated sandbox network
+  (which has no route to the outside world without the proxy, so the failure mode was "connection
+  refused," not a silent proxy bypass — the isolation held even while the proxy env var itself was
+  wrong). Fixed by also setting lowercase `http_proxy`/`https_proxy`.
+- **What this pass did NOT build/verify, and why**: the actual `infra/docker/coder-sandbox`
+  Dockerfiles could not be built as-is in this particular session's own sandboxed environment —
+  `apt-get`/`apk` package-repository hosts (`deb.debian.org`, `dl-cdn.alpinelinux.org`) are blocked
+  by that environment's own egress policy (a genuine, confirmed org-level denial, not a
+  registry-availability problem the `mirror.gcr.io` technique addresses). The verification used
+  functionally-equivalent images built via multi-stage `COPY` from pre-built, registry-pulled
+  images sharing the same Debian/Alpine base (so ABI-compatible) instead of live package installs
+  — the production Dockerfiles themselves were not modified and remain what a normal CI/production
+  environment (with ordinary apt/apk access) builds unmodified. `coder-sandbox-docker-proxy`
+  (`tecnativa/docker-socket-proxy`) could not be started in this same environment (its haproxy
+  frontend requires binding an IPv6 listener the nested-container environment's kernel does not
+  permit) — out of scope for this fix and orthogonal to what issue #84 asked to verify (the
+  egress-proxy allow-list and sandbox isolation properties), so `CoderSandbox` talked to the local
+  Docker socket directly for this pass rather than through that proxy. Neither gap affects the
+  production images/compose file, which are unchanged.
+- **A permanent, repo-committed regression now exists**: `packages/adapters-coder/src/
+sandbox-live.integration.test.ts`, gated the same way `*.postgres.test.ts` suites gate on
+  `MINICODER_TEST_PG_URL` (a `describe.skipIf` on a set of `CODER_SANDBOX_LIVE_TEST`/
+  `CODER_SANDBOX_TEST_*`/`SCM_TEST_*` env vars) — a no-op in any environment with no Docker daemon
+  (every prior phase of this project, and this repo's own CI today), but a real, repeatable
+  end-to-end check the next time a live daemon + SCM host pair is available. This closes the "no
+  permanent CI-integrated live-instance matrix exists" gap's test-infrastructure half; wiring it
+  into an actual CI job (which would need a Docker-in-Docker runner and a throwaway SCM instance)
+  remains real, tracked future work, not done here.

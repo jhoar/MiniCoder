@@ -211,15 +211,27 @@ implementation for the first time:
   egress for the code-generation call is governed by ordinary deployment-network egress controls,
   not by this sandbox's proxy — document and secure that host-process network path the same way
   any other outbound API call from the Workflow Layer's worker process is secured.
-- **Aspirational, not yet daemon-verified:** the sandbox stack was written and syntax-validated
-  (`docker compose config`) but has not been exercised against a live Docker daemon in this
-  repository's CI — the implementation session had no reachable daemon (see docs/06 Phase 9
-  "Deviations from the original plan"). A Docker-daemon-gated integration test proving egress
-  denial actually blocks a disallowed host while allowing GitHub/the LLM host remains to be added.
-  The "internal package proxy/mirror" and "local dev egress allow-list" variants described above
-  for dependency provisioning are not yet built — the pre-baked sandbox image
-  (`infra/docker/coder-sandbox/Dockerfile`) installs Node/pnpm/git at build time, but a read-only
-  bind-mounted pnpm store is not yet wired into the compose stack.
+- **Live-daemon-verified as of issue #84** (docs/06 §Phase 18 Stage 6's sixth follow-up): a real
+  Docker daemon and a real, plain-HTTP self-hosted Gitea instance proved both the positive case
+  (a genuine sandboxed clone/commit/push succeeds once `SCM_ALLOWED_HOST` names the SCM host) and
+  the negative case (the identical attempt fails by default when it doesn't — the allow-list's
+  default-deny genuinely denies, not merely "didn't error because it happened to work"), plus every
+  isolation property listed above, checked functionally from inside a real running container:
+  non-root uid, an all-zero `/proc/self/status` `CapEff` bitmask, a read-only root filesystem that
+  rejects writes outside `/workspace`/`/tmp`, and no orphaned containers left behind afterward
+  (confirming removal-in-`finally`). This pass also found and fixed a real bug — `sandbox.ts` set
+  only uppercase `HTTPS_PROXY`/`HTTP_PROXY`, which curl/git's `git-remote-http` deliberately
+  ignores for plain-HTTP requests (the "httpoxy" CGI-vulnerability mitigation), invisible against
+  every prior HTTPS-remote-only test fixture — and left a permanent, env-var-gated regression
+  (`packages/adapters-coder/src/sandbox-live.integration.test.ts`, a no-op absent a live daemon,
+  same posture as this repo's `*.postgres.test.ts` suites). What that pass did **not** exercise:
+  `coder-sandbox-docker-proxy` (blocked by that verification session's own nested-container
+  networking, unrelated to the egress-proxy/isolation properties this issue targeted) and a
+  permanent CI-integrated live-instance matrix (the pass was a one-off manual run, torn down
+  afterward, not wired into `pnpm test`/CI). The "internal package proxy/mirror" and "local dev
+  egress allow-list" variants described above for dependency provisioning are still not built — the
+  pre-baked sandbox image (`infra/docker/coder-sandbox/Dockerfile`) installs Node/pnpm/git at build
+  time, but a read-only bind-mounted pnpm store is not yet wired into the compose stack.
 
 ## 6a. Workflow-Layer Payload Hygiene
 
