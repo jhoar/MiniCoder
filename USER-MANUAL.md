@@ -63,7 +63,9 @@ signing off on the final design doc — it stops and waits for a human.
 | `minicoder merge finalize-if-github-merged`                                        | Recovery command if a merge succeeded on GitHub but wasn't recorded.                   |
 | `minicoder spec ingest <file>`                                                     | Ingest a specification file.                                                           |
 | `minicoder clarification answer`                                                   | Answer a clarification question.                                                       |
+| `minicoder clarification start/complete`                                           | Start a new clarification round, or complete the current one.                          |
 | `minicoder plan submit-for-approval/approve/activate`                              | Submit, approve, and activate the implementation plan.                                 |
+| `minicoder plan export/export-backlog`                                             | Render a `plan.md`/`backlog.md`-equivalent artifact export.                            |
 | `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                        |
 | `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.     |
 | `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                   |
@@ -711,6 +713,13 @@ minicoder clarification answer --project <project> --session <sessionId> \
   --question <qId> --text "<your answer>"
   # expectedQuestionVersion is fetched automatically from the session — no manual lookup needed
 
+minicoder clarification start --project <project> --session <sessionId>
+  # clarification_required -> clarification_in_progress; expectedVersion fetched automatically
+
+minicoder clarification complete --project <project> --session <sessionId>
+  # clarification_in_progress -> clarification_complete, once every question in the round is
+  # answered; expectedVersion fetched automatically
+
 minicoder plan submit-for-approval --project <project> --plan <planId>
 
 minicoder plan approve --project <project> --plan <planId> --yes [--notes "looks good"]
@@ -719,34 +728,41 @@ minicoder plan approve --project <project> --plan <planId> --yes [--notes "looks
 minicoder plan activate --project <project> --plan <planId> --yes
   # requires an approver/admin-role key
 
+minicoder plan export --project <project> --plan <planId>
+  # renders plan.md-equivalent markdown into a new artifact_exports row; no expectedVersion needed
+  # (this operates on the fresh export row's own state, not the plan's)
+
+minicoder plan export-backlog --project <project> --plan <planId>
+  # renders backlog.md-equivalent markdown into a new artifact_exports row
+
 minicoder budget approve-override --project <project> --policy <policyId> \
   --reason "approved extra spend for this sprint" --yes
   # requires an approver/admin-role key; --policy is the budget_policies row being overridden
 ```
 
 Every one of these fetches its own `expectedVersion`/`expectedQuestionVersion` (an
-optimistic-concurrency check) live before dispatching, and mints a fresh `Idempotency-Key` per
-invocation by default — you never need to compute either by hand. If a command times out or you
-lose its response before knowing whether it succeeded, pass `--idempotency-key <key>` on the retry
-to reuse the exact same key instead of risking a duplicate side effect from a second, differently-
-keyed submission.
+optimistic-concurrency check) live before dispatching, where the underlying command actually needs
+one, and mints a fresh `Idempotency-Key` per invocation by default — you never need to compute
+either by hand. If a command times out or you lose its response before knowing whether it
+succeeded, pass `--idempotency-key <key>` on the retry to reuse the exact same key instead of
+risking a duplicate side effect from a second, differently-keyed submission.
 
 If you need to call a command with no dedicated CLI wrapper yet, every registered handler remains
 reachable directly via `POST /commands/:commandSlug` (`GET /commands` lists every slug currently
 registered) — this needs `Authorization: Bearer <MINICODER_API_KEY>` and a client-chosen
 `Idempotency-Key` header (any unique string per logical submission — reusing one replays the
-original result rather than re-running the command). A handful of operations still have no CLI
-wrapper — `export-plan`, `export-backlog`, `start-clarification`, `complete-clarification`
-(tracked in [issue #81](https://github.com/jhoar/MiniCoder/issues/81)) — as well as any future
-command added to the registry before its own CLI wrapper lands. Example, exporting a plan snapshot
-directly:
+original result rather than re-running the command). This escape hatch remains available for any
+future command added to the registry before its own CLI wrapper lands — as of
+[issue #81](https://github.com/jhoar/MiniCoder/issues/81)'s closure, every operation the manual
+previously listed here now has one. Example, using the generic route directly for a command with
+no wrapper yet:
 
 ```bash
-curl -X POST "$MINICODER_API_URL/commands/export-plan" \
+curl -X POST "$MINICODER_API_URL/commands/<command-slug>" \
   -H "Authorization: Bearer $MINICODER_API_KEY" \
-  -H "Idempotency-Key: export-plan-$(uuidgen)" \
+  -H "Idempotency-Key: <command-slug>-$(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{"planId":"<planId>","projectId":"<project>"}'
+  -d '{"...": "..."}'
 ```
 
 ### 5.0.1 Task-enqueue commands — `minicoder run ...` / `minicoder design-doc request-run` (API)

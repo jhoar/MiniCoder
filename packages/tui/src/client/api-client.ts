@@ -438,7 +438,7 @@ export class ApiClient {
   }
 
   /** `RecordClarificationAnswerCommand` — data-only, does not itself transition
-   * `clarification_sessions.status` (that's `CompleteClarificationCommand`, still curl-only). */
+   * `clarification_sessions.status` (that's `CompleteClarificationCommand`, below). */
   recordClarificationAnswer(
     clarificationQuestionId: string,
     clarificationSessionId: string,
@@ -456,6 +456,37 @@ export class ApiClient {
         answer,
         expectedQuestionVersion,
       },
+      idempotencyKey,
+    );
+  }
+
+  /** `StartClarificationCommand` — clarification_required -> clarification_in_progress (issue
+   * #81, closing one of the four generic-dispatch-only gaps PR #79's audit found but didn't
+   * cover). */
+  startClarification(
+    clarificationSessionId: string,
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/start-clarification',
+      { clarificationSessionId, projectId, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
+  /** `CompleteClarificationCommand` — clarification_in_progress -> clarification_complete, once
+   * every question in the current round has an answer (issue #81). */
+  completeClarification(
+    clarificationSessionId: string,
+    projectId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/complete-clarification',
+      { clarificationSessionId, projectId, expectedVersion },
       idempotencyKey,
     );
   }
@@ -501,6 +532,29 @@ export class ApiClient {
       { planId, projectId, expectedVersion },
       idempotencyKey,
     );
+  }
+
+  /** `ExportPlanCommand` — artifact-export pending -> generating -> exported, rendering
+   * `plan.md`-equivalent markdown into `artifact_exports.content`. No `expectedVersion`: this
+   * operates on a fresh `artifact_exports` row's own state machine, not the plan's version
+   * (issue #81). */
+  exportPlan(
+    planId: string,
+    projectId: string,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post('/commands/export-plan', { planId, projectId }, idempotencyKey);
+  }
+
+  /** `ExportBacklogCommand` — artifact-export pending -> generating -> exported, rendering
+   * `backlog.md`-equivalent markdown. Same no-`expectedVersion` shape as `exportPlan` (issue
+   * #81). */
+  exportBacklog(
+    planId: string,
+    projectId: string,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post('/commands/export-backlog', { planId, projectId }, idempotencyKey);
   }
 
   /** `ApproveBudgetOverrideCommand` — serves both `paused_budget_exceeded -> running` and

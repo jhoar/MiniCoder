@@ -250,3 +250,86 @@ describe('CLI plan write commands', () => {
     expect((init?.headers as Record<string, string>)['Idempotency-Key']).toBe('my-fixed-retry-key');
   });
 });
+
+describe('CLI plan export commands (issue #81)', () => {
+  beforeEach(() => {
+    process.env['MINICODER_API_URL'] = 'http://localhost:4000';
+    process.env['MINICODER_API_KEY'] = 'test-key';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    delete process.env['MINICODER_API_URL'];
+    delete process.env['MINICODER_API_KEY'];
+  });
+
+  function fakeCommandFetch(commandPath: string, commandResult: unknown) {
+    return vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === commandPath) {
+        expect((init?.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
+        return { ok: true, status: 200, json: async () => commandResult } as Response;
+      }
+      throw new Error(`unexpected fetch to ${path}`);
+    });
+  }
+
+  it('export dispatches export-plan directly, with no expectedVersion (no /plans/:id fetch needed)', async () => {
+    const fetchImpl = fakeCommandFetch('/commands/export-plan', {
+      command_id: 'c1',
+      accepted: true,
+      resulting_state: 'exported',
+      emitted_event_ids: [],
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'export',
+      '--project',
+      'proj1',
+      '--plan',
+      'plan1',
+      '--json',
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect(JSON.parse(init?.body as string)).toEqual({ planId: 'plan1', projectId: 'proj1' });
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"resultingState": "exported"');
+  });
+
+  it('export-backlog dispatches export-backlog directly', async () => {
+    const fetchImpl = fakeCommandFetch('/commands/export-backlog', {
+      command_id: 'c1',
+      accepted: true,
+      resulting_state: 'exported',
+      emitted_event_ids: [],
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'export-backlog',
+      '--project',
+      'proj1',
+      '--plan',
+      'plan1',
+      '--json',
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect(JSON.parse(init?.body as string)).toEqual({ planId: 'plan1', projectId: 'proj1' });
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"resultingState": "exported"');
+  });
+});

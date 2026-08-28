@@ -100,5 +100,87 @@ export function createClarificationCommand(): Command {
       },
     );
 
+  cmd
+    .command('start')
+    .description(
+      'clarification_required -> clarification_in_progress (operator+); expectedVersion is ' +
+        'fetched automatically from the session (issue #81)',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--session <id>', 'Clarification session ID')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (opts: { project: string; session: string } & IdempotencyKeyOption & JsonOption) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const { session } = await client.getClarificationSession(opts.session);
+            const idempotencyKey = resolveIdempotencyKey(
+              `start-clarification:${opts.session}`,
+              opts,
+            );
+            const result = await client.startClarification(
+              opts.session,
+              opts.project,
+              session.version,
+              idempotencyKey,
+            );
+            return {
+              command: 'start-clarification',
+              projectId: opts.project,
+              resultingState: result.resulting_state,
+            };
+          },
+          (data) => renderCommandResultView(data),
+        );
+      },
+    );
+
+  cmd
+    .command('complete')
+    .description(
+      'clarification_in_progress -> clarification_complete (operator+), once every question in ' +
+        'the current round has an answer; expectedVersion is fetched automatically (issue #81)',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--session <id>', 'Clarification session ID')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (opts: { project: string; session: string } & IdempotencyKeyOption & JsonOption) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const { session } = await client.getClarificationSession(opts.session);
+            const idempotencyKey = resolveIdempotencyKey(
+              `complete-clarification:${opts.session}`,
+              opts,
+            );
+            const result = await client.completeClarification(
+              opts.session,
+              opts.project,
+              session.version,
+              idempotencyKey,
+            );
+            return {
+              command: 'complete-clarification',
+              projectId: opts.project,
+              resultingState: result.resulting_state,
+            };
+          },
+          (data) => renderCommandResultView(data),
+        );
+      },
+    );
+
   return cmd;
 }
