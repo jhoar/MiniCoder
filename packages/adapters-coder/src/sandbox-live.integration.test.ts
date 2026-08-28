@@ -24,13 +24,17 @@ import { prepareBranch, commitAndPush, type WorkspaceOptions } from './workspace
  *      to the isolated `minicoder-coder-sandbox` network plus a real-egress network, once with
  *      `SCM_ALLOWED_HOST` set to a reachable Gitea/GitLab host and (optionally) once without, to
  *      exercise both CODER_SANDBOX_TEST_PROXY_ALLOW and CODER_SANDBOX_TEST_PROXY_DENY below.
- *   2. Point this suite at that topology via the env vars below and a real repo/token on that
+ *   2. Optionally bring up `coder-sandbox-docker-proxy` too (with `DISABLE_IPV6=1` — see that
+ *      compose service's own comment for why) and point `CODER_SANDBOX_TEST_DOCKER_HOST` at it,
+ *      to also prove `CoderSandbox` creates/controls containers *through* that proxy rather than
+ *      talking to the local Docker socket directly.
+ *   3. Point this suite at that topology via the env vars below and a real repo/token on that
  *      SCM host.
  *
  * A full walkthrough (including the exact `docker run`/`docker network create` commands used to
  * verify this against a real Gitea instance, since this repo's own dev/CI sandboxes' egress
  * policy blocks `deb.debian.org`/`dl-cdn.alpinelinux.org` directly) is recorded in docs/06 §Phase
- * 18 Stage 6's issue #84 follow-up note and CLAUDE.md's Reference Coder Adapter Operational
+ * 18 Stage 6's issue #84 follow-up notes and CLAUDE.md's Reference Coder Adapter Operational
  * Constraints section.
  */
 
@@ -43,6 +47,11 @@ const PROXY_ALLOW = process.env['CODER_SANDBOX_TEST_PROXY_ALLOW'];
 /** Same shape, but the SCM host is deliberately NOT in this proxy's allow-list — proves the
  * negative (default-deny) case. Optional: the positive-case test still runs without it. */
 const PROXY_DENY = process.env['CODER_SANDBOX_TEST_PROXY_DENY'];
+/** `coder-sandbox-docker-proxy` address (e.g. `127.0.0.1:12375` if published to the host, or
+ * `coder-sandbox-docker-proxy:2375` from inside its own network) — the same `host:port` value
+ * `CODER_SANDBOX_DOCKER_HOST` takes in production. Optional: every other test still runs against
+ * the local Docker socket directly without it. */
+const DOCKER_HOST = process.env['CODER_SANDBOX_TEST_DOCKER_HOST'];
 const REPO_URL = process.env['SCM_TEST_REPO_URL'];
 const GIT_TOKEN = process.env['SCM_TEST_TOKEN'];
 const REMOTE_USERNAME = process.env['SCM_TEST_USERNAME'] ?? 'token';
@@ -68,6 +77,7 @@ describe.skipIf(!RUN)(
         image: IMAGE!,
         network: NETWORK!,
         httpsProxy: PROXY_ALLOW!,
+        dockerHost: DOCKER_HOST,
       });
       await sandbox.start();
       try {
@@ -144,11 +154,34 @@ describe.skipIf(!RUN)(
           image: IMAGE!,
           network: NETWORK!,
           httpsProxy: PROXY_DENY!,
+          dockerHost: DOCKER_HOST,
         });
         await sandbox.start();
         try {
           const featureRunId = `issue-84-verify-denied-${Date.now()}`;
           await expect(prepareBranch(baseOptions(featureRunId, sandbox))).rejects.toThrow();
+        } finally {
+          await sandbox.remove();
+        }
+      },
+      60_000,
+    );
+
+    // Only meaningful when CODER_SANDBOX_TEST_DOCKER_HOST is set — otherwise every test above
+    // already talks to the local Docker socket directly, which is not what this checks.
+    it.skipIf(!DOCKER_HOST)(
+      'creates and controls the sandbox container through coder-sandbox-docker-proxy, not the local socket',
+      async () => {
+        const sandbox = new CoderSandbox({
+          image: IMAGE!,
+          network: NETWORK!,
+          httpsProxy: PROXY_ALLOW!,
+          dockerHost: DOCKER_HOST,
+        });
+        await sandbox.start();
+        try {
+          const result = await sandbox.run('id', ['-u']);
+          expect(result.stdout.trim()).toBe('10001');
         } finally {
           await sandbox.remove();
         }

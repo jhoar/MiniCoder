@@ -30,8 +30,10 @@ export interface Sandbox extends CommandRunner {
 }
 
 export interface SandboxOptions {
-  /** Docker socket/proxy the sandbox talks to (e.g. `coder-sandbox-docker-proxy` — see
-   * infra/docker-compose.coder-sandbox.yml). Defaults to the local docker.sock. */
+  /** Docker socket/proxy the sandbox talks to — a bare hostname (local docker.sock's default
+   * port), a `host:port` pair (e.g. `coder-sandbox-docker-proxy:2375`, the documented
+   * `CODER_SANDBOX_DOCKER_HOST` convention — see infra/docker-compose.coder-sandbox.yml), or a
+   * full `tcp://host:port` URL. Defaults to the local docker.sock when unset. */
   readonly dockerHost?: string;
   readonly image: string;
   /** The isolated, egress-restricted network (see docs/07 §6 / infra/docker-compose.coder-sandbox.yml). */
@@ -40,6 +42,29 @@ export interface SandboxOptions {
   readonly cpus?: number;
   readonly memoryBytes?: number;
   readonly docker?: DockerLike;
+}
+
+/**
+ * Issue #84 live-verification fix: `docker-modem` (dockerode's transport) only reads a port from
+ * a separate `opts.port` field — never from the `opts.host` string, even a fully-scheme-qualified
+ * one (`tcp://host:port`), since its request-building code does `port: this.port` verbatim rather
+ * than the parsed URL's own port. Passing `{ host: 'coder-sandbox-docker-proxy:2375' }` alone (the
+ * exact value `CODER_SANDBOX_DOCKER_HOST` is documented to hold) silently connects to the default
+ * HTTP port (80) instead of the docker-socket-proxy's real 2375 — worse, Node's legacy `url.parse`
+ * (which `docker-modem` uses internally) actively misparses a bare `host:port` string, treating
+ * the part before the colon as a protocol and the part after as the whole path, so the resulting
+ * hostname is wrong too. Splitting host and port ourselves and passing both as separate `dockerode`
+ * options is the only combination that reliably connects to a non-default-port Docker host/proxy.
+ */
+export function parseDockerHost(dockerHost: string): { host: string; port?: number } {
+  const withoutScheme = dockerHost.replace(/^[a-z]+:\/\//i, '');
+  const lastColon = withoutScheme.lastIndexOf(':');
+  if (lastColon === -1) {
+    return { host: withoutScheme };
+  }
+  const host = withoutScheme.slice(0, lastColon);
+  const port = Number(withoutScheme.slice(lastColon + 1));
+  return host && Number.isInteger(port) && port > 0 ? { host, port } : { host: withoutScheme };
 }
 
 /**
@@ -57,7 +82,9 @@ export class CoderSandbox implements Sandbox {
   constructor(private readonly options: SandboxOptions) {
     this.docker =
       options.docker ??
-      (new Docker(options.dockerHost ? { host: options.dockerHost } : undefined) as DockerLike);
+      (new Docker(
+        options.dockerHost ? parseDockerHost(options.dockerHost) : undefined,
+      ) as DockerLike);
   }
 
   async start(): Promise<void> {

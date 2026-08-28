@@ -224,11 +224,20 @@ implementation for the first time:
   ignores for plain-HTTP requests (the "httpoxy" CGI-vulnerability mitigation), invisible against
   every prior HTTPS-remote-only test fixture — and left a permanent, env-var-gated regression
   (`packages/adapters-coder/src/sandbox-live.integration.test.ts`, a no-op absent a live daemon,
-  same posture as this repo's `*.postgres.test.ts` suites). What that pass did **not** exercise:
-  `coder-sandbox-docker-proxy` (blocked by that verification session's own nested-container
-  networking, unrelated to the egress-proxy/isolation properties this issue targeted) and a
-  permanent CI-integrated live-instance matrix (the pass was a one-off manual run, torn down
-  afterward, not wired into `pnpm test`/CI). The "internal package proxy/mirror" and "local dev
+  same posture as this repo's `*.postgres.test.ts` suites). **A follow-up pass closed the one piece
+  that pass left unexercised: `coder-sandbox-docker-proxy` itself.** Two real bugs were found and
+  fixed: the proxy image needs `DISABLE_IPV6=1` (already supported by its entrypoint) since its
+  default dual-stack bind fails outright on an IPv4-only host/container runtime; and `sandbox.ts`'s
+  `dockerHost` handling passed a `host:port` string straight through as dockerode's `host` field
+  alone, but `docker-modem` never reads a port from that string (even a fully-qualified
+  `tcp://host:port` URL) and Node's legacy `url.parse` actively misparses a bare `host:port` pair
+  with no scheme — so the documented `CODER_SANDBOX_DOCKER_HOST=host:port` convention silently
+  connected to the wrong host and port. Fixed with a new `parseDockerHost()` helper. With both
+  fixes, `CoderSandbox` was proven to create/control a real container — and drive a full
+  clone/commit/push — entirely through `coder-sandbox-docker-proxy` rather than the local socket,
+  with the proxy's own scoped-API allow-list (no `VOLUMES` access) confirmed still enforced. What
+  remains open: a permanent CI-integrated live-instance matrix (both passes were one-off manual
+  runs, torn down afterward, not wired into `pnpm test`/CI). The "internal package proxy/mirror" and "local dev
   egress allow-list" variants described above for dependency provisioning are still not built — the
   pre-baked sandbox image (`infra/docker/coder-sandbox/Dockerfile`) installs Node/pnpm/git at build
   time, but a read-only bind-mounted pnpm store is not yet wired into the compose stack.
