@@ -28,10 +28,11 @@ Subsystem names:
 - MiniCoder SCM Integration (`packages/github`, `packages/gitea`, `packages/gitlab` are all shipped
   `ScmClient` implementations — see `06-implementation-plan.md` §Phase 18; every write-path call
   site, including the coder adapter's own clone/push credential, is provider-aware as of three
-  same-day Stage 6 follow-ups. A fourth follow-up live-verified Gitea's credential/clone-push and
-  every `GiteaScmClient` method against a real Gitea instance; GitLab's credential/clone-push
-  remains a real, narrowly-tracked verification gap — documented, not unimplemented — in that
-  plan's Stage 6 completion notes)
+  same-day Stage 6 follow-ups. A fourth and fifth follow-up live-verified Gitea's and GitLab's
+  credential/clone-push and every `GiteaScmClient`/`GitlabScmClient` method against real Gitea and
+  GitLab instances respectively, closing what verification gap remained — see that plan's Stage 6
+  completion notes for the full writeup, including two real GitLab bugs found and fixed along the
+  way)
 - MiniCoder Orchestrator API
 - MiniCoder Text UI
 - MiniCoder Web UI
@@ -52,10 +53,10 @@ SCM provider       = authoritative repository, branch, commit, PR, review, CI/ch
                      implementations (see `06-implementation-plan.md` §Phase 18); every write-path
                      call site (scheduled reconciliation, reviewer diff fetch, merge-gate status
                      checks, PR creation, the real merge call, and the coder adapter's own
-                     clone/push credential) is provider-aware since Stage 6. Gitea's credential
-                     convention and the coder adapter's actual clone/push are live-verified against
-                     a real Gitea instance (Stage 6's fourth follow-up); GitLab's are not — a real,
-                     narrowly-tracked gap (Stage 6's completion notes), not an unimplemented one.
+                     clone/push credential) is provider-aware since Stage 6. Both Gitea's and
+                     GitLab's credential conventions and the coder adapter's actual clone/push are
+                     live-verified against real instances (Stage 6's fourth and fifth follow-ups,
+                     the latter also finding and fixing two real GitLab-specific bugs).
 SCM webhooks       = PRIMARY source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism. Implemented by the `github-reconciliation`
                      task (docs §3.12), which keeps that literal name regardless of which provider

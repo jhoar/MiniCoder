@@ -1015,7 +1015,7 @@ resolver receives the seeded repository's real provider/`base_url`) and the pre-
 `gitlab-reconcile-fallback.test.ts` together now cover both halves — the task resolves the right
 client, and the algorithm correctly acts on what that client reports.
 
-**What remains unverified (not unimplemented) — now GitLab only.** After three same-day Stage 6
+**Both providers are now fully live-verified — no remaining gap.** After three same-day Stage 6
 follow-ups, every write-path call site is provider-aware — `run-review`'s reviewer diff fetch,
 `run-merge-gate`'s status-check publication, `run-coder`'s post-push `createPullRequest()` call,
 `minicoder merge ...`/its API routes' real merge call, and `run-coder`'s coder-adapter clone/push
@@ -1024,10 +1024,15 @@ for the coder adapter, its matching HTTPS Basic-Auth username. A fourth follow-u
 Gitea's half of this: a real, directly-downloaded Gitea 1.22.3 binary (no Docker needed) confirmed
 the `token:<PAT>` convention works for clone and push, that the username value is genuinely
 irrelevant once the password is a valid token, and that every `GiteaScmClient` REST method works
-end-to-end against real API responses. GitLab's `oauth2:<token>` convention remains unverified
-against a live instance — high-confidence (a long-documented, version-stable one), but self-hosted
-GitLab CE has no equivalent lightweight, Docker-free verification path the way Gitea's single
-binary does. See docs/06 §Phase 18 Stage 6's completion notes for the full, up-to-date writeup.
+end-to-end against real API responses. A fifth follow-up did the same for GitLab, running a real
+GitLab CE 17.5.2 instance (`docker compose up`, using the `mirror.gcr.io` Docker Hub mirror to
+work around this environment's blocked CDN access) — confirming the `oauth2:<PAT>` convention
+works identically, that GitLab too ignores the Basic-Auth username entirely once the password is a
+valid token (a new finding), and every `GitlabScmClient` REST method end-to-end. That pass also
+found and fixed three real bugs: `infra/docker-compose.gitlab.yml`'s wrong nginx port mapping,
+`GitlabScmClient.getPullRequestDiff()`'s crash under explicit pagination (a genuine GitLab-side
+bug), and `GitlabScmClient.mergePullRequest()`'s unclassified rejection on an empty commit message.
+See docs/06 §Phase 18 Stage 6's completion notes for the full, up-to-date writeup.
 
 ### Phase 8 — Execution Orchestrator Runbook
 

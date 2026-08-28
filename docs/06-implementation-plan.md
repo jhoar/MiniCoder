@@ -2420,6 +2420,18 @@ config`) but this environment had no reachable Docker daemon. GitLab CE is a sub
   expectation for whoever runs it next. 56 unit tests cover the client/normalizer/token-verifier
   against fakes; the reconciliation-fallback regression above covers the algorithm-level acceptance
   claim without needing a live server.
+  **Superseded by Stage 6's fifth follow-up:** a later session, with a working Docker daemon but
+  Docker Hub CDN access blocked by network policy, found that the `mirror.gcr.io` Docker Hub
+  mirror worked around the block (serving blobs from `storage.googleapis.com`, which was reachable)
+  — confirmed in two separate execution environments. It pulled `gitlab/gitlab-ce:17.5.2-ce.0` via
+  the mirror, re-tagged it locally to match this compose file's own image reference (so the file
+  itself needed no permanent change to a third-party mirror), and ran the actual
+  `docker-compose.gitlab.yml` stack end-to-end for the first time. This surfaced and fixed a real
+  bug in the compose file itself (its `3400:80` port mapping forwarded to a port nothing was
+  listening on — GitLab's nginx listens on whatever port `external_url` specifies, 3400 here, not
+  80 — fixed to `3400:3400`, see that file's own inline comment) before `GitlabScmClient` and the
+  coder adapter's git credential could even be reached. See Stage 6's fifth follow-up below for
+  the full writeup of what was verified against the running instance.
 - **A real, pre-existing test-infrastructure gap was found and fixed while adding this stage**:
   `vitest.config.ts`'s alias map had no entry for `@minicoder/gitea` (added in Stage 3) at all —
   Stage 3's own tests happened to pass anyway only because a stale `packages/gitea/dist/` from a
@@ -2516,6 +2528,13 @@ config`) but this environment had no reachable Docker daemon. GitLab CE is a sub
   (`docker info` fails), the same constraint already documented for
   `infra/docker-compose.{gitea,gitlab}.yml` in Stages 3/4 — that dimension could not be built or
   verified here and is not represented by an aspirational, untested CI YAML file.
+  **Partially superseded by Stage 6's fourth and fifth follow-ups:** a later session did run real
+  Gitea and GitLab instances and exercise both `ScmClient` implementations end-to-end against
+  them (see those follow-ups below) — the live-instance verification gap itself is closed. What
+  remains genuinely not built is the permanent, CI-integrated version of this: those follow-ups
+  were one-off manual/exploratory runs (a downloaded Gitea binary, a `docker compose up` GitLab
+  instance, both torn down afterward), not a `pnpm test`/CI-wired live-instance matrix job. Turning
+  the same pattern into permanent CI infrastructure remains real, tracked future work.
 - Full monorepo `pnpm typecheck` (`@minicoder/gitea` added to `packages/testing`'s dependencies so
   the conformance suite can import it — a genuine, previously-missing dependency, not present
   before this stage), `pnpm lint`, `pnpm format:check`, and `pnpm test` (113 test files, 1043
@@ -2777,6 +2796,78 @@ disagreement-arbiter.ts`, 3 more in `review-fix-loop.ts` — `review-fix-loop.ts
     `GIT_REMOTE_USERNAMES`'s doc comments in `run-coder.ts`, plus this document, CLAUDE.md, and
     docs/00/01/04/07 below) — no production code changed, since nothing was found wrong. Re-ran
     `pnpm typecheck`/`pnpm format:check` after the doc-comment edits; both pass.
+  - **Fifth follow-up, same day: GitLab closed the same way, this time genuinely running the
+    project's own `docker-compose.gitlab.yml` stack, and finding two real bugs.** The fourth
+    follow-up's Docker daemon turned out to work in a second execution environment too (a
+    separately-checked "trusted network access" environment, requested specifically to see if it
+    had different registry access) — but that environment hit the identical Docker Hub CDN block,
+    proving the restriction is a platform-wide egress policy, not something an environment
+    configuration choice bypasses. The actual workaround found: `mirror.gcr.io` (Google's public
+    Docker Hub mirror) serves blobs from `storage.googleapis.com`, which was reachable in both
+    environments — `docker pull mirror.gcr.io/<image>` (or a local re-tag to the canonical image
+    name, used here so the compose file itself needed no permanent third-party-mirror reference)
+    is a general workaround for this specific class of restriction, not a GitLab-only trick.
+  - **The compose stack itself had a real, previously-undiscoverable bug.** Bringing up
+    `infra/docker-compose.gitlab.yml` (image pulled via the mirror, retagged to
+    `gitlab/gitlab-ce:17.5.2-ce.0` to match the file unchanged) produced a container that ran every
+    internal GitLab service correctly (`gitaly`/`puma`/`sidekiq`/`postgresql`/`redis`/`nginx`/
+    `gitlab-workhorse` all healthy per `gitlab-ctl status`) but never passed its Docker healthcheck
+    and never answered on the exposed port. Root cause: GitLab's omnibus `nginx` listens
+    internally on whatever port `external_url` specifies (`3400`, set in this file's own
+    `GITLAB_OMNIBUS_CONFIG`), not port 80 — but the compose file mapped host `3400` to container
+    port `80`, forwarding to a port nothing was listening on. This is exactly the class of bug the
+    file's own header comment anticipated ("this stack has not been exercised against a live
+    Docker daemon") — fixed by mapping `3400:3400` instead, with an inline comment explaining why,
+    committed separately as its own fix before the credential/API verification below.
+  - **What was actually proven, mirroring Gitea's fourth-follow-up battery exactly:** (1)
+    `workspace.ts`'s real `prepareBranch()`/`commitAndPush()`/`findExistingRunCommit()` cloned,
+    committed (with the `MiniCoder-Feature-Run` trailer), pushed, and correctly detected/reused an
+    idempotent retry against a live GitLab MR branch, using the `oauth2:<PAT>` convention
+    `GIT_REMOTE_USERNAMES.gitlab` resolves — verified by re-fetching the pushed branch and file
+    content from GitLab's own REST API afterward, not just trusting the local git client. (2) A
+    completely different, unrelated Basic-Auth username with the same correct token authenticated
+    identically to `'oauth2'` — a genuinely new finding: GitLab, like Gitea, ignores the Basic-Auth
+    username entirely once the password is a valid personal access token, which was not previously
+    known or documented anywhere in this project (the `'oauth2'` convention was assumed necessary,
+    not merely conventional, until this test). (3) A wrong token and no credentials both correctly
+    failed against a private repository, ruling out "any Basic-Auth header works." (4) Every
+    `GitlabScmClient` method was exercised end-to-end against the real instance:
+    `listPullRequestsForBranch`, `createPullRequest`, `getPullRequest`, `getPullRequestDiff`,
+    `publishStatusCheck`, `getRemainingRateLimit`, and `mergePullRequest`, followed by
+    `getPullRequest` again confirming the real post-merge state.
+  - **Two real, previously-undetectable bugs in `GitlabScmClient` itself were found and fixed,
+    with regression coverage added directly (5 new tests, `packages/gitlab/src/
+gitlab-client.test.ts`):** - `getPullRequestDiff()` crashed with a 500 (`NoMethodError: undefined method 'page' for
+      #<Gitlab::Diff::FileCollection::PaginatedMergeRequestDiff>`) on this real GitLab CE 17.5.2
+    instance whenever `per_page` was explicitly supplied in the query string — a genuine
+    server-side bug in GitLab's own "limit optimization" offset-pagination helper for this
+    specific collection type, reproduced reliably (the identical request without `per_page`
+    returns 200 with real pagination headers). No amount of reviewing GitLab's documented API
+    shape would have surfaced this — it required an actual server response. Fixed by never
+    sending `per_page` on this one endpoint and following the real `X-Next-Page` response header
+    instead of a client-chosen page size — which is also more correct in general, since it
+    tracks whatever `per_page` default the server is actually configured with. This required
+    widening the private `request()` helper to also return `Headers`, a change every other call
+    site's `{ data }`-only destructuring absorbed with zero modification. - `mergePullRequest()` rejected the merge with an unclassified 422 whenever `commitMessage` was
+    an explicit empty string (as opposed to omitted) — reproduced by retrying the identical merge
+    with the field omitted and watching it succeed instantly. No current MiniCoder caller
+    triggers this in practice (`merge.ts`/`merge-if-ready-route.ts` both omit `commitMessage`
+    entirely, which `JSON.stringify` already drops as `undefined`), so this was defense-in-depth
+    hardening rather than a fix for an observed production failure — but it was also a real gap
+    in `mergePullRequest()`'s error classification either way: 422 was not one of the two status
+    codes (406, 405) this method recognized as a merge rejection, so it would have rethrown
+    unclassified, defeating the whole point of `ScmMergeRejectedError`. Fixed by omitting
+    `merge_commit_message`/`squash_commit_message` entirely when `commitMessage` is blank, and by
+    classifying 422 identically to 405 (`not_mergeable`, `autoClearable: false`) as
+    defense-in-depth for any other real cause GitLab might return it for.
+  - A pre-existing shared test-fixture bug surfaced by this fix: `packages/testing/src/
+scm-conformance.test.ts`'s own fake-`fetch` helper (predating this follow-up, from Stage 5) also
+    didn't return a `.headers` object, which broke once `getPullRequestDiff()` started reading one
+    — fixed identically to `gitlab-client.test.ts`'s own helper (a real `Headers()` default).
+  - Re-ran the full suite after this fifth follow-up: `pnpm typecheck`/`pnpm lint`/
+    `pnpm format:check`/`pnpm build:web` all still pass, `minicoder test system` (13 scenarios) all
+    pass, and `pnpm test` now reports 116 test files / 1092 tests passed, 26 skipped (up from
+    116/1087 after the fourth follow-up).
 - **Documentation corrected to reflect the interface/schema/diagnostic layer being genuinely
   shipped, while being explicit about the write-pipeline exception** — the "GitLab and Gitea are
   staged, not-yet-built providers" framing in `CLAUDE.md` (decision #3), `docs/00`, `docs/01`
@@ -2807,27 +2898,34 @@ system` (13 scenarios, including the two edited scenario files) all pass, and `p
   `scm-client-resolver.test.ts` plus the new provider-dispatch regressions added to
   `github-reconciliation.test.ts`/`run-review.test.ts`).
 
-Acceptance (whole item): **fully implemented after three same-day follow-ups; Gitea is now
-genuinely live-verified after a fourth, GitLab remains a narrow, explicitly-documented verification
-gap.** At least one alternative SCM provider (Gitea, then GitLab) was added without changing core
-orchestration, the `pull_requests`/`feature_runs` schema, or the feature-execution state matrix —
-the literal schema/state-matrix clause holds, and the `ScmClient` interface itself, its webhook
-receivers, and every read/diagnostic/write call site — including, after the third follow-up, the
-coder adapter's own clone/push credential path — are genuine "swap the implementation behind an
-unchanged interface" successes, proven by the Stage 5 cross-provider conformance suite plus the
-provider-dispatch regressions added across all three follow-ups. The stronger, implied reading of
-that sentence — that a Gitea/GitLab-configured project can actually be _driven_ through the
-automated pipeline the way a GitHub-configured one can — now holds end-to-end in code for scheduled
+Acceptance (whole item): **fully implemented and, as of a fifth same-day follow-up, fully
+live-verified for both alternative SCM providers — no remaining verification gap.** At least one
+alternative SCM provider (Gitea, then GitLab) was added without changing core orchestration, the
+`pull_requests`/`feature_runs` schema, or the feature-execution state matrix — the literal
+schema/state-matrix clause holds, and the `ScmClient` interface itself, its webhook receivers, and
+every read/diagnostic/write call site — including, after the third follow-up, the coder adapter's
+own clone/push credential path — are genuine "swap the implementation behind an unchanged
+interface" successes, proven by the Stage 5 cross-provider conformance suite plus the
+provider-dispatch regressions added across every follow-up. The stronger, implied reading of that
+sentence — that a Gitea/GitLab-configured project can actually be _driven_ through the automated
+pipeline the way a GitHub-configured one can — now holds end-to-end in code for scheduled
 reconciliation, AI review, merge-gate status checks, the real merge call, and (as of the third
-follow-up) the coder adapter's clone/push, for both providers. **For Gitea specifically, "in code"
-is no longer the ceiling: a fourth follow-up ran a real Gitea 1.22.3 instance (a directly-downloaded
-binary, no Docker needed) and proved the actual clone/push, the username-independent token
-authentication, and every `GiteaScmClient` REST method end-to-end against real API responses** —
-closing both this stage's coder-adapter-credential gap and Stage 3's original "no live Gitea
-instance available" caveat with real evidence, not just documentation. **GitLab is the one
-provider with no live verification at all**: its `oauth2:<token>` credential convention is still
-only documented-and-high-confidence, since self-hosted GitLab CE has no equivalent lightweight,
-Docker-free path the way Gitea's single binary does, and this environment's Docker Hub access was
-blocked by network policy. This is the accurate, as-built status after all four follow-ups — one
-well-scoped, explicitly-tracked verification gap (GitLab), not a claim that verification happened
-for a provider it didn't.
+follow-up) the coder adapter's clone/push, for both providers. **This is no longer just "in code":
+a fourth follow-up ran a real Gitea 1.22.3 instance and a fifth ran a real GitLab CE 17.5.2
+instance** (both via a directly-downloaded binary and a real `docker compose up` respectively — the
+GitLab pass needed the `mirror.gcr.io` Docker Hub mirror to work around this environment's blocked
+CDN access) **and proved, for both providers: the actual clone/push, that both providers ignore the
+HTTPS Basic-Auth username entirely once the password is a valid token (a genuinely new finding,
+not merely re-confirming documented behavior), and every REST method (`GiteaScmClient`/
+`GitlabScmClient`) end-to-end against real API responses.** This closed Stage 3's original "no live
+Gitea instance available" caveat, Stage 4's identical GitLab caveat, and this stage's own
+coder-adapter-credential gap, all with real evidence rather than documentation alone. Along the
+way, three real, previously-undiscoverable bugs were found and fixed: `infra/docker-compose.gitlab.yml`'s
+wrong nginx port mapping, `GitlabScmClient.getPullRequestDiff()`'s crash on this GitLab version
+when `per_page` was supplied, and `GitlabScmClient.mergePullRequest()`'s unclassified rejection on
+an explicit empty `commitMessage`. What remains open is narrower still: the coder-sandbox
+egress-proxy allow-list's `SCM_ALLOWED_HOST` addition is unverified (both live passes ran git
+operations directly on the host, not inside the actual sandboxed network path), and no permanent
+CI-integrated live-instance matrix exists — both live-verification passes were one-off manual runs,
+torn down afterward, not wired into `pnpm test`/CI. This is the accurate, as-built status after all
+five follow-ups.

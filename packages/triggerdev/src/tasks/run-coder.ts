@@ -85,13 +85,15 @@ export function buildCoderCloneUrl(
 }
 
 /** The HTTPS Basic-Auth username each provider expects paired with its access token in a git
- * remote URL (`workspace.ts`'s `authenticatedRemote()`). GitHub's `x-access-token` and GitLab's
- * `oauth2` are both documented, stable conventions used identically across API versions. Gitea's
- * `'token'` placeholder is live-verified (docs/06 §Phase 18 Stage 6's fourth follow-up) against a
- * real Gitea 1.22.3 instance — any non-blank username works identically once the password is a
- * valid token, confirming Gitea's documented username-independent behavior. GitLab's convention
- * remains unverified against a live instance — see `resolveDefaultCoderAdapterFactory()`'s doc
- * comment below for the full confidence breakdown. */
+ * remote URL (`workspace.ts`'s `authenticatedRemote()`). All three are now live-verified (docs/06
+ * §Phase 18 Stage 6's fourth and fifth follow-ups) against real Gitea 1.22.3 and GitLab CE 17.5.2
+ * instances: both self-hosted providers turned out to authenticate purely on the token in the
+ * password field, ignoring the username entirely (confirmed empirically for both — a completely
+ * unrelated username with the same correct token authenticates identically) — `'token'`/`'oauth2'`
+ * are the documented conventions this client sends, not values either server actually requires.
+ * GitHub's `x-access-token` is the one convention not independently re-verified in this pass (it
+ * predates this project's live-verification effort and already had a real production caller). See
+ * `resolveDefaultCoderAdapterFactory()`'s doc comment below for the full writeup. */
 const GIT_REMOTE_USERNAMES: Record<'github' | 'gitlab' | 'gitea', string> = {
   github: 'x-access-token',
   gitlab: 'oauth2',
@@ -117,36 +119,50 @@ const GIT_TOKEN_ENV_VARS: Record<'github' | 'gitlab' | 'gitea', string> = {
  * — the same names `scm-client-resolver.ts` already established for REST client construction) and
  * embeds it under the matching `GIT_REMOTE_USERNAMES` username.
  *
- * **Gitea (`token:<token>`) is now live-verified, not just documented (docs/06 §Phase 18 Stage 6's
- * fourth follow-up).** A real Gitea 1.22.3 instance (a native binary, no Docker needed — Gitea
- * ships as a single static binary from GitHub Releases, which was reachable when this environment's
- * Docker Hub registry access was not) confirmed: (1) `workspace.ts`'s real `prepareBranch()`/
+ * **Gitea (`token:<token>`) is live-verified against a real Gitea 1.22.3 instance (docs/06 §Phase
+ * 18 Stage 6's fourth follow-up)** — a native binary, no Docker needed (Gitea ships as a single
+ * static binary from GitHub Releases, which was reachable when this environment's Docker Hub
+ * registry access was not). Confirmed: (1) `workspace.ts`'s real `prepareBranch()`/
  * `commitAndPush()`/`findExistingRunCommit()` clone, commit, push, and idempotent-retry-detect
  * correctly against a genuine Gitea remote using this exact `token:<PAT>` convention; (2) a
  * completely different, unrelated Basic-Auth username with the same correct token authenticates
  * identically — proving the username value itself is inert, exactly as Gitea's documented
  * behavior claims; (3) a wrong token, or no credentials at all, correctly fails against a private
  * repository, proving the token itself (not just "some non-empty Basic-Auth header") is what's
- * checked; (4) every `GiteaScmClient` method (`createPullRequest`, `getPullRequest`,
- * `getPullRequestDiff`, `publishStatusCheck`, `mergePullRequest`, `listPullRequestsForBranch`) also
- * worked correctly end-to-end against the same live instance, closing Stage 3's original "no live
- * Gitea instance available" caveat. Not verified: behavior on Gitea versions other than 1.22.3, or
- * against an instance with non-default auth configuration (e.g. one that has disabled built-in
- * Basic-Auth account/token login) — the live pass exercised one clean default install; the
- * `GITEA_USERNAME` env var fallback named below is still the right move if either of those
- * surfaces a real difference.
+ * checked; (4) every `GiteaScmClient` method also worked correctly end-to-end against the same
+ * live instance, closing Stage 3's original "no live Gitea instance available" caveat. Not
+ * verified: behavior on Gitea versions other than 1.22.3, or against an instance with non-default
+ * auth configuration (e.g. one that has disabled built-in Basic-Auth account/token login) — the
+ * live pass exercised one clean default install; the `GITEA_USERNAME` env var fallback named
+ * below is still the right move if either of those surfaces a real difference.
  *
- * **GitLab (`oauth2:<token>`) remains unverified against a live instance** — this is GitLab's own
- * long-documented, version-stable personal-access-token-over-HTTPS convention (used identically
- * for git operations across GitLab.com and self-hosted GitLab CE/EE), so confidence is already
- * high, but no live GitLab instance has been stood up to prove it the way Gitea's was (self-hosted
- * GitLab CE is materially heavier to stand up than Gitea's single binary — no equivalent
- * lightweight path was available in this environment). The coder-sandbox egress-proxy allow-list
- * (`infra/docker/coder-sandbox/egress-proxy/filter.txt`'s optional `SCM_ALLOWED_HOST` env var,
- * mirroring the existing `CODE_GEN_ALLOWED_HOST`) is also still unverified for both providers,
- * since the live-verification pass ran the coder-adapter's git operations directly on the host,
- * not inside the sandbox's egress-proxied network — that piece still needs a real Docker daemon
- * with registry access, which this environment did not have.
+ * **GitLab (`oauth2:<token>`) is also live-verified against a real GitLab CE 17.5.2 instance
+ * (docs/06 §Phase 18 Stage 6's fifth follow-up)** — this environment's own Docker Hub CDN access
+ * was blocked, but the `mirror.gcr.io` Docker Hub mirror worked around it (confirmed reachable in
+ * two separate execution environments), so the full `docker-compose.gitlab.yml` stack was
+ * actually run rather than a lighter substitute. Confirmed via the identical battery run against
+ * Gitea: `workspace.ts`'s real clone/commit/push/idempotent-retry-detect all work with this exact
+ * `oauth2:<PAT>` convention; a completely different Basic-Auth username with the same correct
+ * token also authenticates identically (GitLab, like Gitea, ignores the username entirely once the
+ * password is a valid token — a new finding, not previously documented); a wrong token or no
+ * credentials correctly fails. This pass found two real bugs in `GitlabScmClient`, both fixed and
+ * regression-tested directly in `gitlab-client.ts`: `getPullRequestDiff()` crashed with a 500 on
+ * this GitLab version whenever `per_page` was explicitly supplied (a genuine GitLab-side
+ * pagination bug, worked around by following `X-Next-Page` instead), and `mergePullRequest()`
+ * rejected the merge with an unclassified 422 whenever `commitMessage` was an explicit empty
+ * string rather than omitted (no real MiniCoder caller does this today, but it's now defended
+ * against directly). `infra/docker-compose.gitlab.yml`'s own port mapping was also found and fixed
+ * during this pass (nginx listens on `external_url`'s port, not always 80 — see that file's own
+ * comment). Every other `GitlabScmClient` method worked correctly with no surprises. Not verified:
+ * GitLab versions other than 17.5.2, or a self-managed instance with non-default authentication
+ * settings.
+ *
+ * **The coder-sandbox egress-proxy allow-list remains the one unverified piece for both
+ * providers** — `infra/docker/coder-sandbox/egress-proxy/filter.txt`'s optional `SCM_ALLOWED_HOST`
+ * env var (mirroring the existing `CODE_GEN_ALLOWED_HOST`) was added but not exercised, since both
+ * live-verification passes ran the coder-adapter's git operations directly on the host, not inside
+ * the sandbox's own egress-proxied network. That piece still needs a real Docker daemon running
+ * the full `docker-compose.coder-sandbox.yml` stack, which this pass did not attempt.
  */
 function resolveDefaultCoderAdapterFactory(): CoderAdapterFactory {
   return async ({ repoUrl, provider }: CoderRepoConnection) => {

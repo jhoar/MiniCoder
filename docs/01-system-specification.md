@@ -43,12 +43,11 @@ redesign, since `ObservedPullRequestState` and the rest of the `ScmClient` contr
 written at a provider-neutral level of abstraction. Every write-path call site — scheduled
 reconciliation, reviewer diff fetch, merge-gate status checks, PR creation, the real merge call,
 and the coder adapter's own clone/push credential — is provider-aware as of three same-day Stage 6
-follow-ups. **Gitea's coder-adapter credential convention and actual clone/push are live-verified
-against a real Gitea instance (a fourth Stage 6 follow-up); GitLab's remain a narrow, tracked
-gap** — self-hosted GitLab CE has no equivalent lightweight, Docker-free verification path the way
-Gitea's single-binary distribution does. This is an implementation-complete, verification-open gap
-for GitLab specifically, not a missing feature; see §4.3/§5.7 and Stage 6's completion notes for
-the full, up-to-date writeup.
+follow-ups. **Both Gitea's and GitLab's coder-adapter credential conventions and actual clone/push
+are live-verified against real instances** (a fourth Stage 6 follow-up ran a real Gitea 1.22.3
+instance; a fifth ran a real GitLab CE 17.5.2 instance, also finding and fixing two real
+GitLab-specific bugs along the way) — no remaining verification gap for either provider; see
+§4.3/§5.7 and Stage 6's completion notes for the full, up-to-date writeup.
 
 > Note: **PostgreSQL is in scope** as the hosted/team state store (see §3, §14). It is not a
 > deferred "migration"; it is a first-class deployment profile supported by the persistence
@@ -68,10 +67,9 @@ SCM provider       = authoritative repository, branch, commit, PR, review, CI/ch
                      conversation, mergeability, and merge state. GitHub, Gitea, and GitLab are all
                      shipped `ScmClient` implementations behind the same interface (§4.3, §5.7,
                      `06-implementation-plan.md` §Phase 18); every write-path call site, including
-                     the coder adapter's own clone/push credential, is provider-aware. Gitea's
-                     coder-adapter credential and clone/push are live-verified against a real
-                     instance; GitLab's are not — a real, narrowly-tracked verification gap, see
-                     §5.7 and Stage 6's completion notes.
+                     the coder adapter's own clone/push credential, is provider-aware. Both Gitea's
+                     and GitLab's coder-adapter credential and clone/push are live-verified against
+                     real instances — see §5.7 and Stage 6's completion notes.
 SCM webhooks       = primary source for external SCM changes.
 Scheduled reconciliation = fallback/repair mechanism.
 CI provider        = CI, tests, and build validation (GitHub Actions today).
@@ -98,8 +96,8 @@ its own; it reads/writes whichever database the profile below already uses.
 
 - SQLite on local disk.
 - Workflow Layer: one `minicoder tasks worker` process against the same SQLite file (see §14).
-- SCM repository (GitHub, Gitea, or GitLab — `06-implementation-plan.md` §Phase 18; see §5.7 for
-  the write-pipeline caveat that still applies to a Gitea/GitLab-provider repository).
+- SCM repository (GitHub, Gitea, or GitLab — `06-implementation-plan.md` §Phase 18; the write
+  pipeline is live-verified for all three, see §5.7).
 - Local API, local TUI, optional local Web UI.
 
 ### 3.2 Hosted / Team Profile
@@ -260,11 +258,13 @@ adapter's own clone/push credential path — resolves the matching provider's to
 Basic-Auth username convention, across three same-day Stage 6 follow-ups (Stage 6's completion
 notes have the full, up-to-date writeup). **A fourth follow-up live-verified Gitea's
 coder-adapter credential/clone-push against a real Gitea 1.22.3 instance** (a directly-downloaded
-binary — no Docker needed), including every `GiteaScmClient` REST method end-to-end. **One narrow,
-tracked gap remains: GitLab's coder-adapter credential/clone-push has not been verified against a
-live instance** — its `oauth2:<token>` convention is high-confidence (a long-documented,
-version-stable one), but self-hosted GitLab CE has no equivalent lightweight, Docker-free
-verification path.
+binary — no Docker needed), including every `GiteaScmClient` REST method end-to-end. **A fifth
+follow-up did the same for GitLab**, running a real GitLab CE 17.5.2 instance (via the
+`mirror.gcr.io` Docker Hub mirror, working around this environment's blocked CDN access) and
+verifying every `GitlabScmClient` REST method end-to-end — finding and fixing two real
+GitLab-specific bugs (`getPullRequestDiff()`'s crash under explicit pagination, `mergePullRequest()`'s
+unclassified rejection on an empty commit message) along the way. No verification gap remains for
+either provider.
 
 **GitHub integration contract** (finalized in implementation Phase 7 against
 `packages/github`, `packages/core/src/scm/` (renamed from `packages/core/src/github/` by docs/06

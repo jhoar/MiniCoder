@@ -73,6 +73,10 @@ function jsonResponse(status: number, body: unknown) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    // Real `Headers`, defaulting empty — GitlabScmClient.getPullRequestDiff() reads
+    // `x-next-page` off this (see gitlab-client.ts's own doc comment); an empty set correctly
+    // signals "no next page" for these single-page fixtures.
+    headers: new Headers(),
     text: async () => (body === undefined ? '' : JSON.stringify(body)),
   } as Response;
 }

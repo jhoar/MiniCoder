@@ -161,8 +161,8 @@ These are locked decisions that appear throughout the docs. Do not contradict or
    `packages/gitlab` — full `ScmClient` implementations, webhook receivers, CLI tooling, and a
    cross-provider conformance suite, docs/06 §Phase 18's "Generic SCM Interface" plan, Stages 0–5).
    **Every production write-path call site is provider-aware, including the coder adapter's own
-   clone/push credential — Gitea's is now live-verified, GitLab's is implemented but not yet
-   live-instance-verified.**
+   clone/push credential — and, as of two live-verification follow-ups, both Gitea's and GitLab's
+   have been proven against real instances, not just documented.**
    `github-reconciliation`'s scheduled task, `run-review`'s diff fetch, `run-merge-gate`'s
    status-check publication, `run-coder`'s post-push `createPullRequest()` call,
    `minicoder merge ...`/its two API routes' real merge call, and (as of a third same-day Stage 6
@@ -173,22 +173,28 @@ These are locked decisions that appear throughout the docs. Do not contradict or
    dispatch-by-`repositories.provider` pattern `packages/cli/src/commands/state.ts`'s
    `resolveScmClientForDoctor()` already establishes). A Gitea/GitLab-provider project can now be
    diagnosed, receive webhooks, have its scheduled reconciliation and AI review run correctly, be
-   merge-gated, be merged, and have its coder adapter clone/push, all in code. **Gitea's clone/push
-   credential is now genuinely live-verified, not just documented (docs/06 §Phase 18 Stage 6's
-   fourth follow-up).** A real Gitea 1.22.3 instance — a directly-downloaded static binary, no
-   Docker needed — confirmed the `token:<PAT>` HTTPS Basic-Auth convention works for both clone and
-   push, that the username value is genuinely irrelevant once the password is a valid token (per
-   Gitea's documented behavior), and that every `GiteaScmClient` REST method
-   (`createPullRequest`/`getPullRequest`/`getPullRequestDiff`/`publishStatusCheck`/
-   `mergePullRequest`/`listPullRequestsForBranch`) works correctly against real API responses.
-   **GitLab remains the one tracked verification gap:** its `oauth2:<token>` HTTPS Basic-Auth
-   convention is high-confidence (GitLab's own long-documented, version-stable convention) but has
-   not been exercised against a live instance — self-hosted GitLab CE has no equivalent
-   lightweight, Docker-free path the way Gitea's single binary does. See docs/06 §Phase 18
-   Stage 6's completion notes for the full writeup, including exactly what a live GitLab
-   verification pass would still need to confirm. The scheduled reconciliation task keeps its
-   literal name (`github-reconciliation`, one of the no-drift canonical task IDs, docs/00 §3.12)
-   regardless of which provider it ends up
+   merge-gated, be merged, and have its coder adapter clone/push, all in code — and, unlike every
+   earlier phase of this project, this is no longer just a code-level claim. **A fourth follow-up
+   live-verified Gitea** (a real Gitea 1.22.3 instance — a directly-downloaded static binary, no
+   Docker needed) **and a fifth live-verified GitLab** (a real GitLab CE 17.5.2 instance, run via
+   `docker compose up` using the `mirror.gcr.io` Docker Hub mirror to work around this
+   environment's blocked CDN access). Both confirmed: the actual clone/push using each provider's
+   documented credential convention (`token:<PAT>` for Gitea, `oauth2:<PAT>` for GitLab); that
+   **both providers ignore the HTTPS Basic-Auth username entirely once the password is a valid
+   token** — a genuinely new finding for GitLab, not merely re-confirming Gitea's already-documented
+   behavior; and every REST method (`GiteaScmClient`/`GitlabScmClient`) working correctly against
+   real API responses. The GitLab pass also found and fixed three real bugs no amount of code
+   review could have surfaced: `infra/docker-compose.gitlab.yml`'s wrong nginx port mapping (GitLab
+   listens on whatever port `external_url` specifies, not always 80), `GitlabScmClient.
+getPullRequestDiff()` crashing on a real GitLab-side pagination bug when `per_page` was supplied,
+   and `GitlabScmClient.mergePullRequest()` silently failing to classify a 422 rejection triggered
+   by an explicit empty `commitMessage`. See docs/06 §Phase 18 Stage 6's completion notes for the
+   full writeup. What remains unverified is narrower still: the coder-sandbox egress-proxy
+   allow-list's `SCM_ALLOWED_HOST` addition (both passes ran git operations on the host, not inside
+   the actual sandboxed network path) and a permanent CI-integrated live-instance matrix (both
+   passes were one-off manual runs, not wired into `pnpm test`/CI). The scheduled reconciliation
+   task keeps its literal name (`github-reconciliation`, one of the no-drift canonical task IDs,
+   docs/00 §3.12) regardless of which provider it ends up
    reconciling — same precedent as keeping `@minicoder/triggerdev` after the Trigger.dev removal.
 
 4. **Workflow Layer** is the subsystem name for durable workflow execution. **The implementation

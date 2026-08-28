@@ -7,17 +7,31 @@ import {
   deriveConversationsResolved,
 } from './gitlab-client.js';
 
-interface FakeRoute {
-  method: string;
-  path: string;
+interface FakeResponseSpec {
   status?: number;
   body?: unknown;
+  headers?: Record<string, string>;
 }
 
-function jsonResponse(status: number, body: unknown) {
+interface FakeRoute extends FakeResponseSpec {
+  method: string;
+  path: string;
+  /** For an endpoint called multiple times (pagination): each call consumes the next entry in
+   * order; the last entry repeats once exhausted. Overrides status/body/headers when present —
+   * used to simulate GitLab's `X-Next-Page` pagination header across successive calls to the same
+   * path, which the requested URL alone can't distinguish (page number is part of the URL, but a
+   * route matches on path prefix, not the full query string). */
+  responses?: FakeResponseSpec[];
+  /** Mutated by `fakeFetch` to track how many times a `responses`-based route has been consumed —
+   * callers should not set this. */
+  callCount?: number;
+}
+
+function jsonResponse(status: number, body: unknown, headers?: Record<string, string>) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(headers ?? {}),
     text: async () => (body === undefined ? '' : JSON.stringify(body)),
   } as Response;
 }
@@ -47,7 +61,13 @@ function fakeFetch(routes: FakeRoute[]): typeof fetch {
     if (!match) {
       throw new Error(`fakeFetch: no route registered for ${method} ${url}`);
     }
-    return jsonResponse(match.status ?? 200, match.body);
+    if (match.responses && match.responses.length > 0) {
+      const index = Math.min(match.callCount ?? 0, match.responses.length - 1);
+      match.callCount = (match.callCount ?? 0) + 1;
+      const spec = match.responses[index]!;
+      return jsonResponse(spec.status ?? 200, spec.body, spec.headers);
+    }
+    return jsonResponse(match.status ?? 200, match.body, match.headers);
   }) as typeof fetch;
 }
 
@@ -240,6 +260,73 @@ describe('GitlabScmClient', () => {
     ).rejects.toMatchObject({ reason: 'not_mergeable', autoClearable: false });
   });
 
+  it('mergePullRequest classifies a 422 as not_mergeable/not autoClearable (GitLab live-verification finding)', async () => {
+    // Verified against a real GitLab CE 17.5.2 instance: GitLab returns 422 "Branch cannot be
+    // merged" for at least one real not-mergeable condition (see the sibling
+    // "omits merge_commit_message" test below for the specific trigger found) — not just 405 as
+    // originally assumed.
+    const client = new GitlabScmClient({
+      ...BASE,
+      fetchImpl: fakeFetch([
+        {
+          method: 'PUT',
+          path: '/merge_requests/7/merge',
+          status: 422,
+          body: { message: 'Branch cannot be merged' },
+        },
+      ]),
+    });
+    await expect(
+      client.mergePullRequest({ owner: 'o', repo: 'r', prNumber: 7, mergeMethod: 'merge' }),
+    ).rejects.toMatchObject({ reason: 'not_mergeable', autoClearable: false });
+  });
+
+  it('mergePullRequest omits merge_commit_message/squash_commit_message when commitMessage is empty', async () => {
+    // Regression for a real bug found live: GitLab CE 17.5.2 rejects the merge with a 422 when
+    // merge_commit_message is an explicit empty string (as opposed to the field being omitted
+    // entirely) — reproduced by retrying the identical merge request with the field omitted and
+    // watching it succeed. No current MiniCoder caller passes an empty string today (every real
+    // caller omits commitMessage, leaving it undefined, which JSON.stringify already drops), but
+    // this is now defended against directly rather than relying on callers never doing so.
+    const fetchImpl = vi.fn(
+      fakeFetch([
+        { method: 'PUT', path: '/merge_requests/7/merge', body: { merge_commit_sha: 'sha' } },
+      ]),
+    );
+    const client = new GitlabScmClient({ ...BASE, fetchImpl });
+    await client.mergePullRequest({
+      owner: 'o',
+      repo: 'r',
+      prNumber: 7,
+      mergeMethod: 'squash',
+      commitMessage: '',
+    });
+    const [, init] = fetchImpl.mock.calls[0]!;
+    const body = JSON.parse(init!.body as string);
+    expect(body).not.toHaveProperty('merge_commit_message');
+    expect(body).not.toHaveProperty('squash_commit_message');
+  });
+
+  it('mergePullRequest sends a non-empty commitMessage through unchanged', async () => {
+    const fetchImpl = vi.fn(
+      fakeFetch([
+        { method: 'PUT', path: '/merge_requests/7/merge', body: { merge_commit_sha: 'sha' } },
+      ]),
+    );
+    const client = new GitlabScmClient({ ...BASE, fetchImpl });
+    await client.mergePullRequest({
+      owner: 'o',
+      repo: 'r',
+      prNumber: 7,
+      mergeMethod: 'squash',
+      commitMessage: 'a real message',
+    });
+    const [, init] = fetchImpl.mock.calls[0]!;
+    const body = JSON.parse(init!.body as string);
+    expect(body.merge_commit_message).toBe('a real message');
+    expect(body.squash_commit_message).toBe('a real message');
+  });
+
   it('mergePullRequest rethrows a genuine infrastructure failure untouched', async () => {
     const client = new GitlabScmClient({
       ...BASE,
@@ -271,6 +358,52 @@ describe('GitlabScmClient', () => {
     const diff = await client.getPullRequestDiff('o', 'r', 7);
     expect(diff).toContain('diff --git a/a.txt b/a.txt');
     expect(diff).toContain('+new');
+  });
+
+  it('getPullRequestDiff never sends per_page (GitLab live-verification finding)', async () => {
+    // Regression for a real bug found live: GitLab CE 17.5.2's diffs endpoint crashes with a 500
+    // (NoMethodError: undefined method `page`) whenever per_page is explicitly supplied — page
+    // alone works fine. Asserts the actual request URL never contains per_page, so this bug can't
+    // silently come back.
+    const fetchImpl = vi.fn(
+      fakeFetch([
+        {
+          method: 'GET',
+          path: '/diffs',
+          body: [{ old_path: 'a.txt', new_path: 'a.txt', diff: 'x' }],
+        },
+      ]),
+    );
+    const client = new GitlabScmClient({ ...BASE, fetchImpl });
+    await client.getPullRequestDiff('o', 'r', 7);
+    const [url] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).not.toContain('per_page');
+    expect(String(url)).toContain('page=1');
+  });
+
+  it('getPullRequestDiff follows X-Next-Page across multiple pages', async () => {
+    const client = new GitlabScmClient({
+      ...BASE,
+      fetchImpl: fakeFetch([
+        {
+          method: 'GET',
+          path: '/diffs',
+          responses: [
+            {
+              body: [{ old_path: 'a.txt', new_path: 'a.txt', diff: 'first' }],
+              headers: { 'x-next-page': '2' },
+            },
+            {
+              body: [{ old_path: 'b.txt', new_path: 'b.txt', diff: 'second' }],
+              headers: { 'x-next-page': '' },
+            },
+          ],
+        },
+      ]),
+    });
+    const diff = await client.getPullRequestDiff('o', 'r', 7);
+    expect(diff).toContain('diff --git a/a.txt b/a.txt\nfirst');
+    expect(diff).toContain('diff --git a/b.txt b/b.txt\nsecond');
   });
 
   it("listPullRequestsForBranch relies on GitLab's server-side source_branch filter (no client-side filtering)", async () => {

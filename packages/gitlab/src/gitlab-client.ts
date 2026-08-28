@@ -14,10 +14,17 @@
  * called `iid` (internal ID) — this is what `prNumber` maps to throughout this file; GitLab also
  * has a global `id` per MR that this client never uses.
  *
- * **Verification status (same honest-labeling posture as `packages/gitea`):** based on GitLab's
- * documented REST API v4 and webhook payload shapes, reviewed for correctness, not exercised
- * against a live GitLab instance in this repository's CI — see `infra/docker-compose.gitlab.yml`'s
- * own header comment for why. Unit tests exercise this client against a fake `fetchImpl`.
+ * **Live-verified against a real GitLab CE 17.5.2 instance (docs/06 §Phase 18 Stage 6's
+ * live-verification pass), not just reviewed against documented shapes.** `createPullRequest`,
+ * `getPullRequest`, `getPullRequestDiff`, `publishStatusCheck`, `mergePullRequest`, and
+ * `listPullRequestsForBranch` all ran end-to-end against a real instance (`docker compose -f
+ * infra/docker-compose.gitlab.yml up`, image pulled via the `mirror.gcr.io` Docker Hub mirror
+ * workaround — this environment's direct Docker Hub CDN access was blocked) and found two real
+ * bugs, both fixed and regression-tested here: `getPullRequestDiff()`'s pagination (see its own
+ * doc comment) and `mergePullRequest()`'s empty-`merge_commit_message` handling (see its own doc
+ * comment). Every other method matched its documented shape with no surprises. Unit tests exercise
+ * this client against a fake `fetchImpl` for the full surface; `createBranch`/`getRemainingRateLimit`
+ * were not separately live-exercised (no real caller needed them for this pass).
  *
  * **This is the largest lowest-common-denominator compromise of the three providers, documented
  * here rather than silently absorbed (per docs/06 §Phase 18's own framing):**
@@ -161,7 +168,7 @@ export class GitlabScmClient implements ScmClient {
     method: string,
     path: string,
     body?: unknown,
-  ): Promise<{ status: number; data: T | null }> {
+  ): Promise<{ status: number; data: T | null; headers: Headers }> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/v4${path}`, {
       method,
       headers: {
@@ -171,7 +178,8 @@ export class GitlabScmClient implements ScmClient {
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (response.status === 204) return { status: response.status, data: null };
+    if (response.status === 204)
+      return { status: response.status, data: null, headers: response.headers };
     const text = await response.text();
     const data = text.length > 0 ? (JSON.parse(text) as T) : null;
     if (!response.ok) {
@@ -180,7 +188,7 @@ export class GitlabScmClient implements ScmClient {
         response.status,
       );
     }
-    return { status: response.status, data };
+    return { status: response.status, data, headers: response.headers };
   }
 
   async createBranch(options: CreateBranchOptions): Promise<{ branchName: string; sha: string }> {
@@ -311,15 +319,26 @@ export class GitlabScmClient implements ScmClient {
       await this.rebaseAndWait(projectId, options.prNumber);
     }
 
+    // HIGH bug fix, verified against a real GitLab CE 17.5.2 instance (docs/06 §Phase 18 Stage 6's
+    // live-verification pass): sending merge_commit_message: '' (an explicit empty string, as
+    // opposed to omitting the field) makes GitLab reject the merge outright with a 422 "Branch
+    // cannot be merged" — reproduced reliably (retrying the identical MR with the field omitted
+    // instead succeeds immediately). No current MiniCoder caller passes an empty string today
+    // (every real caller in merge.ts/merge-if-ready-route.ts omits commitMessage entirely, so
+    // JSON.stringify already drops the `undefined` value) — this is defense-in-depth against a
+    // future caller or API consumer submitting one, not a fix for an observed production failure.
+    const hasCommitMessage = Boolean(options.commitMessage && options.commitMessage.length > 0);
     try {
       const { data } = await this.request<GitlabMergeRequest>(
         'PUT',
         `/projects/${projectId}/merge_requests/${options.prNumber}/merge`,
         {
           squash: options.mergeMethod === 'squash',
-          merge_commit_message: options.commitMessage,
+          merge_commit_message: hasCommitMessage ? options.commitMessage : undefined,
           squash_commit_message:
-            options.mergeMethod === 'squash' ? options.commitMessage : undefined,
+            options.mergeMethod === 'squash' && hasCommitMessage
+              ? options.commitMessage
+              : undefined,
           sha: options.expectedHeadSha,
         },
       );
@@ -329,9 +348,12 @@ export class GitlabScmClient implements ScmClient {
         const message = err.message;
         // GitLab's merge endpoint genuinely supports the same sha-mismatch guard GitHub's does
         // (unlike Gitea's, which has none): 406 is GitLab's documented response when the supplied
-        // `sha` no longer matches the MR's real head. 405 covers "not mergeable" (conflicts, a
-        // required pipeline hasn't succeeded, branch protection). Both only apply when we actually
-        // requested a merge — the classification is only reachable from this call site.
+        // `sha` no longer matches the MR's real head. 405 and 422 both cover "not mergeable"
+        // (conflicts, a required pipeline hasn't succeeded, branch protection, or the
+        // merge_commit_message bug above) — verified live that GitLab uses both status codes for
+        // different not-mergeable sub-cases, not just 405 as originally assumed. All three only
+        // apply when we actually requested a merge — the classification is only reachable from
+        // this call site.
         if (err.status === 406) {
           throw new ScmMergeRejectedError(
             `MR !${options.prNumber} head moved since the merge gate was evaluated: ${message}`,
@@ -339,7 +361,7 @@ export class GitlabScmClient implements ScmClient {
             true,
           );
         }
-        if (err.status === 405) {
+        if (err.status === 405 || err.status === 422) {
           throw new ScmMergeRejectedError(
             `MR !${options.prNumber} is not mergeable: ${message}`,
             'not_mergeable',
@@ -351,17 +373,33 @@ export class GitlabScmClient implements ScmClient {
     }
   }
 
+  /**
+   * **Never pass `per_page` to this endpoint — verified against a real GitLab CE 17.5.2 instance
+   * (docs/06 §Phase 18 Stage 6's live-verification pass).** `GET .../merge_requests/:iid/diffs`
+   * crashes with a 500 (`NoMethodError: undefined method 'page' for
+   * #<Gitlab::Diff::FileCollection::PaginatedMergeRequestDiff>`) whenever `per_page` is explicitly
+   * supplied — GitLab's own offset-pagination "limit optimization" helper doesn't support this
+   * particular collection type. `page` alone (no `per_page`) works fine and returns real
+   * `X-Next-Page`/`X-Total-Pages` headers, so this loop follows `X-Next-Page` instead of a
+   * client-chosen page size — this also means it correctly tracks whatever `per_page` default the
+   * server is actually configured with, rather than assuming one. Every other paginated endpoint
+   * in this client (`paginateDiscussions`, `listPullRequestsForBranch`, etc.) was also exercised
+   * live with an explicit `per_page=50` and works correctly — this bug is specific to the diffs
+   * endpoint's collection type, not a general GitLab pagination issue.
+   */
   async getPullRequestDiff(owner: string, repo: string, prNumber: number): Promise<string> {
     const projectId = encodeProjectId(owner, repo);
     const entries: GitlabDiffEntry[] = [];
-    for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const { data } = await this.request<GitlabDiffEntry[]>(
+    let page = '1';
+    for (let i = 0; i < MAX_PAGES; i += 1) {
+      const { data, headers } = await this.request<GitlabDiffEntry[]>(
         'GET',
-        `/projects/${projectId}/merge_requests/${prNumber}/diffs?page=${page}&per_page=${PER_PAGE}`,
+        `/projects/${projectId}/merge_requests/${prNumber}/diffs?page=${page}`,
       );
-      const batch = data ?? [];
-      entries.push(...batch);
-      if (batch.length < PER_PAGE) break;
+      entries.push(...(data ?? []));
+      const nextPage = headers.get('x-next-page');
+      if (!nextPage) break;
+      page = nextPage;
     }
     // Synthesized unified-diff-like text — see this module's header comment.
     return entries

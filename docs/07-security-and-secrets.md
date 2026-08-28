@@ -60,16 +60,18 @@ call, and (as of a third same-day Stage 6 follow-up) the coder adapter's own clo
 `GITHUB_TOKEN`/`GITLAB_TOKEN`/`GITEA_TOKEN` per the repository's actual `provider` column, pairing
 each with its own git-remote HTTPS Basic-Auth username: GitHub's `x-access-token`, GitLab's
 `oauth2:<token>`, Gitea's `<token-in-password-field>` convention (username value is
-documented-as-irrelevant, current placeholder `token`). **Gitea's convention and clone/push are
-now live-verified, not just documented (a fourth same-day Stage 6 follow-up).** A real Gitea
-1.22.3 instance (a directly-downloaded static binary, no Docker needed) confirmed the git-http
-backend authenticates on the token in the password field regardless of the username sent, and that
-a real clone/push round-trip — including every `GiteaScmClient` REST method — works correctly
-end-to-end. **GitLab's convention remains a documented, high-confidence, but unverified one:** it
-is GitLab's own long-documented, version-stable convention used identically against GitLab.com and
-self-hosted CE/EE, but self-hosted GitLab CE has no equivalent lightweight, Docker-free
-verification path the way Gitea's single binary does. See Stage 6's completion notes in
-`06-implementation-plan.md` for the full writeup.
+documented-as-irrelevant, current placeholder `token`). **Both providers' conventions and
+clone/push are now live-verified, not just documented (a fourth and fifth same-day Stage 6
+follow-up).** A real Gitea 1.22.3 instance (a directly-downloaded static binary, no Docker needed)
+confirmed Gitea's git-http backend authenticates on the token in the password field regardless of
+the username sent. A real GitLab CE 17.5.2 instance (`docker compose up`, using the `mirror.gcr.io`
+Docker Hub mirror to work around this environment's blocked CDN access) confirmed GitLab's backend
+does the identical thing — a genuinely new finding, since GitLab's `oauth2` convention had been
+assumed necessary, not merely conventional, until this test. A real clone/push round-trip —
+including every `GiteaScmClient`/`GitlabScmClient` REST method — works correctly end-to-end for
+both providers; the GitLab pass also found and fixed two real GitLab-specific bugs
+(`getPullRequestDiff()`'s pagination crash, `mergePullRequest()`'s unclassified empty-commit-message
+rejection). See Stage 6's completion notes in `06-implementation-plan.md` for the full writeup.
 
 ### 3.1 GitHub (current implementation)
 
