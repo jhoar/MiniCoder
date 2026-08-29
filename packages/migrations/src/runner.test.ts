@@ -455,6 +455,13 @@ describe('Reset safety guards', () => {
     DB_PATH: tmpDb,
     HOME: tmpHome,
     APP_ENV: 'development',
+    // Explicitly cleared: Vitest sets its own ambient NODE_ENV=test on the worker process, which
+    // `runRunner`'s `...process.env` spread would otherwise leak into the spawned subprocess —
+    // now that the guard checks APP_ENV/NODE_ENV independently (issue #76), an unset-here
+    // NODE_ENV would disagree with APP_ENV=development and spuriously block every test in this
+    // suite. Mirrors `trigger.test.ts`'s equivalent `delete process.env['NODE_ENV']` isolation
+    // for its own (in-process, not subprocess) reset-dev guard tests.
+    NODE_ENV: undefined,
   });
 
   function dryRun(extra: string[] = [], env: Record<string, string | undefined> = {}) {
@@ -492,6 +499,29 @@ describe('Reset safety guards', () => {
     expect(fs.existsSync(tmpDb)).toBe(false);
     dryRun([], { APP_ENV: 'production' });
     expect(fs.existsSync(tmpDb)).toBe(false);
+  });
+
+  // Issue #76 regression: a previous `(APP_ENV ?? NODE_ENV)` short-circuit never even inspected
+  // NODE_ENV once APP_ENV was set, so APP_ENV=development NODE_ENV=production passed this guard
+  // cleanly — the same class of bug already fixed for `trigger reset-dev`'s guard.
+  it('blocks reset when APP_ENV is safe but NODE_ENV is unsafe (short-circuit regression)', () => {
+    const result = dryRun([], { APP_ENV: 'development', NODE_ENV: 'production' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/NODE_ENV/);
+    expect(result.stderr).toMatch(/production/);
+  });
+
+  it('blocks reset when NODE_ENV is safe but APP_ENV is unsafe', () => {
+    const result = dryRun([], { APP_ENV: 'production', NODE_ENV: 'development' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/APP_ENV/);
+    expect(result.stderr).toMatch(/production/);
+  });
+
+  it('blocks reset when APP_ENV and NODE_ENV are both individually safe but disagree', () => {
+    const result = dryRun([], { APP_ENV: 'development', NODE_ENV: 'test' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/disagree/);
   });
 
   it('blocks reset when --env flag is missing', () => {
@@ -674,6 +704,7 @@ describe('Reset safety guards', () => {
         DB_DIALECT: 'postgres',
         HOME: tmpHome,
         APP_ENV: 'development',
+        NODE_ENV: undefined,
         DB_URL:
           'postgresql://alice:supersecret@localhost:15432/devdb?password=query-secret&token=abc#frag-secret',
       },
@@ -704,6 +735,7 @@ describe('Reset safety guards', () => {
         DB_DIALECT: 'postgres',
         HOME: tmpHome,
         APP_ENV: 'development',
+        NODE_ENV: undefined,
         DB_URL: 'not a valid url ::: secret-should-not-leak',
       },
     );
@@ -729,6 +761,7 @@ describe('Reset safety guards', () => {
         DB_DIALECT: 'postgres',
         HOME: tmpHome,
         APP_ENV: 'development',
+        NODE_ENV: undefined,
         DB_URL: 'postgresql://alice:secret@prod-db.example.com:5432/devdb',
       },
     );
@@ -753,6 +786,7 @@ describe('Reset safety guards', () => {
         DB_DIALECT: 'postgres',
         HOME: tmpHome,
         APP_ENV: 'development',
+        NODE_ENV: undefined,
         DB_URL: 'postgresql://alice:secret@prod-db.example.com:5432/devdb',
       },
     );

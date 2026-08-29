@@ -3010,7 +3010,7 @@ fixed:
 - **A second, independent bug in `CoderSandbox` itself — `dockerHost` silently connected to the
   wrong port.** `packages/adapters-coder/src/sandbox.ts` passed the caller's `dockerHost` string
   straight through as dockerode's `host` option alone (`new Docker({ host: options.dockerHost })`).
-  `docker-modem` (dockerode's transport) only ever reads a port from a *separate* `opts.port`
+  `docker-modem` (dockerode's transport) only ever reads a port from a _separate_ `opts.port`
   field — its request-building code does `port: this.port` verbatim, never extracting a port from
   the parsed `host` URL even when that string is a fully-qualified `tcp://host:port`. Worse, Node's
   legacy `url.parse` (which `docker-modem` uses internally) actively misparses a bare `host:port`
@@ -3018,7 +3018,7 @@ fixed:
   `{hostname: null, host: '2375', pathname: null}`, treating the part before the colon as a
   protocol and the part after as an opaque host — so passing the exact, documented
   `CODER_SANDBOX_DOCKER_HOST=coder-sandbox-docker-proxy:2375` convention (this compose file's own
-  header comment) would have silently targeted the wrong hostname *and* the wrong port. This is
+  header comment) would have silently targeted the wrong hostname _and_ the wrong port. This is
   precisely why the sixth follow-up's live-daemon test suite, even once it could reach a running
   `coder-sandbox-docker-proxy`, needed a fix here before `CoderSandbox` could actually connect to
   it — confirmed by reproducing the failure first (a bare `dockerHost` value connects to port 80,
@@ -3031,7 +3031,7 @@ fixed:
   no-valid-port fallback).
 - **Live-verified end to end**: with both fixes applied, `CoderSandbox` created and controlled a
   real ephemeral container — driving `workspace.ts`'s full clone/commit/push against the same live
-  Gitea instance the sixth follow-up used — entirely *through* `coder-sandbox-docker-proxy` (a
+  Gitea instance the sixth follow-up used — entirely _through_ `coder-sandbox-docker-proxy` (a
   container the vitest process reached via a host-published port, mirroring how a real
   `run-coder` Trigger.dev task process would reach it over the `minicoder-coder-docker-proxy`
   Docker network in production), not the local Docker socket. `docker ps -a` after the run showed

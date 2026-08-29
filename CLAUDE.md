@@ -551,7 +551,9 @@ minicoder trigger reset-dev --yes --env development` passed cleanly, since `NODE
   agreed-upon system env exactly. **Watch, not fixed:** `packages/migrations/src/runner.ts`'s `db
 reset` guard uses the identical `APP_ENV ?? NODE_ENV` short-circuit and has the same latent gap —
   out of scope for this PR (pre-existing code this PR never touched), tracked as issue #76 rather
-  than silently left undocumented.
+  than silently left undocumented. **Closed by issue #76:** fixed identically (independent
+  per-var check, agreement check, then `--env` match) — see the Database Reset CLI section above
+  for the current, accurate description of `db reset`'s guard.
 - **LOW-1 (the Postgres concurrency test's `task_queue` inserts omitted `project_id` on the row
   itself, only embedding it in the JSON payload).** Weakened that suite's coverage of the real FK
   and the `(project_id, task_id, idempotency_key)` composite unique index. Fixed by populating the
@@ -3365,8 +3367,16 @@ mirroring `state repair`'s two-step dry-run/apply/confirmation-token shape:
 Additional enforced checks (all before any mutation, all before a SQLite file is created or a
 PostgreSQL connection is used):
 
-- **`--env`/system-env agreement**: when `APP_ENV`/`NODE_ENV` is set, `--env` must match it
-  exactly — not just both be in the safe set.
+- **`APP_ENV`/`NODE_ENV` are checked independently, not via a `??` short-circuit (issue #76
+  fix).** A prior `(APP_ENV ?? NODE_ENV)` computation never even inspected `NODE_ENV` once
+  `APP_ENV` was set, so `APP_ENV=development NODE_ENV=production` passed the guard cleanly — a
+  real safety gap in the most destructive command in this CLI, the same class of bug already fixed
+  for `trigger reset-dev`'s guard (`packages/cli/src/commands/trigger.ts`) during PR #75's review.
+  Each var that IS set must individually be in the safe set (`development`/`test`/`ci`); if both
+  are set, they must agree with each other — two individually-safe-but-disagreeing values (e.g.
+  `development` vs `test`) block the reset too.
+- **`--env`/system-env agreement**: once a single, agreed-upon system env is established (per the
+  independent check above), `--env` must match it exactly — not just both be in the safe set.
 - **Unset system env is never inferred as safe**: requires the explicit `--disposable-db` flag.
 - **`--actor <name>` is required** and recorded in the audit log — Phase 1's CLI has no
   session/role system, so this is a caller-declared identity, not an authenticated principal (the
