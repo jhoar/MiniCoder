@@ -119,14 +119,36 @@ function auditAndGuardReset(args: string[], ctx: ResetContext): void {
   // 1a. System environment guard — deployment-level env vars cannot be overridden
   //     by the --env flag. If the process knows it is running in a non-safe
   //     environment, refuse regardless of what the caller supplies.
-  const sysEnv = (process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? '').toLowerCase();
-  if (sysEnv && !SAFE_ENVS.has(sysEnv)) {
+  //
+  //     APP_ENV and NODE_ENV are read and validated independently, not via a `??`
+  //     short-circuit (issue #76): the previous `(APP_ENV ?? NODE_ENV)` computation never even
+  //     inspected NODE_ENV once APP_ENV was set, so `APP_ENV=development NODE_ENV=production`
+  //     passed this guard cleanly — a real safety gap in the most destructive command in this
+  //     CLI. Mirrors the identical fix already applied to `trigger reset-dev`'s guard
+  //     (packages/cli/src/commands/trigger.ts): each var that IS set must individually be in
+  //     the safe set, and if both are set they must agree with each other.
+  const appEnv = process.env['APP_ENV']?.toLowerCase();
+  const nodeEnv = process.env['NODE_ENV']?.toLowerCase();
+  for (const [name, value] of [
+    ['APP_ENV', appEnv],
+    ['NODE_ENV', nodeEnv],
+  ] as const) {
+    if (value !== undefined && !SAFE_ENVS.has(value)) {
+      console.error(
+        `  reset is blocked: system env ${name} is "${value}".\n` +
+          '  Reset is only permitted when APP_ENV/NODE_ENV is development, test, or ci.',
+      );
+      process.exit(1);
+    }
+  }
+  if (appEnv !== undefined && nodeEnv !== undefined && appEnv !== nodeEnv) {
     console.error(
-      `  reset is blocked: deployment environment is "${sysEnv}" (APP_ENV/NODE_ENV).\n` +
-        '  Reset is only permitted when APP_ENV/NODE_ENV is development, test, or ci.',
+      `  reset is blocked: APP_ENV ("${appEnv}") and NODE_ENV ("${nodeEnv}") disagree.\n` +
+        '  The two must match exactly when both are set.',
     );
     process.exit(1);
   }
+  const sysEnv = appEnv ?? nodeEnv ?? '';
 
   // 1b. Explicit --env flag required as a second, caller-supplied confirmation
   const envFlag = parseFlag(args, '--env');
