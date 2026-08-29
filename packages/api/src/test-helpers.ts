@@ -69,6 +69,22 @@ export async function seedHumanRequiredFeatureRun(
   return { featureRunId, featureRequestId };
 }
 
+/** Seeds a `disagreement_records` row against the given feature run, for `/disagreements`
+ * read-model tests (issue #63's feature_request_id/project_id resolution). */
+export async function seedDisagreement(
+  db: DbClient,
+  opts: { featureRunId: string; state?: string },
+): Promise<{ disagreementId: string }> {
+  const now = new Date().toISOString();
+  const disagreementId = generateId();
+  await db.execute(
+    `INSERT INTO disagreement_records (id, feature_run_id, review_cycle, state, version, created_at, updated_at)
+     VALUES (?, ?, 1, ?, 1, ?, ?)`,
+    [disagreementId, opts.featureRunId, opts.state ?? 'open', now, now],
+  );
+  return { disagreementId };
+}
+
 /** Seeds a `triggerdev_runs` row for `/triggerdev-runs` read-model tests. */
 export async function seedTriggerdevRun(
   db: DbClient,

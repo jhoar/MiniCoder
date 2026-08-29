@@ -6,6 +6,7 @@ import {
   seedProjectWithWorkflowState,
   seedHumanRequiredFeatureRun,
   seedTriggerdevRun,
+  seedDisagreement,
 } from '../../test-helpers.js';
 
 describe('read endpoints', () => {
@@ -117,6 +118,31 @@ describe('read endpoints', () => {
       fr_id: 'FR-001',
       title: 'Test Feature',
       current_execution_state: 'human_required',
+    });
+  });
+
+  // Issue #63: /disagreements used to carry only feature_run_id, forcing the Web UI to resolve
+  // feature_request_id/project_id with a per-row HTTP round-trip pair. The read model now resolves
+  // both server-side; this proves that end-to-end through the real route.
+  it('GET /disagreements resolves feature_request_id and project_id for each row', async () => {
+    const { app, db } = await buildTestApp();
+    const { projectId } = await seedProjectWithWorkflowState(db);
+    const { featureRunId, featureRequestId } = await seedHumanRequiredFeatureRun(db, projectId);
+    const { disagreementId } = await seedDisagreement(db, { featureRunId });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/disagreements',
+      headers: { authorization: `Bearer ${TEST_OPERATOR_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      id: disagreementId,
+      feature_run_id: featureRunId,
+      feature_request_id: featureRequestId,
+      project_id: projectId,
     });
   });
 
