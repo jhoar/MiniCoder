@@ -254,6 +254,48 @@ describe('Migration runner (SQLite)', () => {
     const currentFence = lock?.fence ?? 0;
     expect(heldFence).toBeLessThan(currentFence);
   });
+
+  // Issue #77 regression: task_queue.project_id was nullable at the schema level despite being a
+  // de facto required invariant — a NULL project_id silently defeats the (project_id, task_id,
+  // idempotency_key) composite unique index's dedup guarantee, since SQL treats every NULL as
+  // distinct. Migration 0019 tightens it to NOT NULL.
+  it('enforces NOT NULL on task_queue.project_id (issue #77)', () => {
+    applyMigrations(db);
+
+    expect(() => {
+      db.prepare(
+        "INSERT INTO task_queue (id, task_id, payload, idempotency_key, version) VALUES ('tq-null', 'run-coder', '{}', 'idem-1', 1)",
+      ).run();
+    }).toThrow(/NOT NULL/);
+  });
+
+  it('still enforces the task_queue.project_id foreign key after the migration 0019 rebuild', () => {
+    applyMigrations(db);
+    db.pragma('foreign_keys = ON');
+
+    expect(() => {
+      db.prepare(
+        "INSERT INTO task_queue (id, task_id, payload, idempotency_key, project_id, version) VALUES ('tq-bad-fk', 'run-coder', '{}', 'idem-1', 'nonexistent-project', 1)",
+      ).run();
+    }).toThrow();
+  });
+
+  it('still enforces the (project_id, task_id, idempotency_key) unique index after the migration 0019 rebuild', () => {
+    applyMigrations(db);
+
+    db.prepare(
+      "INSERT INTO projects (id, name) VALUES ('proj-tq-unique', 'Task Queue Test')",
+    ).run();
+    db.prepare(
+      "INSERT INTO task_queue (id, task_id, payload, idempotency_key, project_id, version) VALUES ('tq-1', 'run-coder', '{}', 'idem-shared', 'proj-tq-unique', 1)",
+    ).run();
+
+    expect(() => {
+      db.prepare(
+        "INSERT INTO task_queue (id, task_id, payload, idempotency_key, project_id, version) VALUES ('tq-2', 'run-coder', '{}', 'idem-shared', 'proj-tq-unique', 1)",
+      ).run();
+    }).toThrow();
+  });
 });
 
 describe('SqliteDbClient.transaction()', () => {

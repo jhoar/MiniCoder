@@ -40,8 +40,8 @@ function insertTaskQueueRow(
 ): void {
   raw
     .prepare(
-      `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, next_retry_at, version, created_at, updated_at)
-       VALUES (?, ?, '{"projectId":"proj-test-001"}', ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`,
+      `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, next_retry_at, project_id, version, created_at, updated_at)
+       VALUES (?, ?, '{"projectId":"proj-test-001"}', ?, ?, ?, ?, 'proj-test-001', 1, datetime('now'), datetime('now'))`,
     )
     .run(
       id,

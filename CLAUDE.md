@@ -567,6 +567,26 @@ reset` guard uses the identical `APP_ENV ?? NODE_ENV` short-circuit and has the 
   observed one — tightening it to `NOT NULL` would also need to reconcile with existing raw-SQL
   test fixtures/CLI paths (`trigger cancel-run`, direct test inserts) that don't always set it.
   Tracked as issue #77 rather than silently assumed safe.
+  **Closed by issue #77:** migration `0019_task_queue_project_id_not_null` tightens
+  `task_queue.project_id` to `NOT NULL` in both dialects (`ALTER TABLE ... ALTER COLUMN ... SET NOT
+NULL` on PostgreSQL; the standard SQLite rebuild procedure — create `task_queue_new` with the
+  tightened column, `INSERT ... SELECT *`, drop the old table, rename, recreate its two indexes —
+  since SQLite has no `ALTER COLUMN`). A one-time `DELETE FROM task_queue WHERE project_id IS NULL`
+  precedes the constraint change in both dialects: any such row could only have come from a bug or
+  a manual/test insert bypassing every real production writer, `task_queue` is disposable
+  worker-owned queue-mechanics state (not a permanent record, per migration 0017's own framing),
+  and a NULL-`project_id` row has no external identity any project-scoped read/CLI/API path could
+  ever reach — deleting it mirrors the operational posture `state reconcile`/`state doctor`
+  already take for other orphaned rows, rather than rejecting the migration outright or requiring
+  a manual backfill step. `trigger cancel-run` was confirmed to be `UPDATE`-only against an
+  existing row (never an `INSERT`), so it needed no change. The remaining raw-SQL test fixtures
+  that inserted a row with no `project_id` (`packages/triggerdev/src/task-worker.test.ts`,
+  `packages/cli/src/commands/tasks.test.ts`) were updated to seed a project row and populate the
+  column — every other test writer already did. New regressions in
+  `packages/migrations/src/runner.test.ts` prove the `NOT NULL` constraint is enforced, and that
+  the pre-existing FK and `(project_id, task_id, idempotency_key)` unique index both survive the
+  SQLite rebuild intact (a full table recreation risks silently dropping a constraint the original
+  table had).
 - **Migration 0017 was edited in place three times while unmerged.** Accepted per this repo's own
   documented pre-merge-editing convention (see HIGH-1/round 2 above) — fixed at its final shape
   once this PR merges, per that same convention.
