@@ -26,11 +26,20 @@ function createMigratedSqliteFile(): string {
 
 function insertPendingTaskQueueRow(filePath: string, id: string): void {
   const raw = new Database(filePath);
+  raw.pragma('foreign_keys = ON');
   const now = new Date().toISOString();
+  // task_queue.project_id is NOT NULL and FK-references projects(id) (migration 0019) — seed a
+  // project row so this insert satisfies the foreign key.
   raw
     .prepare(
-      `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, version, created_at, updated_at)
-       VALUES (?, 'run-coder', '{}', ?, 'pending', 0, 1, ?, ?)`,
+      `INSERT OR IGNORE INTO projects (id, name, state, version, created_at, updated_at)
+       VALUES ('proj-tasks-cli-test', 'Test Project', 'active', 1, ?, ?)`,
+    )
+    .run(now, now);
+  raw
+    .prepare(
+      `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
+       VALUES (?, 'run-coder', '{}', ?, 'pending', 0, 'proj-tasks-cli-test', 1, ?, ?)`,
     )
     .run(id, `idem-${id}`, now, now);
   raw.close();

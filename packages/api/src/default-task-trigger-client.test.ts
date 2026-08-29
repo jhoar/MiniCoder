@@ -46,7 +46,7 @@ interface TaskQueueRow {
   payload: string;
   idempotency_key: string;
   status: string;
-  project_id: string | null;
+  project_id: string;
 }
 
 function queryTaskQueue(filePath: string): TaskQueueRow[] {

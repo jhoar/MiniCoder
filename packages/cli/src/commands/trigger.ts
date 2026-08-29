@@ -150,7 +150,7 @@ export function createTriggerCommand(): Command {
         const rows = await db.query<{
           task_id: string;
           payload: string;
-          project_id: string | null;
+          project_id: string;
         }>('SELECT task_id, payload, project_id FROM task_queue WHERE id = ?', [runId]);
         const source = rows[0];
         if (!source) {
