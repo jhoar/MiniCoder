@@ -17,6 +17,7 @@ import {
   type TaskTriggerClient,
 } from './commands/task-trigger-routes.js';
 import { registerDiagnosticsRoutes } from './commands/diagnostics-routes.js';
+import { registerRepairDesignDocumentBindingRoute } from './commands/repair-design-document-binding-route.js';
 import type { ScmClientResolver } from '@minicoder/triggerdev';
 
 export interface BuildAppOptions {
@@ -65,6 +66,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     taskTriggerClient: opts.taskTriggerClient ?? unconfiguredTaskTriggerClient(),
   });
   registerDiagnosticsRoutes(app, { db: opts.db });
+  registerRepairDesignDocumentBindingRoute(app, { db: opts.db });
 
   return app;
 }

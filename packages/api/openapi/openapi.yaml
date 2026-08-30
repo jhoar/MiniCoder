@@ -165,6 +165,16 @@ paths:
         '400': { description: 'Validation error, or GitHub does not confirm the PR as merged' }
         '403': { description: Not authorized }
         '404': { description: Feature run not found }
+  /commands/repair-design-document-binding:
+    post:
+      operationId: repairDesignDocumentBinding
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '200': { description: 'Binding backfilled, or already bound to the requested document' }
+        '400': { description: 'Validation error, or the artifact is already bound to a different document' }
+        '403': { description: Not authorized }
+        '404': { description: Artifact export or design document not found }
   /commands/request-coder-run:
     post:
       operationId: requestCoderRun

@@ -405,6 +405,23 @@ export class ApiClient {
     return this.post('/commands/complete-project', { projectId, expectedVersion }, idempotencyKey);
   }
 
+  /** Issue #71: the supported operator recovery for a pre-migration-0014 (or manually-inserted)
+   * `artifact_exports` design-document row stuck with a NULL `design_document_id` binding —
+   * only ever backfills a currently-NULL binding, never rebinds an already-bound artifact. No
+   * `Idempotency-Key` needed: the underlying repair is naturally idempotent (a CAS-guarded
+   * UPDATE), matching `finalizeIfGithubMerged()`'s shape. */
+  repairDesignDocumentBinding(
+    projectId: string,
+    artifactExportId: string,
+    designDocumentId: string,
+  ): Promise<{ alreadyBound: boolean; artifactExportId: string; designDocumentId: string }> {
+    return this.post('/commands/repair-design-document-binding', {
+      projectId,
+      artifactExportId,
+      designDocumentId,
+    });
+  }
+
   /** Enqueues the `run-design-doc` Trigger.dev task (drafts sections, exports
    * final-design-document.md, records the document ready). */
   requestDesignDoc(

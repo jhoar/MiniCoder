@@ -199,6 +199,39 @@ export function createDesignDocCommand(): Command {
     );
 
   cmd
+    .command('repair-binding')
+    .description(
+      'Backfill a NULL artifact_exports.design_document_id binding (issue #71 recovery path; operator+)',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--artifact <id>', 'artifact_exports row ID')
+    .requiredOption('--document <id>', 'design_documents ID to bind (must belong to the project)')
+    .option('--yes', 'Confirm the repair (required)')
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (
+        opts: { project: string; artifact: string; document: string; yes?: boolean } & JsonOption,
+      ) => {
+        if (!opts.yes) {
+          console.error('Error: --yes is required to confirm repairing the artifact binding.');
+          process.exitCode = 1;
+          return;
+        }
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          () => client.repairDesignDocumentBinding(opts.project, opts.artifact, opts.document),
+          (data) =>
+            renderCommandResultView({
+              command: 'repair-design-document-binding',
+              projectId: opts.project,
+              resultingState: data.alreadyBound ? 'already_bound' : 'repaired',
+            }),
+        );
+      },
+    );
+
+  cmd
     .command('request-run')
     .description(
       'Enqueues run-design-doc (drafts sections via DocumentationAgentAdapter, exports final-design-document.md)',
