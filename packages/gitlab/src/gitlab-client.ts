@@ -15,16 +15,28 @@
  * has a global `id` per MR that this client never uses.
  *
  * **Live-verified against a real GitLab CE 17.5.2 instance (docs/06 §Phase 18 Stage 6's
- * live-verification pass), not just reviewed against documented shapes.** `createPullRequest`,
- * `getPullRequest`, `getPullRequestDiff`, `publishStatusCheck`, `mergePullRequest`, and
- * `listPullRequestsForBranch` all ran end-to-end against a real instance (`docker compose -f
- * infra/docker-compose.gitlab.yml up`, image pulled via the `mirror.gcr.io` Docker Hub mirror
- * workaround — this environment's direct Docker Hub CDN access was blocked) and found two real
- * bugs, both fixed and regression-tested here: `getPullRequestDiff()`'s pagination (see its own
- * doc comment) and `mergePullRequest()`'s empty-`merge_commit_message` handling (see its own doc
- * comment). Every other method matched its documented shape with no surprises. Unit tests exercise
- * this client against a fake `fetchImpl` for the full surface; `createBranch`/`getRemainingRateLimit`
- * were not separately live-exercised (no real caller needed them for this pass).
+ * live-verification pass), not just reviewed against documented shapes — and now permanently
+ * re-verified in CI (issue #85).** `createPullRequest`, `getPullRequest`, `getPullRequestDiff`,
+ * `publishStatusCheck`, `mergePullRequest`, and `listPullRequestsForBranch` all ran end-to-end
+ * against a real instance (`docker compose -f infra/docker-compose.gitlab.yml up`, image pulled via
+ * the `mirror.gcr.io` Docker Hub mirror workaround — this environment's direct Docker Hub CDN
+ * access was blocked) and found two real bugs, both fixed and regression-tested here:
+ * `getPullRequestDiff()`'s pagination (see its own doc comment) and `mergePullRequest()`'s
+ * empty-`merge_commit_message` handling (see its own doc comment). Every other method matched its
+ * documented shape with no surprises. `packages/gitlab/src/gitlab-live.integration.test.ts` (run by
+ * `.github/workflows/live-scm-matrix.yml`'s `live-gitlab` job — scheduled + `workflow_dispatch`,
+ * not on every push) is the permanent successor to that one-off manual pass, with dedicated
+ * assertions for both fixed bugs so a regression in either one fails CI specifically. That same
+ * permanent-CI pass found one more genuinely new thing: GitLab computes an MR's diff
+ * asynchronously after creation — `getPullRequestDiff()` called immediately after
+ * `createPullRequest()` reliably returns an empty diff, populated roughly a second later. This
+ * client's `getPullRequestDiff()` itself is not wrong (it faithfully returns whatever GitLab
+ * reports), so no code change was needed here — `gitlab-live.integration.test.ts`'s
+ * `waitForNonEmptyDiff()` documents and polls around it; a real caller fetching a diff immediately
+ * after opening an MR (`run-review.ts`) could hit the identical race, tracked as a follow-up. Unit
+ * tests exercise this client against a fake `fetchImpl` for the full surface; `createBranch`/
+ * `getRemainingRateLimit` were not separately live-exercised (no real caller needed them for this
+ * pass).
  *
  * **This is the largest lowest-common-denominator compromise of the three providers, documented
  * here rather than silently absorbed (per docs/06 §Phase 18's own framing):**

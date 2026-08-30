@@ -1,0 +1,207 @@
+name: Live SCM Matrix
+
+# Issue #85: docs/06 §Phase 18 Stage 6's live-instance verification of GiteaScmClient/
+# GitlabScmClient (which found and fixed three real bugs no fake-fetchImpl unit test could have
+# surfaced) was exploratory manual testing, not permanent CI infrastructure. This workflow turns
+# that same pattern into a permanent, scheduled integration tier — mirroring the
+# MINICODER_TEST_PG_URL-gated PostgreSQL suites' "skip if the dependency isn't available" posture
+# (CLAUDE.md's Cross-Dialect Testing section), except here the "dependency" is a live server this
+# workflow itself provisions rather than one assumed to already exist.
+#
+# Scheduled + workflow_dispatch, NOT on every push/PR: GitLab CE alone takes several minutes to
+# become healthy even before any test runs, and running a live-server matrix on every push would
+# add real, ongoing cost/latency to the fast PR-gate workflow (ci.yml) for a check whose whole
+# purpose is catching slow-moving provider drift, not gating individual changes. A push that
+# touches packages/gitea or packages/gitlab still gets fast feedback from ci.yml's existing
+# fake-fetchImpl unit tests; this workflow is the deeper, periodic check behind that.
+on:
+  schedule:
+    # Daily at 06:00 UTC. A too-frequent schedule buys little (provider drift moves slowly) while
+    # meaningfully adding to this repo's CI minutes — see the "not on every push" note above.
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  live-gitea:
+    name: Live Gitea
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+
+      # No Docker needed for this half (per the issue's own suggested approach) — a directly
+      # downloaded static binary, run as the runner's own unprivileged user, is both cheaper and
+      # closer to the real live-verification pass that manually validated this client (which used
+      # the identical binary-download approach, not infra/docker-compose.gitea.yml).
+      - name: Download pinned Gitea release binary
+        run: |
+          curl -sSL -o gitea \
+            https://github.com/go-gitea/gitea/releases/download/v1.22.3/gitea-1.22.3-linux-amd64
+          chmod +x gitea
+          ./gitea --version
+
+      - name: Bootstrap and start Gitea
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gitea-data/gitea-repos"
+          cat > "$RUNNER_TEMP/gitea-app.ini" <<EOF
+          APP_NAME = MiniCoder CI Gitea
+          RUN_MODE = prod
+          RUN_USER = $(id -un)
+
+          [repository]
+          ROOT = $RUNNER_TEMP/gitea-data/gitea-repos
+
+          [database]
+          DB_TYPE = sqlite3
+          PATH = $RUNNER_TEMP/gitea-data/gitea.db
+
+          [server]
+          DOMAIN = localhost
+          HTTP_PORT = 3300
+          ROOT_URL = http://localhost:3300/
+          DISABLE_SSH = true
+          START_SSH_SERVER = false
+          APP_DATA_PATH = $RUNNER_TEMP/gitea-data
+
+          [security]
+          INSTALL_LOCK = true
+
+          [service]
+          DISABLE_REGISTRATION = false
+
+          [mailer]
+          ENABLED = false
+
+          [log]
+          MODE = console
+          LEVEL = warn
+          EOF
+          ./gitea migrate --config "$RUNNER_TEMP/gitea-app.ini"
+          ./gitea admin user create --config "$RUNNER_TEMP/gitea-app.ini" \
+            --username testadmin --password "$(openssl rand -base64 24)" \
+            --email admin@example.test --admin --must-change-password=false
+          token=$(./gitea admin user generate-access-token --config "$RUNNER_TEMP/gitea-app.ini" \
+            --username testadmin --token-name ci-token --raw \
+            --scopes 'write:repository,write:user,write:issue')
+          echo "::add-mask::$token"
+          echo "GITEA_LIVE_TOKEN=$token" >> "$GITHUB_ENV"
+          nohup ./gitea web --config "$RUNNER_TEMP/gitea-app.ini" > "$RUNNER_TEMP/gitea.log" 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3300/api/healthz >/dev/null 2>&1; then
+              echo "Gitea healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Gitea failed to become healthy" >&2
+          cat "$RUNNER_TEMP/gitea.log"
+          exit 1
+
+      - name: Create test repository
+        run: |
+          curl -sf -X POST http://localhost:3300/api/v1/user/repos \
+            -H "Authorization: token ${{ env.GITEA_LIVE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"widgets","auto_init":true,"default_branch":"main"}'
+
+      - name: Run live Gitea integration test
+        env:
+          MINICODER_TEST_LIVE_GITEA: '1'
+          GITEA_LIVE_BASE_URL: http://localhost:3300
+          GITEA_LIVE_OWNER: testadmin
+          GITEA_LIVE_REPO: widgets
+        run: npx vitest run packages/gitea/src/gitea-live.integration.test.ts
+
+      - name: Dump Gitea logs on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/gitea.log" || true
+
+  live-gitlab:
+    name: Live GitLab
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+
+      # A live-verification pass (docs/06 §Phase 18 Stage 6) found direct Docker Hub access
+      # blocked by that environment's own network policy — mirror.gcr.io (backed by
+      # storage.googleapis.com) was the confirmed workaround. GitHub-hosted runners are not known
+      # to have the same restriction, so try the direct pull first and only fall back to the
+      # mirror if it fails, rather than always paying for the extra pull.
+      - name: Pull GitLab CE image
+        run: |
+          docker pull gitlab/gitlab-ce:17.5.2-ce.0 || {
+            echo "Direct Docker Hub pull failed, falling back to mirror.gcr.io" >&2
+            docker pull mirror.gcr.io/gitlab/gitlab-ce:17.5.2-ce.0
+            docker tag mirror.gcr.io/gitlab/gitlab-ce:17.5.2-ce.0 gitlab/gitlab-ce:17.5.2-ce.0
+          }
+
+      - name: Start GitLab
+        run: docker compose -f infra/docker-compose.gitlab.yml up -d
+
+      - name: Wait for GitLab to become healthy
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            status=$(docker inspect --format='{{.State.Health.Status}}' \
+              minicoder-gitlab-fixture 2>/dev/null || echo "starting")
+            if [ "$status" = "healthy" ]; then
+              echo "GitLab healthy after $((i * 10))s"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "GitLab failed to become healthy" >&2
+          docker logs minicoder-gitlab-fixture --tail 200
+          exit 1
+
+      # gitlab-rails runner creates a real personal access token non-interactively — no need to
+      # know (or wait 24h for) the randomly generated initial root password.
+      - name: Bootstrap a root access token and a test project
+        run: |
+          set -euo pipefail
+          token=$(docker exec minicoder-gitlab-fixture gitlab-rails runner "
+            t = User.find_by_username('root').personal_access_tokens.create!(
+              scopes: ['api'], name: 'ci-token', expires_at: 1.day.from_now)
+            plaintext = SecureRandom.hex(20)
+            t.set_token(plaintext)
+            t.save!
+            puts plaintext
+          " | tail -1)
+          echo "::add-mask::$token"
+          echo "GITLAB_LIVE_TOKEN=$token" >> "$GITHUB_ENV"
+          curl -sf -X POST http://localhost:3400/api/v4/projects \
+            -H "PRIVATE-TOKEN: $token" -H "Content-Type: application/json" \
+            -d '{"name":"widgets","initialize_with_readme":true,"default_branch":"main"}'
+
+      - name: Run live GitLab integration test
+        env:
+          MINICODER_TEST_LIVE_GITLAB: '1'
+          GITLAB_LIVE_BASE_URL: http://localhost:3400
+          GITLAB_LIVE_OWNER: root
+          GITLAB_LIVE_REPO: widgets
+        run: npx vitest run packages/gitlab/src/gitlab-live.integration.test.ts
+
+      - name: Dump GitLab logs on failure
+        if: failure()
+        run: docker logs minicoder-gitlab-fixture --tail 300 || true

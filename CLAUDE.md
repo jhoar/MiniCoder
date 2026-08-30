@@ -3306,6 +3306,55 @@ a third suite, `packages/api/src/route-idempotency.postgres.test.ts`, proving th
 claim → fulfill → reclaim round-trip through a real `result JSONB` column and a genuine
 concurrent-claim race resolving to exactly one `owned` outcome.
 
+**Live SCM Matrix (issue #85):** `packages/gitea/src/gitea-live.integration.test.ts`/
+`packages/gitlab/src/gitlab-live.integration.test.ts` are the permanent, CI-gated successors to
+docs/06 §Phase 18 Stage 6's exploratory manual live-verification pass — the same class of
+`describe.skipIf` no-op-unless-env-vars-set gating `sandbox-live.integration.test.ts` already
+establishes, so `pnpm test`/local dev never depends on a live Gitea/GitLab instance being
+reachable. `.github/workflows/live-scm-matrix.yml` is the permanent CI wiring: **scheduled (daily)
+plus `workflow_dispatch`, deliberately not on every push/PR** — GitLab CE alone takes several
+minutes to become healthy even before any test runs, and running a live-server matrix on every
+push would add real, ongoing cost/latency to the fast PR-gate workflow (`ci.yml`) for a check whose
+whole purpose is catching slow-moving provider drift, not gating individual changes. The `live-
+gitea` job downloads a pinned Gitea 1.22.3 release binary directly (no Docker — the cheaper, and
+the actually-manually-verified, approach) and bootstraps an admin user/access token/test repo via
+`gitea admin user create`/`generate-access-token` (both real, non-interactive Gitea CLI
+subcommands); the `live-gitlab` job brings up `infra/docker-compose.gitlab.yml` (falling back to
+the `mirror.gcr.io` Docker Hub mirror only if a direct pull fails — GitHub-hosted runners are not
+known to share the network restriction the original manual verification session had) and
+bootstraps a root personal access token via `gitlab-rails runner`'s `PersonalAccessToken#set_token`
+(no interactive login or 24h-expiring generated root password needed). Both jobs were live-verified
+in full before being committed — not just written and assumed correct — including discovering one
+genuinely new Gitea behavior no prior documentation review had surfaced: `getPullRequest()`'s
+`mergeable` flag is computed asynchronously after PR creation, so `gitea-live.integration.test.ts`
+polls for it before attempting a merge (a real production caller — `run-merge-gate.ts`/`merge.ts`
+— would need the identical wait to avoid a spurious `not_mergeable` rejection on a trivially
+mergeable PR; tracked as a separate follow-up, not silently folded into this fix). The GitLab suite
+carries dedicated, direct assertions for both bugs the original manual pass found and fixed
+(`getPullRequestDiff()`'s `per_page`-triggered pagination crash; `mergePullRequest()`'s
+empty-`commitMessage` rejection), not just incidental coverage from the rest of the battery.
+This same live pass found a second genuinely new timing behavior, parallel to Gitea's: GitLab
+computes an MR's diff asynchronously after creation too — `getPullRequestDiff()` called immediately
+after `createPullRequest()` reliably returns an empty diff (confirmed directly against the raw
+`GET .../diffs` endpoint: `[]` immediately after creation, populated roughly a second later).
+`gitlab-live.integration.test.ts`'s `waitForNonEmptyDiff()` polls for it; the identical real-caller
+follow-up applies here too — `run-review.ts` fetches this same diff to hand to the AI reviewer and
+could hit the identical race on a freshly-opened MR, tracked as a follow-up rather than fixed here.
+**A second real bug (this one in the infrastructure, not the client) was found and fixed while
+bringing up `infra/docker-compose.gitlab.yml`
+locally to verify this pass**: its `healthcheck` curled `http://localhost/-/readiness` (implicit
+port 80), the exact same "nginx only listens on whatever port `external_url` specifies" root cause
+that file's own `ports:` comment already documents — but the fix for the port mapping never
+touched the healthcheck definition, which still hit the wrong port. This meant the container could
+be genuinely fully up and correctly serving requests on `:3400` (confirmed directly:
+`docker exec ... curl -f http://localhost:3400/-/readiness` returned `{"status":"ok"}`) while
+Docker still reported it "unhealthy"/perpetually "starting" — which would have made the `live-
+gitlab` CI job's own health-polling step time out and fail on every run, against a GitLab instance
+that was actually working correctly the whole time. Fixed by pointing the healthcheck at the same
+port the `ports:` mapping already uses. Live-verified: recreating the container with the fix
+applied (config/data volumes preserved, so no full reprovision needed) flips `docker inspect`'s
+health status to `healthy`, matching the already-correct-underneath server.
+
 ## Vitest Test Command Tiers
 
 | CLI command                  | What it runs                                                                 | Config                                      |

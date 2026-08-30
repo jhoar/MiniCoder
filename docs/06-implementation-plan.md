@@ -2535,6 +2535,19 @@ config`) but this environment had no reachable Docker daemon. GitLab CE is a sub
   were one-off manual/exploratory runs (a downloaded Gitea binary, a `docker compose up` GitLab
   instance, both torn down afterward), not a `pnpm test`/CI-wired live-instance matrix job. Turning
   the same pattern into permanent CI infrastructure remains real, tracked future work.
+  **Closed by issue #85:** `.github/workflows/live-scm-matrix.yml` (scheduled + `workflow_dispatch`,
+  deliberately not on every push — see CLAUDE.md's Cross-Dialect Testing section for the full
+  reasoning) turns the identical manual pattern into permanent CI wiring: a `live-gitea` job
+  downloads the same pinned Gitea binary and bootstraps it non-interactively via `gitea admin user
+create`/`generate-access-token`; a `live-gitlab` job brings up the same `infra/docker-compose.
+gitlab.yml` (with the identical `mirror.gcr.io` fallback, tried only after a direct pull attempt)
+  and bootstraps a root token via `gitlab-rails runner`. Both new suites
+  (`packages/gitea/src/gitea-live.integration.test.ts`/`packages/gitlab/src/gitlab-live.
+integration.test.ts`) were live-verified end to end against real instances before being committed,
+  the same `describe.skipIf`-gated no-op-locally posture `sandbox-live.integration.test.ts` already
+  established — see CLAUDE.md's Cross-Dialect Testing section for what that live pass found
+  (a genuinely new Gitea `mergeable`-is-computed-asynchronously behavior) and how the GitLab suite
+  directly regression-tests both bugs this stage's live-verification pass fixed.
 - Full monorepo `pnpm typecheck` (`@minicoder/gitea` added to `packages/testing`'s dependencies so
   the conformance suite can import it — a genuine, previously-missing dependency, not present
   before this stage), `pnpm lint`, `pnpm format:check`, and `pnpm test` (113 test files, 1043
@@ -3048,3 +3061,12 @@ sandbox-live.integration.test.ts` gained an optional `CODER_SANDBOX_TEST_DOCKER_
   (sandbox image, both egress-proxy variants, the Docker socket proxy, and a throwaway SCM
   instance) into an actual CI job — the seventh follow-up, like the sixth, was a one-off manual
   verification pass, not a CI job.
+  **Partially closed by issue #85** — scoped narrowly to the `ScmClient` half of this gap, not the
+  full coder-sandbox topology: `.github/workflows/live-scm-matrix.yml` (scheduled +
+  `workflow_dispatch`) permanently wires a real Gitea instance and a real GitLab instance into CI,
+  with `packages/gitea/src/gitea-live.integration.test.ts`/`packages/gitlab/src/gitlab-live.
+integration.test.ts` exercising `GiteaScmClient`/`GitlabScmClient` end to end against them — see
+  CLAUDE.md's Cross-Dialect Testing section for the full writeup. Still genuinely open: wiring the
+  sandbox image, either egress-proxy variant, or the Docker socket proxy into a CI job — those need
+  a Docker-in-Docker-capable runner and remain this bullet's own tracked future work, unchanged by
+  issue #85.

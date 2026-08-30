@@ -6,15 +6,16 @@ version: '3.8'
 # receiver against a real server, mirroring the posture `infra/docker-compose.gitea.yml`/
 # `infra/docker-compose.coder-sandbox.yml` already document.
 #
-# Status: this stack has not been exercised against a live Docker daemon in this repository's CI
-# yet — the implementation session that wrote it had no reachable Docker daemon (`docker info`
-# reported "Cannot connect to the Docker daemon"; only `docker compose config` syntax validation
-# was possible). `packages/gitlab`'s unit tests run against a fake `fetchImpl` instead of this
-# stack, and the Stage 4 "reconciliation fallback is primary" acceptance regression
-# (`packages/testing/src/gitlab-reconcile-fallback.test.ts`) exercises `reconcileGithubState()`
-# directly against a hand-built `ObservedPullRequestState`, not this stack either. A
-# Docker-daemon-gated end-to-end scenario against a real GitLab instance remains real, tracked
-# future work.
+# Status: this stack is now brought up in permanent CI (issue #85, `.github/workflows/
+# live-scm-matrix.yml`'s `live-gitlab` job — scheduled + `workflow_dispatch`, not on every push;
+# see CLAUDE.md's Cross-Dialect Testing section) — `packages/gitlab/src/gitlab-live.
+# integration.test.ts` exercises `GitlabScmClient` end to end against it. `packages/gitlab`'s unit
+# tests still run against a fake `fetchImpl` for everyday `pnpm test`/local dev (this stack is
+# heavy and slow to boot, per the note below), and the Stage 4 "reconciliation fallback is
+# primary" acceptance regression (`packages/testing/src/gitlab-reconcile-fallback.test.ts`)
+# exercises `reconcileGithubState()` directly against a hand-built `ObservedPullRequestState`, not
+# this stack either. The webhook receiver specifically remains untested against this stack in CI —
+# real, tracked future work.
 #
 # GitLab CE is a substantially heavier, slower-starting image than Gitea's (a full Rails
 # monolith plus Redis/Postgres/Sidekiq bundled inside one container) — expect several minutes
@@ -51,8 +52,15 @@ services:
       - minicoder-gitlab-logs:/var/log/gitlab
       - minicoder-gitlab-data:/var/opt/gitlab
     shm_size: '256m'
+    # Same root cause as the ports comment above, live-verified again here (issue #85): the
+    # healthcheck itself curled `http://localhost/-/readiness` (implicit port 80), which — since
+    # nginx only listens on whatever port `external_url` specifies — never succeeded, leaving the
+    # container permanently "unhealthy"/"starting" even once GitLab was genuinely fully up and
+    # serving real requests (confirmed by curling `:3400/-/readiness` from inside the container and
+    # getting `{"status":"ok"}` while the port-80 healthcheck was still failing). Keep this in sync
+    # with `external_url`'s port, exactly like the `ports:` mapping above.
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost/-/readiness']
+      test: ['CMD', 'curl', '-f', 'http://localhost:3400/-/readiness']
       interval: 30s
       timeout: 10s
       retries: 20
