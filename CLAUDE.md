@@ -2411,6 +2411,35 @@ serve`'s shape exactly (`--port`/`--host` options, does not close the DB connect
   `@minicoder/tui/views`) or a separate client package is a larger structural change than the
   Phase 14 fix-review pass warranted; every current consumer (`packages/cli`) already imports
   everything it needs from the one barrel with no ambiguity. Tracked as issue #60.
+  **Closed by issue #60:** `@minicoder/tui` now exposes two real subpaths — `@minicoder/tui/client`
+  (`ApiClient`/`ApiError`/`resolveApiConfig`/related types, `src/client/index.ts`) and
+  `@minicoder/tui/views` (`runView` plus every `render*View()`, `src/views-entry.ts`) — and every
+  `packages/cli` consumer was migrated to import from the correct one (two files,
+  `status.ts`/`active.ts`/`tui-client.ts`, need both). The root barrel (`src/index.ts`) is kept,
+  now just re-exporting the two subpaths, for a "just give me everything" import.
+  **The subpaths could not be implemented as a `package.json` `exports` map** — this repo's locked
+  `tsconfig.base.json` pins `moduleResolution: "Node"` (the classic strategy, predating the
+  `exports` field spec), which TypeScript's classic resolution ignores entirely for subpath
+  imports; a plain `exports` entry would work for Node's own runtime `require()` but leave every
+  `packages/cli` consumer failing to typecheck. Instead this uses the older, still-standard
+  "shadow directory with its own `package.json`" trick classic Node resolution has always
+  supported: `packages/tui/client/package.json` and `packages/tui/views/package.json` (real files,
+  checked into git — not build output) each point `main`/`types` at the corresponding compiled
+  `dist/` entry (`../dist/client/index.js`/`.d.ts`, `../dist/views-entry.js`/`.d.ts`). `pnpm-workspace.yaml`'s
+  `packages/*` glob is one level deep, so these nested folders are never mistaken for separate
+  workspace packages. `vitest.config.ts`'s shared alias map gained matching `@minicoder/tui/client`/
+  `@minicoder/tui/views` entries pointing straight at the TS source, so `pnpm test` never depends
+  on `packages/tui` having been built first — mirroring the existing bare `@minicoder/tui` alias.
+  **A real bug surfaced while adding those aliases**: `@rollup/plugin-alias` (which Vite/Vitest use
+  for `resolve.alias`) matches a plain string `find` key by _prefix_, not exact equality — the
+  existing `'@minicoder/tui'` key was silently swallowing `@minicoder/tui/client`/`.../views` too,
+  rewriting them into a nonsensical `<...>/src/index.ts/client` path and failing with "Cannot find
+  module" (confirmed empirically, not assumed). Fixed by anchoring the bare key to
+  `'@minicoder/tui$'` (`@rollup/plugin-alias`'s documented exact-match syntax) — an object-key
+  alias map with any prefix relationship between two keys needs this whenever the shorter key is
+  meant to match only itself. Verified end to end at real CLI runtime too (via `tsx`, independent
+  of Vitest's alias config): both subpaths resolve correctly through the shadow-directory shims
+  with no `dist/` pre-build assumption baked into the test suite alone.
 - **`featureRunId` query-parameter parity (found in PR review).** `/agent-runs`, `/disagreements`,
   `/workflow-events` (optional) and `/review-findings`, `/merge-gate-evaluations` (required) all
   accepted/required `featureRunId` at runtime before this phase, but the hand-authored OpenAPI spec

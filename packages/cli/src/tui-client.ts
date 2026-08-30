@@ -5,7 +5,8 @@
  */
 import { randomUUID } from 'crypto';
 import type React from 'react';
-import { ApiClient, resolveApiConfig, runView, ApiError } from '@minicoder/tui';
+import { ApiClient, resolveApiConfig, ApiError } from '@minicoder/tui/client';
+import { runView } from '@minicoder/tui/views';
 
 export function buildApiClient(): ApiClient {
   return new ApiClient(resolveApiConfig());

@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { ApiError, renderActiveFeatureView } from '@minicoder/tui';
+import { ApiError } from '@minicoder/tui/client';
+import { renderActiveFeatureView } from '@minicoder/tui/views';
 import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
 
 export function createActiveCommand(): Command {
