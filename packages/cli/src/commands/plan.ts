@@ -10,7 +10,7 @@ import {
 } from '@minicoder/core';
 import type { CommandEnvelope } from '@minicoder/core';
 import { humanActor } from '@minicoder/triggerdev';
-import { renderPlanView, renderCommandResultView } from '@minicoder/tui';
+import { renderPlanView, renderCommandResultView } from '@minicoder/tui/views';
 import {
   buildApiClient,
   renderOrJson,

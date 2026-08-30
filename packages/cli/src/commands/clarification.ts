@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { renderClarificationView, renderCommandResultView } from '@minicoder/tui';
+import { renderClarificationView, renderCommandResultView } from '@minicoder/tui/views';
 import {
   buildApiClient,
   renderOrJson,

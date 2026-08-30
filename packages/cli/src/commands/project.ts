@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Command } from 'commander';
-import { renderCommandResultView } from '@minicoder/tui';
+import { renderCommandResultView } from '@minicoder/tui/views';
 import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
 
 /**

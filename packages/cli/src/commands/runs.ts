@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { renderRunsView, renderTimelineView } from '@minicoder/tui';
+import { renderRunsView, renderTimelineView } from '@minicoder/tui/views';
 import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
 
 export function createRunsCommand(): Command {

@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { renderFeaturesView, renderHumanRequiredView } from '@minicoder/tui';
+import { renderFeaturesView, renderHumanRequiredView } from '@minicoder/tui/views';
 import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
 
 export function createFeaturesCommand(): Command {

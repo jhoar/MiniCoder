@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { ApiError, renderStatusView } from '@minicoder/tui';
+import { ApiError } from '@minicoder/tui/client';
+import { renderStatusView } from '@minicoder/tui/views';
 import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
 
 export function createStatusCommand(): Command {

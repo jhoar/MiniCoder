@@ -1,0 +1,4 @@
+{
+  "main": "../dist/views-entry.js",
+  "types": "../dist/views-entry.d.ts"
+}
