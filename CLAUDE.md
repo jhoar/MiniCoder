@@ -3516,12 +3516,33 @@ There are several distinct state machines — not one:
 | Web UI               | React / Next.js                                                                        |
 | Security scanning    | pnpm audit/OSV + gitleaks + semgrep                                                    |
 
-**Local setup prerequisite:** the root `package.json`'s `build`/`typecheck`/`lint`/`test` scripts
-shell out to nested `pnpm -r ...`/`pnpm --filter ...` calls, so `pnpm` must be resolvable on
-`PATH` before running any of them — via `corepack enable` (one-time) or a global `pnpm` install.
+**Local setup prerequisite (issue #64):** the root `package.json`'s `build`/`build:web`/
+`typecheck`/`lint`/`test` scripts shell out to nested `pnpm -r ...`/`pnpm --filter ...` calls, so a
+plain `pnpm` must be resolvable on `PATH` _before_ running any of them — via `corepack enable`
+(one-time, the recommended path) or a global `pnpm` install. CI already satisfies this via
+`pnpm/action-setup`, which installs a real `pnpm` binary onto the runner's `PATH` directly (not
+through Corepack), so none of this affects CI.
+
+**This bites a specific, easy-to-misdiagnose local setup: invoking commands as `corepack
+pnpm@<version> run <script>` without ever running `corepack enable` first.** Corepack supports two
+distinct modes: `corepack enable` installs permanent `pnpm`/`pnpx`/etc. shims onto a directory
+already on `PATH`, so a plain `pnpm` inside any later script resolves normally; calling
+`corepack pnpm@<version> ...` directly, without `corepack enable`, does **not** — it resolves and
+execs that one pnpm version for the single invocation you typed, and puts nothing named `pnpm` on
+`PATH` for the script's own child processes to find. The top-level command still runs successfully
+(`corepack` found and ran the real pnpm CLI), which is exactly what makes the resulting failure
+confusing: `build:web`/`typecheck`/`lint`'s own nested `pnpm --filter ...`/`pnpm -r ...` calls then
+fail with a bare `pnpm: not found`, deep inside a script that otherwise looks like it started
+running fine. If you hit this, run `corepack enable` once (or install `pnpm` globally) rather than
+prefixing every command with `corepack pnpm@<version>`.
+
 This is a documentation note, not a script change: swapping the scripts themselves to invoke
-`corepack pnpm` risks behaving differently under `pnpm/action-setup`-based CI, which is out of
-scope to verify here.
+`corepack pnpm` was considered as an alternative fix, but rejected — it would require a `packageManager`
+field this repo doesn't declare (nothing pins an exact version for Corepack to resolve without one
+being spelled out on every invocation, the same friction that produces the `corepack
+pnpm@<version> ...` invocation style above in the first place) and risks behaving differently under
+`pnpm/action-setup`-based CI in ways this repo has no way to verify short of a live CI run — not a
+risk worth taking for what is, in the end, a documentation gap once you know what's happening.
 
 ## Editing Guidelines for Documentation
 
