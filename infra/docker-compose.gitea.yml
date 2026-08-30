@@ -10,9 +10,14 @@ version: '3.8'
 # CI yet — the implementation session that wrote it had no reachable Docker daemon (`docker info`
 # reported "Cannot connect to the Docker daemon"; only `docker compose config` syntax validation
 # was possible). `packages/gitea`'s unit tests run against a fake `fetchImpl` instead of this
-# stack. A Docker-daemon-gated integration test (the same category CLAUDE.md already tracks for
-# the Coder sandbox) is the intended place to prove `GiteaScmClient` end to end against a real
-# Gitea server once a daemon is available in CI — that test does not exist yet.
+# stack.
+#
+# `GiteaScmClient` IS now exercised end to end against a real, live Gitea server in CI (issue #85,
+# `.github/workflows/live-scm-matrix.yml`) — but via a directly downloaded Gitea release binary
+# (`packages/gitea/src/gitea-live.integration.test.ts`), not via this compose file, since no Docker
+# is needed for that approach and it's what the original manual live-verification pass actually
+# used. This stack itself remains untested against a live daemon in CI; it stays useful for local
+# manual testing of the webhook receiver, which the binary-only CI job doesn't exercise.
 #
 # Startup: `docker compose -f infra/docker-compose.gitea.yml up -d`, wait for the healthcheck,
 # then create an access token and a webhook (either through Gitea's web UI at

@@ -15,12 +15,13 @@
  * equivalent of a GitHub App).
  *
  * **Verification status (same honest-labeling posture CLAUDE.md already applies to the Coder
- * sandbox):** this implementation is based on Gitea's documented REST API and webhook payload
- * shapes, reviewed for correctness, but has not been exercised against a live Gitea instance in
- * this repository's CI — `infra/docker-compose.gitea.yml` exists but this environment had no
- * reachable Docker daemon to verify it end-to-end. Unit tests exercise this client against a fake
- * `fetchImpl`, proving the request/response handling logic, not a live Gitea server's actual
- * responses.
+ * sandbox):** exercised end to end against a real, live Gitea 1.22.3 instance, both in a one-off
+ * manual pass (docs/06 §Phase 18 Stage 6) and now permanently in CI (issue #85,
+ * `packages/gitea/src/gitea-live.integration.test.ts`, `.github/workflows/live-scm-matrix.yml` —
+ * scheduled + `workflow_dispatch`, not on every push). Unit tests still exercise this client
+ * against a fake `fetchImpl` for everyday `pnpm test`/local dev; the live suite is what actually
+ * proves this client's request/response handling against a real server's real behavior, not just
+ * fixtures encoding today's assumptions about that behavior.
  *
  * Lowest-common-denominator reductions versus `OctokitGitHubClient`, documented here rather than
  * silently absorbed (per docs/06 §Phase 18's own framing — this is expected, not a defect):
