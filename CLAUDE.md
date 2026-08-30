@@ -2610,6 +2610,25 @@ a.clarification_question_id = q.id` — safe as a plain, non-aggregating join si
   (a second, related bug: the page previously linked into the _currently selected_ project's
   context regardless of which project the disagreement's feature actually belonged to), so
   `/disagreements`' cross-project listing now links each row into its own correct project.
+  **Closed by issue #63:** the original fix's `resolveDisagreementFeatures()` helper
+  (`packages/web/src/lib/resolve-disagreement-features.ts`, now removed) resolved this same
+  run→request→project chain with one `client.getFeatureRun(...)`/`client.getFeature(...)` HTTP
+  round-trip pair **per disagreement row** — an O(n) render-time fan-out flagged as an
+  architectural watch item in PR #62's re-review (worst case 100 extra round trips for the page's
+  50-row cap). Resolved instead at the read-model layer: `DisagreementRow`
+  (`packages/api/src/read-models/governance.ts`) gained `feature_request_id`/`project_id` fields,
+  and `listDisagreements()` resolves them via two batch queries after the base list (mirroring
+  `listHumanRequiredItems()`'s two-step pattern, not a three-table JOIN inlined into
+  `listByCreatedAt`'s query — that helper's `WHERE`/`ORDER BY` reference bare `created_at`/`id`,
+  which would be ambiguous once joined against `feature_runs`/`feature_requests`, both of which
+  also carry those column names). This costs a fixed 3 backend queries per page load regardless of
+  row count, not one pair per row. `/disagreements/page.tsx` now reads `row.feature_request_id`/
+  `row.project_id` directly with no client-side resolution step. The original regression's
+  distinct-run/request/project-ID fixture technique is preserved, moved to where the resolution
+  now actually happens: `packages/api/src/read-models/governance.test.ts` (direct read-model unit
+  coverage, including a two-disagreement case proving the batch-map resolution doesn't cross-wire
+  results between rows) and a new `GET /disagreements` case in
+  `packages/api/src/routes/reads/reads.test.ts` (end-to-end through the real route).
 - **HIGH-3 (no per-end-user auth boundary — documented, not code-fixed).** `packages/web` holds one
   server-side API key shared by every browser visitor; there is no session/identity layer
   distinguishing one visitor from another, unlike the backend's own per-key role model. Building a

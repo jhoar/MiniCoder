@@ -52,6 +52,13 @@ export interface DisagreementRow {
   arbiter_run_id: string | null;
   resolution: string | null;
   resolved_at: string | null;
+  /** Resolved via `feature_runs.feature_request_id`, not present on `disagreement_records`
+   * itself — see `listDisagreements()`'s doc comment (issue #63). */
+  feature_request_id: string;
+  /** Resolved via `feature_requests.project_id` (a disagreement's owning feature can belong to a
+   * *different* project than whichever one is currently selected in the Web UI's `?project=`
+   * param — see CLAUDE.md's Next.js Web UI Operational Constraints, MEDIUM-6). */
+  project_id: string;
   version: number;
   created_at: string;
   updated_at: string;
@@ -60,7 +67,21 @@ export interface DisagreementRow {
 const DISAGREEMENT_COLUMNS =
   'id, feature_run_id, finding_id, review_cycle, state, arbiter_run_id, resolution, resolved_at, version, created_at, updated_at';
 
-export function listDisagreements(
+/**
+ * `disagreement_records` carries only `feature_run_id` — `/features/[id]` expects a feature
+ * *request* ID, and its real project ID lives on `feature_requests`, not `feature_runs`. This
+ * resolves both via two batch queries after the base list (mirroring `listHumanRequiredItems()`'s
+ * two-step pattern), not a three-table JOIN inlined into `listByCreatedAt`'s query: that helper's
+ * `WHERE`/`ORDER BY` reference bare `created_at`/`id`, which would be ambiguous once joined against
+ * `feature_runs`/`feature_requests` (both of which also carry those column names) — the same
+ * cross-dialect ambiguous-column hazard `listHumanRequiredItems()` already avoids for this reason
+ * (CLAUDE.md's Ink Text UI Operational Constraints). This closes issue #63: the Web UI previously
+ * resolved this same chain with one `getFeatureRun`/`getFeature` HTTP round-trip pair *per
+ * disagreement row* (`packages/web/src/lib/resolve-disagreement-features.ts`, now removed) — an
+ * O(n) render-time fan-out. Resolving it here instead costs a fixed 3 backend queries per page
+ * (the base list plus these two batches), regardless of how many disagreement rows it returns.
+ */
+export async function listDisagreements(
   db: DbClient,
   filters: { featureRunId?: string; state?: string },
   params: ListParams,
@@ -75,7 +96,7 @@ export function listDisagreements(
     clauses.push('state = ?');
     queryParams.push(filters.state);
   }
-  return listByCreatedAt<DisagreementRow>(
+  const page = await listByCreatedAt<Omit<DisagreementRow, 'feature_request_id' | 'project_id'>>(
     db,
     {
       table: 'disagreement_records',
@@ -85,6 +106,33 @@ export function listDisagreements(
     },
     params,
   );
+  if (page.items.length === 0) return { items: [], nextCursor: page.nextCursor };
+
+  const featureRunIds = [...new Set(page.items.map((d) => d.feature_run_id))];
+  const runPlaceholders = featureRunIds.map(() => '?').join(', ');
+  const runs = await db.query<{ id: string; feature_request_id: string }>(
+    `SELECT id, feature_request_id FROM feature_runs WHERE id IN (${runPlaceholders})`,
+    featureRunIds,
+  );
+  const featureRequestIdByRunId = new Map(runs.map((r) => [r.id, r.feature_request_id]));
+
+  const featureRequestIds = [...new Set(runs.map((r) => r.feature_request_id))];
+  const requestPlaceholders = featureRequestIds.map(() => '?').join(', ');
+  const requests =
+    featureRequestIds.length > 0
+      ? await db.query<{ id: string; project_id: string }>(
+          `SELECT id, project_id FROM feature_requests WHERE id IN (${requestPlaceholders})`,
+          featureRequestIds,
+        )
+      : [];
+  const projectIdByFeatureRequestId = new Map(requests.map((r) => [r.id, r.project_id]));
+
+  const items = page.items.map((d) => {
+    const featureRequestId = featureRequestIdByRunId.get(d.feature_run_id) ?? '';
+    const projectId = projectIdByFeatureRequestId.get(featureRequestId) ?? '';
+    return { ...d, feature_request_id: featureRequestId, project_id: projectId };
+  });
+  return { items, nextCursor: page.nextCursor };
 }
 
 export interface PolicyDecisionRow {

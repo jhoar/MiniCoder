@@ -1,6 +1,5 @@
 import type { ReactElement } from 'react';
 import { getApiClient } from '../../lib/api-server';
-import { resolveDisagreementFeatures } from '../../lib/resolve-disagreement-features';
 import { resolveProjectId } from '../../lib/project';
 import { ProjectSwitcher } from '../../components/project-switcher';
 import { StatusBadge } from '../../components/status-badge';
@@ -17,12 +16,14 @@ export default async function DisagreementsPage({
   // — this lists every open/escalated disagreement across the whole deployment, which is the best
   // this API surface supports today. Resolution happens from the linked feature's detail page,
   // where the feature run's current version is already known.
-  const [projects, rawDisagreements, policyDecisions] = await Promise.all([
+  //
+  // Each row's `feature_request_id`/`project_id` are resolved backend-side by `listDisagreements()`
+  // (issue #63) — no per-row client-side fan-out needed here the way an earlier revision required.
+  const [projects, disagreements, policyDecisions] = await Promise.all([
     client.listProjects({ limit: '100' }),
     client.listDisagreements({}, { limit: '50' }),
     client.listPolicyDecisions(projectId, { limit: '50' }),
   ]);
-  const disagreements = await resolveDisagreementFeatures(client, rawDisagreements.items);
 
   return (
     <div>
@@ -34,7 +35,7 @@ export default async function DisagreementsPage({
       <section>
         <h2>Disagreements (all projects)</h2>
         <Table
-          rows={disagreements}
+          rows={disagreements.items}
           rowKey={(row) => row.id}
           columns={[
             { key: 'state', header: 'State', render: (row) => <StatusBadge value={row.state} /> },
@@ -42,8 +43,8 @@ export default async function DisagreementsPage({
               key: 'feature',
               header: 'Feature',
               render: (row) => (
-                <a href={`/features/${row.featureRequestId}?project=${row.featureProjectId}`}>
-                  {row.featureRequestId}
+                <a href={`/features/${row.feature_request_id}?project=${row.project_id}`}>
+                  {row.feature_request_id}
                 </a>
               ),
             },
