@@ -2872,6 +2872,28 @@ ASC` access pattern had no matching index, fine at small scale but avoidable sca
   that row. A caller wanting to export/ready such a legacy row must first backfill its
   `design_document_id` directly (no backfill migration/repair command was built for this — it is
   real, tracked future work, not silently assumed unnecessary; tracked as issue #71).
+  **Closed by issue #71:** `repairDesignDocumentBinding()`
+  (`packages/api/src/read-models/design-doc-repair.ts`) is the supported operator recovery for
+  exactly this dead end, exposed as `POST /commands/repair-design-document-binding`
+  (`packages/api/src/commands/repair-design-document-binding-route.ts`, `operator`-role-gated via
+  `requireRole()`, no `Idempotency-Key` needed) and `minicoder design-doc repair-binding --project
+<id> --artifact <id> --document <id> --yes`. Not a `CommandHandler` — `design_document_id` is a
+  binding column, not a state-machine field, so there is no matrix transition to dispatch; this is
+  the same "non-command DB-repair action, exposed via a dedicated route" posture
+  `diagnostics-routes.ts`/`finalize-if-github-merged-route.ts` already establish, not a new
+  pattern. It only ever backfills a currently-`NULL` binding after confirming the target
+  `design_documents` row belongs to the same project (a document from a different project simply
+  isn't found) — it never rebinds an already-bound artifact to a different document (`400
+artifact-already-bound`), and re-running it with the same document is a safe idempotent no-op
+  (`alreadyBound: true`), the same replay-safety posture `state repair` establishes for its own
+  audited mutations. The write is CAS-guarded (`UPDATE ... WHERE design_document_id IS NULL`) and
+  re-checked on a 0-affected-rows race rather than assumed to be this caller's own write, and is
+  audited via a `workflow_events` row (`artifact_export.binding_repaired`) in the same transaction
+  as the binding write — mirroring `state repair --apply`'s mutation-plus-event-insert convention.
+  A regression in `design-doc-repair.test.ts` proves the full loop end to end: the exact
+  fail-closed rejection `design-document-artifact-binding.test.ts` already covers, followed by a
+  repair, followed by the same `ExportDesignDocumentHandler` call now succeeding against the same
+  row.
 - **`evaluateProjectAcceptance()` (`packages/core/src/project/acceptance.ts`) is deliberately
   DB-knowable-only, not a literal implementation of docs/01 §13.1's full checklist.** A core
   command handler cannot itself shell out to `pnpm test`/`pnpm build`/lint/security-scan without a

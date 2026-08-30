@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.3
-> Last-updated: 2026-08-28
+> Version: 1.2.4
+> Last-updated: 2026-08-30
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -635,6 +635,7 @@ minicoder design-doc regenerate --project <id> --yes                          # 
 minicoder design-doc request-revision --project <id> --document <id> --yes [--notes <text>]  # -> design_document_revision_requested (approver+)
 minicoder design-doc approve --project <id> --document <id> --yes [--notes <text>]           # -> design_document_approved (approver+)
 minicoder design-doc request-run --project <id> --documentation-adapter <name> [--idempotency-key <key>] # enqueues run-design-doc (drafts sections, exports final-design-document.md)
+minicoder design-doc repair-binding --project <id> --artifact <id> --document <id> --yes      # backfills a NULL artifact_exports.design_document_id binding (issue #71 recovery; operator+)
 
 # Generic-dispatch and task-enqueue CLI wrappers (previously curl-only — see USER-MANUAL.md §5.0/
 # §5.0.1; API-only, same conventions as the Ink Text UI commands above). Every write/enqueue
