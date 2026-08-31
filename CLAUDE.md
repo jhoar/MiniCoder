@@ -3469,6 +3469,70 @@ via `TransactionalCommandExecutor`, and no-ops on `ok`. It is deliberately separ
 runs, and only the human override (`ApproveBudgetOverrideHandler`) records a `policy_decisions`
 row, not the system-triggered breach.
 
+## Local Quickstart Defaults (SQLite + Gitea)
+
+**Decision**: a fresh checkout's default configuration is SQLite plus a local, docker-compose-
+managed Gitea instance — chosen specifically so MiniCoder is usable quickly with no external
+accounts to sign up for. This does not change or weaken decision #3 above (GitHub remains the
+original and most complete shipped SCM provider, and every production write-path call site is
+already provider-aware) — it only changes which provider `scripts/start-minicoder.sh` reaches for
+by default when nothing else is configured. PostgreSQL, GitHub, and GitLab remain fully supported
+"more complex setup" alternatives, opted into via flags/env vars, not code paths that were removed
+or downgraded.
+
+- **`scripts/start-minicoder.sh` gained `--scm=<gitea|gitlab|github|none>` (default `gitea`) and
+  `--db=<sqlite|postgres>` (default `sqlite`) flags**, plus the equivalent `SCM_STACK`/`DB_DIALECT`
+  env vars (flag wins if both are given). Unless `--no-infra` is passed, the script brings up the
+  matching docker-compose stack (`infra/docker-compose.{gitea,gitlab,postgres}.yml`) and waits for
+  its healthcheck before proceeding — mirroring the polling shape `.github/workflows/
+live-scm-matrix.yml`'s `live-gitlab` job already established for GitLab's slow first boot.
+- **First-run bootstrap is zero-touch, not a "log into the web UI and click Generate Token"
+  step.** For Gitea, the script runs `docker exec -u git <container> gitea admin user create` /
+  `gitea admin user generate-access-token` directly against the running container — the same two
+  CLI subcommands `.github/workflows/live-scm-matrix.yml`'s `live-gitea` job already uses (there
+  against a downloaded binary instead of a container, since that job has no Docker-in-CI need; here
+  the container is the whole point). For GitLab, it runs `gitlab-rails runner` to mint a root
+  personal access token non-interactively — the identical command the `live-gitlab` job already
+  uses, avoiding GitLab's randomly-generated, 24h-expiring initial root password entirely. Both are
+  the same, already-proven-in-CI commands, not a new untested bootstrap mechanism.
+- **Bootstrapped values persist to `.env` idempotently** (a new `persist_env_var()` helper: append
+  only if the key isn't already present in the file), so a second run reuses the same Gitea admin
+  user/token or GitLab root token instead of erroring on "user already exists" or minting a new
+  token every time. `GITEA_TOKEN`/`GITLAB_TOKEN` already set (by a prior run, or supplied manually
+  for an externally-managed instance) short-circuits the bootstrap entirely.
+- **`APP_ENV=production` unconditionally skips all docker-compose infra bring-up**, regardless of
+  `SCM_STACK`/`DB_DIALECT` — this is deliberately checked before the `--no-infra`/Docker-
+  availability branches, not folded into them, so a misconfigured production environment can never
+  accidentally provision a throwaway local Gitea/GitLab/Postgres container. A production deployment
+  always supplies real, externally-managed credentials/endpoints directly, exactly as before this
+  change — nothing about the production path (the existing `MINICODER_API_KEYS`/
+  `GITHUB_WEBHOOK_SECRET` hard-required-when-unset checks) was altered.
+- **Docker unavailable degrades to a warning, never a hard failure.** `have_docker()` checks both
+  that the `docker` binary is on `PATH` and that the daemon actually responds (`docker info`); if
+  either fails, the script prints which `*_TOKEN`/`*_BASE_URL` to set manually and continues —
+  matching the CODE_GEN_*/adapter-registry-bootstrap precedent elsewhere in this document of
+  "fail fast only when the feature needing it is actually used," not at process startup.
+- **`infra/docker-compose.postgres.yml` is new** — MiniCoder's own orchestration-database
+  PostgreSQL container (`postgres:16-alpine`, user/db `minicoder`/`minicoder`), unrelated to Gitea's
+  or GitLab's own internal metadata databases (their compose files already existed, each bundling
+  its own separate SQLite/embedded-Postgres for its own bookkeeping). Not brought up by default —
+  only via `--db=postgres` — since SQLite remains the default per decision #10 (never on a network
+  filesystem) and the "one architecture, two state-store profiles" decision above.
+- **`GITEA_WEBHOOK_SECRET`/`GITLAB_WEBHOOK_SECRET` dev placeholders are generated for whichever
+  provider is selected**, mirroring `GITHUB_WEBHOOK_SECRET`'s existing dev-placeholder generation —
+  harmless since both are genuinely optional (unset simply leaves that provider's webhook route
+  unmounted per `packages/api/src/server.ts`), but keeps the route available immediately if a real
+  webhook is wired up later without a second script run.
+- **Still out of scope, deliberately not built here**: there is no CLI/API command to register a
+  `repositories` row (provider/base_url/owner/name) for a real project against the bootstrapped
+  Gitea instance — that gap already existed before this change (USER-MANUAL.md §3.1.2 already
+  documents it: "however your setup tooling/import path does that; there is no separate 'connect a
+  repo' CLI command yet") and remains real, tracked future work, not something this quickstart
+  change silently papers over. Likewise, a real webhook delivery from the dockerized Gitea/GitLab
+  container back to a host-process `minicoder api serve` needs its own host-networking setup this
+  script does not attempt — local testing without a real webhook still uses the already-documented
+  `minicoder gitea simulate-*`/`minicoder gitlab simulate-*` dev commands.
+
 ## Security Sandbox Rules (docs/07, §6)
 
 - Workspaces are ephemeral and isolated per agent run.

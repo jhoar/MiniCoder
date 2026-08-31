@@ -54,7 +54,10 @@ The authoritative specification lives entirely under [`docs/`](docs/). Read in o
 - **The linked SCM provider is repository truth**; webhooks are the primary event source, with
   scheduled reconciliation as the fallback/repair path. GitHub is the original and most complete
   implementation; Gitea and GitLab are also shipped behind the same provider-neutral interface
-  (docs/06 §Phase 18).
+  (docs/06 §Phase 18). **`./scripts/start-minicoder.sh` defaults to SQLite + a local, docker-
+  compose-managed Gitea instance** so a fresh checkout is usable quickly with no external accounts
+  to sign up for; PostgreSQL/GitHub/GitLab remain fully supported via `--db=postgres`/
+  `--scm=github`/`--scm=gitlab` for more complex setups (see `USER-MANUAL.md` §3).
 - **Sequential execution is a policy** (locks/lanes with fencing tokens), not a schema limitation —
   one feature is worked on per project at a time, by design.
 - **Vendor-neutral agent adapters** (planner, coder, reviewer, arbiter, documentation, human) run

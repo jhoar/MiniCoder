@@ -1,0 +1,38 @@
+version: '3.8'
+
+# MiniCoder — local PostgreSQL backend for MiniCoder's own orchestration database (DB_DIALECT=postgres).
+#
+# This is MiniCoder's own state store, unrelated to Gitea's/GitLab's internal metadata databases —
+# see infra/docker-compose.gitea.yml/docker-compose.gitlab.yml for those. SQLite (no container
+# needed) remains the default/quickstart choice (CLAUDE.md's "SQLite = local/single-node;
+# PostgreSQL = hosted/team" decision) — bring this stack up only when you deliberately want to
+# exercise the PostgreSQL profile locally, e.g. via `./scripts/start-minicoder.sh --db=postgres`.
+#
+# Startup: `docker compose -f infra/docker-compose.postgres.yml up -d`, wait for the healthcheck,
+# then point MiniCoder at it with:
+#   DB_DIALECT=postgres
+#   DB_URL=postgres://minicoder:minicoder@localhost:5432/minicoder
+#
+# Never put SQLite on a network filesystem — that constraint is unrelated to this file, which is
+# for the opposite case (using PostgreSQL instead of SQLite).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: minicoder-postgres
+    environment:
+      - POSTGRES_USER=minicoder
+      - POSTGRES_PASSWORD=minicoder
+      - POSTGRES_DB=minicoder
+    ports:
+      - '5432:5432'
+    volumes:
+      - minicoder-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U minicoder -d minicoder']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  minicoder-postgres-data:

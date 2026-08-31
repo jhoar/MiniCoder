@@ -1,16 +1,22 @@
 version: '3.8'
 
-# MiniCoder — local/CI Gitea fixture (docs/06 §Phase 18 Stage 3).
+# MiniCoder — local Gitea instance (docs/06 §Phase 18 Stage 3), now doing double duty as the
+# default local-quickstart SCM backend, not just a CI/manual-testing fixture.
 #
 # A single Gitea instance for exercising `@minicoder/gitea`'s `GiteaScmClient` and webhook
 # receiver against a real server, mirroring the posture `infra/docker-compose.coder-sandbox.yml`
-# already documents for the Coder sandbox.
+# already documents for the Coder sandbox. `./scripts/start-minicoder.sh` (default, no flags)
+# brings this stack up automatically and bootstraps an admin user + access token on first run
+# (`docker exec -u git <container> gitea admin user create` / `generate-access-token`, the same two
+# subcommands `.github/workflows/live-scm-matrix.yml`'s `live-gitea` job already uses) — see
+# CLAUDE.md's "Local Quickstart Defaults (SQLite + Gitea)" section for the full writeup.
 #
 # Status: this stack has not been exercised against a live Docker daemon in this repository's
-# CI yet — the implementation session that wrote it had no reachable Docker daemon (`docker info`
-# reported "Cannot connect to the Docker daemon"; only `docker compose config` syntax validation
-# was possible). `packages/gitea`'s unit tests run against a fake `fetchImpl` instead of this
-# stack.
+# CI yet — the implementation session that first wrote it had no reachable Docker daemon (`docker
+# info` reported "Cannot connect to the Docker daemon"; only `docker compose config` syntax
+# validation was possible), and the start-minicoder.sh quickstart bootstrap that now drives it
+# was written under the same constraint. `packages/gitea`'s unit tests run against a fake
+# `fetchImpl` instead of this stack.
 #
 # `GiteaScmClient` IS now exercised end to end against a real, live Gitea server in CI (issue #85,
 # `.github/workflows/live-scm-matrix.yml`) — but via a directly downloaded Gitea release binary
@@ -22,7 +28,8 @@ version: '3.8'
 # Startup: `docker compose -f infra/docker-compose.gitea.yml up -d`, wait for the healthcheck,
 # then create an access token and a webhook (either through Gitea's web UI at
 # http://localhost:3300, or its API) pointed at a `minicoder gitea serve`/Orchestrator-API
-# instance's `/webhooks/gitea`.
+# instance's `/webhooks/gitea` — or just run `./scripts/start-minicoder.sh`, which does the token
+# part of this for you.
 #
 # SQLite backend (GITEA__database__DB_TYPE=sqlite3): the simplest option for a throwaway test
 # fixture — this is Gitea's own internal metadata store, unrelated to MiniCoder's own

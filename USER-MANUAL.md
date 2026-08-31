@@ -117,17 +117,43 @@ scheduled reconciliation pass as a fallback) and mirrors what it sees.
 
 ## 3. Installing and standing up a deployment
 
+**Quickest path** — SQLite plus a local Gitea instance, both managed for you:
+
+```bash
+pnpm install
+minicoder db migrate       # or just run the next line — it does this too
+./scripts/start-minicoder.sh
+```
+
+With Docker installed and running, that one command brings up a local Gitea instance via
+docker compose, bootstraps a Gitea admin user and access token on first run (nothing to click
+through in a web UI), applies migrations against a local SQLite file, and starts the Orchestrator
+API and a task worker. This is the default configuration specifically so a fresh checkout is
+usable quickly with no external accounts to sign up for. Everything below this point, plus
+`--scm=github`/`--scm=gitlab`/`--db=postgres` (3.5), covers the "more complex setup" alternatives —
+a real GitHub/GitLab project, PostgreSQL, and so on — which remain fully supported.
+
 ### 3.1 Prerequisites
 
 - Node.js and `pnpm` on `PATH` (`corepack enable` if you haven't already).
-- A database: SQLite for local/single-node use, PostgreSQL for a hosted/team deployment. Never put
-  SQLite on a network filesystem.
-- A GitHub repository and a token (`GITHUB_TOKEN`) with permission to push branches, open PRs, and
-  merge — MiniCoder pushes real commits and opens real pull requests against it.
+- A database: SQLite (default) for local/single-node use, PostgreSQL for a more complex hosted/team
+  deployment. Never put SQLite on a network filesystem.
+- An SCM provider repository and a token with permission to push branches, open PRs, and merge —
+  MiniCoder pushes real commits and opens real pull requests against it. **The default/quickest
+  path needs nothing here**: `./scripts/start-minicoder.sh` brings up a local Gitea instance via
+  Docker and bootstraps a token for you automatically (Docker itself is the only prerequisite for
+  that path). A real GitHub repository (`GITHUB_TOKEN`) or a GitLab project/instance
+  (`GITLAB_TOKEN`) are the "more complex setup" alternatives — see 3.1.1/3.1.2.
 - An LLM provider endpoint for the coder/reviewer/planner/arbiter/documentation adapters
-  (`CODE_GEN_BASE_URL`, `CODE_GEN_API_KEY`, `CODE_GEN_MODEL` — any OpenAI-compatible endpoint).
+  (`CODE_GEN_BASE_URL`, `CODE_GEN_API_KEY`, `CODE_GEN_MODEL` — any OpenAI-compatible endpoint). Not
+  needed just to bring the processes up — only once you actually run a coder/reviewer/design-doc
+  task.
 
-### 3.1.1 Generating `GITHUB_TOKEN` and `GITHUB_WEBHOOK_SECRET`
+### 3.1.1 Generating `GITHUB_TOKEN` and `GITHUB_WEBHOOK_SECRET` (more complex setup: a real GitHub project)
+
+This section is for connecting a real GitHub repository — the "more complex setup" alternative to
+the zero-touch default described above. If you're just trying MiniCoder out, skip straight to 3.5
+and run `./scripts/start-minicoder.sh` (Gitea, no token generation needed).
 
 **`GITHUB_TOKEN`** — used by the coder/reviewer adapters (push branches, open PRs), `minicoder
 merge ...` (merge, publish the `minicoder/review-gate` status check), `github-reconciliation`
@@ -223,6 +249,12 @@ self-hosted providers, a `base_url` pointing at your instance — set these when
 `repositories` row for the project (however your setup tooling/import path does that; there is no
 separate "connect a repo" CLI command yet — a repository row is created alongside the project).
 
+**If you're using the default `./scripts/start-minicoder.sh` (Gitea, no flags), `GITEA_TOKEN` and
+`GITEA_BASE_URL` are already generated for you** on first run (3.5) — the token-generation steps
+below are only needed if you're pointing at a Gitea/GitLab instance you set up yourself (a real
+self-hosted instance, `--scm=gitlab`'s local docker-compose stack, etc.), rather than the
+docker-compose Gitea the default flow manages automatically.
+
 **`GITEA_TOKEN` / `GITLAB_TOKEN`** — used by `state doctor --check-scm` to check a repository of
 that provider for undiscovered PRs. Generate one from your instance:
 
@@ -290,14 +322,15 @@ minicoder db validate        # confirms every expected table/index exists
 
 | Concern                      | Variable                                                    | Notes                                                                                                                    |
 | ---------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Database                     | `DB_DIALECT`                                                | `sqlite` (default) or `postgres`                                                                                         |
+| SCM stack (start script)     | `SCM_STACK`                                                 | `gitea` (default) \| `gitlab` \| `github` \| `none` — same as `--scm=...`; picks which docker-compose infra 3.5 manages |
+| Database                     | `DB_DIALECT`                                                | `sqlite` (default, quick setup) or `postgres` (more complex setup) — `--db=...` is the equivalent flag                  |
 | Database (SQLite)            | `DB_PATH`                                                   | Defaults to `./minicoder.db`                                                                                             |
-| Database (PostgreSQL)        | `DB_URL`                                                    | Required when `DB_DIALECT=postgres`                                                                                      |
+| Database (PostgreSQL)        | `DB_URL`                                                    | Required when `DB_DIALECT=postgres`; auto-filled by `--db=postgres` if a local container is used                        |
 | API auth (server)            | `MINICODER_API_KEYS`                                        | JSON array of `{key, id, role, actorKind, displayName?}`                                                                 |
 | API auth (client/CLI/UI)     | `MINICODER_API_KEY`                                         | One raw key from the array above                                                                                         |
 | API location (client/CLI/UI) | `MINICODER_API_URL`                                         | Defaults to `http://localhost:4000`                                                                                      |
+| Gitea (default SCM)          | `GITEA_TOKEN` / `GITEA_BASE_URL`                            | Used by `state doctor --check-scm` (Gitea-provider repos); auto-generated by the default `./scripts/start-minicoder.sh`  |
 | GitHub                       | `GITHUB_TOKEN`                                              | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-scm` (GitHub-provider repos)                     |
-| Gitea                        | `GITEA_TOKEN`                                               | Used by `state doctor --check-scm` (Gitea-provider repos)                                                                |
 | GitLab                       | `GITLAB_TOKEN`                                              | Used by `state doctor --check-scm` (GitLab-provider repos)                                                               |
 | GitHub webhooks              | `GITHUB_WEBHOOK_SECRET`                                     | Required by both `minicoder github serve` and `minicoder api serve`                                                      |
 | GitHub webhooks (rotation)   | `GITHUB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
@@ -395,20 +428,32 @@ defaults, and is the recommended way to stand up a deployment (including product
 process supervisor — see 3.5.1):
 
 ```bash
-./scripts/start-minicoder.sh                    # sqlite, 1 task worker, API + webhooks on :4000
+./scripts/start-minicoder.sh                    # default: sqlite + local Gitea (docker compose)
+./scripts/start-minicoder.sh --scm=github       # use a real GitHub project instead (3.1.1)
+./scripts/start-minicoder.sh --scm=gitlab       # use a local GitLab CE instance instead (slow first
+                                                  # boot — several minutes is normal for GitLab CE)
+./scripts/start-minicoder.sh --scm=none         # skip SCM infra entirely
+./scripts/start-minicoder.sh --db=postgres      # local PostgreSQL container instead of SQLite
+./scripts/start-minicoder.sh --no-infra         # never touch Docker; use whatever's already
+                                                  # configured (e.g. an externally-managed instance)
 WORKER_COUNT=3 ./scripts/start-minicoder.sh      # scale to 3 task workers
 START_WEB_UI=true ./scripts/start-minicoder.sh   # also start the Web UI (packages/web) on :3000
 ./scripts/start-minicoder.sh --webhook-only      # dev-only: minicoder github serve instead of api serve
 ./scripts/start-minicoder.sh --help              # full option/env-var reference
 ```
 
-It loads a `.env` file from the repo root if present, runs `minicoder db migrate` before starting
-anything, waits for `/healthz` before printing its summary, and stops every process cleanly
-(no orphaned workers, no held ports) on Ctrl-C or `SIGTERM`. In local development, unset
-`MINICODER_API_KEYS`/`GITHUB_WEBHOOK_SECRET` are filled in with clearly-labeled dev-only
-placeholders (printed to the console so you know to use them); with `APP_ENV=production` it
-refuses to start instead of inventing a production secret — set both for real first. Logs for each
-process land in `logs/<process-name>.log`.
+It loads a `.env` file from the repo root if present, brings up the docker-compose infra matching
+`--scm`/`--db` (or `SCM_STACK`/`DB_DIALECT` in `.env`) unless `--no-infra` is passed — on first run
+this includes bootstrapping a Gitea admin user and access token (or a GitLab root token) with no
+manual web UI steps, saving the result back to `.env` so a later run reuses it. Without Docker
+available, this step degrades to a warning rather than failing — set the matching `*_TOKEN`/
+`*_BASE_URL`/`DB_URL` yourself to point at an externally-managed instance instead. It then runs
+`minicoder db migrate` before starting anything, waits for `/healthz` before printing its summary,
+and stops every process cleanly (no orphaned workers, no held ports) on Ctrl-C or `SIGTERM`. In
+local development, unset `MINICODER_API_KEYS`/`GITHUB_WEBHOOK_SECRET` are filled in with
+clearly-labeled dev-only placeholders (printed to the console so you know to use them); with
+`APP_ENV=production` it refuses to start instead of inventing a production secret — set both for
+real first. Logs for each process land in `logs/<process-name>.log`.
 
 Everything below this point describes what the script does under the hood — useful for
 understanding what's running, tuning an individual process, or wiring your own process supervisor
@@ -470,13 +515,16 @@ WantedBy=multi-user.target
 
 **Docker**: build an image with `pnpm install && pnpm build` baked in, then
 `CMD ["./scripts/start-minicoder.sh"]`, supplying `DB_URL`, `MINICODER_API_KEYS`,
-`GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, and the `CODE_GEN_*` vars as container environment
-variables (never baked into the image).
+`GITHUB_WEBHOOK_SECRET`, your chosen SCM provider's token (`GITHUB_TOKEN`/`GITEA_TOKEN`/
+`GITLAB_TOKEN`), and the `CODE_GEN_*` vars as container environment variables (never baked into the
+image). With `APP_ENV=production` set, the script never brings up docker-compose SCM/DB infra on
+its own regardless of `SCM_STACK`/`DB_DIALECT` — those are quickstart-only convenience; a
+production deployment always supplies real, externally-managed credentials/endpoints directly.
 
 In both cases, set `APP_ENV=production`, `DB_DIALECT=postgres` with a real `DB_URL` (SQLite is
 local/single-node only — never on a network filesystem), and real values for
-`MINICODER_API_KEYS`/`GITHUB_WEBHOOK_SECRET`/`GITHUB_TOKEN`/`CODE_GEN_*` — the script will refuse
-to start without the first two once `APP_ENV=production` is set.
+`MINICODER_API_KEYS`/`GITHUB_WEBHOOK_SECRET`/your SCM provider's token/`CODE_GEN_*` — the script
+will refuse to start without the first two once `APP_ENV=production` is set.
 
 ### 3.6 Optional: the Text UI and Web UI
 
