@@ -150,7 +150,16 @@ persist_env_var() {
   export "${name}=${value}"
 }
 
-have_docker() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }
+have_docker() {
+  # `docker info` alone only proves the daemon is reachable — it says nothing about whether the
+  # `docker compose` CLI plugin is installed. On a host with a working daemon but no compose
+  # plugin (e.g. an old Docker CLI predating Compose V2), `docker compose -f ...` doesn't fail
+  # with a clean "unknown command" — Docker's flag parser instead misreads the dropped `compose`
+  # token and reports a confusing "unknown shorthand flag: 'f' in -f", masking the real problem
+  # and skipping this function's own documented graceful-degradation path entirely. Checking
+  # `docker compose version` here closes that gap.
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
+}
 
 wait_for_health() {
   # $1 container name, $2 max attempts, $3 seconds between attempts
@@ -271,9 +280,11 @@ elif [ "$NO_INFRA" = true ]; then
 elif ! have_docker; then
   if [ "$SCM_STACK" != "github" ] && [ "$SCM_STACK" != "none" ]; then
     SCM_STACK_UPPER="$(printf '%s' "$SCM_STACK" | tr '[:lower:]' '[:upper:]')"
-    echo "NOTE: Docker not available/running — skipping local ${SCM_STACK} infra." >&2
+    echo "NOTE: Docker not available/running, or the 'docker compose' plugin isn't installed —" >&2
+    echo "      skipping local ${SCM_STACK} infra." >&2
     echo "      Set ${SCM_STACK_UPPER}_TOKEN (and ${SCM_STACK_UPPER}_BASE_URL) yourself, or install" >&2
-    echo "      Docker and re-run, to use the default zero-touch local ${SCM_STACK} setup." >&2
+    echo "      Docker (with the compose plugin: 'docker compose version' should succeed) and" >&2
+    echo "      re-run, to use the default zero-touch local ${SCM_STACK} setup." >&2
   fi
   if [ "$DB_DIALECT" = "postgres" ] && [ -z "${DB_URL:-}" ]; then
     echo "NOTE: Docker not available/running and DB_URL is unset — set DB_URL yourself to point at" >&2
