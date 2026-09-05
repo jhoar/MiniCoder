@@ -3384,6 +3384,24 @@ WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never
   deployment wanting the whole backlog to run unattended must re-enqueue it itself (repeatedly via
   the CLI, or from an external scheduler) — `USER-MANUAL.md` §4 Step 4 documents this explicitly
   rather than implying full automatic progression through the backlog.
+- **Broader correction found while fixing the doc above: NONE of the pipeline's Workflow Layer
+  tasks chain to the next one — not just `start-next-feature`.** An earlier revision of
+  `USER-MANUAL.md` §4 Step 4 claimed "each step re-enqueues the next Workflow Layer task
+  (`run-coder`, `run-review`, `run-merge-gate`) as it becomes eligible" — false, confirmed by
+  grepping every file under `packages/triggerdev/src/tasks/` for any call to an
+  `enqueueTask()`/`trigger*()` function: there are none. Every one of `run-coder`/`run-review`/
+  `run-merge-gate`/`start-next-feature` must be enqueued individually, by a human or by a
+  deployment's own external scheduler, at every hop — this codebase does no internal chaining
+  anywhere. The one exception is genuinely automatic: a real SCM webhook delivery drives
+  `pr_opened → ci_running → under_review` (and `changes_requested → fixing`) via
+  `packages/github`'s (or `gitea`'s/`gitlab`'s) webhook-triggered inbox handlers, per decision #3's
+  "webhooks are the primary event source." Fixed in `USER-MANUAL.md` §4 Step 4/Step 7, which now
+  walks the full manual sequence. **A second, previously-undocumented gap surfaced in the same
+  pass: the scheduled `github-reconciliation` fallback task has no CLI/API trigger of its own at
+  all** — unlike every other canonical task, there is no `minicoder run ...`/enqueue route for it;
+  a deployment without a real webhook wired (and unwilling to hand-simulate every event via
+  `github/gitea/gitlab simulate-*`) has no way to invoke it on demand. Documented as a known,
+  open gap in `USER-MANUAL.md` §4 Step 4, not fixed in this pass.
 
 ## Cross-Dialect Testing (Mandatory)
 

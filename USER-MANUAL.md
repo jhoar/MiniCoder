@@ -643,25 +643,67 @@ minicoder plan approve --project <project> --plan <planId> --yes
 minicoder plan activate --project <project> --plan <planId> --yes
 ```
 
-### Step 4 — Kick off execution, and watch it work
+### Step 4 — Drive execution, and watch it work
 
-Activation alone doesn't start anything — enqueue the first `start-next-feature` run yourself:
+**None of this happens on its own.** Every stage below is its own task-queue enqueue, and nothing
+in this codebase automatically enqueues the next one when the previous one finishes — each hop is
+either something you (or your own external scheduler/cron) trigger explicitly, or something a real
+SCM webhook delivery triggers automatically (see below). Plan on driving one feature at a time
+through this sequence:
 
 ```bash
+# 1. Select the next eligible feature (dependency order, one-feature-at-a-time) and start coding.
 minicoder run start-next-feature --project <project>
+minicoder status --project <project>       # poll until the start-next-feature task succeeds
+minicoder active --project <project>       # confirm execution state is now "coding"
+
+# 2. Have the coder adapter write the code, push a branch, and open the PR.
+minicoder run coder --project <project> --feature-run <featureRunId> --coder-adapter CodexCoderAdapter
+minicoder status --project <project>       # poll until run-coder succeeds
+minicoder active --project <project>       # confirm execution state is now "code_pushed", then
+                                            # "pr_opened" once the PR is linked
 ```
 
-This selects the next eligible feature (respecting dependency order and the one-feature-at-a-time
-rule) and starts coding on it. From there the pipeline runs on its own: coding → push → PR → CI →
-review → fix loop (if needed) → policy approval — each step re-enqueues the next Workflow Layer
-task (`run-coder`, `run-review`, `run-merge-gate`) as it becomes eligible, no further manual
-`minicoder run ...` needed for that feature. Once it reaches `merged` (or `skipped`),
-`start-next-feature` needs to be enqueued again to pick up the next one — it isn't
-self-rescheduling, so if you want the whole backlog to run unattended, call it again after each
-feature completes (`minicoder active --project <project>` going back to showing nothing is the
-signal), or from your own scheduler/cron on an interval.
+**What happens next depends on whether a real SCM webhook is wired up** (see
+[§3.1.1](#311-generating-github_token-and-github_webhook_secret-more-complex-setup-a-real-github-project)/
+[§3.1.2](#312-connecting-a-gitea-or-gitlab-project)): a real webhook delivery (CI status change,
+review submitted) drives `pr_opened → ci_running → under_review` automatically via the
+webhook-triggered inbox handlers — this is the primary path (docs §3 decision #3), and once it
+fires you don't need to do anything for this hop. If you don't have a real webhook wired (e.g.
+local/dev use without tunneling one in), fake the events instead:
 
-Watch it:
+```bash
+minicoder gitea simulate-check-passed --project <project> --pr-number <n>
+minicoder gitea simulate-review-approved --project <project> --pr-number <n>
+# (github/gitlab simulate-* if that's your provider — see §5.3)
+```
+
+**Known gap:** the scheduled `github-reconciliation` fallback task (meant to catch up on any
+missed webhook delivery) has no CLI/API trigger of its own today — unlike every other Workflow
+Layer task, there is no `minicoder run ...`/enqueue route for it. If you're not running a real
+webhook receiver and don't want to hand-simulate every event, this is currently a real dead end,
+not a misconfiguration on your end.
+
+```bash
+# 3. Once the PR reaches under_review, request an AI review.
+minicoder run review --project <project> --feature-run <featureRunId> \
+  --reviewer-adapter ClaudeReviewerAdapter
+minicoder status --project <project>       # poll until run-review succeeds
+minicoder active --project <project>       # blocking findings -> "changes_requested"/"fixing"
+                                            # (loop back to step 2's `run coder` once fixed);
+                                            # clean review -> stays at "under_review"
+
+# 4. Once under_review with no blocking findings, recompute the merge gate.
+minicoder run merge-gate --project <project> --feature-run <featureRunId>
+minicoder status --project <project>       # poll until run-merge-gate succeeds
+minicoder active --project <project>       # a passing gate -> "approved_by_policy"
+
+# 5. An approver merges it (§4 Step 6 below has the full command).
+minicoder merge merge-if-ready --feature-run <featureRunId> --project <project> --actor <you>
+```
+
+Once this feature reaches `merged` (or `skipped`), go back to step 1 (`run start-next-feature`) to
+pick up the next one — it isn't self-rescheduling either. Watch overall progress with:
 
 ```bash
 minicoder status --project <project>       # overall dashboard
@@ -734,8 +776,12 @@ minicoder merge finalize-if-github-merged --feature-run <id> --project <project>
 
 ### Step 7 — Repeat until the backlog is done
 
-Steps 4–6 repeat automatically, one feature at a time, until every feature request is `merged` or
-`skipped`.
+Repeat Step 4's sequence (`run start-next-feature` → `run coder` → CI/review observation →
+`run review` → `run merge-gate` → `merge merge-if-ready`), one feature at a time, until every
+feature request is `merged` or `skipped`. None of it repeats on its own — either drive it by hand
+as above, or wire your own external scheduler/cron to call the same enqueue routes/CLI commands on
+an interval (the same posture this manual's own [§5.13](#513-observability--minicoder-observability-export-otel-db)
+already documents for `observability export-otel`).
 
 ### Step 8 — Final design document
 
