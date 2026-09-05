@@ -25,8 +25,8 @@
     "react": "17.0.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "*",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/react": "^17.0.83",
-    "better-sqlite3": "*"
+    "better-sqlite3": "^12.11.1"
   }
 }

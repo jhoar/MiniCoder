@@ -27,8 +27,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "*",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/pg": "^8.11.6",
-    "better-sqlite3": "*"
+    "better-sqlite3": "^12.11.1"
   }
 }
