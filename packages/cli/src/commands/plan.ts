@@ -4,12 +4,13 @@ import { createDbClientFromEnv } from '../db-client.js';
 import {
   TransactionalCommandExecutor,
   ImportBacklogHandler,
+  ValidateBacklogHandler,
   parseBacklogMarkdown,
   BacklogParseError,
   generateId,
 } from '@minicoder/core';
 import type { CommandEnvelope } from '@minicoder/core';
-import { humanActor } from '@minicoder/triggerdev';
+import { humanActor, systemActor } from '@minicoder/triggerdev';
 import { renderPlanView, renderCommandResultView } from '@minicoder/tui/views';
 import {
   buildApiClient,
@@ -161,6 +162,58 @@ export function createPlanCommand(): Command {
         }
       },
     );
+
+  plan
+    .command('validate-backlog')
+    .description(
+      'Validates a plan\'s current backlog (system-actorKind-only ValidateBacklogCommand — ' +
+        'no MINICODER_API_KEYS system key needed, dispatches directly like import-backlog); ' +
+        'required before submit-for-approval',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--plan <id>', 'Implementation plan ID')
+    .action(async (opts: { project: string; plan: string }) => {
+      const db = await createDbClientFromEnv();
+      try {
+        // A fixed key would replay a stale cached result after a backlog regeneration (which
+        // resets `backlog_validated_state` and bumps `backlog_version`) — the same
+        // per-occurrence-discriminator requirement CLAUDE.md documents for every repeatable
+        // command's idempotency key. `backlog_version` is that discriminator here.
+        const planRows = await db.query<{ backlog_version: number }>(
+          `SELECT backlog_version FROM implementation_plans WHERE id = ? AND project_id = ?`,
+          [opts.plan, opts.project],
+        );
+        const backlogVersion = planRows[0]?.backlog_version;
+        if (backlogVersion === undefined) {
+          throw new Error(`Plan ${opts.plan} not found in project ${opts.project}`);
+        }
+
+        const correlationId = generateId();
+        const executor = new TransactionalCommandExecutor(db);
+        const envelope: CommandEnvelope<{ projectId: string; planId: string }> = {
+          commandId: generateId(),
+          idempotencyKey: `validate-backlog-cli:${opts.plan}:${backlogVersion}`,
+          payload: { projectId: opts.project, planId: opts.plan },
+          actor: systemActor(correlationId),
+          correlationId,
+        };
+        const result = await executor.execute(new ValidateBacklogHandler(), envelope);
+        console.log(
+          JSON.stringify(
+            {
+              command: 'plan validate-backlog',
+              projectId: opts.project,
+              planId: opts.plan,
+              resultingState: result.resultingState,
+            },
+            null,
+            2,
+          ),
+        );
+      } finally {
+        await db.close();
+      }
+    });
 
   plan
     .command('submit-for-approval')
