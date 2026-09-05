@@ -20,9 +20,9 @@
  * this file only declares each task's shape, not how the queue retries it.
  */
 import { z } from 'zod';
-import type { DbClient, PlannerAgentAdapter } from '@minicoder/core';
+import type { DbClient } from '@minicoder/core';
 import { linkRunToDb, updateRunStatus } from './metadata.js';
-import { requireNonBlankEnvVar } from './tasks/env.js';
+import { resolveDefaultPlannerAdapter } from './tasks/planner-adapter.js';
 import type { TaskId } from './task-ids.js';
 
 import { runImpl as runIngestSpecification } from './tasks/ingest-specification.js';
@@ -67,36 +67,6 @@ import {
   RunDesignDocPayload as RunDesignDocSchema,
 } from './tasks/types.js';
 
-/**
- * Constructs the real reference `GenericLLMPlannerAdapter` (issue #32) from env config.
- * Moved verbatim from `triggerdev-tasks.ts` — already SDK-free.
- */
-async function resolveDefaultPlannerAdapter(): Promise<PlannerAgentAdapter> {
-  const codeGenBaseUrl = requireNonBlankEnvVar(
-    'CODE_GEN_BASE_URL',
-    'planning-readiness-assessment requires an OpenAI-compatible endpoint — see ' +
-      'docs/07-security-and-secrets.md §3.',
-  );
-  const codeGenApiKey = requireNonBlankEnvVar(
-    'CODE_GEN_API_KEY',
-    'planning-readiness-assessment requires an OpenAI-compatible endpoint — see ' +
-      'docs/07-security-and-secrets.md §3.',
-  );
-  const codeGenModel = requireNonBlankEnvVar(
-    'CODE_GEN_MODEL',
-    'planning-readiness-assessment requires an OpenAI-compatible endpoint — see ' +
-      'docs/07-security-and-secrets.md §3.',
-  );
-  const { GenericLLMPlannerAdapter, HttpPlanProvider } =
-    await import('@minicoder/adapters-planner');
-  return new GenericLLMPlannerAdapter({
-    planProvider: new HttpPlanProvider({
-      baseUrl: codeGenBaseUrl,
-      apiKey: codeGenApiKey,
-      model: codeGenModel,
-    }),
-  });
-}
 
 export interface TaskDefinition<P = unknown, R = unknown> {
   readonly taskId: TaskId;
@@ -130,8 +100,12 @@ export const TASK_REGISTRY: ReadonlyMap<TaskId, TaskDefinition<unknown, unknown>
     runRecordClarificationAnswer,
   ),
   def('complete-clarification', 1, CompleteClarificationSchema, runCompleteClarification),
-  def('generate-implementation-plan', 1, GenerateImplementationPlanSchema, runGeneratePlan),
-  def('generate-feature-backlog', 1, GenerateFeatureBacklogSchema, runGenerateBacklog),
+  def('generate-implementation-plan', 1, GenerateImplementationPlanSchema, async (payload, db) =>
+    runGeneratePlan(payload, db, await resolveDefaultPlannerAdapter()),
+  ),
+  def('generate-feature-backlog', 1, GenerateFeatureBacklogSchema, async (payload, db) =>
+    runGenerateBacklog(payload, db, await resolveDefaultPlannerAdapter()),
+  ),
   def('validate-backlog', 1, ValidateBacklogSchema, runValidateBacklog),
   def('request-plan-approval', 1, RequestPlanApprovalSchema, runRequestPlanApproval),
   def('activate-approved-backlog', 1, ActivateApprovedBacklogSchema, runActivateBacklog),

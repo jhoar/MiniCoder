@@ -251,3 +251,23 @@ export function getImplementationPlan(db: DbClient, id: string): Promise<Impleme
     'implementation-plan',
   );
 }
+
+export interface PlanSectionRow {
+  id: string;
+  title: string;
+  content: string;
+  order_index: number;
+}
+
+/** Not project-scoped by a `WHERE` clause of its own — `plan_sections.plan_id` already scopes it
+ * to one plan, and the caller (the `GET /plans/:id/sections` route) resolves/authorizes the plan
+ * itself via `getImplementationPlan()` first. Plain `plan_id = ?` + `ORDER BY order_index ASC`, not
+ * `listByCreatedAt`'s cursor pagination — a plan's sections are a small, complete, ordered list
+ * (the same content `ExportPlanHandler` already renders as one Markdown document), not a
+ * candidate for incremental paging. */
+export function listPlanSections(db: DbClient, planId: string): Promise<PlanSectionRow[]> {
+  return db.query<PlanSectionRow>(
+    `SELECT id, title, content, order_index FROM plan_sections WHERE plan_id = ? ORDER BY order_index ASC`,
+    [planId],
+  );
+}

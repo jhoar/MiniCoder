@@ -21,24 +21,66 @@ export interface FeatureRequestRow {
   version: number;
   created_at: string;
   updated_at: string;
+  /** `fr_id`s this feature depends on (`feature_dependencies.target_fr_id`, translated from the
+   * internal id to the human-readable label) — previously invisible from any API/CLI response,
+   * reachable only via a raw SQL join against the database. Populated by a second batch query
+   * (mirroring `listHumanRequiredItems()`'s own two-step pattern below), not a JOIN folded into
+   * the cursor-paginated listing itself — `listByCreatedAt`'s WHERE/ORDER BY reference bare
+   * `created_at`/`id`, which would be ambiguous once joined against `feature_dependencies`. */
+  depends_on_fr_ids: string[];
 }
 
-export function listFeatureRequests(
+const FEATURE_REQUEST_COLUMNS =
+  'id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at';
+
+/** Batch-resolves `feature_dependencies` for a set of feature-request ids, translating
+ * `target_fr_id` (an internal id) to its `fr_id` label. Returns a map keyed by the *source*
+ * feature's internal id. */
+async function loadDependsOnFrIds(
+  db: DbClient,
+  featureRequestIds: string[],
+): Promise<Map<string, string[]>> {
+  const byId = new Map<string, string[]>();
+  if (featureRequestIds.length === 0) return byId;
+  const placeholders = featureRequestIds.map(() => '?').join(', ');
+  const rows = await db.query<{ source_fr_id: string; target_fr_id_label: string }>(
+    `SELECT fd.source_fr_id, freq.fr_id AS target_fr_id_label
+     FROM feature_dependencies fd
+     JOIN feature_requests freq ON freq.id = fd.target_fr_id
+     WHERE fd.source_fr_id IN (${placeholders})`,
+    featureRequestIds,
+  );
+  for (const row of rows) {
+    const list = byId.get(row.source_fr_id) ?? [];
+    list.push(row.target_fr_id_label);
+    byId.set(row.source_fr_id, list);
+  }
+  return byId;
+}
+
+export async function listFeatureRequests(
   db: DbClient,
   projectId: string,
   params: ListParams,
 ): Promise<CursorPage<FeatureRequestRow>> {
-  return listByCreatedAt<FeatureRequestRow>(
+  const page = await listByCreatedAt<Omit<FeatureRequestRow, 'depends_on_fr_ids'>>(
     db,
     {
       table: 'feature_requests',
-      columns:
-        'id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at',
+      columns: FEATURE_REQUEST_COLUMNS,
       where: 'project_id = ?',
       params: [projectId],
     },
     params,
   );
+  const dependsOnById = await loadDependsOnFrIds(
+    db,
+    page.items.map((f) => f.id),
+  );
+  return {
+    ...page,
+    items: page.items.map((f) => ({ ...f, depends_on_fr_ids: dependsOnById.get(f.id) ?? [] })),
+  };
 }
 
 export interface FeatureRunRow {
@@ -59,13 +101,18 @@ export async function getFeatureRequest(
   db: DbClient,
   id: string,
 ): Promise<{ feature: FeatureRequestRow; runs: FeatureRunRow[] }> {
-  const feature = await getByIdOrThrow<FeatureRequestRow>(
+  const row = await getByIdOrThrow<Omit<FeatureRequestRow, 'depends_on_fr_ids'>>(
     db,
     'feature_requests',
-    'id, plan_id, project_id, fr_id, title, description, kind, executable, state, priority, version, created_at, updated_at',
+    FEATURE_REQUEST_COLUMNS,
     id,
     'feature-request',
   );
+  const dependsOnById = await loadDependsOnFrIds(db, [id]);
+  const feature: FeatureRequestRow = {
+    ...row,
+    depends_on_fr_ids: dependsOnById.get(id) ?? [],
+  };
   const runs = await db.query<FeatureRunRow>(
     `SELECT id, feature_request_id, attempt_no, current_execution_state, lock_id, started_at, ended_at, outcome, version, created_at, updated_at
      FROM feature_runs WHERE feature_request_id = ? ORDER BY attempt_no DESC`,

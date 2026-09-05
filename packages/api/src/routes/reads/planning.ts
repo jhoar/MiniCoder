@@ -8,6 +8,7 @@ import {
   getClarificationSession,
   listImplementationPlans,
   getImplementationPlan,
+  listPlanSections,
 } from '../../read-models/index.js';
 import { parseListParams } from '../query-params.js';
 import { RequestValidationError } from '../../errors.js';
@@ -71,5 +72,15 @@ export function registerPlanningReadRoutes(app: FastifyInstance, db: DbClient): 
 
   app.get<{ Params: { id: string } }>('/plans/:id', async (request, reply) => {
     return reply.code(200).send(await getImplementationPlan(db, request.params.id));
+  });
+
+  // Additive: `getImplementationPlan()`'s existing shape is a public contract already consumed by
+  // the Web UI/CLI (fetchPlanVersion() etc.), so section content is served as a sibling resource
+  // rather than widening that response — same "detail as its own endpoint" precedent
+  // `/feature-runs/:id/timeline` already established, rather than `GET /clarification-sessions/:id`'s
+  // in-place-widened-response precedent, since here an existing consumer already depends on the
+  // narrower shape.
+  app.get<{ Params: { id: string } }>('/plans/:id/sections', async (request, reply) => {
+    return reply.code(200).send({ sections: await listPlanSections(db, request.params.id) });
   });
 }

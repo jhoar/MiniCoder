@@ -218,6 +218,91 @@ describe('CLI plan write commands', () => {
     expect(printed).toContain('"resultingState": "activated_for_execution"');
   });
 
+  it('resolve-gap fetches the gap version via GET /planning-readiness-assessments/:id and dispatches resolve-planning-gap', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === '/planning-readiness-assessments/assessment1') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            assessment: { id: 'assessment1', project_id: 'proj1', status: 'sufficient_with_assumptions' },
+            gaps: [
+              { id: 'gap1', assessment_id: 'assessment1', description: 'desc', severity: 'blocking', resolution: null, resolved_at: null, version: 3 },
+            ],
+            assumptions: [],
+            questions: [],
+          }),
+        } as Response;
+      }
+      if (path === '/commands/resolve-planning-gap') {
+        expect((init?.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
+        const body = JSON.parse(init?.body as string);
+        expect(body).toEqual({
+          projectId: 'proj1',
+          assessmentId: 'assessment1',
+          gapId: 'gap1',
+          resolution: 'Accepted for now',
+          expectedVersion: 3,
+        });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            command_id: 'cmd-1',
+            accepted: true,
+            resulting_state: 'resolved',
+            emitted_event_ids: [],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch to ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'resolve-gap',
+      '--project',
+      'proj1',
+      '--assessment',
+      'assessment1',
+      '--gap',
+      'gap1',
+      '--resolution',
+      'Accepted for now',
+      '--yes',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"resultingState": "resolved"');
+  });
+
+  it('resolve-gap refuses to run without --yes', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'resolve-gap',
+      '--project',
+      'proj1',
+      '--assessment',
+      'assessment1',
+      '--gap',
+      'gap1',
+      '--resolution',
+      'Accepted for now',
+    ]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('--yes is required'),
+    );
+  });
+
   it('honors a caller-supplied --idempotency-key instead of minting a new one', async () => {
     const fetchImpl = fakeFetch(
       { id: 'plan1', project_id: 'proj1', version: 0 },
@@ -248,6 +333,78 @@ describe('CLI plan write commands', () => {
 
     const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[1]!;
     expect((init?.headers as Record<string, string>)['Idempotency-Key']).toBe('my-fixed-retry-key');
+  });
+});
+
+describe('CLI plan view --plan', () => {
+  beforeEach(() => {
+    process.env['MINICODER_API_URL'] = 'http://localhost:4000';
+    process.env['MINICODER_API_KEY'] = 'test-key';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    delete process.env['MINICODER_API_URL'];
+    delete process.env['MINICODER_API_KEY'];
+  });
+
+  it('fetches the plan row and its sections and renders both when --plan is given', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const u = new URL(url);
+      if (u.pathname === '/plans' && u.searchParams.get('projectId') === 'proj1') {
+        return { ok: true, status: 200, json: async () => ({ items: [], nextCursor: null }) } as Response;
+      }
+      if (u.pathname === '/planning-readiness-assessments') {
+        return { ok: true, status: 200, json: async () => ({ items: [], nextCursor: null }) } as Response;
+      }
+      if (u.pathname === '/plans/plan1') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'plan1',
+            project_id: 'proj1',
+            assessment_id: 'assessment1',
+            state: 'draft',
+            title: 'Generated Plan',
+            summary: 'Generated summary',
+            version: 1,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          }),
+        } as Response;
+      }
+      if (u.pathname === '/plans/plan1/sections') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sections: [{ id: 'sec1', title: 'Overview', content: 'Build CRUD endpoints.', order_index: 0 }],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch to ${u.pathname}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'view',
+      '--project',
+      'proj1',
+      '--plan',
+      'plan1',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"title": "Generated Plan"');
+    expect(printed).toContain('"title": "Overview"');
+    expect(printed).toContain('"content": "Build CRUD endpoints."');
   });
 });
 

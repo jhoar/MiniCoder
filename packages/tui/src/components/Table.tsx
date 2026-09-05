@@ -60,7 +60,16 @@ export function Table<T>({
                   {typeof cell === 'string' ? (
                     <Text wrap="truncate-end">{pad(cell, col.width)}</Text>
                   ) : (
-                    cell
+                    // A non-string cell (e.g. `StatusBadge`) renders its own `<Text
+                    // wrap="truncate-end">` with no pre-pad — without this inner width
+                    // constraint, Ink truncates it against the OUTER box's full `col.width + 1`
+                    // (the string path's own 1-character gutter included), so an over-length value
+                    // eats the gutter entirely and the next column starts with zero gap. Bounding
+                    // it to exactly `col.width` here restores the same 1-character gutter both
+                    // cell kinds are supposed to get.
+                    <Box width={col.width} flexShrink={0}>
+                      {cell}
+                    </Box>
                   )}
                 </Box>
               );

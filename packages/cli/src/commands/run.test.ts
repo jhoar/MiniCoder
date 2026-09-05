@@ -175,6 +175,68 @@ describe('CLI run command', () => {
     });
   });
 
+  it('run plan-generation enqueues request-plan-generation', async () => {
+    const fetchImpl = fakeFetch('/commands/request-plan-generation', {
+      triggerdevRunId: 'run-5',
+      accepted: true,
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'run',
+      'plan-generation',
+      '--project',
+      'proj1',
+      '--assessment',
+      'assessment1',
+      '--planner-adapter',
+      'GenericLLMPlannerAdapter',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"triggerdevRunId": "run-5"');
+    expect(bodyOf(fetchImpl)).toEqual({
+      projectId: 'proj1',
+      assessmentId: 'assessment1',
+      plannerAdapterName: 'GenericLLMPlannerAdapter',
+    });
+  });
+
+  it('run backlog-generation enqueues request-backlog-generation', async () => {
+    const fetchImpl = fakeFetch('/commands/request-backlog-generation', {
+      triggerdevRunId: 'run-6',
+      accepted: true,
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'run',
+      'backlog-generation',
+      '--project',
+      'proj1',
+      '--plan',
+      'plan1',
+      '--planner-adapter',
+      'GenericLLMPlannerAdapter',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"triggerdevRunId": "run-6"');
+    expect(bodyOf(fetchImpl)).toEqual({
+      projectId: 'proj1',
+      planId: 'plan1',
+      plannerAdapterName: 'GenericLLMPlannerAdapter',
+    });
+  });
+
   it('honors a caller-supplied --idempotency-key instead of minting a new one', async () => {
     const fetchImpl = fakeFetch('/commands/request-coder-run', {
       triggerdevRunId: 'run-1',

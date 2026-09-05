@@ -11,6 +11,7 @@ import type {
   ClarificationSessionRow,
   ClarificationQuestionRow,
   ImplementationPlanRow,
+  PlanSectionRow,
   FeatureRequestRow,
   FeatureRunRow,
   PullRequestRow,
@@ -167,6 +168,13 @@ export class ApiClient {
    * would incorrectly report a valid plan as missing once it's not on page 1. */
   getImplementationPlan(planId: string): Promise<ImplementationPlanRow> {
     return this.get(`/plans/${encodeURIComponent(planId)}`);
+  }
+
+  /** `GET /plans/:id/sections` — a plan's `plan_sections` rows, ordered. A sibling resource
+   * rather than folded into `getImplementationPlan()`'s response, since that response shape is
+   * already a public contract other callers (e.g. `fetchPlanVersion()`) depend on unchanged. */
+  getPlanSections(planId: string): Promise<{ sections: PlanSectionRow[] }> {
+    return this.get(`/plans/${encodeURIComponent(planId)}/sections`);
   }
 
   listPlanningReadinessAssessments(
@@ -589,6 +597,24 @@ export class ApiClient {
     );
   }
 
+  /** docs/02 §3: "Any blocking gap prevents activation unless resolved or explicitly accepted by
+   * an authorized human." Records an approver's resolution for one `planning_gaps` row, unblocking
+   * `submit-for-approval`'s unresolved-blocking-gaps check. */
+  resolvePlanningGap(
+    projectId: string,
+    assessmentId: string,
+    gapId: string,
+    resolution: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/resolve-planning-gap',
+      { projectId, assessmentId, gapId, resolution, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
   /** `ExportPlanCommand` — artifact-export pending -> generating -> exported, rendering
    * `plan.md`-equivalent markdown into `artifact_exports.content`. No `expectedVersion`: this
    * operates on a fresh `artifact_exports` row's own state machine, not the plan's version
@@ -644,6 +670,36 @@ export class ApiClient {
     return this.post(
       '/commands/request-readiness-assessment',
       { projectId, plannerAdapterName },
+      idempotencyKey,
+    );
+  }
+
+  /** Enqueues `generate-implementation-plan` with no `sections`, which its runImpl reads as
+   * "invoke the adapter's `generatePlanSections()` against the assessment's own specification". */
+  requestPlanGeneration(
+    projectId: string,
+    assessmentId: string,
+    plannerAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-plan-generation',
+      { projectId, assessmentId, plannerAdapterName },
+      idempotencyKey,
+    );
+  }
+
+  /** Enqueues `generate-feature-backlog` with no `features`, which its runImpl reads as
+   * "invoke the adapter's `generateFeatureBacklog()` against the plan's own plan_sections". */
+  requestBacklogGeneration(
+    projectId: string,
+    planId: string,
+    plannerAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-backlog-generation',
+      { projectId, planId, plannerAdapterName },
       idempotencyKey,
     );
   }

@@ -60,6 +60,7 @@ export class GenericLLMPlannerAdapter implements PlannerAgentAdapter {
       title: result.title,
       summary: result.summary,
       sections: result.sections.map((s) => ({ title: s.title, content: s.content })),
+      tokensUsed: result.tokensUsed,
     };
   }
 
@@ -85,6 +86,7 @@ export class GenericLLMPlannerAdapter implements PlannerAgentAdapter {
           testType: t.testType,
         })),
       })),
+      tokensUsed: result.tokensUsed,
     };
   }
 }

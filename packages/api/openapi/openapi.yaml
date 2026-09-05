@@ -228,6 +228,20 @@ paths:
       requestBody:
         content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
       responses: { '202': { description: Enqueued } }
+  /commands/request-plan-generation:
+    post:
+      operationId: requestPlanGeneration
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
+  /commands/request-backlog-generation:
+    post:
+      operationId: requestBacklogGeneration
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
   /commands/validate:
     post:
       operationId: diagnosticsValidate
@@ -340,6 +354,11 @@ paths:
   /plans/{id}:
     get:
       operationId: getPlan
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /plans/{id}/sections:
+    get:
+      operationId: getPlanSections
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses: { '200': { description: OK } }
   /features:

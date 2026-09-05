@@ -67,5 +67,9 @@ export function resolveDefaultTaskTriggerClient(): TaskTriggerClient {
       enqueueTask('run-merge-gate', payload, payload.idempotencyKey),
     triggerRunDesignDoc: (payload) =>
       enqueueTask('run-design-doc', payload, payload.idempotencyKey),
+    triggerPlanGeneration: (payload) =>
+      enqueueTask('generate-implementation-plan', payload, payload.idempotencyKey),
+    triggerBacklogGeneration: (payload) =>
+      enqueueTask('generate-feature-backlog', payload, payload.idempotencyKey),
   };
 }

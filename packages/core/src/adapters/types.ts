@@ -30,6 +30,11 @@ export interface PlanSectionGenerationOutput {
   title: string;
   summary?: string;
   sections: Array<{ title: string; content: string }>;
+  /** Token usage reported by the underlying provider, if any — additive (issue #100's sibling
+   * gap for `run()`/readiness-assessment remains separately tracked). Lets a caller wrap this
+   * call in `AgentRunRecorder.record()` with a real `costExtractor`, the same way `run-coder.ts`
+   * does for the Coder role, instead of silently reporting zero planning-phase generation cost. */
+  tokensUsed?: { input: number; output: number };
 }
 
 /**
@@ -61,6 +66,9 @@ export interface GeneratedFeature {
 
 export interface FeatureBacklogGenerationOutput {
   features: GeneratedFeature[];
+  /** Token usage reported by the underlying provider, if any — same additive rationale as
+   * `PlanSectionGenerationOutput.tokensUsed` above. */
+  tokensUsed?: { input: number; output: number };
 }
 
 export type CoderBehavior = 'success' | 'fail' | 'invalid_output';
@@ -177,6 +185,14 @@ export interface AdapterCall<I, O> {
 export interface PlannerAgentAdapter {
   readonly role: 'PlannerAgentAdapter';
   run(input: PlannerInput): Promise<PlannerOutput>;
+  /** Optional (additive): not every PlannerAgentAdapter implementation generates plan content —
+   * only an adapter that declares these can be used by `generate-implementation-plan`/
+   * `generate-feature-backlog`'s adapter-invocation path (issue #32's `GenericLLMPlannerAdapter`
+   * is the one shipped implementation that does). */
+  generatePlanSections?(input: PlanSectionGenerationInput): Promise<PlanSectionGenerationOutput>;
+  generateFeatureBacklog?(
+    input: FeatureBacklogGenerationInput,
+  ): Promise<FeatureBacklogGenerationOutput>;
 }
 
 export interface CoderAgentAdapter {

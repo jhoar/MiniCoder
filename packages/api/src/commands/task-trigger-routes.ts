@@ -72,6 +72,20 @@ export interface TaskTriggerClient {
     correlationId: string;
     idempotencyKey: string;
   }): Promise<TriggeredRun>;
+  triggerPlanGeneration(payload: {
+    projectId: string;
+    assessmentId: string;
+    plannerAdapterName: string;
+    correlationId: string;
+    idempotencyKey: string;
+  }): Promise<TriggeredRun>;
+  triggerBacklogGeneration(payload: {
+    projectId: string;
+    planId: string;
+    plannerAdapterName: string;
+    correlationId: string;
+    idempotencyKey: string;
+  }): Promise<TriggeredRun>;
 }
 
 export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
@@ -88,6 +102,8 @@ export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
     triggerRunReview: () => fail('request-review'),
     triggerRunMergeGate: () => fail('recompute-merge-gate'),
     triggerRunDesignDoc: () => fail('request-design-doc'),
+    triggerPlanGeneration: () => fail('request-plan-generation'),
+    triggerBacklogGeneration: () => fail('request-backlog-generation'),
   };
 }
 
@@ -251,6 +267,56 @@ export function registerTaskTriggerRoutes(app: FastifyInstance, deps: TaskTrigge
       const run = await deps.taskTriggerClient.triggerRunDesignDoc({
         projectId,
         documentationAdapterName,
+        correlationId: request.actor!.correlationId,
+        idempotencyKey,
+      });
+      return reply.code(202).send({ triggerdevRunId: run.triggerdevRunId, accepted: true });
+    },
+  );
+
+  // Enqueues `generate-implementation-plan` with an empty `sections` array, which
+  // generate-implementation-plan.ts's runImpl reads as "invoke the adapter" — closing the gap
+  // where GenericLLMPlannerAdapter.generatePlanSections() (issue #32) existed but nothing ever
+  // called it. Same "enqueue route" shape as the routes above; no synchronous CommandResult to
+  // report, since the actual generation happens asynchronously on the task worker.
+  app.post<{ Body: { projectId?: string; assessmentId?: string; plannerAdapterName?: string } }>(
+    '/commands/request-plan-generation',
+    async (request, reply) => {
+      requireRole(request, UserRole.OPERATOR, 'request-plan-generation');
+      const { projectId, assessmentId, plannerAdapterName } = request.body ?? {};
+      if (!projectId || !assessmentId || !plannerAdapterName) {
+        throw new RequestValidationError(
+          'projectId, assessmentId, and plannerAdapterName are required',
+        );
+      }
+      const idempotencyKey = readIdempotencyKey(request.headers['idempotency-key']);
+      const run = await deps.taskTriggerClient.triggerPlanGeneration({
+        projectId,
+        assessmentId,
+        plannerAdapterName,
+        correlationId: request.actor!.correlationId,
+        idempotencyKey,
+      });
+      return reply.code(202).send({ triggerdevRunId: run.triggerdevRunId, accepted: true });
+    },
+  );
+
+  // Enqueues `generate-feature-backlog` with an empty `features` array — the
+  // generate-feature-backlog.ts half of the same wiring gap above, invoking
+  // generateFeatureBacklog() against the plan's own plan_sections rows.
+  app.post<{ Body: { projectId?: string; planId?: string; plannerAdapterName?: string } }>(
+    '/commands/request-backlog-generation',
+    async (request, reply) => {
+      requireRole(request, UserRole.OPERATOR, 'request-backlog-generation');
+      const { projectId, planId, plannerAdapterName } = request.body ?? {};
+      if (!projectId || !planId || !plannerAdapterName) {
+        throw new RequestValidationError('projectId, planId, and plannerAdapterName are required');
+      }
+      const idempotencyKey = readIdempotencyKey(request.headers['idempotency-key']);
+      const run = await deps.taskTriggerClient.triggerBacklogGeneration({
+        projectId,
+        planId,
+        plannerAdapterName,
         correlationId: request.actor!.correlationId,
         idempotencyKey,
       });

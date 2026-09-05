@@ -4,12 +4,13 @@ import { createDbClientFromEnv } from '../db-client.js';
 import {
   TransactionalCommandExecutor,
   ImportBacklogHandler,
+  ValidateBacklogHandler,
   parseBacklogMarkdown,
   BacklogParseError,
   generateId,
 } from '@minicoder/core';
 import type { CommandEnvelope } from '@minicoder/core';
-import { humanActor } from '@minicoder/triggerdev';
+import { humanActor, systemActor } from '@minicoder/triggerdev';
 import { renderPlanView, renderCommandResultView } from '@minicoder/tui/views';
 import {
   buildApiClient,
@@ -56,24 +57,33 @@ export function createPlanCommand(): Command {
       '--assessment <id>',
       'Show gaps/assumptions/questions for a specific readiness assessment',
     )
+    .option('--plan <id>', 'Show title/summary/sections for a specific implementation plan')
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string; assessment?: string } & JsonOption) => {
-      const client = buildApiClient();
-      await renderOrJson(
-        opts,
-        async () => {
-          const [plans, readiness, detail] = await Promise.all([
-            client.listImplementationPlans(opts.project),
-            client.listPlanningReadinessAssessments(opts.project),
-            opts.assessment
-              ? client.getPlanningReadinessAssessment(opts.assessment)
-              : Promise.resolve(undefined),
-          ]);
-          return { plans, readiness, detail };
-        },
-        (data) => renderPlanView(data),
-      );
-    });
+    .action(
+      async (opts: { project: string; assessment?: string; plan?: string } & JsonOption) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const [plans, readiness, detail, planDetail] = await Promise.all([
+              client.listImplementationPlans(opts.project),
+              client.listPlanningReadinessAssessments(opts.project),
+              opts.assessment
+                ? client.getPlanningReadinessAssessment(opts.assessment)
+                : Promise.resolve(undefined),
+              opts.plan
+                ? Promise.all([
+                    client.getImplementationPlan(opts.plan),
+                    client.getPlanSections(opts.plan),
+                  ]).then(([plan, { sections }]) => ({ plan, sections }))
+                : Promise.resolve(undefined),
+            ]);
+            return { plans, readiness, detail, planDetail };
+          },
+          (data) => renderPlanView(data),
+        );
+      },
+    );
 
   plan
     .command('import-backlog <file>')
@@ -150,6 +160,122 @@ export function createPlanCommand(): Command {
         } finally {
           await db.close();
         }
+      },
+    );
+
+  plan
+    .command('validate-backlog')
+    .description(
+      'Validates a plan\'s current backlog (system-actorKind-only ValidateBacklogCommand — ' +
+        'no MINICODER_API_KEYS system key needed, dispatches directly like import-backlog); ' +
+        'required before submit-for-approval',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--plan <id>', 'Implementation plan ID')
+    .action(async (opts: { project: string; plan: string }) => {
+      const db = await createDbClientFromEnv();
+      try {
+        // A fixed key would replay a stale cached result after a backlog regeneration (which
+        // resets `backlog_validated_state` and bumps `backlog_version`) — the same
+        // per-occurrence-discriminator requirement CLAUDE.md documents for every repeatable
+        // command's idempotency key. `backlog_version` is that discriminator here.
+        const planRows = await db.query<{ backlog_version: number }>(
+          `SELECT backlog_version FROM implementation_plans WHERE id = ? AND project_id = ?`,
+          [opts.plan, opts.project],
+        );
+        const backlogVersion = planRows[0]?.backlog_version;
+        if (backlogVersion === undefined) {
+          throw new Error(`Plan ${opts.plan} not found in project ${opts.project}`);
+        }
+
+        const correlationId = generateId();
+        const executor = new TransactionalCommandExecutor(db);
+        const envelope: CommandEnvelope<{ projectId: string; planId: string }> = {
+          commandId: generateId(),
+          idempotencyKey: `validate-backlog-cli:${opts.plan}:${backlogVersion}`,
+          payload: { projectId: opts.project, planId: opts.plan },
+          actor: systemActor(correlationId),
+          correlationId,
+        };
+        const result = await executor.execute(new ValidateBacklogHandler(), envelope);
+        console.log(
+          JSON.stringify(
+            {
+              command: 'plan validate-backlog',
+              projectId: opts.project,
+              planId: opts.plan,
+              resultingState: result.resultingState,
+            },
+            null,
+            2,
+          ),
+        );
+      } finally {
+        await db.close();
+      }
+    });
+
+  plan
+    .command('resolve-gap')
+    .description(
+      "Records an approver's resolution for a blocking planning gap (docs/02 §3: " +
+        '"resolved or explicitly accepted by an authorized human"), unblocking submit-for-approval',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--assessment <id>', 'Planning readiness assessment ID')
+    .requiredOption('--gap <id>', 'Planning gap ID (see plan view --assessment <id>)')
+    .requiredOption('--resolution <text>', 'Resolution note explaining why this gap is accepted')
+    .option('--yes', 'Confirm resolving the gap (required)')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (
+        opts: {
+          project: string;
+          assessment: string;
+          gap: string;
+          resolution: string;
+          yes?: boolean;
+        } & IdempotencyKeyOption &
+          JsonOption,
+      ) => {
+        if (!opts.yes) {
+          console.error('Error: --yes is required to confirm resolving the gap.');
+          process.exitCode = 1;
+          return;
+        }
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const detail = await client.getPlanningReadinessAssessment(opts.assessment);
+            const gap = detail.gaps.find((g) => g.id === opts.gap);
+            if (!gap) {
+              throw new Error(`Gap ${opts.gap} not found in assessment ${opts.assessment}`);
+            }
+            const idempotencyKey = resolveIdempotencyKey(
+              `resolve-planning-gap:${opts.gap}:${gap.version}`,
+              opts,
+            );
+            const result = await client.resolvePlanningGap(
+              opts.project,
+              opts.assessment,
+              opts.gap,
+              opts.resolution,
+              gap.version,
+              idempotencyKey,
+            );
+            return {
+              command: 'resolve-planning-gap',
+              projectId: opts.project,
+              resultingState: result.resulting_state,
+            };
+          },
+          (data) => renderCommandResultView(data),
+        );
       },
     );
 

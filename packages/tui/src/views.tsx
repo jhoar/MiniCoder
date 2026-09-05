@@ -8,6 +8,7 @@ import { Box, Text } from 'ink';
 import type {
   CursorPage,
   ImplementationPlanRow,
+  PlanSectionRow,
   PlanningReadinessRow,
   PlanningReadinessAssessmentDetail,
   ClarificationSessionRow,
@@ -132,6 +133,7 @@ export function renderPlanView(props: {
   plans: CursorPage<ImplementationPlanRow>;
   readiness: CursorPage<PlanningReadinessRow>;
   detail?: PlanningReadinessAssessmentDetail;
+  planDetail?: { plan: ImplementationPlanRow; sections: PlanSectionRow[] };
 }): React.ReactElement {
   const planColumns: Column<ImplementationPlanRow>[] = [
     { header: 'Title', width: 22, render: (p) => p.title },
@@ -177,6 +179,27 @@ export function renderPlanView(props: {
               items={props.detail.questions.map((q) => ({
                 label: <Text dimColor>{`Round ${q.round}${q.answered_at ? ' (answered)' : ' (unanswered)'}`}</Text>,
                 text: q.question,
+              }))}
+            />
+          </Section>
+        </>
+      )}
+      {props.planDetail && (
+        <>
+          <Section title={`Plan ${props.planDetail.plan.id}`}>
+            <KeyValue
+              fields={[
+                { label: 'Title', value: props.planDetail.plan.title },
+                { label: 'Summary', value: props.planDetail.plan.summary ?? '(none)' },
+                { label: 'State', value: <StatusBadge state={props.planDetail.plan.state} /> },
+              ]}
+            />
+          </Section>
+          <Section title={`Sections for plan ${props.planDetail.plan.id}`}>
+            <DescriptionList
+              items={props.planDetail.sections.map((s) => ({
+                label: <Text bold>{s.title}</Text>,
+                text: s.content,
               }))}
             />
           </Section>
@@ -237,7 +260,38 @@ export function renderClarificationView(props: {
 // features / human-required
 // ---------------------------------------------------------------------------
 
-export function renderFeaturesView(page: CursorPage<FeatureRequestRow>): React.ReactElement {
+export function renderFeaturesView(
+  page: CursorPage<FeatureRequestRow>,
+  opts?: { full?: boolean },
+): React.ReactElement {
+  if (opts?.full) {
+    // The table's `Title` column (and every other column) is fixed-width and truncated by
+    // design — good for scanning many rows, wrong for actually reading a feature's full
+    // description, which the table doesn't even show a column for at all. Same
+    // word-wrap-not-truncate rationale as the plan-sections/gaps-assumptions-questions detail
+    // views: `DescriptionList` wraps to the terminal width instead of cutting content off.
+    return (
+      <Section title="Feature queue (full text)">
+        <DescriptionList
+          items={page.items.map((f) => ({
+            label: (
+              <Text>
+                <Text bold>{`${f.fr_id} ${f.title}`}</Text>
+                {' — '}
+                <Text dimColor>{`${f.kind}, priority ${f.priority}, `}</Text>
+                <StatusBadge state={f.state} />
+                {f.depends_on_fr_ids.length > 0 && (
+                  <Text dimColor>{` — depends on ${f.depends_on_fr_ids.join(', ')}`}</Text>
+                )}
+              </Text>
+            ),
+            text: f.description,
+          }))}
+        />
+        <Footer nextCursor={page.nextCursor} />
+      </Section>
+    );
+  }
   const columns: Column<FeatureRequestRow>[] = [
     { header: 'FR', width: 8, render: (f) => f.fr_id },
     { header: 'Title', width: 24, render: (f) => f.title },

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render } from 'ink-testing-library';
+import { Text } from 'ink';
 import { Table, type Column } from './Table.js';
 
 /**
@@ -39,5 +40,41 @@ describe('Table', () => {
     const columns: Column<Row>[] = [{ header: 'ID', width: 10, render: (r) => r.id }];
     const { lastFrame } = render(<Table columns={columns} rows={[{ id: 'ab' }]} />);
     expect(lastFrame()).toContain('ab');
+  });
+
+  /**
+   * A real bug found in live use (`minicoder features`): an over-length element cell (e.g.
+   * `StatusBadge` rendering `approved_pending_execution`, 26 characters, in a 22-wide column) ate
+   * the 1-character gutter reserved between columns — the next column's value ran directly into
+   * the truncation ellipsis with no visible separation at all
+   * (`approved_pending_execu…99`). Plain-string cells never had this problem: `pad()` already
+   * truncates/pads relative to `col.width` before Ink ever sees it, leaving the outer box's
+   * `col.width + 1` exactly one character of slack. A non-string cell (like `StatusBadge`) has no
+   * such pre-truncation step — it renders its own unconstrained `<Text wrap="truncate-end">` — so
+   * without an inner width constraint matching the string path, Ink truncated it against the
+   * outer box's full `col.width + 1` instead.
+   */
+  interface TwoColRow {
+    state: string;
+    priority: number;
+  }
+
+  it('reserves the same 1-character gutter for an over-length element cell as it does for a string cell', () => {
+    const columns: Column<TwoColRow>[] = [
+      {
+        header: 'State',
+        width: 22,
+        render: (r) => <Text wrap="truncate-end">{r.state}</Text>,
+      },
+      { header: 'Priority', width: 8, render: (r) => String(r.priority) },
+    ];
+    const { lastFrame } = render(
+      <Table columns={columns} rows={[{ state: 'approved_pending_execution', priority: 99 }]} />,
+    );
+    const frame = lastFrame() ?? '';
+    // The truncated state and the priority value must never be visually glued together.
+    expect(frame).not.toMatch(/…99/);
+    expect(frame).toContain('…');
+    expect(frame).toContain('99');
   });
 });
