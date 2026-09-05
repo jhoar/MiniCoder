@@ -5,6 +5,7 @@ import { CommandError } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
 import {
   isoNow,
+  generateId,
   writeWorkflowEvent,
   claimIdempotencyKey,
   fulfillIdempotencyKey,
@@ -30,6 +31,18 @@ const IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * `implementation_plans`, `feature_requests`, etc.) carries a `project_id` foreign key that
  * requires this row to exist first, so without this handler nothing project-scoped can ever be
  * created at all.
+ *
+ * Also inserts the project's `workflow_states` row (genesis by INSERT, same posture as the
+ * `projects` row itself) — a real, previously-undiscovered gap: no production code anywhere ever
+ * wrote this row before (confirmed by grep — every `pause-automation.ts`/`resume-automation.ts`/
+ * `record-budget-*.ts`/`approve-budget-override.ts` handler only ever `SELECT`s/`UPDATE`s it,
+ * assuming it already exists; only test fixtures ever inserted one directly). Without it,
+ * `SelectFeatureHandler`'s `UPDATE workflow_states SET active_feature_run_id = ? WHERE
+ * automation_state = 'running' AND active_feature_run_id IS NULL` compare-and-swap can never match
+ * any row, so `start-next-feature` can never select a feature for a real, production-created
+ * project — the entire execution phase was unreachable end to end. `automation_state` defaults to
+ * `'running'`, matching the column's own schema default (explicit here rather than relying on an
+ * implicit SQL default, per this codebase's established convention for every other genesis INSERT).
  */
 export class CreateProjectHandler
   implements CommandHandler<CreateProjectPayload, CreateProjectResultState>
@@ -72,6 +85,12 @@ export class CreateProjectHandler
         `INSERT INTO projects (id, name, description, state, version, created_at, updated_at)
          VALUES (?, ?, ?, 'active', 1, ?, ?)`,
         [id, name, description ?? null, now, now],
+      );
+
+      await tx.execute(
+        `INSERT INTO workflow_states (id, project_id, active_feature_run_id, automation_state, version, created_at, updated_at)
+         VALUES (?, ?, NULL, 'running', 1, ?, ?)`,
+        [generateId(), id, now, now],
       );
 
       const eventId = await writeWorkflowEvent(tx, {

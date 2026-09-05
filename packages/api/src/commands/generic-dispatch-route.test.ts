@@ -124,6 +124,49 @@ describe('generic command dispatch route', () => {
   });
 });
 
+describe('create-project (also inserts workflow_states — see CreateProjectHandler doc comment)', () => {
+  it('creates a projects row AND a workflow_states row defaulting to automation_state=running', async () => {
+    const { app, db } = await buildTestApp();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/create-project',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'create-project-1',
+      },
+      payload: { id: 'proj-new', name: 'New Project' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ accepted: true, resulting_state: 'active' });
+
+    const projectRows = await db.query<{ id: string; state: string }>(
+      `SELECT id, state FROM projects WHERE id = ?`,
+      ['proj-new'],
+    );
+    expect(projectRows[0]).toMatchObject({ id: 'proj-new', state: 'active' });
+
+    // Real bug this test guards against: no production code anywhere else ever inserted this row
+    // (only test fixtures did) — SelectFeatureHandler's compare-and-swap needs it to exist before
+    // start-next-feature can ever select a feature for this project.
+    const workflowStateRows = await db.query<{
+      project_id: string;
+      automation_state: string;
+      active_feature_run_id: string | null;
+      version: number;
+    }>(`SELECT project_id, automation_state, active_feature_run_id, version FROM workflow_states WHERE project_id = ?`, [
+      'proj-new',
+    ]);
+    expect(workflowStateRows[0]).toMatchObject({
+      project_id: 'proj-new',
+      automation_state: 'running',
+      active_feature_run_id: null,
+      version: 1,
+    });
+  });
+});
+
 describe('resolve-planning-gap (docs/02 §3: blocking gap requires human resolution/acceptance)', () => {
   async function seedBlockingGap(db: Awaited<ReturnType<typeof buildTestApp>>['db']) {
     const now = new Date().toISOString();
