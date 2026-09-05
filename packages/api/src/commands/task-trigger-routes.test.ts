@@ -26,6 +26,14 @@ function fakeTaskTriggerClient(): TaskTriggerClient & { calls: unknown[] } {
       calls.push({ task: 'run-design-doc', payload });
       return { triggerdevRunId: 'run-design-doc-1' };
     },
+    triggerPlanGeneration: async (payload) => {
+      calls.push({ task: 'generate-implementation-plan', payload });
+      return { triggerdevRunId: 'plan-generation-1' };
+    },
+    triggerBacklogGeneration: async (payload) => {
+      calls.push({ task: 'generate-feature-backlog', payload });
+      return { triggerdevRunId: 'backlog-generation-1' };
+    },
   };
 }
 
@@ -134,6 +142,50 @@ describe('task-trigger enqueue routes', () => {
     expect(client.calls[0]).toMatchObject({ task: 'run-design-doc' });
   });
 
+  it('POST /commands/request-plan-generation calls the injected client', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-plan-generation',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-plan-generation-1',
+      },
+      payload: {
+        projectId: 'proj-1',
+        assessmentId: 'assessment-1',
+        plannerAdapterName: 'GenericLLMPlannerAdapter',
+      },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(client.calls[0]).toMatchObject({ task: 'generate-implementation-plan' });
+  });
+
+  it('POST /commands/request-backlog-generation calls the injected client', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-backlog-generation',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-backlog-generation-1',
+      },
+      payload: {
+        projectId: 'proj-1',
+        planId: 'plan-1',
+        plannerAdapterName: 'GenericLLMPlannerAdapter',
+      },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(client.calls[0]).toMatchObject({ task: 'generate-feature-backlog' });
+  });
+
   it('POST /commands/request-readiness-assessment looks up the most recent specification_inputs row and calls the injected client', async () => {
     const client = fakeTaskTriggerClient();
     const { app, db } = await buildTestApp({ taskTriggerClient: client });
@@ -196,6 +248,14 @@ describe('task-trigger enqueue routes', () => {
     ['request-fixes', { reviewerAdapterName: 'ClaudeReviewerAdapter' }],
     ['recompute-merge-gate', {}],
     ['request-design-doc', { documentationAdapterName: 'ClaudeDocumentationAdapter' }],
+    [
+      'request-plan-generation',
+      { assessmentId: 'assessment-1', plannerAdapterName: 'GenericLLMPlannerAdapter' },
+    ],
+    [
+      'request-backlog-generation',
+      { planId: 'plan-1', plannerAdapterName: 'GenericLLMPlannerAdapter' },
+    ],
   ])(
     'rejects a viewer-role key from calling POST /commands/%s (finding 2)',
     async (route, extraFields) => {

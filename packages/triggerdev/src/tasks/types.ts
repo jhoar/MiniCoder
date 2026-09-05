@@ -49,9 +49,16 @@ export const CompleteClarificationPayload = BasePayload.merge(ActorPayload).exte
 
 export const GenerateImplementationPlanPayload = BasePayload.extend({
   assessmentId: z.string(),
-  title: z.string(),
+  // Optional as of the adapter-generation wiring: a caller supplying no `sections` (and
+  // therefore no `title` either — there's nothing to title without content) must instead supply
+  // `plannerAdapterName`, which tells generate-implementation-plan.ts to invoke the adapter's
+  // generatePlanSections() against the assessment's own ingested specification and derive
+  // title/summary/sections from its output. Supplying `sections` directly keeps working exactly
+  // as before, `plannerAdapterName` unused.
+  title: z.string().optional(),
   summary: z.string().nullable().optional(),
   sections: z.array(z.object({ title: z.string(), content: z.string() })).default([]),
+  plannerAdapterName: z.string().optional(),
 });
 
 const FeatureBacklogEntry = z.object({
@@ -74,9 +81,14 @@ const FeatureBacklogEntry = z.object({
 
 export const GenerateFeatureBacklogPayload = BasePayload.extend({
   planId: z.string(),
-  // Must match GenerateFeatureBacklogHandler's own schema (.min(1)) — an empty/missing array is a
-  // caller error, not a valid "nothing to generate" no-op.
-  features: z.array(FeatureBacklogEntry).min(1),
+  // Optional (default []) as of the adapter-generation wiring — mirrors
+  // GenerateImplementationPlanPayload.sections above: an empty/omitted `features` array plus
+  // `plannerAdapterName` tells generate-feature-backlog.ts to invoke the adapter's
+  // generateFeatureBacklog() against the plan's own sections instead. Supplying `features`
+  // directly keeps working exactly as before (still validated non-empty at that point, just no
+  // longer enforced by this schema alone — see generate-feature-backlog.ts's runtime check).
+  features: z.array(FeatureBacklogEntry).default([]),
+  plannerAdapterName: z.string().optional(),
 });
 
 export const ValidateBacklogPayload = BasePayload.extend({

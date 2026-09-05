@@ -648,6 +648,36 @@ export class ApiClient {
     );
   }
 
+  /** Enqueues `generate-implementation-plan` with no `sections`, which its runImpl reads as
+   * "invoke the adapter's `generatePlanSections()` against the assessment's own specification". */
+  requestPlanGeneration(
+    projectId: string,
+    assessmentId: string,
+    plannerAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-plan-generation',
+      { projectId, assessmentId, plannerAdapterName },
+      idempotencyKey,
+    );
+  }
+
+  /** Enqueues `generate-feature-backlog` with no `features`, which its runImpl reads as
+   * "invoke the adapter's `generateFeatureBacklog()` against the plan's own plan_sections". */
+  requestBacklogGeneration(
+    projectId: string,
+    planId: string,
+    plannerAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-backlog-generation',
+      { projectId, planId, plannerAdapterName },
+      idempotencyKey,
+    );
+  }
+
   /** Enqueues `run-coder` for a feature run at `selected`/`coding`. */
   requestCoderRun(
     projectId: string,

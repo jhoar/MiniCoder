@@ -64,6 +64,39 @@ function fakePlanner(
   };
 }
 
+/** A fake planner that also implements the two generation methods, for the
+ * generate-implementation-plan.ts/generate-feature-backlog.ts adapter-invocation wiring tests. */
+function fakePlannerWithGeneration(): PlannerAgentAdapter {
+  return {
+    ...fakePlanner('sufficient'),
+    async generatePlanSections(input) {
+      return {
+        title: `Generated plan for ${input.assessmentId}`,
+        summary: 'Generated summary',
+        sections: [{ title: 'Overview', content: input.specificationContent }],
+        tokensUsed: { input: 100, output: 50 },
+      };
+    },
+    async generateFeatureBacklog(input) {
+      return {
+        features: [
+          {
+            frId: 'FR-001',
+            title: `Feature from ${input.planSections[0]?.title ?? 'plan'}`,
+            description: 'Generated feature description.',
+            kind: 'feature' as const,
+            priority: 0,
+            dependsOnFrIds: [],
+            acceptanceCriteria: [],
+            testExpectations: [],
+          },
+        ],
+        tokensUsed: { input: 80, output: 40 },
+      };
+    },
+  };
+}
+
 async function registerMockPlanner(db: DbClient, name = 'MockPlannerAdapter'): Promise<void> {
   const now = new Date().toISOString();
   const adapterId = `adapter-${name}`;
@@ -293,6 +326,78 @@ describe('task runImpl — command-backed unit tests', () => {
     expect(result.planId).toBeTruthy();
   });
 
+  it('generate-implementation-plan and generate-feature-backlog invoke the adapter end to end when no content is supplied directly', async () => {
+    const now = new Date().toISOString();
+    const specId = 'spec-input-gen-001';
+    await db.execute(
+      `INSERT INTO specification_inputs (id, project_id, content, content_type, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'text/plain', 1, ?, ?)`,
+      [specId, 'proj-test-001', 'Build a todo app.', now, now],
+    );
+
+    const assessment = await runPlanningReadiness(
+      {
+        ...BASE_PAYLOAD,
+        specificationInputId: specId,
+        specificationContent: 'Build a todo app.',
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
+      db,
+      fakePlanner('sufficient'),
+    );
+    expect(assessment.readinessResult).toBe('sufficient');
+
+    const assessmentRows = await db.query<{ id: string }>(
+      `SELECT id FROM planning_readiness_assessments WHERE project_id = ? AND specification_input_id = ?`,
+      ['proj-test-001', specId],
+    );
+    const assessmentId = assessmentRows[0]!.id;
+
+    const planResult = await runGeneratePlan(
+      {
+        ...BASE_PAYLOAD,
+        assessmentId,
+        sections: [],
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
+      db,
+      fakePlannerWithGeneration(),
+    );
+    expect(planResult.planId).toBeTruthy();
+
+    const sectionRows = await db.query<{ title: string; content: string }>(
+      `SELECT title, content FROM plan_sections WHERE plan_id = ?`,
+      [planResult.planId],
+    );
+    expect(sectionRows).toEqual([{ title: 'Overview', content: 'Build a todo app.' }]);
+
+    // The generation run recorded real token usage / cost — not left null the way the sibling
+    // readiness-assessment gap (issue #100) still is.
+    const agentRunRows = await db.query<{ tokens_used: string | null; cost_usd: number | null }>(
+      `SELECT tokens_used, cost_usd FROM agent_runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`,
+      ['proj-test-001'],
+    );
+    expect(agentRunRows[0]?.cost_usd).not.toBeNull();
+
+    const backlogResult = await runGenerateBacklog(
+      {
+        ...BASE_PAYLOAD,
+        planId: planResult.planId!,
+        features: [],
+        plannerAdapterName: 'MockPlannerAdapter',
+      },
+      db,
+      fakePlannerWithGeneration(),
+    );
+    expect(backlogResult.featureCount).toBe(1);
+
+    const featureRows = await db.query<{ fr_id: string; title: string }>(
+      `SELECT fr_id, title FROM feature_requests WHERE plan_id = ?`,
+      [planResult.planId],
+    );
+    expect(featureRows).toEqual([{ fr_id: 'FR-001', title: 'Feature from Overview' }]);
+  });
+
   it('generate-feature-backlog rejects when the plan does not exist', async () => {
     await expect(
       runGenerateBacklog(
@@ -317,13 +422,35 @@ describe('task runImpl — command-backed unit tests', () => {
     ).rejects.toThrow('not found');
   });
 
-  it('generate-feature-backlog payload schema rejects an empty features array', () => {
+  // Changed from "rejects" to "accepts, defaulting to []" as part of wiring
+  // generate-feature-backlog.ts to invoke the planner adapter when no features are supplied
+  // directly — the schema itself no longer enforces non-emptiness (generate-feature-backlog.ts's
+  // runImpl does, at runtime, when the adapter-generation path itself yields zero features).
+  it('generate-feature-backlog payload schema accepts an empty features array (defaults to [])', () => {
     const parsed = GenerateFeatureBacklogPayloadSchema.safeParse({
       ...BASE_PAYLOAD,
       planId: 'plan-001',
       features: [],
     });
-    expect(parsed.success).toBe(false);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.features).toEqual([]);
+    }
+  });
+
+  it('generate-feature-backlog rejects when features are empty and no plannerAdapterName is given', async () => {
+    await expect(
+      runGenerateBacklog(
+        { ...BASE_PAYLOAD, planId: 'plan-001', features: [] },
+        db,
+      ),
+    ).rejects.toThrow(/no plannerAdapterName given/);
+  });
+
+  it('generate-implementation-plan rejects when sections are empty and no plannerAdapterName is given', async () => {
+    await expect(
+      runGeneratePlan({ ...BASE_PAYLOAD, assessmentId: 'assessment-001', sections: [] }, db),
+    ).rejects.toThrow(/no plannerAdapterName given/);
   });
 
   it('start-next-feature returns started boolean and no-ops when no candidate exists', async () => {
