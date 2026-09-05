@@ -6,12 +6,17 @@ import { requireNonBlankEnvVar } from './env.js';
 // `generateFeatureBacklog()` (issue #32's generation methods, wired into
 // generate-implementation-plan.ts/generate-feature-backlog.ts) ask the same endpoint to decompose
 // an entire specification into full plan sections or a complete feature backlog in one request —
-// a genuinely slower call for any real spec, confirmed empirically: the first live run against a
-// real ~1200-line specification timed out at 30s on all 3 worker retries before this fix. One
-// shared `HttpPlanProvider` instance serves every PlannerAgentAdapter call (there is no per-method
-// timeout on that class), so this raises the ceiling for readiness assessment too — harmless,
-// since a call that normally finishes in a few seconds is unaffected by a higher ceiling.
-const DEFAULT_PLANNER_TIMEOUT_MS = 120_000;
+// a genuinely slower call for any real spec. Confirmed empirically in two rounds against a real
+// ~1200-line specification: 30s wasn't enough for generatePlanSections() (all 3 worker retries
+// timed out); a first fix raised the default to 120s, which was enough for generatePlanSections()
+// but still not enough for generateFeatureBacklog() (2 more real timeouts) — that call asks for
+// many structured per-feature fields (frId/title/description/priority/dependencies/acceptance
+// criteria/test expectations) across every plan section, a heavier completion than plan-section
+// generation. One shared `HttpPlanProvider` instance serves every PlannerAgentAdapter call (there
+// is no per-method timeout on that class), so this raises the ceiling for every call including the
+// much faster readiness assessment too — harmless, since a call that normally finishes in a few
+// seconds is unaffected by a higher ceiling.
+const DEFAULT_PLANNER_TIMEOUT_MS = 300_000;
 
 export function resolvePlannerTimeoutMs(): number {
   const raw = process.env['PLANNER_TIMEOUT_MS'];

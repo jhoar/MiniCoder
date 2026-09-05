@@ -6,8 +6,8 @@ describe('resolvePlannerTimeoutMs', () => {
     delete process.env['PLANNER_TIMEOUT_MS'];
   });
 
-  it('defaults to 120000ms when unset', () => {
-    expect(resolvePlannerTimeoutMs()).toBe(120_000);
+  it('defaults to 300000ms when unset', () => {
+    expect(resolvePlannerTimeoutMs()).toBe(300_000);
   });
 
   it('honors a valid override', () => {
@@ -19,7 +19,7 @@ describe('resolvePlannerTimeoutMs', () => {
     'falls back to the default for an invalid value (%s)',
     (value) => {
       process.env['PLANNER_TIMEOUT_MS'] = value;
-      expect(resolvePlannerTimeoutMs()).toBe(120_000);
+      expect(resolvePlannerTimeoutMs()).toBe(300_000);
     },
   );
 });
