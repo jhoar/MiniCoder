@@ -44,10 +44,10 @@ signing off on the final design doc — it stops and waits for a human.
 | `minicoder github simulate-*`                                                      | Fake a GitHub event for local testing (dev/test only).                                 |
 | `minicoder api serve`                                                              | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to.     |
 | `minicoder status`                                                                 | Project dashboard: state, automation, workflow health.                                 |
-| `minicoder plan`                                                                   | View the implementation plan and readiness.                                            |
+| `minicoder plan`                                                                   | View the implementation plan and readiness, or (`--plan <id>`) one plan's full sections. |
 | `minicoder plan import-backlog <file>`                                             | Import a hand-written `backlog.md`.                                                    |
 | `minicoder clarification`                                                          | View clarification questions/answers.                                                  |
-| `minicoder features`                                                               | List the feature backlog, or (`--human-required`) items awaiting a human.              |
+| `minicoder features`                                                               | List the feature backlog, or (`--human-required`) items awaiting a human, or (`--full`) with untruncated descriptions and dependencies. |
 | `minicoder active`                                                                 | Show the one feature currently being worked on and its PR/CI status.                   |
 | `minicoder runs`                                                                   | List agent runs, or (`--timeline`) a merged history for one feature.                   |
 | `minicoder findings`                                                               | List review findings for a feature run.                                                |
@@ -65,9 +65,12 @@ signing off on the final design doc — it stops and waits for a human.
 | `minicoder clarification answer`                                                   | Answer a clarification question.                                                       |
 | `minicoder clarification start/complete`                                           | Start a new clarification round, or complete the current one.                          |
 | `minicoder plan submit-for-approval/approve/activate`                              | Submit, approve, and activate the implementation plan.                                 |
+| `minicoder plan validate-backlog`                                                  | Validate the current backlog (required before `submit-for-approval` will accept it).   |
+| `minicoder plan resolve-gap`                                                       | Resolve a blocking planning gap (required before `submit-for-approval` will accept it if any are open). |
 | `minicoder plan export/export-backlog`                                             | Render a `plan.md`/`backlog.md`-equivalent artifact export.                            |
 | `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                        |
 | `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.     |
+| `minicoder run plan-generation/backlog-generation`                                | Enqueue AI-adapter-backed generation of the implementation plan or feature backlog.    |
 | `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                   |
 | `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                             |
 | `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                  |
@@ -339,6 +342,7 @@ minicoder db validate        # confirms every expected table/index exists
 | GitLab webhooks              | `GITLAB_WEBHOOK_SECRET`                                     | Required by `minicoder gitlab serve`; optional for `minicoder api serve` (unset leaves `/webhooks/gitlab` unmounted)     |
 | GitLab webhooks (rotation)   | `GITLAB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
 | LLM provider                 | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL` | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters |
+| Planner adapter timeout      | `PLANNER_TIMEOUT_MS`                                        | Milliseconds; defaults to 300000 (5 min). Raise this if `run plan-generation`/`run backlog-generation` fails with `TimeoutError` on a large specification |
 | Observability (optional)     | `OTEL_EXPORTER_OTLP_ENDPOINT`                               | If unset, `observability export-otel` is a no-op                                                                         |
 | Web UI                       | (none new)                                                  | Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` as the CLI                                                        |
 
@@ -577,26 +581,55 @@ is marked `clarification_blocked` and escalated to a human. Once every question 
 round is answered, the session completes (`clarification_complete`) and plan generation can
 proceed.
 
-### Step 3 — Review and approve the plan
+### Step 3 — Generate, review, and approve the plan
 
-Once a plan and its feature backlog exist:
+Once clarification is `clarification_complete` (or the initial readiness assessment came back
+`sufficient`), the plan and feature backlog don't exist yet on their own — generate them by
+enqueueing the planner adapter (needs `CODE_GEN_BASE_URL`/`CODE_GEN_API_KEY`/`CODE_GEN_MODEL` set,
+and a `PlannerAgentAdapter` — e.g. `GenericLLMPlannerAdapter` — already registered in the
+`AdapterRegistry`; see the adapter registry bootstrap note in
+[§3.5](#35-start-the-long-running-processes)):
 
 ```bash
-minicoder plan --project <project>
-minicoder features --project <project>
+minicoder plan --project <project>   # note the readiness assessment's id (assessmentId)
+minicoder run plan-generation --project <project> --assessment <assessmentId> \
+  --planner-adapter GenericLLMPlannerAdapter
+minicoder status --project <project>   # poll until the generate-implementation-plan task succeeds
+minicoder plan --project <project>     # view the generated plan's summary
+minicoder plan --project <project> --plan <planId>   # full section-by-section content
 ```
 
-If you'd rather hand-author the backlog, write a `backlog.md` and import it:
+Then generate the feature backlog from that plan the same way:
+
+```bash
+minicoder run backlog-generation --project <project> --plan <planId> \
+  --planner-adapter GenericLLMPlannerAdapter
+minicoder status --project <project>   # poll until generate-feature-backlog succeeds
+minicoder features --project <project>          # the backlog, one row per feature
+minicoder features --project <project> --full   # full descriptions and dependency lists
+```
+
+If a real specification is ambiguous, generation can surface a **blocking planning gap** even
+after clarification completed sufficiently — this is a separate, later check from clarification's
+own gaps, and `submit-for-approval` will refuse until every blocking gap is resolved:
+
+```bash
+minicoder plan resolve-gap --project <project> --assessment <assessmentId> --gap <gapId> \
+  --resolution "<how you're resolving it>" --yes
+```
+
+If you'd rather hand-author the backlog instead of generating it, write a `backlog.md` and import
+it:
 
 ```bash
 minicoder plan import-backlog backlog.md --project <project> --plan <planId> --actor <you> --dry-run
 minicoder plan import-backlog backlog.md --project <project> --plan <planId> --actor <you>
 ```
 
-Submission for approval requires the backlog to have passed validation with no unresolved blocking
-gaps:
+Submission for approval also requires the backlog to have passed validation:
 
 ```bash
+minicoder plan validate-backlog --project <project> --plan <planId>
 minicoder plan submit-for-approval --project <project> --plan <planId>
 ```
 
@@ -611,9 +644,23 @@ minicoder plan activate --project <project> --plan <planId> --yes
 
 ### Step 4 — Let automation run, and watch it work
 
-Once activated, `start-next-feature` picks the next eligible feature (respecting dependency order
-and the one-feature-at-a-time rule), and the pipeline runs on its own: coding → push → PR → CI →
-review → fix loop (if needed) → policy approval. Watch it:
+Once activated, `start-next-feature` (running against your project's `task_queue`) picks the next
+eligible feature (respecting dependency order and the one-feature-at-a-time rule), and from there
+the pipeline runs on its own: coding → push → PR → CI → review → fix loop (if needed) → policy
+approval — each step re-enqueues the next Workflow Layer task (`run-coder`, `run-review`,
+`run-merge-gate`) as it becomes eligible, no manual `minicoder run ...` needed once execution has
+started.
+
+**Known gap:** there is currently no `minicoder`/API command that itself triggers the first
+`start-next-feature` run for a newly activated project — unlike `run coder`/`run review`/
+`run merge-gate`, it has no dedicated enqueue route yet. A deployment that has this working today
+is invoking `start-next-feature` some other way (e.g. a script, or a scheduled job it set up
+itself) that isn't part of this project's shipped surface. If activation alone hasn't produced any
+movement (`minicoder active --project <project>` still shows nothing after a while, with
+`minicoder tasks worker` confirmed running), this is why — it's tracked as a real, open gap, not a
+misconfiguration on your end.
+
+Watch it:
 
 ```bash
 minicoder status --project <project>       # overall dashboard
@@ -768,6 +815,10 @@ minicoder clarification complete --project <project> --session <sessionId>
   # clarification_in_progress -> clarification_complete, once every question in the round is
   # answered; expectedVersion fetched automatically
 
+minicoder plan resolve-gap --project <project> --assessment <assessmentId> --gap <gapId> \
+  --resolution "<how you're resolving it>" --yes
+  # expectedVersion is fetched automatically from the readiness assessment
+
 minicoder plan submit-for-approval --project <project> --plan <planId>
 
 minicoder plan approve --project <project> --plan <planId> --yes [--notes "looks good"]
@@ -815,13 +866,19 @@ curl -X POST "$MINICODER_API_URL/commands/<command-slug>" \
 
 ### 5.0.1 Task-enqueue commands — `minicoder run ...` / `minicoder design-doc request-run` (API)
 
-Five routes each enqueue a whole background task (coding, review, merge-gate recompute, or
-design-doc generation) rather than executing synchronously. All require an **operator**-role (or
-above) API key; the CLI mints the `Idempotency-Key` for you by default (or pass
-`--idempotency-key <key>` to reuse one after a timeout/lost response) and prints
+Seven routes each enqueue a whole background task (plan generation, backlog generation, coding,
+review, merge-gate recompute, or design-doc generation) rather than executing synchronously. All
+require an **operator**-role (or above) API key; the CLI mints the `Idempotency-Key` for you by
+default (or pass `--idempotency-key <key>` to reuse one after a timeout/lost response) and prints
 `enqueued:<triggerdevRunId>` on success.
 
 ```bash
+minicoder run plan-generation --project <project> --assessment <assessmentId> \
+  --planner-adapter GenericLLMPlannerAdapter
+
+minicoder run backlog-generation --project <project> --plan <planId> \
+  --planner-adapter GenericLLMPlannerAdapter
+
 minicoder run coder --project <project> --feature-run <id> --coder-adapter CodexCoderAdapter
 
 minicoder run review --project <project> --feature-run <id> \
@@ -837,7 +894,14 @@ minicoder design-doc request-run --project <project> --documentation-adapter Cla
 ```
 
 Every `...-adapter` value must already exist in the `AdapterRegistry` — see the adapter registry
-bootstrap note in [§3.5](#35-start-the-long-running-processes).
+bootstrap note in [§3.5](#35-start-the-long-running-processes). Unlike the other five,
+`plan-generation`/`backlog-generation` can also enqueue with no plan/features already present at
+all — that's the point: the underlying `generate-implementation-plan`/`generate-feature-backlog`
+tasks accept an empty `sections`/`features` payload plus a `plannerAdapterName` and draft the
+content themselves via the adapter, rather than requiring you to have already generated or
+hand-authored it (see [§4 Step 3](#step-3--generate-review-and-approve-the-plan)). Both can also
+take a long time on a large specification — if a run fails with a `TimeoutError`, raise
+`PLANNER_TIMEOUT_MS` (milliseconds; defaults to 300000 / 5 minutes) before retrying.
 
 ### 5.1 Database lifecycle — `minicoder db ...` (DB)
 
@@ -924,8 +988,9 @@ repository), `/webhooks/gitea` (mounted only if `GITEA_WEBHOOK_SECRET` is set), 
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `status --project <id>`                                | Project + automation state, task-queue health, (if your key is operator+) doctor-check summary. | `--project` (required)                                                            |
 | `plan --project <id>`                                  | The implementation plan and readiness assessment.                                               | `--project` (required)                                                            |
+| `plan --project <id> --plan <planId>`                  | One plan's full title/summary/state and every section's full content.                           | `--project` (required), `--plan`                                                  |
 | `clarification --project <id> [--session <id>]`        | Clarification questions/answers, one session or the latest.                                     | `--project` (required), `--session`                                               |
-| `features --project <id> [--human-required]`           | The feature backlog, or (with the flag) only features parked at `human_required`.               | `--project` (required), `--human-required`, `--cursor`, `--limit`                 |
+| `features --project <id> [--human-required] [--full]`  | The feature backlog, or (`--human-required`) only items parked at `human_required`, or (`--full`) untruncated descriptions and `depends_on_fr_ids` instead of the truncated table. | `--project` (required), `--human-required`, `--full`, `--cursor`, `--limit`        |
 | `active --project <id>`                                | The one feature currently in flight and its linked PR/CI status.                                | `--project` (required)                                                            |
 | `runs [--project <id>] [--feature-run <id>]`           | Agent run history.                                                                              | `--project`, `--feature-run`, `--cursor`, `--limit`                               |
 | `runs --timeline <featureRunId>`                       | One feature's full merged chronological history (events, runs, findings, PR, cost, approvals).  | positional-ish `--timeline <id>`                                                  |
@@ -940,8 +1005,10 @@ repository), `/webhooks/gitea` (mounted only if `GITEA_WEBHOOK_SECRET` is set), 
 
 | Subcommand              | Transport | Purpose                                                                                | Key flags                                                                                                                            |
 | ----------------------- | --------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| _(bare)_                | API       | Default view: plan + readiness.                                                        | `--project` (required)                                                                                                               |
+| _(bare)_                | API       | Default view: plan + readiness, or (with `--plan`) one plan's full title/summary/state and section content. | `--project` (required), `--plan`                                                                                                     |
 | `import-backlog <file>` | DB        | Parse, validate, preview, and (unless `--dry-run`) import a hand-written `backlog.md`. | positional file, `--project` (required), `--plan` (required), `--actor` (required), `--actor-role` (default `approver`), `--dry-run` |
+| `validate-backlog`      | DB        | Validate the current backlog against its own current version — required before `submit-for-approval` will accept it. Dispatches as a system actor (bypasses the generic-dispatch route's own system-actorKind restriction). | `--project` (required), `--plan` (required)                                                                                          |
+| `resolve-gap`           | API       | Resolve one blocking `planning_gaps` row (from either clarification or a later plan/backlog generation pass) — required before `submit-for-approval` will accept it if any gap is still unresolved. | `--project` (required), `--assessment <id>` (required), `--gap <id>` (required), `--resolution <text>` (required), `--yes` (required) |
 
 ### 5.7 Design document — `minicoder design-doc ...` (API)
 
@@ -1028,6 +1095,18 @@ Run `minicoder status --project <project>` and `minicoder state doctor --project
 Check whether automation is `paused_by_operator` (someone paused it — `minicoder resume`) or
 `paused_budget_exceeded`/`waiting_for_budget_approval` (needs an approver's budget override).
 Confirm `minicoder tasks worker` is actually running — nothing advances without it.
+
+**`generate-implementation-plan`/`generate-feature-backlog` failed with `TimeoutError`.**
+Check with `minicoder trigger inspect-run <runId>`. The default planner-adapter HTTP timeout
+(`PLANNER_TIMEOUT_MS`, 5 minutes) can be too short for a large specification against a slower LLM
+endpoint — raise it (e.g. `export PLANNER_TIMEOUT_MS=1800000` for 30 minutes) and re-run
+`minicoder run plan-generation`/`minicoder run backlog-generation`.
+
+**`submit-for-approval` fails with `409 backlog-not-validated` or `409 unresolved-blocking-gaps`.**
+Both are real preconditions, not bugs: run `minicoder plan validate-backlog --project <project>
+--plan <planId>` first, and if validation (or an earlier clarification/generation pass) left any
+blocking `planning_gaps` row unresolved, resolve each one with `minicoder plan resolve-gap` before
+retrying `submit-for-approval` — see [§4 Step 3](#step-3--generate-review-and-approve-the-plan).
 
 **A feature is stuck at `human_required`.**
 That's by design — see [§4 Step 5](#step-5--handle-anything-that-needs-you). Use

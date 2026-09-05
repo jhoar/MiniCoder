@@ -3276,6 +3276,104 @@ clarification start`/`minicoder clarification complete` now wrap all four, mirro
   documented for any future command added to the registry before its own wrapper lands, just no
   longer naming these four as the example.
 
+## Planner Generation Wiring and Planning-Pipeline Gap Closures (`packages/triggerdev/src/tasks/{generate-implementation-plan,generate-feature-backlog,planner-adapter,planner-cost}.ts`, `packages/core/src/commands/handlers/{project/create-project,planning/resolve-planning-gap}.ts`)
+
+**Not a numbered implementation-plan phase** — this is a bug-fix/gap-closure pass, found by
+actually driving a real project through the full planning pipeline end to end (not a synthetic
+test fixture) and fixing each blocker as it surfaced, the same posture PR #79/issue #81 already
+established for "real gap found by actual use, not a phase deliverable."
+
+- **`generate-implementation-plan`/`generate-feature-backlog` previously required the caller to
+  already have `sections`/`features` content in hand — there was no way to have the planner
+  adapter draft that content itself, despite `PlannerAgentAdapter.generatePlanSections()`/
+  `.generateFeatureBacklog()` (issue #32) existing since Phase 6/7's adapter work.** Both task
+  `runImpl`s now support a second, adapter-invocation path: when the payload's `sections`/
+  `features` array is empty and a `plannerAdapterName` is supplied, the task resolves that adapter
+  via `AdapterRegistry`, calls the corresponding `generate*()` method, and uses its output instead
+  of requiring pre-supplied content — `GenerateImplementationPlanPayload.title` became optional and
+  `GenerateFeatureBacklogPayload.features` changed from `.min(1)` to `.default([])` to allow this.
+  Two new task-enqueue routes (`POST /commands/request-plan-generation`/`request-backlog-generation`,
+  the sixth/seventh enqueue routes alongside `request-coder-run`/`request-review`/`request-fixes`/
+  `recompute-merge-gate`/`request-design-doc`) and CLI wrappers (`minicoder run plan-generation`/
+  `minicoder run backlog-generation`) are the only way to reach this path — mirroring every other
+  enqueue route's shape exactly, including minting a fresh `Idempotency-Key` by default.
+  `packages/triggerdev/src/tasks/planner-adapter.ts`'s `resolveDefaultPlannerAdapter()` constructs
+  the real `GenericLLMPlannerAdapter`/`HttpPlanProvider` from the same `CODE_GEN_*` env vars every
+  other default adapter resolver already reads; `planner-cost.ts`'s `computePlannerCostUsd()`/
+  `resolvePlannerPromptTemplateVersion()` mirror `run-coder.ts`'s `computeCostUsd()`/
+  `resolvePromptTemplateVersion()` shape for the planner role specifically (`PLANNER_PRICE_PER_1K_
+{INPUT,OUTPUT}_TOKENS`, `PLANNER_PROMPT_TEMPLATE_VERSION`).
+- **`HttpPlanProvider`'s fixed 30-second HTTP timeout — sized for the much smaller readiness-
+  assessment call — was too short for a full plan/backlog drafting call against a real
+  specification, confirmed by two consecutive real `TimeoutError` failures against an actual
+  project before the fix.** Made configurable via `PLANNER_TIMEOUT_MS` (default raised to 300000ms
+  / 5 minutes, itself already larger than the original hardcoded 30s); still configurable higher
+  for a very large specification.
+- **`CreateProjectHandler` never wrote a `workflow_states` row — a real, previously undiscovered
+  gap with no test coverage catching it, because every test fixture inserted this row directly and
+  no production code path ever had.** Confirmed by grep: every `pause-automation.ts`/
+  `resume-automation.ts`/`record-budget-*.ts`/`approve-budget-override.ts` handler only ever
+  `SELECT`s/`UPDATE`s this row, assuming it already exists. Without it,
+  `SelectFeatureHandler`'s compare-and-swap (`UPDATE workflow_states SET active_feature_run_id = ?
+WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never match any row for
+  a real, production-created project — `start-next-feature` could never select a feature for
+  execution at all, silently blocking the entire execution phase for every project ever created
+  through the normal `CreateProjectCommand` path. Fixed by inserting the `workflow_states` row
+  (`automation_state='running'`, `active_feature_run_id=NULL`) in the same transaction as the
+  `projects` INSERT — genesis-by-INSERT, the same posture this document already establishes for
+  `clarification_sessions`/`implementation_plans`. A project created before this fix needs a
+  one-time manual backfill INSERT (no repair-command wrapper was built for this one-off case,
+  since it can only ever affect projects created before the fix shipped).
+- **`ValidateBacklogCommand` (system-actorKind-only) was completely unreachable by any real
+  caller** — not via the generic-dispatch route (actor identity there always comes from the
+  calling API key's own configured `role`/`actorKind`, and a `system`-actorKind-required handler
+  can never be satisfied by a normal human API key, regardless of role), and no CLI wrapper
+  existed either. `SubmitPlanForApprovalHandler`'s "backlog validated" guard could therefore never
+  be satisfied for any real, human-driven plan, permanently blocking `submit-for-approval` with
+  `409 backlog-not-validated`. Fixed with `minicoder plan validate-backlog` — a direct-DB dispatch
+  CLI command (mirroring `import-backlog`'s existing DB-transport shape), building a `systemActor()`
+  identity and using `backlog_version` as the idempotency key's per-occurrence discriminator (a
+  fixed key would replay a stale cached result after a backlog regeneration, which resets
+  `backlog_validated_state` and bumps `backlog_version` — the same discriminator rule this document
+  states elsewhere for every repeatable command).
+- **No command anywhere ever resolved a `planning_gaps` row (`resolved_at`/`resolution` columns
+  existed since the initial schema with zero production writers)**, so `SubmitPlanForApprovalHandler`'s
+  "no unresolved blocking gaps" guard could never be satisfied once a real specification produced
+  even one blocking gap — a second, independent way `submit-for-approval` was permanently blocked
+  for real usage (`409 unresolved-blocking-gaps`), on top of the validate-backlog gap above. Fixed
+  with `ResolvePlanningGapCommand`/`ResolvePlanningGapHandler` (`requiredRole=APPROVER`,
+  `requiredActorKind='human'`), a CAS update on the `planning_gaps` row plus a `human_approvals`
+  audit row (`context_type='planning_gap_resolution'`) and a `planning_gap.resolved`
+  `workflow_events` row, all in one transaction. Registered on the generic-dispatch route (a real
+  `human`-actorKind handler, unlike `validate-backlog`); `minicoder plan resolve-gap` is the CLI
+  wrapper, fetching `expectedVersion` from the live readiness assessment automatically. A blocking
+  gap can be raised either by clarification itself or discovered later by a plan/backlog generation
+  pass — the resolution mechanism is the same regardless of origin (docs/02 §3).
+- **`Table.tsx`'s non-string-cell rendering path (`StatusBadge` and similar) had no width
+  constraint of its own, unlike the plain-string-cell path's `pad()`-then-`wrap="truncate-end"`
+  handling — an over-length element cell consumed the outer box's full `col.width + 1` (gutter
+  included), so the next column started with zero gap.** Fixed by wrapping non-string cells in an
+  inner `<Box width={col.width} flexShrink={0}>`, restoring the same 1-character gutter both cell
+  kinds are supposed to get.
+- **`minicoder plan` gained a `--plan <id>` detail view** (plan title/summary/state plus every
+  section's full, word-wrapped content via the existing `DescriptionList` component) and
+  **`minicoder features` gained a `--full` flag** (full, untruncated descriptions and
+  `depends_on_fr_ids` instead of the fixed-width truncated table) — both closing a real usability
+  gap found live: the default table view truncates long descriptions/state tokens with no
+  indication of what was cut, and had no way to see a feature's declared dependencies at all
+  (`FeatureRequestRow` gained a `depends_on_fr_ids: string[]` field, backed by a new
+  `loadDependsOnFrIds()` batch read-model helper, the same "batch second query" idiom
+  `listHumanRequiredItems()` already established, to avoid ambiguous-JOIN issues across
+  SQLite/PostgreSQL).
+- All of the above is documented for users in `USER-MANUAL.md` (§1, §4 Step 3, §5.0/§5.0.1/§5.5/
+  §5.6, §6) and in `docs/00-glossary-and-terms.md` §5 (Canonical CLI Surface) /
+  `docs/02-bootstrap-planner-clarification.md` §3 (blocking-gap resolution). **`start-next-feature`
+  still has no dedicated enqueue route or CLI wrapper of its own** — unlike every other Workflow
+  Layer task this document names, there is currently no `minicoder`/API way to trigger the very
+  first `start-next-feature` run for a newly activated project; `USER-MANUAL.md` §4 Step 4
+  documents this as a known, open gap rather than silently describing automation as more turnkey
+  than it currently is.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
