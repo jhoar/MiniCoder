@@ -22,6 +22,7 @@
  */
 import {
   CommandRegistry,
+  CreateProjectHandler,
   IngestSpecificationHandler,
   ApprovePlanHandler,
   ActivatePlanHandler,
@@ -58,6 +59,7 @@ export function buildCommandRegistry(): CommandRegistry {
   const registry = new CommandRegistry();
 
   // Human-actorKind handlers (generic dispatch).
+  registry.register(new CreateProjectHandler());
   registry.register(new IngestSpecificationHandler());
   registry.register(new ApprovePlanHandler());
   registry.register(new ActivatePlanHandler());

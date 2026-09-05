@@ -24,10 +24,10 @@
   "devDependencies": {
     "@minicoder/persistence-postgres": "workspace:*",
     "@minicoder/testing": "workspace:*",
-    "@types/better-sqlite3": "*",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/js-yaml": "^4.0.9",
     "@types/pg": "^8.11.6",
-    "better-sqlite3": "*",
+    "better-sqlite3": "^12.11.1",
     "pg": "^8.12.0"
   }
 }

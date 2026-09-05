@@ -1,18 +1,69 @@
 import { randomUUID } from 'crypto';
 import { Command } from 'commander';
 import { renderCommandResultView } from '@minicoder/tui/views';
-import { buildApiClient, renderOrJson, type JsonOption } from '../tui-client.js';
+import {
+  buildApiClient,
+  renderOrJson,
+  resolveIdempotencyKey,
+  type IdempotencyKeyOption,
+  type JsonOption,
+} from '../tui-client.js';
 
 /**
- * Phase 17 project-lifecycle write actions (docs/00 §5). Mirrors `pause.ts`/`resume.ts`'s exact
- * "GET /status for the current version, mint a fresh per-invocation Idempotency-Key, POST the
- * command" shape — the same reasoning applies here: `MarkImplementationCompleteCommand`/
- * `CompleteProjectCommand` are system-actorKind (reachable via the API's system-key allow-list),
- * one-shot administrative actions with no async/durable-retry need that would justify a
- * Trigger.dev task.
+ * Phase 17 project-lifecycle write actions (docs/00 §5), plus `create` (a later, non-Phase-17
+ * addition closing a real gap — nothing in the shipped product created the `projects` row every
+ * project-scoped command requires as an FK target; only test fixtures did). `mark-implementation-
+ * complete`/`complete` mirror `pause.ts`/`resume.ts`'s exact "GET /status for the current
+ * version, mint a fresh per-invocation Idempotency-Key, POST the command" shape — the same
+ * reasoning applies here: `MarkImplementationCompleteCommand`/`CompleteProjectCommand` are
+ * system-actorKind (reachable via the API's system-key allow-list), one-shot administrative
+ * actions with no async/durable-retry need that would justify a Trigger.dev task.
+ * `CreateProjectCommand` is human-actorKind and insert-only (no state to fetch first), so
+ * `create` follows `spec.ts`'s simpler shape instead.
  */
 export function createProjectCommand(): Command {
   const cmd = new Command('project').description('Project lifecycle actions (Phase 17)');
+
+  cmd
+    .command('create')
+    .description(
+      'Creates a new project (CreateProjectCommand) — the genesis row every project-scoped ' +
+        'command (spec ingest, plan, etc.) requires as an FK target',
+    )
+    .requiredOption('--id <id>', 'Project ID (a human-chosen slug, e.g. "my-app")')
+    .requiredOption('--name <name>', 'Project display name')
+    .option('--description <text>', 'Project description')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (
+        opts: { id: string; name: string; description?: string } & IdempotencyKeyOption &
+          JsonOption,
+      ) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const idempotencyKey = resolveIdempotencyKey(`create-project:${opts.id}`, opts);
+            const result = await client.createProject(
+              opts.id,
+              opts.name,
+              opts.description,
+              idempotencyKey,
+            );
+            return {
+              command: 'create-project',
+              projectId: opts.id,
+              resultingState: result.resulting_state,
+            };
+          },
+          (data) => renderCommandResultView(data),
+        );
+      },
+    );
 
   cmd
     .command('mark-implementation-complete')

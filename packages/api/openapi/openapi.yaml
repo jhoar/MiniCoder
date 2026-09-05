@@ -175,6 +175,24 @@ paths:
         '400': { description: 'Validation error, or the artifact is already bound to a different document' }
         '403': { description: Not authorized }
         '404': { description: Artifact export or design document not found }
+  /commands/register-adapter:
+    post:
+      operationId: registerAdapter
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '200': { description: 'Adapter registered (fresh insert or existing row updated)' }
+        '400': { description: 'Validation error, or an unrecognized capability token' }
+        '403': { description: Not authorized }
+  /commands/request-readiness-assessment:
+    post:
+      operationId: requestReadinessAssessment
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '202': { description: Enqueued }
+        '404': { description: No specification_inputs row exists yet for this project }
   /commands/request-coder-run:
     post:
       operationId: requestCoderRun

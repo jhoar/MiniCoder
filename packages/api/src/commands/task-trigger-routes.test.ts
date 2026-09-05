@@ -6,6 +6,10 @@ function fakeTaskTriggerClient(): TaskTriggerClient & { calls: unknown[] } {
   const calls: unknown[] = [];
   return {
     calls,
+    triggerReadinessAssessment: async (payload) => {
+      calls.push({ task: 'planning-readiness-assessment', payload });
+      return { triggerdevRunId: 'readiness-1' };
+    },
     triggerRunCoder: async (payload) => {
       calls.push({ task: 'run-coder', payload });
       return { triggerdevRunId: 'run-coder-1' };
@@ -130,7 +134,63 @@ describe('task-trigger enqueue routes', () => {
     expect(client.calls[0]).toMatchObject({ task: 'run-design-doc' });
   });
 
+  it('POST /commands/request-readiness-assessment looks up the most recent specification_inputs row and calls the injected client', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app, db } = await buildTestApp({ taskTriggerClient: client });
+    await db.execute(`INSERT INTO projects (id, name) VALUES (?, ?)`, ['proj-1', 'Test Project']);
+    await db.execute(
+      `INSERT INTO specification_inputs (id, project_id, content) VALUES (?, ?, ?)`,
+      ['spec-older', 'proj-1', 'older spec'],
+    );
+    await db.execute(
+      `INSERT INTO specification_inputs (id, project_id, content, created_at) VALUES (?, ?, ?, ?)`,
+      ['spec-newer', 'proj-1', 'newest spec content', '2099-01-01T00:00:00.000Z'],
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-readiness-assessment',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-readiness-1',
+      },
+      payload: { projectId: 'proj-1', plannerAdapterName: 'GenericLLMPlannerAdapter' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body)).toMatchObject({ triggerdevRunId: 'readiness-1', accepted: true });
+    expect(client.calls[0]).toMatchObject({
+      task: 'planning-readiness-assessment',
+      payload: {
+        projectId: 'proj-1',
+        specificationInputId: 'spec-newer',
+        specificationContent: 'newest spec content',
+        plannerAdapterName: 'GenericLLMPlannerAdapter',
+      },
+    });
+  });
+
+  it('POST /commands/request-readiness-assessment returns 404 when no specification has been ingested yet', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app, db } = await buildTestApp({ taskTriggerClient: client });
+    await db.execute(`INSERT INTO projects (id, name) VALUES (?, ?)`, ['proj-1', 'Test Project']);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-readiness-assessment',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-readiness-404',
+      },
+      payload: { projectId: 'proj-1', plannerAdapterName: 'GenericLLMPlannerAdapter' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(client.calls).toHaveLength(0);
+  });
+
   it.each([
+    ['request-readiness-assessment', { plannerAdapterName: 'GenericLLMPlannerAdapter' }],
     ['request-coder-run', { coderAdapterName: 'CodexCoderAdapter' }],
     ['request-review', { reviewerAdapterName: 'ClaudeReviewerAdapter' }],
     ['request-fixes', { reviewerAdapterName: 'ClaudeReviewerAdapter' }],

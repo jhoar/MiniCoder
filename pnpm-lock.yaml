@@ -135,8 +135,8 @@ importers:
         specifier: workspace:*
         version: link:../testing
       '@types/better-sqlite3':
-        specifier: '*'
-        version: 7.6.13
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
@@ -144,8 +144,8 @@ importers:
         specifier: ^8.11.6
         version: 8.20.0
       better-sqlite3:
-        specifier: '*'
-        version: 9.6.0
+        specifier: ^12.11.1
+        version: 12.11.1
       pg:
         specifier: ^8.12.0
         version: 8.21.0
@@ -187,14 +187,14 @@ importers:
         version: 17.0.2
     devDependencies:
       '@types/better-sqlite3':
-        specifier: '*'
-        version: 7.6.13
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/react':
         specifier: ^17.0.83
         version: 17.0.93
       better-sqlite3:
-        specifier: '*'
-        version: 9.6.0
+        specifier: ^12.11.1
+        version: 12.11.1
 
   packages/core:
     dependencies:
@@ -259,15 +259,15 @@ importers:
         specifier: workspace:*
         version: link:../persistence-sqlite
       better-sqlite3:
-        specifier: ^9.6.0
-        version: 9.6.0
+        specifier: ^12.11.1
+        version: 12.11.1
       pg:
         specifier: ^8.12.0
         version: 8.21.0
     devDependencies:
       '@types/better-sqlite3':
-        specifier: ^7.6.11
-        version: 7.6.13
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/pg':
         specifier: ^8.11.6
         version: 8.20.0
@@ -291,12 +291,12 @@ importers:
         specifier: workspace:*
         version: link:../core
       better-sqlite3:
-        specifier: ^9.6.0
-        version: 9.6.0
+        specifier: ^12.11.1
+        version: 12.11.1
     devDependencies:
       '@types/better-sqlite3':
-        specifier: ^7.6.11
-        version: 7.6.13
+        specifier: ^9.6.0
+        version: 9.6.0
 
   packages/testing:
     dependencies:
@@ -335,14 +335,14 @@ importers:
         version: 3.25.76
     devDependencies:
       '@types/better-sqlite3':
-        specifier: '*'
-        version: 7.6.13
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/pg':
         specifier: ^8.11.6
         version: 8.20.0
       better-sqlite3:
-        specifier: '*'
-        version: 9.6.0
+        specifier: ^12.11.1
+        version: 12.11.1
 
   packages/triggerdev:
     dependencies:
@@ -393,14 +393,14 @@ importers:
         version: 3.25.76
     devDependencies:
       '@types/better-sqlite3':
-        specifier: '*'
-        version: 7.6.13
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/pg':
         specifier: ^8.11.6
         version: 8.20.0
       better-sqlite3:
-        specifier: '*'
-        version: 9.6.0
+        specifier: ^12.11.1
+        version: 12.11.1
 
   packages/tui:
     dependencies:
@@ -477,11 +477,11 @@ importers:
         version: link:../persistence-sqlite
     devDependencies:
       '@types/better-sqlite3':
-        specifier: '*'
-        version: 7.6.13
-      better-sqlite3:
-        specifier: '*'
+        specifier: ^9.6.0
         version: 9.6.0
+      better-sqlite3:
+        specifier: ^12.11.1
+        version: 12.11.1
 
 packages:
 
@@ -1479,8 +1479,8 @@ packages:
   '@tybys/wasm-util@0.10.3':
     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
 
-  '@types/better-sqlite3@7.6.13':
-    resolution: {integrity: sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==}
+  '@types/better-sqlite3@9.6.0':
+    resolution: {integrity: sha512-ZEEwBSgMu7GYJOynoagg5X9JbxfL6dTJDsgViJIqh67jV44kyOr9RXfmFjLK5rzC4MWssP06t9hu/JwGDnUbCg==}
 
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
@@ -1971,8 +1971,9 @@ packages:
   before-after-hook@2.2.3:
     resolution: {integrity: sha512-NzUnlZexiaH/46WDhANlyR2bXRopNg4F/zuSA3OpZnllCUgRaOF2znDioDWrmbNVsuZk6l9pMquQB38cfBZwkQ==}
 
-  better-sqlite3@9.6.0:
-    resolution: {integrity: sha512-yR5HATnqeYNVnkaUTf4bOP2dJSnyhP4puJN/QPRyx4YkBEEUxib422n2XzPqDEHjQQqazoYoADdAm5vE15+dAQ==}
+  better-sqlite3@12.11.1:
+    resolution: {integrity: sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA==}
+    engines: {node: 20.x || 22.x || 23.x || 24.x || 25.x || 26.x}
 
   bindings@1.5.0:
     resolution: {integrity: sha512-p2q/t/mhvuOj/UeLlV6566GD/guowlr0hHxClI0W9m7MWYkL1F0hLo+0Aexs9HSPCtR1SXQ0TD3MMKrXZajbiQ==}
@@ -4710,7 +4711,7 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
-  '@types/better-sqlite3@7.6.13':
+  '@types/better-sqlite3@9.6.0':
     dependencies:
       '@types/node': 20.19.43
 
@@ -5245,7 +5246,7 @@ snapshots:
 
   before-after-hook@2.2.3: {}
 
-  better-sqlite3@9.6.0:
+  better-sqlite3@12.11.1:
     dependencies:
       bindings: 1.5.0
       prebuild-install: 7.1.3

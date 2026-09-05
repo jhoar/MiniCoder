@@ -150,7 +150,16 @@ persist_env_var() {
   export "${name}=${value}"
 }
 
-have_docker() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }
+have_docker() {
+  # `docker info` alone only proves the daemon is reachable — it says nothing about whether the
+  # `docker compose` CLI plugin is installed. On a host with a working daemon but no compose
+  # plugin (e.g. an old Docker CLI predating Compose V2), `docker compose -f ...` doesn't fail
+  # with a clean "unknown command" — Docker's flag parser instead misreads the dropped `compose`
+  # token and reports a confusing "unknown shorthand flag: 'f' in -f", masking the real problem
+  # and skipping this function's own documented graceful-degradation path entirely. Checking
+  # `docker compose version` here closes that gap.
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
+}
 
 wait_for_health() {
   # $1 container name, $2 max attempts, $3 seconds between attempts
@@ -271,9 +280,11 @@ elif [ "$NO_INFRA" = true ]; then
 elif ! have_docker; then
   if [ "$SCM_STACK" != "github" ] && [ "$SCM_STACK" != "none" ]; then
     SCM_STACK_UPPER="$(printf '%s' "$SCM_STACK" | tr '[:lower:]' '[:upper:]')"
-    echo "NOTE: Docker not available/running — skipping local ${SCM_STACK} infra." >&2
+    echo "NOTE: Docker not available/running, or the 'docker compose' plugin isn't installed —" >&2
+    echo "      skipping local ${SCM_STACK} infra." >&2
     echo "      Set ${SCM_STACK_UPPER}_TOKEN (and ${SCM_STACK_UPPER}_BASE_URL) yourself, or install" >&2
-    echo "      Docker and re-run, to use the default zero-touch local ${SCM_STACK} setup." >&2
+    echo "      Docker (with the compose plugin: 'docker compose version' should succeed) and" >&2
+    echo "      re-run, to use the default zero-touch local ${SCM_STACK} setup." >&2
   fi
   if [ "$DB_DIALECT" = "postgres" ] && [ -z "${DB_URL:-}" ]; then
     echo "NOTE: Docker not available/running and DB_URL is unset — set DB_URL yourself to point at" >&2
@@ -374,6 +385,20 @@ START_WEB_UI="${START_WEB_UI:-false}"
 # 4. Preflight
 # ---------------------------------------------------------------------------
 command -v pnpm >/dev/null 2>&1 || { echo "ERROR: pnpm not found on PATH (run: corepack enable)" >&2; exit 1; }
+
+# Every `minicoder ...` invocation below runs the CLI's TypeScript source directly via `tsx`
+# (no build step for packages/cli itself), but its workspace dependencies (@minicoder/core,
+# @minicoder/triggerdev, @minicoder/api, etc.) are consumed through their compiled `dist/`
+# output, per each package's own `"main"`/`"types"` pointing there — tsx/Node module resolution
+# does NOT fall back to source for those. On a fresh checkout (or after `git pull` picks up
+# source changes) those `dist/` directories don't exist or are stale, and the very first
+# `minicoder db migrate` call below fails with a confusing
+# "Cannot find module '.../dist/index.js'" instead of a clear "you need to build first" error.
+# `@minicoder/cli^...` selects every workspace dependency of the CLI (not the CLI itself, and
+# not @minicoder/web, which isn't a CLI dependency and is instead run via `next dev` — no build
+# needed — when START_WEB_UI=true below).
+echo "==> Building CLI workspace dependencies (pnpm --filter \"@minicoder/cli^...\" build)"
+pnpm --filter "@minicoder/cli^..." run build
 
 echo "==> Applying pending migrations (minicoder db migrate)"
 pnpm --filter @minicoder/cli exec tsx src/index.ts db migrate

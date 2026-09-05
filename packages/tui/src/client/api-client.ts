@@ -410,6 +410,25 @@ export class ApiClient {
    * only ever backfills a currently-NULL binding, never rebinds an already-bound artifact. No
    * `Idempotency-Key` needed: the underlying repair is naturally idempotent (a CAS-guarded
    * UPDATE), matching `finalizeIfGithubMerged()`'s shape. */
+  /** Registers (or updates) an `agent_adapters` row — required before any task resolving that
+   * role/name (planning readiness, coder, reviewer, arbiter, design-doc) can run. No
+   * Idempotency-Key needed: `AdapterRegistry.register()` is itself idempotent. */
+  registerAdapter(
+    role: string,
+    name: string,
+    implementation: string,
+    capabilities: string[],
+    isActive: boolean,
+  ): Promise<{ adapterId: string; role: string; name: string }> {
+    return this.post('/commands/register-adapter', {
+      role,
+      name,
+      implementation,
+      capabilities,
+      isActive,
+    });
+  }
+
   repairDesignDocumentBinding(
     projectId: string,
     artifactExportId: string,
@@ -439,6 +458,18 @@ export class ApiClient {
   // Generic-dispatch-only commands (USER-MANUAL.md §5.0) — previously reachable only via a
   // hand-built curl call against `POST /commands/:commandSlug`; these give them the same typed
   // method + CLI-wrapper treatment every other command already gets.
+
+  /** `CreateProjectCommand` — insert-only, no state matrix. Genesis command for a `projects`
+   * row: every project-scoped command (`ingest-specification` included) requires this row to
+   * already exist as an FK target, and nothing else in the shipped product creates one. */
+  createProject(
+    id: string,
+    name: string,
+    description: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post('/commands/create-project', { id, name, description }, idempotencyKey);
+  }
 
   /** `IngestSpecificationCommand` — insert-only, no state matrix (docs/02 §3). */
   ingestSpecification(
@@ -595,6 +626,20 @@ export class ApiClient {
   // Task-enqueue routes (USER-MANUAL.md §5.0.1) — each enqueues a whole Trigger.dev task
   // orchestration rather than executing synchronously; all return `202 {triggerdevRunId,
   // accepted: true}` and require an operator-or-above API key.
+
+  /** Enqueues `planning-readiness-assessment` for a project's most recently ingested
+   * specification. */
+  requestReadinessAssessment(
+    projectId: string,
+    plannerAdapterName: string,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-readiness-assessment',
+      { projectId, plannerAdapterName },
+      idempotencyKey,
+    );
+  }
 
   /** Enqueues `run-coder` for a feature run at `selected`/`coding`. */
   requestCoderRun(
