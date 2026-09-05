@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.4
-> Last-updated: 2026-08-30
+> Version: 1.2.5
+> Last-updated: 2026-09-05
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -611,8 +611,9 @@ minicoder api serve [--port <number>] [--host <host>]   # long-running Fastify p
 # singular — distinct from the server's plural MINICODER_API_KEYS; see docs/07 §4).
 minicoder status --project <id>
 minicoder plan --project <id>                           # default view; `plan import-backlog` unchanged
+minicoder plan --project <id> --plan <planId>           # one plan's full title/summary/state and section content
 minicoder clarification --project <id> [--session <id>]
-minicoder features --project <id> [--human-required] [--cursor <c>] [--limit <n>]
+minicoder features --project <id> [--human-required] [--full] [--cursor <c>] [--limit <n>]  # --full: untruncated descriptions and depends_on_fr_ids
 minicoder active --project <id>
 minicoder runs [--project <id>] [--feature-run <id>] [--cursor <c>] [--limit <n>]
 minicoder runs --timeline <featureRunId>                # Phase 16: merged workflow-history view
@@ -650,7 +651,11 @@ minicoder plan approve --project <id> --plan <id> --yes [--notes <text>]      # 
 minicoder plan activate --project <id> --plan <id> --yes                     # approver+; approved -> activated_for_execution
 minicoder plan export --project <id> --plan <id>                             # operator+; renders plan.md-equivalent markdown into a new artifact_exports row
 minicoder plan export-backlog --project <id> --plan <id>                     # operator+; renders backlog.md-equivalent markdown into a new artifact_exports row
+minicoder plan validate-backlog --project <id> --plan <id>                   # DB-direct (system actor, not the generic-dispatch route); required before submit-for-approval will accept the backlog
+minicoder plan resolve-gap --project <id> --assessment <id> --gap <id> --resolution <text> --yes  # approver+; resolves one blocking planning_gaps row
 minicoder budget approve-override --project <id> --policy <id> --reason <text> --yes  # approver+
+minicoder run plan-generation --project <id> --assessment <id> --planner-adapter <name> [--idempotency-key <key>]  # operator+; enqueues generate-implementation-plan (adapter-drafted, no pre-existing sections needed)
+minicoder run backlog-generation --project <id> --plan <id> --planner-adapter <name> [--idempotency-key <key>]  # operator+; enqueues generate-feature-backlog (adapter-drafted, no pre-existing features needed)
 minicoder run coder --project <id> --feature-run <id> --coder-adapter <name>          # operator+; enqueues run-coder
 minicoder run review --project <id> --feature-run <id> --reviewer-adapter <name> [--arbiter-adapter <name>]  # operator+; enqueues run-review
 minicoder run fixes --project <id> --feature-run <id> --reviewer-adapter <name>       # operator+; re-enqueues run-review

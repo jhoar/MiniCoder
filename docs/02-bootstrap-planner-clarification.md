@@ -3,8 +3,8 @@
 > Status: Canonical
 > Supersedes: minicoder_bootstrap_planner_clarification_specification.md,
 > minicoder_bootstrap_planner_clarification_specification_testing_updated.md
-> Version: 1.0.1
-> Last-updated: 2026-07-13
+> Version: 1.0.2
+> Last-updated: 2026-09-05
 
 Terms and state names are defined in [`00-glossary-and-terms.md`](00-glossary-and-terms.md).
 
@@ -35,6 +35,16 @@ Readiness outcomes: `sufficient`, `sufficient_with_assumptions`, `insufficient` 
 Assessment records include readiness status, readiness score, blocking gaps, non-blocking gaps,
 assumptions, clarification questions, recommended next action, and backlog-generation-allowed flag.
 Any blocking gap prevents activation unless resolved or explicitly accepted by an authorized human.
+
+A blocking `planning_gaps` row can be raised either by clarification itself or by a later
+plan/backlog generation pass (the planner adapter can surface a new gap it discovers while
+drafting content that clarification's own questions never touched) — the resolution mechanism is
+the same regardless of origin: `ResolvePlanningGapCommand` (approver+, requires
+`expectedVersion`/`resolution` text, writes both a `human_approvals` row and a
+`planning_gap.resolved` `workflow_events` row) sets the gap's `resolved_at`/`resolution` columns.
+`SubmitPlanForApprovalCommand`'s "no unresolved blocking gaps" guard checks these columns directly,
+so submission is rejected (`409 unresolved-blocking-gaps`) until every blocking gap for the plan's
+assessment has one. `minicoder plan resolve-gap` (USER-MANUAL.md §5.6) is the CLI wrapper.
 
 ## 4. Clarification Workflow
 
