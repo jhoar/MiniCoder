@@ -7,6 +7,7 @@
 import type {
   CursorPage,
   PlanningReadinessRow,
+  PlanningReadinessAssessmentDetail,
   ClarificationSessionRow,
   ClarificationQuestionRow,
   ImplementationPlanRow,
@@ -173,6 +174,12 @@ export class ApiClient {
     query?: { cursor?: string; limit?: string },
   ): Promise<CursorPage<PlanningReadinessRow>> {
     return this.get('/planning-readiness-assessments', { projectId, ...query });
+  }
+
+  /** The assessment row plus its `planning_gaps`/`planning_assumptions`/`planning_questions` —
+   * previously invisible outside a raw SQL query against the database. */
+  getPlanningReadinessAssessment(id: string): Promise<PlanningReadinessAssessmentDetail> {
+    return this.get(`/planning-readiness-assessments/${encodeURIComponent(id)}`);
   }
 
   listClarificationSessions(

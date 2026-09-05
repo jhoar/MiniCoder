@@ -52,17 +52,24 @@ export function createPlanCommand(): Command {
     .command('view', { isDefault: true, hidden: true })
     .description('Default plan/planning-readiness view')
     .requiredOption('--project <id>', 'Project ID')
+    .option(
+      '--assessment <id>',
+      'Show gaps/assumptions/questions for a specific readiness assessment',
+    )
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string } & JsonOption) => {
+    .action(async (opts: { project: string; assessment?: string } & JsonOption) => {
       const client = buildApiClient();
       await renderOrJson(
         opts,
         async () => {
-          const [plans, readiness] = await Promise.all([
+          const [plans, readiness, detail] = await Promise.all([
             client.listImplementationPlans(opts.project),
             client.listPlanningReadinessAssessments(opts.project),
+            opts.assessment
+              ? client.getPlanningReadinessAssessment(opts.assessment)
+              : Promise.resolve(undefined),
           ]);
-          return { plans, readiness };
+          return { plans, readiness, detail };
         },
         (data) => renderPlanView(data),
       );

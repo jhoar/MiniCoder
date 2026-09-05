@@ -9,6 +9,10 @@ import type {
   CursorPage,
   ImplementationPlanRow,
   PlanningReadinessRow,
+  PlanningReadinessAssessmentDetail,
+  PlanningGapRow,
+  PlanningAssumptionRow,
+  PlanningQuestionRow,
   ClarificationSessionRow,
   ClarificationQuestionRow,
   FeatureRequestRow,
@@ -129,6 +133,7 @@ export function renderStatusView(props: {
 export function renderPlanView(props: {
   plans: CursorPage<ImplementationPlanRow>;
   readiness: CursorPage<PlanningReadinessRow>;
+  detail?: PlanningReadinessAssessmentDetail;
 }): React.ReactElement {
   const planColumns: Column<ImplementationPlanRow>[] = [
     { header: 'Title', width: 22, render: (p) => p.title },
@@ -141,6 +146,19 @@ export function renderPlanView(props: {
     { header: 'Summary', width: 30, render: (r) => r.summary ?? '-' },
     { header: 'ID', width: 18, render: (r) => r.id },
   ];
+  const gapColumns: Column<PlanningGapRow>[] = [
+    { header: 'Severity', width: 12, render: (g) => <StatusBadge state={g.severity} /> },
+    { header: 'Description', width: 50, render: (g) => g.description },
+  ];
+  const assumptionColumns: Column<PlanningAssumptionRow>[] = [
+    { header: 'Confidence', width: 12, render: (a) => <StatusBadge state={a.confidence} /> },
+    { header: 'Description', width: 50, render: (a) => a.description },
+  ];
+  const questionColumns: Column<PlanningQuestionRow>[] = [
+    { header: 'Round', width: 5, render: (q) => String(q.round) },
+    { header: 'Question', width: 44, render: (q) => q.question },
+    { header: 'Answered', width: 8, render: (q) => (q.answered_at ? 'yes' : 'no') },
+  ];
   return (
     <Box flexDirection="column">
       <Section title="Implementation plans">
@@ -151,6 +169,19 @@ export function renderPlanView(props: {
         <Table columns={readinessColumns} rows={props.readiness.items} />
         <Footer nextCursor={props.readiness.nextCursor} />
       </Section>
+      {props.detail && (
+        <>
+          <Section title={`Gaps for assessment ${props.detail.assessment.id}`}>
+            <Table columns={gapColumns} rows={props.detail.gaps} />
+          </Section>
+          <Section title={`Assumptions for assessment ${props.detail.assessment.id}`}>
+            <Table columns={assumptionColumns} rows={props.detail.assumptions} />
+          </Section>
+          <Section title={`Questions for assessment ${props.detail.assessment.id}`}>
+            <Table columns={questionColumns} rows={props.detail.questions} />
+          </Section>
+        </>
+      )}
     </Box>
   );
 }

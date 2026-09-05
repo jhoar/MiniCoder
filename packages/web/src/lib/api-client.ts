@@ -15,6 +15,7 @@ import type {
   GithubLinkRow,
   SpecificationInputRow,
   PlanningReadinessRow,
+  PlanningReadinessAssessmentDetail,
   ClarificationSessionRow,
   ClarificationQuestionRow,
   ImplementationPlanRow,
@@ -219,7 +220,7 @@ export class ApiClient {
     return this.get('/planning-readiness-assessments', { projectId, ...query });
   }
 
-  getPlanningReadinessAssessment(id: string): Promise<PlanningReadinessRow> {
+  getPlanningReadinessAssessment(id: string): Promise<PlanningReadinessAssessmentDetail> {
     return this.get(`/planning-readiness-assessments/${encodeURIComponent(id)}`);
   }
 
