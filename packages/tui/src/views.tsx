@@ -260,7 +260,35 @@ export function renderClarificationView(props: {
 // features / human-required
 // ---------------------------------------------------------------------------
 
-export function renderFeaturesView(page: CursorPage<FeatureRequestRow>): React.ReactElement {
+export function renderFeaturesView(
+  page: CursorPage<FeatureRequestRow>,
+  opts?: { full?: boolean },
+): React.ReactElement {
+  if (opts?.full) {
+    // The table's `Title` column (and every other column) is fixed-width and truncated by
+    // design — good for scanning many rows, wrong for actually reading a feature's full
+    // description, which the table doesn't even show a column for at all. Same
+    // word-wrap-not-truncate rationale as the plan-sections/gaps-assumptions-questions detail
+    // views: `DescriptionList` wraps to the terminal width instead of cutting content off.
+    return (
+      <Section title="Feature queue (full text)">
+        <DescriptionList
+          items={page.items.map((f) => ({
+            label: (
+              <Text>
+                <Text bold>{`${f.fr_id} ${f.title}`}</Text>
+                {' — '}
+                <Text dimColor>{`${f.kind}, priority ${f.priority}, `}</Text>
+                <StatusBadge state={f.state} />
+              </Text>
+            ),
+            text: f.description,
+          }))}
+        />
+        <Footer nextCursor={page.nextCursor} />
+      </Section>
+    );
+  }
   const columns: Column<FeatureRequestRow>[] = [
     { header: 'FR', width: 8, render: (f) => f.fr_id },
     { header: 'Title', width: 24, render: (f) => f.title },

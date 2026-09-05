@@ -42,6 +42,40 @@ describe('views', () => {
     expect(frame).toContain('approved_pending_exec');
   });
 
+  it('renderFeaturesView({ full: true }) shows the full, word-wrapped description instead of the truncated table', () => {
+    const longDescription =
+      'Initialize TypeScript/Node.js monorepo with strict compiler settings; choose desktop shell or local web application host as described in section 21.';
+    const { lastFrame } = render(
+      renderFeaturesView(
+        {
+          items: [
+            {
+              id: '1',
+              plan_id: 'p1',
+              project_id: 'proj1',
+              fr_id: 'FR-001',
+              title: 'Initialize TypeScript/Node.js monorepo',
+              description: longDescription,
+              kind: 'feature',
+              executable: true,
+              state: 'approved_pending_execution',
+              priority: 1,
+              version: 1,
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+            },
+          ],
+          nextCursor: null,
+        },
+        { full: true },
+      ),
+    );
+    const normalizedFrame = (lastFrame() ?? '').replace(/\s+/g, ' ');
+    expect(normalizedFrame).toContain('FR-001');
+    expect(normalizedFrame).toContain(longDescription);
+    expect(normalizedFrame).not.toContain('…');
+  });
+
   it('renderFeaturesView shows "(none)" for an empty page', () => {
     const { lastFrame } = render(renderFeaturesView({ items: [], nextCursor: null }));
     expect(lastFrame()).toContain('(none)');
