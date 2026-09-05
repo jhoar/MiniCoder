@@ -14,6 +14,15 @@ function runMigrationCommand(subCommand: string, extraArgs: string[] = []): void
     stdio: 'inherit',
     env: process.env,
   });
+  // `spawnSync` failing to even launch the child (e.g. `tsx` not resolvable on PATH) reports
+  // `status: null` with no stdout/stderr from the child — silently exiting on that alone (the
+  // original bug: `result.status !== 0` is true for `null`, so this always ran, but the caller
+  // saw nothing but a bare `exit 1`) gives no clue what went wrong. Surface `result.error`
+  // explicitly first.
+  if (result.error) {
+    console.error(`Failed to run migration command '${subCommand}': ${result.error.message}`);
+    process.exit(1);
+  }
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }

@@ -38,6 +38,11 @@ export * from './adapters/capabilities.js';
 export * from './adapters/registry.js';
 export * from './adapters/run-recorder.js';
 
+// Project genesis (create-project.ts note: added post-Phase-6 to close a real gap — nothing in
+// the shipped product created the `projects` row `ingest-specification`/every other
+// project-scoped command requires as an FK target; only test fixtures did).
+export * from './commands/handlers/project/create-project.js';
+
 // Phase 6: planning / clarification command handlers
 export * from './commands/handlers/planning/ingest-specification.js';
 export * from './commands/handlers/planning/assess-planning-readiness.js';

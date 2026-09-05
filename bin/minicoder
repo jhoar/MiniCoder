@@ -32,4 +32,16 @@ REPO_ROOT="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
 # the pnpm-workspace-linked @minicoder/* packages is based on src/index.ts's own location on disk,
 # not on process.cwd(), so this changes nothing about how imports resolve — only relative
 # user-supplied paths, which now correctly resolve against wherever `minicoder` was actually run.
+#
+# `pnpm exec` also does one thing this replacement must do explicitly: it prepends every
+# workspace node_modules/.bin (this package's own, and every ancestor's up to the repo root) onto
+# the child process's PATH. A few CLI subcommands (packages/cli/src/commands/db.ts's
+# `runMigrationCommand`, test.ts's test-tier dispatch) spawn a bare `tsx`/`pnpm` command by name
+# rather than an absolute path, expecting exactly that PATH augmentation — without it, the spawn
+# fails with an unlogged ENOENT (`spawnSync` returns `status: null` with no stdout/stderr, and the
+# caller only checks `result.status !== 0`), so `minicoder db migrate` would silently exit 1 with
+# no output at all. Prepending it here, once, keeps every nested spawn-by-name working exactly as
+# it did under `pnpm exec`, without reintroducing the cwd problem this rewrite fixes.
+export PATH="$REPO_ROOT/node_modules/.bin:$PATH"
+
 exec "$REPO_ROOT/node_modules/.bin/tsx" "$REPO_ROOT/packages/cli/src/index.ts" "$@"

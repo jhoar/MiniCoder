@@ -440,6 +440,18 @@ export class ApiClient {
   // hand-built curl call against `POST /commands/:commandSlug`; these give them the same typed
   // method + CLI-wrapper treatment every other command already gets.
 
+  /** `CreateProjectCommand` — insert-only, no state matrix. Genesis command for a `projects`
+   * row: every project-scoped command (`ingest-specification` included) requires this row to
+   * already exist as an FK target, and nothing else in the shipped product creates one. */
+  createProject(
+    id: string,
+    name: string,
+    description: string | undefined,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post('/commands/create-project', { id, name, description }, idempotencyKey);
+  }
+
   /** `IngestSpecificationCommand` — insert-only, no state matrix (docs/02 §3). */
   ingestSpecification(
     projectId: string,
