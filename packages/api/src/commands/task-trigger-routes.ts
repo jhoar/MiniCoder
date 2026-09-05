@@ -86,6 +86,12 @@ export interface TaskTriggerClient {
     correlationId: string;
     idempotencyKey: string;
   }): Promise<TriggeredRun>;
+  triggerStartNextFeature(payload: {
+    projectId: string;
+    featureRunId?: string;
+    correlationId: string;
+    idempotencyKey: string;
+  }): Promise<TriggeredRun>;
 }
 
 export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
@@ -104,6 +110,7 @@ export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
     triggerRunDesignDoc: () => fail('request-design-doc'),
     triggerPlanGeneration: () => fail('request-plan-generation'),
     triggerBacklogGeneration: () => fail('request-backlog-generation'),
+    triggerStartNextFeature: () => fail('request-start-next-feature'),
   };
 }
 
@@ -317,6 +324,33 @@ export function registerTaskTriggerRoutes(app: FastifyInstance, deps: TaskTrigge
         projectId,
         planId,
         plannerAdapterName,
+        correlationId: request.actor!.correlationId,
+        idempotencyKey,
+      });
+      return reply.code(202).send({ triggerdevRunId: run.triggerdevRunId, accepted: true });
+    },
+  );
+
+  // Enqueues `start-next-feature` — a real, previously-missing enqueue route. Every other
+  // Workflow Layer task this module fronts had one; this one didn't, which meant an activated
+  // plan's very first feature selection had no way to be triggered at all (not even a
+  // scheduled/manual one), silently stranding execution at `Active feature run: (none)` forever
+  // for a project with no other automated trigger wired up. `featureRunId` is optional (matching
+  // `StartNextFeaturePayload`/`runImpl`'s own auto-discovery-vs-targeted-retry contract) — most
+  // callers omit it and let `findNextEligibleFeatureRun()` pick the next eligible candidate;
+  // passing it targets a specific feature run directly (e.g. retrying a stranded `selected` run).
+  app.post<{ Body: { projectId?: string; featureRunId?: string } }>(
+    '/commands/request-start-next-feature',
+    async (request, reply) => {
+      requireRole(request, UserRole.OPERATOR, 'request-start-next-feature');
+      const { projectId, featureRunId } = request.body ?? {};
+      if (!projectId) {
+        throw new RequestValidationError('projectId is required');
+      }
+      const idempotencyKey = readIdempotencyKey(request.headers['idempotency-key']);
+      const run = await deps.taskTriggerClient.triggerStartNextFeature({
+        projectId,
+        featureRunId,
         correlationId: request.actor!.correlationId,
         idempotencyKey,
       });

@@ -756,4 +756,19 @@ export class ApiClient {
   ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
     return this.post('/commands/recompute-merge-gate', { projectId, featureRunId }, idempotencyKey);
   }
+
+  /** Enqueues `start-next-feature` — omit `featureRunId` to auto-discover the next eligible
+   * feature (dependency order, one-feature-at-a-time), or pass one to target a specific run
+   * directly (e.g. retrying a run stranded at `selected`). */
+  requestStartNextFeature(
+    projectId: string,
+    featureRunId: string | undefined,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-start-next-feature',
+      { projectId, featureRunId },
+      idempotencyKey,
+    );
+  }
 }

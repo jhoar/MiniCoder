@@ -279,5 +279,39 @@ export function createRunCommand(): Command {
       },
     );
 
+  cmd
+    .command('start-next-feature')
+    .description(
+      'Enqueues start-next-feature: selects the next eligible feature (dependency order, ' +
+        'one-feature-at-a-time) and starts coding on it. Omit --feature-run to auto-discover; ' +
+        'pass it to target a specific run directly (e.g. retrying one stranded at `selected`).',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .option('--feature-run <id>', 'Feature run ID (optional — auto-discovers if omitted)')
+    .option(...IDEMPOTENCY_KEY_OPTION)
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (
+        opts: { project: string; featureRun?: string } & IdempotencyKeyOption & JsonOption,
+      ) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          () =>
+            client.requestStartNextFeature(
+              opts.project,
+              opts.featureRun,
+              resolveIdempotencyKey(`request-start-next-feature:${opts.project}`, opts),
+            ),
+          (data) =>
+            renderCommandResultView({
+              command: 'request-start-next-feature',
+              projectId: opts.project,
+              resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
+            }),
+        );
+      },
+    );
+
   return cmd;
 }

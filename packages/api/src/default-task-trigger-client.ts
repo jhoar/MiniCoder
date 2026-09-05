@@ -71,5 +71,7 @@ export function resolveDefaultTaskTriggerClient(): TaskTriggerClient {
       enqueueTask('generate-implementation-plan', payload, payload.idempotencyKey),
     triggerBacklogGeneration: (payload) =>
       enqueueTask('generate-feature-backlog', payload, payload.idempotencyKey),
+    triggerStartNextFeature: (payload) =>
+      enqueueTask('start-next-feature', payload, payload.idempotencyKey),
   };
 }

@@ -237,6 +237,52 @@ describe('CLI run command', () => {
     });
   });
 
+  it('run start-next-feature enqueues request-start-next-feature with no --feature-run (auto-discovery)', async () => {
+    const fetchImpl = fakeFetch('/commands/request-start-next-feature', {
+      triggerdevRunId: 'run-7',
+      accepted: true,
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'run',
+      'start-next-feature',
+      '--project',
+      'proj1',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"triggerdevRunId": "run-7"');
+    expect(bodyOf(fetchImpl)).toEqual({ projectId: 'proj1' });
+  });
+
+  it('run start-next-feature passes --feature-run through when supplied (targeted retry)', async () => {
+    const fetchImpl = fakeFetch('/commands/request-start-next-feature', {
+      triggerdevRunId: 'run-8',
+      accepted: true,
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'run',
+      'start-next-feature',
+      '--project',
+      'proj1',
+      '--feature-run',
+      'fr1',
+      '--json',
+    ]);
+
+    expect(bodyOf(fetchImpl)).toEqual({ projectId: 'proj1', featureRunId: 'fr1' });
+  });
+
   it('honors a caller-supplied --idempotency-key instead of minting a new one', async () => {
     const fetchImpl = fakeFetch('/commands/request-coder-run', {
       triggerdevRunId: 'run-1',

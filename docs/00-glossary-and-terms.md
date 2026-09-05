@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.5
+> Version: 1.2.6
 > Last-updated: 2026-09-05
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -656,6 +656,8 @@ minicoder plan resolve-gap --project <id> --assessment <id> --gap <id> --resolut
 minicoder budget approve-override --project <id> --policy <id> --reason <text> --yes  # approver+
 minicoder run plan-generation --project <id> --assessment <id> --planner-adapter <name> [--idempotency-key <key>]  # operator+; enqueues generate-implementation-plan (adapter-drafted, no pre-existing sections needed)
 minicoder run backlog-generation --project <id> --plan <id> --planner-adapter <name> [--idempotency-key <key>]  # operator+; enqueues generate-feature-backlog (adapter-drafted, no pre-existing features needed)
+minicoder run readiness --project <id> --planner-adapter <name> [--idempotency-key <key>]  # operator+; enqueues planning-readiness-assessment against the project's most recently ingested specification_inputs row
+minicoder run start-next-feature --project <id> [--feature-run <id>] [--idempotency-key <key>]  # operator+; enqueues start-next-feature (selects the next eligible feature, or the one named, and starts coding on it; not self-rescheduling)
 minicoder run coder --project <id> --feature-run <id> --coder-adapter <name>          # operator+; enqueues run-coder
 minicoder run review --project <id> --feature-run <id> --reviewer-adapter <name> [--arbiter-adapter <name>]  # operator+; enqueues run-review
 minicoder run fixes --project <id> --feature-run <id> --reviewer-adapter <name>       # operator+; re-enqueues run-review

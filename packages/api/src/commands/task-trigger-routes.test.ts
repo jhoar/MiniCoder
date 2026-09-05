@@ -34,6 +34,10 @@ function fakeTaskTriggerClient(): TaskTriggerClient & { calls: unknown[] } {
       calls.push({ task: 'generate-feature-backlog', payload });
       return { triggerdevRunId: 'backlog-generation-1' };
     },
+    triggerStartNextFeature: async (payload) => {
+      calls.push({ task: 'start-next-feature', payload });
+      return { triggerdevRunId: 'start-next-feature-1' };
+    },
   };
 }
 
@@ -186,6 +190,52 @@ describe('task-trigger enqueue routes', () => {
     expect(client.calls[0]).toMatchObject({ task: 'generate-feature-backlog' });
   });
 
+  it('POST /commands/request-start-next-feature calls the injected client with no featureRunId (auto-discovery)', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-start-next-feature',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-start-next-feature-1',
+      },
+      payload: { projectId: 'proj-1' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body)).toMatchObject({
+      triggerdevRunId: 'start-next-feature-1',
+      accepted: true,
+    });
+    expect(client.calls[0]).toMatchObject({
+      task: 'start-next-feature',
+      payload: { projectId: 'proj-1', featureRunId: undefined },
+    });
+  });
+
+  it('POST /commands/request-start-next-feature passes featureRunId through when supplied (targeted retry)', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-start-next-feature',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-start-next-feature-2',
+      },
+      payload: { projectId: 'proj-1', featureRunId: 'run-1' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(client.calls[0]).toMatchObject({
+      task: 'start-next-feature',
+      payload: { projectId: 'proj-1', featureRunId: 'run-1' },
+    });
+  });
+
   it('POST /commands/request-readiness-assessment looks up the most recent specification_inputs row and calls the injected client', async () => {
     const client = fakeTaskTriggerClient();
     const { app, db } = await buildTestApp({ taskTriggerClient: client });
@@ -256,6 +306,7 @@ describe('task-trigger enqueue routes', () => {
       'request-backlog-generation',
       { planId: 'plan-1', plannerAdapterName: 'GenericLLMPlannerAdapter' },
     ],
+    ['request-start-next-feature', {}],
   ])(
     'rejects a viewer-role key from calling POST /commands/%s (finding 2)',
     async (route, extraFields) => {

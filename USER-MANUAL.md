@@ -70,7 +70,8 @@ signing off on the final design doc — it stops and waits for a human.
 | `minicoder plan export/export-backlog`                                             | Render a `plan.md`/`backlog.md`-equivalent artifact export.                            |
 | `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                        |
 | `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.     |
-| `minicoder run plan-generation/backlog-generation`                                | Enqueue AI-adapter-backed generation of the implementation plan or feature backlog.    |
+| `minicoder run readiness/plan-generation/backlog-generation`                       | Enqueue AI-adapter-backed generation of the readiness assessment, implementation plan, or feature backlog. |
+| `minicoder run start-next-feature`                                                 | Select and start the next eligible feature (needed to kick off execution after activation, and again after each feature completes). |
 | `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                   |
 | `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                             |
 | `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                  |
@@ -642,23 +643,23 @@ minicoder plan approve --project <project> --plan <planId> --yes
 minicoder plan activate --project <project> --plan <planId> --yes
 ```
 
-### Step 4 — Let automation run, and watch it work
+### Step 4 — Kick off execution, and watch it work
 
-Once activated, `start-next-feature` (running against your project's `task_queue`) picks the next
-eligible feature (respecting dependency order and the one-feature-at-a-time rule), and from there
-the pipeline runs on its own: coding → push → PR → CI → review → fix loop (if needed) → policy
-approval — each step re-enqueues the next Workflow Layer task (`run-coder`, `run-review`,
-`run-merge-gate`) as it becomes eligible, no manual `minicoder run ...` needed once execution has
-started.
+Activation alone doesn't start anything — enqueue the first `start-next-feature` run yourself:
 
-**Known gap:** there is currently no `minicoder`/API command that itself triggers the first
-`start-next-feature` run for a newly activated project — unlike `run coder`/`run review`/
-`run merge-gate`, it has no dedicated enqueue route yet. A deployment that has this working today
-is invoking `start-next-feature` some other way (e.g. a script, or a scheduled job it set up
-itself) that isn't part of this project's shipped surface. If activation alone hasn't produced any
-movement (`minicoder active --project <project>` still shows nothing after a while, with
-`minicoder tasks worker` confirmed running), this is why — it's tracked as a real, open gap, not a
-misconfiguration on your end.
+```bash
+minicoder run start-next-feature --project <project>
+```
+
+This selects the next eligible feature (respecting dependency order and the one-feature-at-a-time
+rule) and starts coding on it. From there the pipeline runs on its own: coding → push → PR → CI →
+review → fix loop (if needed) → policy approval — each step re-enqueues the next Workflow Layer
+task (`run-coder`, `run-review`, `run-merge-gate`) as it becomes eligible, no further manual
+`minicoder run ...` needed for that feature. Once it reaches `merged` (or `skipped`),
+`start-next-feature` needs to be enqueued again to pick up the next one — it isn't
+self-rescheduling, so if you want the whole backlog to run unattended, call it again after each
+feature completes (`minicoder active --project <project>` going back to showing nothing is the
+signal), or from your own scheduler/cron on an interval.
 
 Watch it:
 
@@ -866,18 +867,26 @@ curl -X POST "$MINICODER_API_URL/commands/<command-slug>" \
 
 ### 5.0.1 Task-enqueue commands — `minicoder run ...` / `minicoder design-doc request-run` (API)
 
-Seven routes each enqueue a whole background task (plan generation, backlog generation, coding,
-review, merge-gate recompute, or design-doc generation) rather than executing synchronously. All
-require an **operator**-role (or above) API key; the CLI mints the `Idempotency-Key` for you by
-default (or pass `--idempotency-key <key>` to reuse one after a timeout/lost response) and prints
-`enqueued:<triggerdevRunId>` on success.
+Nine routes each enqueue a whole background task (readiness assessment, plan generation, backlog
+generation, feature selection, coding, review, merge-gate recompute, or design-doc generation)
+rather than executing synchronously. All require an **operator**-role (or above) API key; the CLI
+mints the `Idempotency-Key` for you by default (or pass `--idempotency-key <key>` to reuse one
+after a timeout/lost response) and prints `enqueued:<triggerdevRunId>` on success.
 
 ```bash
+minicoder run readiness --project <project> --planner-adapter GenericLLMPlannerAdapter
+  # enqueues planning-readiness-assessment against the project's most recently ingested spec
+
 minicoder run plan-generation --project <project> --assessment <assessmentId> \
   --planner-adapter GenericLLMPlannerAdapter
 
 minicoder run backlog-generation --project <project> --plan <planId> \
   --planner-adapter GenericLLMPlannerAdapter
+
+minicoder run start-next-feature --project <project> [--feature-run <id>]
+  # selects the next eligible feature (or the one named) and starts coding on it; not
+  # self-rescheduling — call it again once the selected feature reaches merged/skipped to keep
+  # the backlog moving (see §4 Step 4)
 
 minicoder run coder --project <project> --feature-run <id> --coder-adapter CodexCoderAdapter
 
@@ -894,13 +903,13 @@ minicoder design-doc request-run --project <project> --documentation-adapter Cla
 ```
 
 Every `...-adapter` value must already exist in the `AdapterRegistry` — see the adapter registry
-bootstrap note in [§3.5](#35-start-the-long-running-processes). Unlike the other five,
-`plan-generation`/`backlog-generation` can also enqueue with no plan/features already present at
-all — that's the point: the underlying `generate-implementation-plan`/`generate-feature-backlog`
-tasks accept an empty `sections`/`features` payload plus a `plannerAdapterName` and draft the
-content themselves via the adapter, rather than requiring you to have already generated or
-hand-authored it (see [§4 Step 3](#step-3--generate-review-and-approve-the-plan)). Both can also
-take a long time on a large specification — if a run fails with a `TimeoutError`, raise
+bootstrap note in [§3.5](#35-start-the-long-running-processes). Unlike the others,
+`readiness`/`plan-generation`/`backlog-generation` can also enqueue with no assessment/plan/
+features already present at all — that's the point: the underlying `planning-readiness-assessment`/
+`generate-implementation-plan`/`generate-feature-backlog` tasks accept an empty payload plus an
+adapter name and draft the content themselves, rather than requiring you to have already generated
+or hand-authored it (see [§4 Step 3](#step-3--generate-review-and-approve-the-plan)). All three can
+also take a long time on a large specification — if a run fails with a `TimeoutError`, raise
 `PLANNER_TIMEOUT_MS` (milliseconds; defaults to 300000 / 5 minutes) before retrying.
 
 ### 5.1 Database lifecycle — `minicoder db ...` (DB)
@@ -1094,7 +1103,10 @@ k8s CronJob), not run continuously. `--cursor-id <id>` (default `workflow_events
 Run `minicoder status --project <project>` and `minicoder state doctor --project <project>`.
 Check whether automation is `paused_by_operator` (someone paused it — `minicoder resume`) or
 `paused_budget_exceeded`/`waiting_for_budget_approval` (needs an approver's budget override).
-Confirm `minicoder tasks worker` is actually running — nothing advances without it.
+Confirm `minicoder tasks worker` is actually running — nothing advances without it. If
+`Active feature run` has been `(none)` since activation (or since the last feature merged/skipped),
+that's expected — `start-next-feature` doesn't run on its own; enqueue it:
+`minicoder run start-next-feature --project <project>` (see [§4 Step 4](#step-4--kick-off-execution-and-watch-it-work)).
 
 **`generate-implementation-plan`/`generate-feature-backlog` failed with `TimeoutError`.**
 Check with `minicoder trigger inspect-run <runId>`. The default planner-adapter HTTP timeout
