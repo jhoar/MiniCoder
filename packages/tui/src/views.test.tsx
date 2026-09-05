@@ -29,6 +29,7 @@ describe('views', () => {
             version: 1,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',
+            depends_on_fr_ids: [],
           },
         ],
         nextCursor: null,
@@ -63,6 +64,7 @@ describe('views', () => {
               version: 1,
               created_at: '2026-01-01T00:00:00Z',
               updated_at: '2026-01-01T00:00:00Z',
+              depends_on_fr_ids: ['FR-000'],
             },
           ],
           nextCursor: null,
@@ -71,6 +73,7 @@ describe('views', () => {
       ),
     );
     const normalizedFrame = (lastFrame() ?? '').replace(/\s+/g, ' ');
+    expect(normalizedFrame).toContain('depends on FR-000');
     expect(normalizedFrame).toContain('FR-001');
     expect(normalizedFrame).toContain(longDescription);
     expect(normalizedFrame).not.toContain('…');

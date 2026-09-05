@@ -280,6 +280,9 @@ export function renderFeaturesView(
                 {' — '}
                 <Text dimColor>{`${f.kind}, priority ${f.priority}, `}</Text>
                 <StatusBadge state={f.state} />
+                {f.depends_on_fr_ids.length > 0 && (
+                  <Text dimColor>{` — depends on ${f.depends_on_fr_ids.join(', ')}`}</Text>
+                )}
               </Text>
             ),
             text: f.description,
