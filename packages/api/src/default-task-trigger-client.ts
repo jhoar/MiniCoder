@@ -59,6 +59,8 @@ async function enqueueTask(
 /** Constructs a `TaskTriggerClient` backed by the local `task_queue` table. */
 export function resolveDefaultTaskTriggerClient(): TaskTriggerClient {
   return {
+    triggerReadinessAssessment: (payload) =>
+      enqueueTask('planning-readiness-assessment', payload, payload.idempotencyKey),
     triggerRunCoder: (payload) => enqueueTask('run-coder', payload, payload.idempotencyKey),
     triggerRunReview: (payload) => enqueueTask('run-review', payload, payload.idempotencyKey),
     triggerRunMergeGate: (payload) =>
