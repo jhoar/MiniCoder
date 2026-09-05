@@ -22,8 +22,8 @@ export function createApiCommand(): Command {
         console.error('Error: failed to start Orchestrator API:', err);
         process.exit(1);
       }
-      // Intentionally does not close the DB connection — a long-running server process, not a
-      // one-shot CLI action (matches `minicoder github serve`'s convention).
+      // `serve()` itself registers SIGINT/SIGTERM handlers that close the DB connection (and
+      // checkpoint SQLite's WAL) before exiting — see `packages/api/src/server.ts`.
     });
 
   return api;
