@@ -3367,12 +3367,41 @@ WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never
   SQLite/PostgreSQL).
 - All of the above is documented for users in `USER-MANUAL.md` (§1, §4 Step 3, §5.0/§5.0.1/§5.5/
   §5.6, §6) and in `docs/00-glossary-and-terms.md` §5 (Canonical CLI Surface) /
-  `docs/02-bootstrap-planner-clarification.md` §3 (blocking-gap resolution). **`start-next-feature`
-  still has no dedicated enqueue route or CLI wrapper of its own** — unlike every other Workflow
-  Layer task this document names, there is currently no `minicoder`/API way to trigger the very
-  first `start-next-feature` run for a newly activated project; `USER-MANUAL.md` §4 Step 4
-  documents this as a known, open gap rather than silently describing automation as more turnkey
-  than it currently is.
+  `docs/02-bootstrap-planner-clarification.md` §3 (blocking-gap resolution).
+- **`start-next-feature` had no dedicated enqueue route or CLI wrapper of its own — the one gap
+  the section above left open, hit again in real use the very next time a project reached
+  activation.** Closed with the ninth task-enqueue route, `POST /commands/request-start-next-feature`
+  (`TaskTriggerClient.triggerStartNextFeature()`, `packages/api/src/commands/task-trigger-routes.ts`),
+  its `resolveDefaultTaskTriggerClient()` implementation (`packages/api/src/default-task-trigger-client.ts`),
+  and `minicoder run start-next-feature --project <id> [--feature-run <id>]` — the same shape every
+  other enqueue route/CLI wrapper in this codebase already follows (operator+ role,
+  `StartNextFeaturePayload`'s existing optional `featureRunId` field passed straight through with no
+  new schema, `enqueued:<runId>` result rendering). No change to `start-next-feature.ts`'s `runImpl`
+  itself was needed — the task, its registry entry, and its concurrency-limit-1 registration all
+  already existed; the only real gap was that nothing outside a test scenario ever enqueued it.
+  **`start-next-feature` is not self-rescheduling** — nothing dispatches a follow-up run after a
+  feature reaches `merged`/`skipped` (confirmed by grep: no other handler/task references it), so a
+  deployment wanting the whole backlog to run unattended must re-enqueue it itself (repeatedly via
+  the CLI, or from an external scheduler) — `USER-MANUAL.md` §4 Step 4 documents this explicitly
+  rather than implying full automatic progression through the backlog.
+- **Broader correction found while fixing the doc above: NONE of the pipeline's Workflow Layer
+  tasks chain to the next one — not just `start-next-feature`.** An earlier revision of
+  `USER-MANUAL.md` §4 Step 4 claimed "each step re-enqueues the next Workflow Layer task
+  (`run-coder`, `run-review`, `run-merge-gate`) as it becomes eligible" — false, confirmed by
+  grepping every file under `packages/triggerdev/src/tasks/` for any call to an
+  `enqueueTask()`/`trigger*()` function: there are none. Every one of `run-coder`/`run-review`/
+  `run-merge-gate`/`start-next-feature` must be enqueued individually, by a human or by a
+  deployment's own external scheduler, at every hop — this codebase does no internal chaining
+  anywhere. The one exception is genuinely automatic: a real SCM webhook delivery drives
+  `pr_opened → ci_running → under_review` (and `changes_requested → fixing`) via
+  `packages/github`'s (or `gitea`'s/`gitlab`'s) webhook-triggered inbox handlers, per decision #3's
+  "webhooks are the primary event source." Fixed in `USER-MANUAL.md` §4 Step 4/Step 7, which now
+  walks the full manual sequence. **A second, previously-undocumented gap surfaced in the same
+  pass: the scheduled `github-reconciliation` fallback task has no CLI/API trigger of its own at
+  all** — unlike every other canonical task, there is no `minicoder run ...`/enqueue route for it;
+  a deployment without a real webhook wired (and unwilling to hand-simulate every event via
+  `github/gitea/gitlab simulate-*`) has no way to invoke it on demand. Documented as a known,
+  open gap in `USER-MANUAL.md` §4 Step 4, not fixed in this pass.
 
 ## Cross-Dialect Testing (Mandatory)
 

@@ -203,14 +203,24 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
       correlationId: 'c',
       idempotencyKey: 'k3',
     });
+    await client.triggerStartNextFeature({
+      projectId: 'p',
+      correlationId: 'c',
+      idempotencyKey: 'k4',
+    });
 
     const rows = queryTaskQueue(dbPath).sort((a, b) =>
       a.idempotency_key.localeCompare(b.idempotency_key),
     );
-    expect(rows.map((r) => r.task_id)).toEqual(['run-review', 'run-merge-gate', 'run-design-doc']);
+    expect(rows.map((r) => r.task_id)).toEqual([
+      'run-review',
+      'run-merge-gate',
+      'run-design-doc',
+      'start-next-feature',
+    ]);
   });
 
-  // The four task ids this client triggers must stay members of the canonical ALL_TASK_IDS list.
+  // Every task id this client triggers must stay a member of the canonical ALL_TASK_IDS list.
   it('only enqueues task ids that are members of the canonical ALL_TASK_IDS list', async () => {
     dbPath = createMigratedSqliteFile();
     process.env['DB_DIALECT'] = 'sqlite';
@@ -244,6 +254,11 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
       documentationAdapterName: 'ClaudeDocumentationAdapter',
       correlationId: 'c',
       idempotencyKey: 'k3',
+    });
+    await client.triggerStartNextFeature({
+      projectId: 'p',
+      correlationId: 'c',
+      idempotencyKey: 'k4',
     });
 
     const usedTaskIds = queryTaskQueue(dbPath).map((r) => r.task_id);
