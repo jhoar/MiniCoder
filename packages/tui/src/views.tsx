@@ -139,12 +139,12 @@ export function renderPlanView(props: {
     { header: 'Title', width: 22, render: (p) => p.title },
     { header: 'State', width: 20, render: (p) => <StatusBadge state={p.state} /> },
     { header: 'Version', width: 7, render: (p) => String(p.version) },
-    { header: 'ID', width: 18, render: (p) => p.id },
+    { header: 'ID', width: 24, render: (p) => p.id },
   ];
   const readinessColumns: Column<PlanningReadinessRow>[] = [
     { header: 'Status', width: 22, render: (r) => <StatusBadge state={r.status} /> },
     { header: 'Summary', width: 30, render: (r) => r.summary ?? '-' },
-    { header: 'ID', width: 18, render: (r) => r.id },
+    { header: 'ID', width: 24, render: (r) => r.id },
   ];
   const gapColumns: Column<PlanningGapRow>[] = [
     { header: 'Severity', width: 12, render: (g) => <StatusBadge state={g.severity} /> },
@@ -197,7 +197,7 @@ export function renderClarificationView(props: {
   const sessionColumns: Column<ClarificationSessionRow>[] = [
     { header: 'Status', width: 20, render: (s) => <StatusBadge state={s.status} /> },
     { header: 'Round', width: 8, render: (s) => `${s.round}/${s.max_rounds}` },
-    { header: 'ID', width: 18, render: (s) => s.id },
+    { header: 'ID', width: 24, render: (s) => s.id },
   ];
   return (
     <Box flexDirection="column">
@@ -551,7 +551,7 @@ export function renderDesignDocView(props: {
   const docColumns: Column<DesignDocumentRow>[] = [
     { header: 'State', width: 24, render: (d) => <StatusBadge state={d.state} /> },
     { header: 'Version', width: 7, render: (d) => String(d.version) },
-    { header: 'ID', width: 18, render: (d) => d.id },
+    { header: 'ID', width: 24, render: (d) => d.id },
   ];
   return (
     <Box flexDirection="column">
