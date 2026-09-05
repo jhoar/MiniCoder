@@ -10,9 +10,6 @@ import type {
   ImplementationPlanRow,
   PlanningReadinessRow,
   PlanningReadinessAssessmentDetail,
-  PlanningGapRow,
-  PlanningAssumptionRow,
-  PlanningQuestionRow,
   ClarificationSessionRow,
   ClarificationQuestionRow,
   FeatureRequestRow,
@@ -38,6 +35,7 @@ import type {
 } from '@minicoder/api';
 import type { ProjectStatus, WhoamiResponse } from './client/api-client.js';
 import { Table, type Column } from './components/Table.js';
+import { DescriptionList } from './components/DescriptionList.js';
 import { KeyValue, type Field } from './components/KeyValue.js';
 import { StatusBadge } from './components/StatusBadge.js';
 
@@ -146,19 +144,6 @@ export function renderPlanView(props: {
     { header: 'Summary', width: 30, render: (r) => r.summary ?? '-' },
     { header: 'ID', width: 24, render: (r) => r.id },
   ];
-  const gapColumns: Column<PlanningGapRow>[] = [
-    { header: 'Severity', width: 12, render: (g) => <StatusBadge state={g.severity} /> },
-    { header: 'Description', width: 50, render: (g) => g.description },
-  ];
-  const assumptionColumns: Column<PlanningAssumptionRow>[] = [
-    { header: 'Confidence', width: 12, render: (a) => <StatusBadge state={a.confidence} /> },
-    { header: 'Description', width: 50, render: (a) => a.description },
-  ];
-  const questionColumns: Column<PlanningQuestionRow>[] = [
-    { header: 'Round', width: 5, render: (q) => String(q.round) },
-    { header: 'Question', width: 44, render: (q) => q.question },
-    { header: 'Answered', width: 8, render: (q) => (q.answered_at ? 'yes' : 'no') },
-  ];
   return (
     <Box flexDirection="column">
       <Section title="Implementation plans">
@@ -172,13 +157,28 @@ export function renderPlanView(props: {
       {props.detail && (
         <>
           <Section title={`Gaps for assessment ${props.detail.assessment.id}`}>
-            <Table columns={gapColumns} rows={props.detail.gaps} />
+            <DescriptionList
+              items={props.detail.gaps.map((g) => ({
+                label: <StatusBadge state={g.severity} />,
+                text: g.description,
+              }))}
+            />
           </Section>
           <Section title={`Assumptions for assessment ${props.detail.assessment.id}`}>
-            <Table columns={assumptionColumns} rows={props.detail.assumptions} />
+            <DescriptionList
+              items={props.detail.assumptions.map((a) => ({
+                label: <StatusBadge state={a.confidence} />,
+                text: a.description,
+              }))}
+            />
           </Section>
           <Section title={`Questions for assessment ${props.detail.assessment.id}`}>
-            <Table columns={questionColumns} rows={props.detail.questions} />
+            <DescriptionList
+              items={props.detail.questions.map((q) => ({
+                label: <Text dimColor>{`Round ${q.round}${q.answered_at ? ' (answered)' : ' (unanswered)'}`}</Text>,
+                text: q.question,
+              }))}
+            />
           </Section>
         </>
       )}
