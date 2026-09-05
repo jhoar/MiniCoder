@@ -251,6 +251,78 @@ describe('CLI plan write commands', () => {
   });
 });
 
+describe('CLI plan view --plan', () => {
+  beforeEach(() => {
+    process.env['MINICODER_API_URL'] = 'http://localhost:4000';
+    process.env['MINICODER_API_KEY'] = 'test-key';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    delete process.env['MINICODER_API_URL'];
+    delete process.env['MINICODER_API_KEY'];
+  });
+
+  it('fetches the plan row and its sections and renders both when --plan is given', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const u = new URL(url);
+      if (u.pathname === '/plans' && u.searchParams.get('projectId') === 'proj1') {
+        return { ok: true, status: 200, json: async () => ({ items: [], nextCursor: null }) } as Response;
+      }
+      if (u.pathname === '/planning-readiness-assessments') {
+        return { ok: true, status: 200, json: async () => ({ items: [], nextCursor: null }) } as Response;
+      }
+      if (u.pathname === '/plans/plan1') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'plan1',
+            project_id: 'proj1',
+            assessment_id: 'assessment1',
+            state: 'draft',
+            title: 'Generated Plan',
+            summary: 'Generated summary',
+            version: 1,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          }),
+        } as Response;
+      }
+      if (u.pathname === '/plans/plan1/sections') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sections: [{ id: 'sec1', title: 'Overview', content: 'Build CRUD endpoints.', order_index: 0 }],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch to ${u.pathname}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'view',
+      '--project',
+      'proj1',
+      '--plan',
+      'plan1',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"title": "Generated Plan"');
+    expect(printed).toContain('"title": "Overview"');
+    expect(printed).toContain('"content": "Build CRUD endpoints."');
+  });
+});
+
 describe('CLI plan export commands (issue #81)', () => {
   beforeEach(() => {
     process.env['MINICODER_API_URL'] = 'http://localhost:4000';

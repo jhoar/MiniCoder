@@ -8,6 +8,7 @@ import { Box, Text } from 'ink';
 import type {
   CursorPage,
   ImplementationPlanRow,
+  PlanSectionRow,
   PlanningReadinessRow,
   PlanningReadinessAssessmentDetail,
   ClarificationSessionRow,
@@ -132,6 +133,7 @@ export function renderPlanView(props: {
   plans: CursorPage<ImplementationPlanRow>;
   readiness: CursorPage<PlanningReadinessRow>;
   detail?: PlanningReadinessAssessmentDetail;
+  planDetail?: { plan: ImplementationPlanRow; sections: PlanSectionRow[] };
 }): React.ReactElement {
   const planColumns: Column<ImplementationPlanRow>[] = [
     { header: 'Title', width: 22, render: (p) => p.title },
@@ -177,6 +179,27 @@ export function renderPlanView(props: {
               items={props.detail.questions.map((q) => ({
                 label: <Text dimColor>{`Round ${q.round}${q.answered_at ? ' (answered)' : ' (unanswered)'}`}</Text>,
                 text: q.question,
+              }))}
+            />
+          </Section>
+        </>
+      )}
+      {props.planDetail && (
+        <>
+          <Section title={`Plan ${props.planDetail.plan.id}`}>
+            <KeyValue
+              fields={[
+                { label: 'Title', value: props.planDetail.plan.title },
+                { label: 'Summary', value: props.planDetail.plan.summary ?? '(none)' },
+                { label: 'State', value: <StatusBadge state={props.planDetail.plan.state} /> },
+              ]}
+            />
+          </Section>
+          <Section title={`Sections for plan ${props.planDetail.plan.id}`}>
+            <DescriptionList
+              items={props.planDetail.sections.map((s) => ({
+                label: <Text bold>{s.title}</Text>,
+                text: s.content,
               }))}
             />
           </Section>

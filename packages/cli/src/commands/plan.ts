@@ -56,24 +56,33 @@ export function createPlanCommand(): Command {
       '--assessment <id>',
       'Show gaps/assumptions/questions for a specific readiness assessment',
     )
+    .option('--plan <id>', 'Show title/summary/sections for a specific implementation plan')
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(async (opts: { project: string; assessment?: string } & JsonOption) => {
-      const client = buildApiClient();
-      await renderOrJson(
-        opts,
-        async () => {
-          const [plans, readiness, detail] = await Promise.all([
-            client.listImplementationPlans(opts.project),
-            client.listPlanningReadinessAssessments(opts.project),
-            opts.assessment
-              ? client.getPlanningReadinessAssessment(opts.assessment)
-              : Promise.resolve(undefined),
-          ]);
-          return { plans, readiness, detail };
-        },
-        (data) => renderPlanView(data),
-      );
-    });
+    .action(
+      async (opts: { project: string; assessment?: string; plan?: string } & JsonOption) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const [plans, readiness, detail, planDetail] = await Promise.all([
+              client.listImplementationPlans(opts.project),
+              client.listPlanningReadinessAssessments(opts.project),
+              opts.assessment
+                ? client.getPlanningReadinessAssessment(opts.assessment)
+                : Promise.resolve(undefined),
+              opts.plan
+                ? Promise.all([
+                    client.getImplementationPlan(opts.plan),
+                    client.getPlanSections(opts.plan),
+                  ]).then(([plan, { sections }]) => ({ plan, sections }))
+                : Promise.resolve(undefined),
+            ]);
+            return { plans, readiness, detail, planDetail };
+          },
+          (data) => renderPlanView(data),
+        );
+      },
+    );
 
   plan
     .command('import-backlog <file>')

@@ -11,6 +11,7 @@ import type {
   ClarificationSessionRow,
   ClarificationQuestionRow,
   ImplementationPlanRow,
+  PlanSectionRow,
   FeatureRequestRow,
   FeatureRunRow,
   PullRequestRow,
@@ -167,6 +168,13 @@ export class ApiClient {
    * would incorrectly report a valid plan as missing once it's not on page 1. */
   getImplementationPlan(planId: string): Promise<ImplementationPlanRow> {
     return this.get(`/plans/${encodeURIComponent(planId)}`);
+  }
+
+  /** `GET /plans/:id/sections` — a plan's `plan_sections` rows, ordered. A sibling resource
+   * rather than folded into `getImplementationPlan()`'s response, since that response shape is
+   * already a public contract other callers (e.g. `fetchPlanVersion()`) depend on unchanged. */
+  getPlanSections(planId: string): Promise<{ sections: PlanSectionRow[] }> {
+    return this.get(`/plans/${encodeURIComponent(planId)}/sections`);
   }
 
   listPlanningReadinessAssessments(

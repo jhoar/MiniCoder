@@ -7,6 +7,7 @@ import {
   renderActiveFeatureView,
   renderCommandResultView,
   renderRunsView,
+  renderPlanView,
 } from './views.js';
 
 describe('views', () => {
@@ -190,6 +191,45 @@ describe('views', () => {
       }),
     );
     expect(lastFrame()).toContain('reviewer');
+  });
+
+  it('renderPlanView shows plan title/summary/state and full section content when planDetail is given', () => {
+    const { lastFrame } = render(
+      renderPlanView({
+        plans: { items: [], nextCursor: null },
+        readiness: { items: [], nextCursor: null },
+        planDetail: {
+          plan: {
+            id: 'plan-1',
+            project_id: 'proj1',
+            assessment_id: 'assessment-1',
+            state: 'draft',
+            title: 'Open Narrative Studio Implementation Plan',
+            summary: 'A local-first writing and narrative-planning application.',
+            version: 1,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+          sections: [
+            {
+              id: 'section-1',
+              title: 'Data Model',
+              content: 'Define the entity-and-relationship model described in section 7.',
+              order_index: 0,
+            },
+          ],
+        },
+      }),
+    );
+    // Whitespace-normalized, same as DescriptionList's own word-wrap test — long content wraps
+    // across lines rather than appearing as one unbroken line.
+    const normalizedFrame = (lastFrame() ?? '').replace(/\s+/g, ' ');
+    expect(normalizedFrame).toContain('Open Narrative Studio Implementation Plan');
+    expect(normalizedFrame).toContain('A local-first writing and narrative-planning application.');
+    expect(normalizedFrame).toContain('Data Model');
+    expect(normalizedFrame).toContain(
+      'Define the entity-and-relationship model described in section 7.',
+    );
   });
 
   it('renderCommandResultView shows the resulting state after pause/resume', () => {

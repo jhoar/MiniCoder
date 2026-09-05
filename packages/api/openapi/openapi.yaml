@@ -356,6 +356,11 @@ paths:
       operationId: getPlan
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses: { '200': { description: OK } }
+  /plans/{id}/sections:
+    get:
+      operationId: getPlanSections
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
   /features:
     get:
       operationId: listFeatures
