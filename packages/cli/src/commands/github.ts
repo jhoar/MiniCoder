@@ -392,9 +392,24 @@ export function createGithubCommand(): Command {
         console.error('Error: failed to start webhook receiver:', err);
         process.exit(1);
       }
-      // Intentionally does not close `db` — the process stays alive serving webhooks until
-      // terminated (SIGINT/SIGTERM), matching a long-running server command, not a one-shot CLI
-      // action like the simulate-* commands above.
+      // The process stays alive serving webhooks until terminated (SIGINT/SIGTERM), matching a
+      // long-running server command, not a one-shot CLI action like the simulate-* commands
+      // above — but `db` must still be closed on that termination, not left open forever: SQLite
+      // runs in WAL mode (`packages/persistence-sqlite/src/index.ts`), so committed writes can
+      // sit in a `data/minicoder.db-wal` side file until the last connection closes cleanly (or
+      // an automatic checkpoint fires). Mirrors `minicoder api serve`'s identical fix
+      // (`packages/api/src/server.ts`) and `minicoder tasks worker`'s existing handling.
+      let shuttingDown = false;
+      const shutdown = async (signal: string): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        console.log(`minicoder github serve: received ${signal}, shutting down...`);
+        await app.close();
+        await db.close();
+        process.exit(0);
+      };
+      process.on('SIGINT', () => void shutdown('SIGINT'));
+      process.on('SIGTERM', () => void shutdown('SIGTERM'));
     });
 
   return github;

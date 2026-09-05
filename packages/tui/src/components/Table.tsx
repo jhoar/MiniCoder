@@ -7,8 +7,20 @@ export interface Column<T> {
   render: (row: T) => React.ReactNode;
 }
 
+/**
+ * Pads a short string to `width` for column alignment. Deliberately does NOT truncate an
+ * over-length string itself — the previous `.slice(0, width)` here silently hard-cut content
+ * with no ellipsis, before Ink's own `wrap="truncate-end"` on the wrapping `<Text>` ever got a
+ * chance to run (the string was already exactly `width` characters by the time Ink saw it, so it
+ * never overflowed its `Box` and the wrap prop was a no-op). `StatusBadge` never had this problem
+ * — it passes its raw string straight to `<Text wrap="truncate-end">` with no pre-slice, so Ink
+ * truncates it WITH a visible "…". Passing the untruncated string through here lets Ink do the
+ * identical thing for plain-string cells. This was a real bug for ID columns specifically: an
+ * opaque id copied out of a truncated cell (with no visual indication it was cut) silently failed
+ * every follow-up command that took it as an argument.
+ */
 function pad(text: string, width: number): string {
-  if (text.length >= width) return text.slice(0, width);
+  if (text.length >= width) return text;
   return text + ' '.repeat(width - text.length);
 }
 

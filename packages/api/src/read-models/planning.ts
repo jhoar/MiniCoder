@@ -62,17 +62,80 @@ export function listPlanningReadinessAssessments(
   );
 }
 
-export function getPlanningReadinessAssessment(
+export interface PlanningGapRow {
+  id: string;
+  assessment_id: string;
+  description: string;
+  severity: string;
+  resolution: string | null;
+  resolved_at: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  clarification_session_id: string | null;
+}
+
+export interface PlanningAssumptionRow {
+  id: string;
+  assessment_id: string;
+  description: string;
+  confidence: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanningQuestionRow {
+  id: string;
+  assessment_id: string;
+  question: string;
+  answer: string | null;
+  round: number;
+  answered_at: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanningReadinessAssessmentDetail {
+  assessment: PlanningReadinessRow;
+  gaps: PlanningGapRow[];
+  assumptions: PlanningAssumptionRow[];
+  questions: PlanningQuestionRow[];
+}
+
+/** Includes the assessment's `planning_gaps`/`planning_assumptions`/`planning_questions` rows —
+ * previously the bare `planning_readiness_assessments` row alone, with no way for any caller to
+ * see the actual gaps/assumptions/questions an assessment produced short of a raw SQL query
+ * against the database. Mirrors `getClarificationSession()`'s `{session, questions}` shape, one
+ * level richer. */
+export async function getPlanningReadinessAssessment(
   db: DbClient,
   id: string,
-): Promise<PlanningReadinessRow> {
-  return getByIdOrThrow<PlanningReadinessRow>(
+): Promise<PlanningReadinessAssessmentDetail> {
+  const assessment = await getByIdOrThrow<PlanningReadinessRow>(
     db,
     'planning_readiness_assessments',
     'id, project_id, specification_input_id, status, summary, version, created_at, updated_at',
     id,
     'planning-readiness-assessment',
   );
+  const gaps = await db.query<PlanningGapRow>(
+    `SELECT id, assessment_id, description, severity, resolution, resolved_at, version, created_at, updated_at, clarification_session_id
+     FROM planning_gaps WHERE assessment_id = ? ORDER BY created_at ASC, id ASC`,
+    [id],
+  );
+  const assumptions = await db.query<PlanningAssumptionRow>(
+    `SELECT id, assessment_id, description, confidence, version, created_at, updated_at
+     FROM planning_assumptions WHERE assessment_id = ? ORDER BY created_at ASC, id ASC`,
+    [id],
+  );
+  const questions = await db.query<PlanningQuestionRow>(
+    `SELECT id, assessment_id, question, answer, round, answered_at, version, created_at, updated_at
+     FROM planning_questions WHERE assessment_id = ? ORDER BY round ASC, created_at ASC, id ASC`,
+    [id],
+  );
+  return { assessment, gaps, assumptions, questions };
 }
 
 export interface ClarificationSessionRow {

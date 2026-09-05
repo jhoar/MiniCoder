@@ -53,5 +53,28 @@ export async function serve(opts: ServeOptions): Promise<string> {
     gitlabWebhookSecrets,
     taskTriggerClient: resolveDefaultTaskTriggerClient(),
   });
-  return app.listen({ port: opts.port, host: opts.host });
+  const address = await app.listen({ port: opts.port, host: opts.host });
+
+  // A graceful shutdown matters beyond "don't drop an in-flight request": SQLite runs in WAL
+  // mode (`packages/persistence-sqlite/src/index.ts`), so committed writes can sit in a
+  // `data/minicoder.db-wal` side file until the last connection to it closes cleanly (or an
+  // automatic checkpoint fires). Without this, `db.close()` was never called at all — Ctrl-C
+  // killed the process directly, leaving the WAL un-checkpointed and making the main `.db` file
+  // look like it's missing recent state to anything that reads it directly (a plain `sqlite3`
+  // CLI, a DB browser, a naive backup script) instead of through this same connection, which
+  // would transparently replay the WAL. Mirrors `minicoder tasks worker`'s existing
+  // SIGINT/SIGTERM handling (`packages/cli/src/commands/tasks.ts`).
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`minicoder api serve: received ${signal}, shutting down...`);
+    await app.close();
+    await db.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  return address;
 }

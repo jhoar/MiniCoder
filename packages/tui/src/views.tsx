@@ -9,6 +9,7 @@ import type {
   CursorPage,
   ImplementationPlanRow,
   PlanningReadinessRow,
+  PlanningReadinessAssessmentDetail,
   ClarificationSessionRow,
   ClarificationQuestionRow,
   FeatureRequestRow,
@@ -34,6 +35,7 @@ import type {
 } from '@minicoder/api';
 import type { ProjectStatus, WhoamiResponse } from './client/api-client.js';
 import { Table, type Column } from './components/Table.js';
+import { DescriptionList } from './components/DescriptionList.js';
 import { KeyValue, type Field } from './components/KeyValue.js';
 import { StatusBadge } from './components/StatusBadge.js';
 
@@ -129,17 +131,18 @@ export function renderStatusView(props: {
 export function renderPlanView(props: {
   plans: CursorPage<ImplementationPlanRow>;
   readiness: CursorPage<PlanningReadinessRow>;
+  detail?: PlanningReadinessAssessmentDetail;
 }): React.ReactElement {
   const planColumns: Column<ImplementationPlanRow>[] = [
     { header: 'Title', width: 22, render: (p) => p.title },
     { header: 'State', width: 20, render: (p) => <StatusBadge state={p.state} /> },
     { header: 'Version', width: 7, render: (p) => String(p.version) },
-    { header: 'ID', width: 18, render: (p) => p.id },
+    { header: 'ID', width: 24, render: (p) => p.id },
   ];
   const readinessColumns: Column<PlanningReadinessRow>[] = [
     { header: 'Status', width: 22, render: (r) => <StatusBadge state={r.status} /> },
     { header: 'Summary', width: 30, render: (r) => r.summary ?? '-' },
-    { header: 'ID', width: 18, render: (r) => r.id },
+    { header: 'ID', width: 24, render: (r) => r.id },
   ];
   return (
     <Box flexDirection="column">
@@ -151,6 +154,34 @@ export function renderPlanView(props: {
         <Table columns={readinessColumns} rows={props.readiness.items} />
         <Footer nextCursor={props.readiness.nextCursor} />
       </Section>
+      {props.detail && (
+        <>
+          <Section title={`Gaps for assessment ${props.detail.assessment.id}`}>
+            <DescriptionList
+              items={props.detail.gaps.map((g) => ({
+                label: <StatusBadge state={g.severity} />,
+                text: g.description,
+              }))}
+            />
+          </Section>
+          <Section title={`Assumptions for assessment ${props.detail.assessment.id}`}>
+            <DescriptionList
+              items={props.detail.assumptions.map((a) => ({
+                label: <StatusBadge state={a.confidence} />,
+                text: a.description,
+              }))}
+            />
+          </Section>
+          <Section title={`Questions for assessment ${props.detail.assessment.id}`}>
+            <DescriptionList
+              items={props.detail.questions.map((q) => ({
+                label: <Text dimColor>{`Round ${q.round}${q.answered_at ? ' (answered)' : ' (unanswered)'}`}</Text>,
+                text: q.question,
+              }))}
+            />
+          </Section>
+        </>
+      )}
     </Box>
   );
 }
@@ -166,7 +197,7 @@ export function renderClarificationView(props: {
   const sessionColumns: Column<ClarificationSessionRow>[] = [
     { header: 'Status', width: 20, render: (s) => <StatusBadge state={s.status} /> },
     { header: 'Round', width: 8, render: (s) => `${s.round}/${s.max_rounds}` },
-    { header: 'ID', width: 18, render: (s) => s.id },
+    { header: 'ID', width: 24, render: (s) => s.id },
   ];
   return (
     <Box flexDirection="column">
@@ -520,7 +551,7 @@ export function renderDesignDocView(props: {
   const docColumns: Column<DesignDocumentRow>[] = [
     { header: 'State', width: 24, render: (d) => <StatusBadge state={d.state} /> },
     { header: 'Version', width: 7, render: (d) => String(d.version) },
-    { header: 'ID', width: 18, render: (d) => d.id },
+    { header: 'ID', width: 24, render: (d) => d.id },
   ];
   return (
     <Box flexDirection="column">
