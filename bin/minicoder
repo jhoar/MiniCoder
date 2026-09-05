@@ -22,4 +22,14 @@ while [ -h "$SOURCE" ]; do
 done
 REPO_ROOT="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
 
-exec pnpm -C "$REPO_ROOT" --filter @minicoder/cli exec tsx src/index.ts "$@"
+# Deliberately NOT `pnpm -C "$REPO_ROOT" --filter @minicoder/cli exec tsx ...` — pnpm's
+# `--filter <pkg> exec` runs the given command with its cwd forced to that package's own
+# directory (packages/cli), regardless of `-C`. Any relative file-path argument a caller passes
+# (e.g. `minicoder spec ingest ./my-spec.md`) would then resolve against packages/cli instead of
+# the caller's actual shell directory — silently wrong, and confusing when it happens to produce
+# an ENOENT instead of quietly reading the wrong file. Invoking tsx directly, with absolute paths
+# to both the tsx binary and the CLI entry point, needs no `cd` at all: Node module resolution for
+# the pnpm-workspace-linked @minicoder/* packages is based on src/index.ts's own location on disk,
+# not on process.cwd(), so this changes nothing about how imports resolve — only relative
+# user-supplied paths, which now correctly resolve against wherever `minicoder` was actually run.
+exec "$REPO_ROOT/node_modules/.bin/tsx" "$REPO_ROOT/packages/cli/src/index.ts" "$@"
