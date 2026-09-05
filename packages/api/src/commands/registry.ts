@@ -33,6 +33,7 @@ import {
   StartClarificationHandler,
   RecordClarificationAnswerHandler,
   CompleteClarificationHandler,
+  ResolvePlanningGapHandler,
   SelectFeatureHandler,
   ResolveDisagreementHandler,
   ResumeFeatureExecutionHandler,
@@ -70,6 +71,7 @@ export function buildCommandRegistry(): CommandRegistry {
   registry.register(new StartClarificationHandler());
   registry.register(new RecordClarificationAnswerHandler());
   registry.register(new CompleteClarificationHandler());
+  registry.register(new ResolvePlanningGapHandler());
   registry.register(new SelectFeatureHandler());
   registry.register(new ResolveDisagreementHandler());
   registry.register(new ResumeFeatureExecutionHandler());

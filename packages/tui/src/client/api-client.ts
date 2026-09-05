@@ -597,6 +597,24 @@ export class ApiClient {
     );
   }
 
+  /** docs/02 §3: "Any blocking gap prevents activation unless resolved or explicitly accepted by
+   * an authorized human." Records an approver's resolution for one `planning_gaps` row, unblocking
+   * `submit-for-approval`'s unresolved-blocking-gaps check. */
+  resolvePlanningGap(
+    projectId: string,
+    assessmentId: string,
+    gapId: string,
+    resolution: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<CommandEnvelopeResponse> {
+    return this.post(
+      '/commands/resolve-planning-gap',
+      { projectId, assessmentId, gapId, resolution, expectedVersion },
+      idempotencyKey,
+    );
+  }
+
   /** `ExportPlanCommand` — artifact-export pending -> generating -> exported, rendering
    * `plan.md`-equivalent markdown into `artifact_exports.content`. No `expectedVersion`: this
    * operates on a fresh `artifact_exports` row's own state machine, not the plan's version

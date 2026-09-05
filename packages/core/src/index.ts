@@ -49,6 +49,7 @@ export * from './commands/handlers/planning/assess-planning-readiness.js';
 export * from './commands/handlers/planning/generate-implementation-plan.js';
 export * from './commands/handlers/planning/generate-feature-backlog.js';
 export * from './commands/handlers/planning/validate-backlog.js';
+export * from './commands/handlers/planning/resolve-planning-gap.js';
 export * from './commands/handlers/planning/submit-plan-for-approval.js';
 export * from './commands/handlers/planning/activate-plan.js';
 export * from './commands/handlers/planning/export-plan.js';

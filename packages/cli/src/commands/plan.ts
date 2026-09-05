@@ -216,6 +216,70 @@ export function createPlanCommand(): Command {
     });
 
   plan
+    .command('resolve-gap')
+    .description(
+      "Records an approver's resolution for a blocking planning gap (docs/02 §3: " +
+        '"resolved or explicitly accepted by an authorized human"), unblocking submit-for-approval',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption('--assessment <id>', 'Planning readiness assessment ID')
+    .requiredOption('--gap <id>', 'Planning gap ID (see plan view --assessment <id>)')
+    .requiredOption('--resolution <text>', 'Resolution note explaining why this gap is accepted')
+    .option('--yes', 'Confirm resolving the gap (required)')
+    .option(
+      '--idempotency-key <key>',
+      'Reuse a specific Idempotency-Key (for safely retrying after an ambiguous failure)',
+    )
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (
+        opts: {
+          project: string;
+          assessment: string;
+          gap: string;
+          resolution: string;
+          yes?: boolean;
+        } & IdempotencyKeyOption &
+          JsonOption,
+      ) => {
+        if (!opts.yes) {
+          console.error('Error: --yes is required to confirm resolving the gap.');
+          process.exitCode = 1;
+          return;
+        }
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          async () => {
+            const detail = await client.getPlanningReadinessAssessment(opts.assessment);
+            const gap = detail.gaps.find((g) => g.id === opts.gap);
+            if (!gap) {
+              throw new Error(`Gap ${opts.gap} not found in assessment ${opts.assessment}`);
+            }
+            const idempotencyKey = resolveIdempotencyKey(
+              `resolve-planning-gap:${opts.gap}:${gap.version}`,
+              opts,
+            );
+            const result = await client.resolvePlanningGap(
+              opts.project,
+              opts.assessment,
+              opts.gap,
+              opts.resolution,
+              gap.version,
+              idempotencyKey,
+            );
+            return {
+              command: 'resolve-planning-gap',
+              projectId: opts.project,
+              resultingState: result.resulting_state,
+            };
+          },
+          (data) => renderCommandResultView(data),
+        );
+      },
+    );
+
+  plan
     .command('submit-for-approval')
     .description('plan-lifecycle draft -> pending_approval (operator+)')
     .requiredOption('--project <id>', 'Project ID')

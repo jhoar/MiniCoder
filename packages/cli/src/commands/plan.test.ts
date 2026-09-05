@@ -218,6 +218,91 @@ describe('CLI plan write commands', () => {
     expect(printed).toContain('"resultingState": "activated_for_execution"');
   });
 
+  it('resolve-gap fetches the gap version via GET /planning-readiness-assessments/:id and dispatches resolve-planning-gap', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === '/planning-readiness-assessments/assessment1') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            assessment: { id: 'assessment1', project_id: 'proj1', status: 'sufficient_with_assumptions' },
+            gaps: [
+              { id: 'gap1', assessment_id: 'assessment1', description: 'desc', severity: 'blocking', resolution: null, resolved_at: null, version: 3 },
+            ],
+            assumptions: [],
+            questions: [],
+          }),
+        } as Response;
+      }
+      if (path === '/commands/resolve-planning-gap') {
+        expect((init?.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
+        const body = JSON.parse(init?.body as string);
+        expect(body).toEqual({
+          projectId: 'proj1',
+          assessmentId: 'assessment1',
+          gapId: 'gap1',
+          resolution: 'Accepted for now',
+          expectedVersion: 3,
+        });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            command_id: 'cmd-1',
+            accepted: true,
+            resulting_state: 'resolved',
+            emitted_event_ids: [],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch to ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'resolve-gap',
+      '--project',
+      'proj1',
+      '--assessment',
+      'assessment1',
+      '--gap',
+      'gap1',
+      '--resolution',
+      'Accepted for now',
+      '--yes',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"resultingState": "resolved"');
+  });
+
+  it('resolve-gap refuses to run without --yes', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'plan',
+      'resolve-gap',
+      '--project',
+      'proj1',
+      '--assessment',
+      'assessment1',
+      '--gap',
+      'gap1',
+      '--resolution',
+      'Accepted for now',
+    ]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('--yes is required'),
+    );
+  });
+
   it('honors a caller-supplied --idempotency-key instead of minting a new one', async () => {
     const fetchImpl = fakeFetch(
       { id: 'plan1', project_id: 'proj1', version: 0 },
