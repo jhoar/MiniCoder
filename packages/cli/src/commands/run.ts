@@ -11,10 +11,14 @@ import {
 /**
  * Task-enqueue routes (USER-MANUAL.md §5.0.1) that previously had no CLI equivalent —
  * `request-design-doc` is the fifth route in that table but is already wrapped by
- * `design-doc.ts`'s `request-run` subcommand, so it is not duplicated here. Each subcommand
- * enqueues a whole Trigger.dev task orchestration (not a single synchronous command) and returns
- * `{triggerdevRunId, accepted}` — mirrored by `renderCommandResultView`'s `resultingState` as
- * `enqueued:<runId>` / `not_accepted`, the same shape `design-doc request-run` already uses.
+ * `design-doc.ts`'s `request-run` subcommand, so it is not duplicated here. `readiness` is a
+ * later addition (not in the original five-route table): `request-readiness-assessment` closes
+ * the real gap where nothing in the shipped product ever enqueued
+ * `planning-readiness-assessment` after `spec ingest` — its outbox event had no consumer. Each
+ * subcommand enqueues a whole task-queue orchestration (not a single synchronous command) and
+ * returns `{triggerdevRunId, accepted}` — mirrored by `renderCommandResultView`'s
+ * `resultingState` as `enqueued:<runId>` / `not_accepted`, the same shape `design-doc
+ * request-run` already uses.
  */
 const IDEMPOTENCY_KEY_OPTION = [
   '--idempotency-key <key>',
@@ -25,6 +29,41 @@ export function createRunCommand(): Command {
   const cmd = new Command('run').description(
     'Enqueue coder/reviewer/merge-gate task runs (operator+; docs/01 §9)',
   );
+
+  cmd
+    .command('readiness')
+    .description(
+      "Enqueues planning-readiness-assessment for a project's most recently ingested spec",
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .requiredOption(
+      '--planner-adapter <name>',
+      'PlannerAgentAdapter registry name (see `minicoder adapter register`)',
+    )
+    .option(...IDEMPOTENCY_KEY_OPTION)
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (
+        opts: { project: string; plannerAdapter: string } & IdempotencyKeyOption & JsonOption,
+      ) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          () =>
+            client.requestReadinessAssessment(
+              opts.project,
+              opts.plannerAdapter,
+              resolveIdempotencyKey(`request-readiness-assessment:${opts.project}`, opts),
+            ),
+          (data) =>
+            renderCommandResultView({
+              command: 'request-readiness-assessment',
+              projectId: opts.project,
+              resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
+            }),
+        );
+      },
+    );
 
   cmd
     .command('coder')

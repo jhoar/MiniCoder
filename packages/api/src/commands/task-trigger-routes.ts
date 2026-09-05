@@ -28,7 +28,8 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { UserRole } from '@minicoder/core';
-import { RequestValidationError } from '../errors.js';
+import type { DbClient } from '@minicoder/core';
+import { NotFoundError, RequestValidationError } from '../errors.js';
 import { requireRole } from '../auth/require-role.js';
 
 export interface TriggeredRun {
@@ -36,6 +37,14 @@ export interface TriggeredRun {
 }
 
 export interface TaskTriggerClient {
+  triggerReadinessAssessment(payload: {
+    projectId: string;
+    specificationInputId: string | null;
+    specificationContent: string;
+    plannerAdapterName: string;
+    correlationId: string;
+    idempotencyKey: string;
+  }): Promise<TriggeredRun>;
   triggerRunCoder(payload: {
     projectId: string;
     featureRunId: string;
@@ -74,6 +83,7 @@ export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
     );
   };
   return {
+    triggerReadinessAssessment: () => fail('request-readiness-assessment'),
     triggerRunCoder: () => fail('request-coder-run'),
     triggerRunReview: () => fail('request-review'),
     triggerRunMergeGate: () => fail('recompute-merge-gate'),
@@ -82,6 +92,7 @@ export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
 }
 
 export interface TaskTriggerRouteDeps {
+  db: DbClient;
   taskTriggerClient: TaskTriggerClient;
 }
 
@@ -96,6 +107,44 @@ function readIdempotencyKey(header: unknown): string {
 }
 
 export function registerTaskTriggerRoutes(app: FastifyInstance, deps: TaskTriggerRouteDeps): void {
+  // Enqueues `planning-readiness-assessment` — the sixth "enqueue" route, same shape as the five
+  // below. Unlike those (which take the target row's ID directly, since a feature run/artifact
+  // export already exists by the time they're called), there is no `planning_readiness_assessments`
+  // row yet at request time — the whole point of this route is to create the first one. So instead
+  // of requiring the caller to resupply the specification text, this route looks up the project's
+  // most recently ingested `specification_inputs` row itself (the same "most recent wins" pattern
+  // `AdapterRegistry.getConfiguration()` already uses for an analogous ambiguity) and passes its
+  // content through — a caller only ever needs `projectId` and `plannerAdapterName`.
+  app.post<{ Body: { projectId?: string; plannerAdapterName?: string } }>(
+    '/commands/request-readiness-assessment',
+    async (request, reply) => {
+      requireRole(request, UserRole.OPERATOR, 'request-readiness-assessment');
+      const { projectId, plannerAdapterName } = request.body ?? {};
+      if (!projectId || !plannerAdapterName) {
+        throw new RequestValidationError('projectId and plannerAdapterName are required');
+      }
+      const idempotencyKey = readIdempotencyKey(request.headers['idempotency-key']);
+      const rows = await deps.db.query<{ id: string; content: string }>(
+        `SELECT id, content FROM specification_inputs WHERE project_id = ?
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+        [projectId],
+      );
+      const specification = rows[0];
+      if (!specification) {
+        throw new NotFoundError('specification_inputs for project', projectId);
+      }
+      const run = await deps.taskTriggerClient.triggerReadinessAssessment({
+        projectId,
+        specificationInputId: specification.id,
+        specificationContent: specification.content,
+        plannerAdapterName,
+        correlationId: request.actor!.correlationId,
+        idempotencyKey,
+      });
+      return reply.code(202).send({ triggerdevRunId: run.triggerdevRunId, accepted: true });
+    },
+  );
+
   app.post<{
     Body: { projectId?: string; featureRunId?: string; coderAdapterName?: string };
   }>('/commands/request-coder-run', async (request, reply) => {
