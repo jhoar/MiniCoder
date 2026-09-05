@@ -386,6 +386,20 @@ START_WEB_UI="${START_WEB_UI:-false}"
 # ---------------------------------------------------------------------------
 command -v pnpm >/dev/null 2>&1 || { echo "ERROR: pnpm not found on PATH (run: corepack enable)" >&2; exit 1; }
 
+# Every `minicoder ...` invocation below runs the CLI's TypeScript source directly via `tsx`
+# (no build step for packages/cli itself), but its workspace dependencies (@minicoder/core,
+# @minicoder/triggerdev, @minicoder/api, etc.) are consumed through their compiled `dist/`
+# output, per each package's own `"main"`/`"types"` pointing there — tsx/Node module resolution
+# does NOT fall back to source for those. On a fresh checkout (or after `git pull` picks up
+# source changes) those `dist/` directories don't exist or are stale, and the very first
+# `minicoder db migrate` call below fails with a confusing
+# "Cannot find module '.../dist/index.js'" instead of a clear "you need to build first" error.
+# `@minicoder/cli^...` selects every workspace dependency of the CLI (not the CLI itself, and
+# not @minicoder/web, which isn't a CLI dependency and is instead run via `next dev` — no build
+# needed — when START_WEB_UI=true below).
+echo "==> Building CLI workspace dependencies (pnpm --filter \"@minicoder/cli^...\" build)"
+pnpm --filter "@minicoder/cli^..." run build
+
 echo "==> Applying pending migrations (minicoder db migrate)"
 pnpm --filter @minicoder/cli exec tsx src/index.ts db migrate
 
