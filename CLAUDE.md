@@ -402,6 +402,20 @@ before returning to `under_review`. Review and merge never act on un-tested code
   elsewhere). A deployment mixing SCM providers across projects needs one `inbox worker` process
   per provider — a real, documented scoping limit, not silently assumed away. `@minicoder/workflow`
   was added as a direct `packages/cli` dependency (it was previously only reachable transitively).
+- **Issue #113 (closed): `gitea/github/gitlab simulate-*` commands crashed with a raw
+  `SqliteError` on any repeat invocation for the same PR/check-name/reviewer.** Found immediately
+  while exercising issue #112's fix: every `simulate-*` subcommand built `inbox_events.id` with a
+  `Date.now()` suffix (unique per call) but built `dedup_key` from only the logical parameters —
+  `gitea:check.passed:{project}:{prNumber}:{checkName}`, no per-invocation discriminator — so a
+  second call for the same PR/check-name hit `dedup_key`'s UNIQUE constraint and crashed the whole
+  CLI with an uncaught exception instead of a clean error. This directly broke the dev-tooling
+  workflow these commands exist for: re-triggering reconciliation for the same PR after fixing
+  something on the SCM side. Unlike the real webhook receiver (`webhook-app.ts`), where `dedup_key`
+  is the actual delivery GUID and genuinely must dedupe retried deliveries, a simulated event has no
+  real delivery to dedupe. Fixed by folding the already-unique `id` into the persisted `dedup_key`
+  (`` `${dedupKey}:${id}` ``) inside each file's shared `insertInboxEvent()` helper — a single
+  choke point per file, not a per-call-site fix — plus a catch converting any residual
+  same-millisecond collision into a clean, actionable error rather than a raw stack trace.
 
 ## Workflow Package Operational Constraints (`packages/workflow/`)
 

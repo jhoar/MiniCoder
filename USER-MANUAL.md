@@ -1188,6 +1188,22 @@ webhook receiver and dev-tooling for each.
 | `gitlab serve`                                                                                                                                                                                                                     | Run the real GitLab webhook receiver (`POST /webhooks/gitlab`). Needs `GITLAB_WEBHOOK_SECRET`.                                                                                                                                                                                                                                                                     | process   | `--port` (default 3102), `--host` (default `0.0.0.0`)                                                                                                            |
 | `gitlab simulate-pr-opened` / `simulate-pr-closed` / `simulate-pr-merged` / `simulate-check-passed` / `simulate-check-failed` / `simulate-review-approved`                                                                         | Fake the corresponding GitLab event locally. **Dev/test/CI only.** No `simulate-review-changes-requested` (GitLab's webhooks never carry that condition — see §3.1.2's reconciliation-only recovery note) and no `simulate-branch-protection-ok` (same reason as Gitea). `--pr-number` here means the merge request's `iid`; `--reviewer` takes a GitLab username. | DB        | Same shape as `github simulate-*`                                                                                                                                |
 
+**`simulate-*` re-fetches real SCM state — it does not fabricate it.** Each `simulate-*` event
+only tells MiniCoder "go re-check this PR against the SCM right now" (via the same
+`reconcileGithubState()` algorithm a real webhook triggers); the actual CI/review outcome MiniCoder
+records is whatever the SCM reports at that moment, not the flags you passed to the `simulate-*`
+command. Against a real Gitea/GitLab/GitHub instance (as opposed to a mock in unit tests), you must
+set the real state first — a real commit status (`POST /repos/{owner}/{repo}/statuses/{sha}`) for
+`simulate-check-passed`/`simulate-check-failed`, a real PR review for `simulate-review-approved`/
+`simulate-review-changes-requested` — then run the `simulate-*` command to make MiniCoder notice.
+Note that `pr_opened → ci_running → under_review` only depends on the observed CI status, not on a
+raw SCM-level review approval — you don't need a real review approval to reach `under_review`; the
+AI reviewer (`minicoder run review`) is the actual review gate.
+
+Re-running the same `simulate-*` command for the same PR/check-name/reviewer is safe and expected
+(issue #113) — each invocation always queues a fresh event regardless of whether an identical one
+was queued before.
+
 ### 5.4 Orchestrator API — `minicoder api serve` (process)
 
 Starts the Fastify API everything else in this table depends on. `--port` (default 4000),
