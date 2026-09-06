@@ -10,6 +10,21 @@ vi.mock('@minicoder/triggerdev', () => ({
   resolveDefaultScmClient: (taskName: string) => mockResolveDefaultScmClient(taskName),
 }));
 
+const mockEnsureRepositoryExists = vi.fn(
+  async (
+    _provider: string,
+    _baseUrl: string | null,
+    _owner: string,
+    _name: string,
+    defaultBranch: string,
+  ) => ({ created: true, actualDefaultBranch: defaultBranch as string | null }),
+);
+
+vi.mock('./repo-create.js', () => ({
+  ensureRepositoryExists: (...args: Parameters<typeof mockEnsureRepositoryExists>) =>
+    mockEnsureRepositoryExists(...args),
+}));
+
 interface RepositoryRow {
   id: string;
   project_id: string;
@@ -372,6 +387,97 @@ describe('CLI repo command', () => {
     expect(errSpy.mock.calls.join(' ')).toMatch(/Could not reach minicoder\/demo/);
     expect(createDbClientFromEnvMock).not.toHaveBeenCalled();
     expect(mockResolveDefaultScmClient).toHaveBeenCalledWith('repo connect');
+  });
+
+  it('--create calls ensureRepositoryExists before writing and registers the repository', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = makeProgram(await loadCommand());
+
+    await program.parseAsync([
+      'node',
+      'minicoder',
+      'repo',
+      'connect',
+      '--project',
+      'proj1',
+      '--provider',
+      'gitea',
+      '--owner',
+      'minicoder',
+      '--name',
+      'demo',
+      '--base-url',
+      'http://localhost:3300',
+      '--create',
+    ]);
+
+    expect(process.exitCode).toBe(0);
+    expect(mockEnsureRepositoryExists).toHaveBeenCalledWith(
+      'gitea',
+      'http://localhost:3300',
+      'minicoder',
+      'demo',
+      'main',
+    );
+    expect(fakeDb.repositories).toHaveLength(1);
+  });
+
+  it('--create registers the SCM-reported actual default branch when it differs from the requested one', async () => {
+    mockEnsureRepositoryExists.mockResolvedValueOnce({
+      created: true,
+      actualDefaultBranch: 'master',
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = makeProgram(await loadCommand());
+
+    await program.parseAsync([
+      'node',
+      'minicoder',
+      'repo',
+      'connect',
+      '--project',
+      'proj1',
+      '--provider',
+      'github',
+      '--owner',
+      'minicoder',
+      '--name',
+      'demo',
+      '--create',
+    ]);
+
+    expect(process.exitCode).toBe(0);
+    expect(fakeDb.repositories[0]!.default_branch).toBe('master');
+  });
+
+  it('--create aborts without writing when repository creation fails', async () => {
+    mockEnsureRepositoryExists.mockRejectedValueOnce(
+      new Error('Could not create minicoder/demo on Gitea'),
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const program = makeProgram(await loadCommand());
+
+    await program.parseAsync([
+      'node',
+      'minicoder',
+      'repo',
+      'connect',
+      '--project',
+      'proj1',
+      '--provider',
+      'gitea',
+      '--owner',
+      'minicoder',
+      '--name',
+      'demo',
+      '--base-url',
+      'http://localhost:3300',
+      '--create',
+    ]);
+
+    expect(process.exitCode).toBe(1);
+    expect(errSpy.mock.calls.join(' ')).toMatch(/Could not create minicoder\/demo/);
+    expect(createDbClientFromEnvMock).not.toHaveBeenCalled();
   });
 
   it('repo show reports no connection for a project with no repositories row', async () => {

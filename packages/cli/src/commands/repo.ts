@@ -20,6 +20,7 @@ import { Command } from 'commander';
 import { createDbClientFromEnv } from '../db-client.js';
 import { generateId, isoNow } from '@minicoder/core';
 import { resolveDefaultScmClient } from '@minicoder/triggerdev';
+import { ensureRepositoryExists } from './repo-create.js';
 
 const SUPPORTED_PROVIDERS = ['github', 'gitea', 'gitlab'] as const;
 type ScmProvider = (typeof SUPPORTED_PROVIDERS)[number];
@@ -48,6 +49,7 @@ interface ConnectOptions {
   defaultBranch: string;
   force?: boolean;
   verify?: boolean;
+  create?: boolean;
   json?: boolean;
 }
 
@@ -94,6 +96,10 @@ export function createRepoCommand(): Command {
     .option('--default-branch <branch>', 'Default branch PRs are opened against', 'main')
     .option('--force', 'Replace an existing repositories row for this project instead of rejecting')
     .option(
+      '--create',
+      'Create the repository on the SCM first if it does not already exist (idempotent)',
+    )
+    .option(
       '--verify',
       'Confirm the repository is reachable with the configured credential before writing',
     )
@@ -117,7 +123,34 @@ export function createRepoCommand(): Command {
       }
       const baseUrl = opts.baseUrl?.trim() ? opts.baseUrl.trim() : null;
       const fullName = `${opts.owner}/${opts.name}`;
+      let defaultBranch = opts.defaultBranch;
 
+      if (opts.create) {
+        try {
+          const ensured = await ensureRepositoryExists(
+            provider,
+            baseUrl,
+            opts.owner,
+            opts.name,
+            opts.defaultBranch,
+          );
+          if (ensured.actualDefaultBranch) {
+            defaultBranch = ensured.actualDefaultBranch;
+          }
+          console.log(
+            ensured.created
+              ? `Created ${fullName} on ${provider}.`
+              : `${fullName} already exists on ${provider} — skipping creation.`,
+          );
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      // Redundant with --create's own existence check when both flags are passed together, but
+      // harmless — --verify remains meaningful on its own for a repository created out of band.
       if (opts.verify) {
         try {
           await verifyReachable(provider, baseUrl, opts.owner, opts.name);
@@ -170,7 +203,7 @@ export function createRepoCommand(): Command {
                 opts.owner,
                 opts.name,
                 fullName,
-                opts.defaultBranch,
+                defaultBranch,
                 now,
                 repositoryId,
               ],
@@ -191,7 +224,7 @@ export function createRepoCommand(): Command {
                 opts.owner,
                 opts.name,
                 fullName,
-                opts.defaultBranch,
+                defaultBranch,
                 now,
                 now,
               ],
@@ -213,7 +246,7 @@ export function createRepoCommand(): Command {
                 provider,
                 fullName,
                 baseUrl,
-                defaultBranch: opts.defaultBranch,
+                defaultBranch,
               }),
               now,
               now,
@@ -226,7 +259,7 @@ export function createRepoCommand(): Command {
             provider,
             fullName,
             baseUrl,
-            defaultBranch: opts.defaultBranch,
+            defaultBranch,
           };
         });
 

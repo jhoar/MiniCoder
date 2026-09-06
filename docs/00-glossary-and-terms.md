@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.7
+> Version: 1.2.8
 > Last-updated: 2026-09-06
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -668,10 +668,13 @@ minicoder run merge-gate --project <id> --feature-run <id>                      
 # §3.1.2). No state-machine matrix governs `repositories`, so this dispatches no command; it
 # writes the row directly and a `repository.connected`/`repository.reconnected` workflow_events
 # audit row, mirroring `state repair`'s "non-command DB write, CLI-only" posture.
-minicoder repo connect --project <id> --provider <github|gitea|gitlab> --owner <owner> --name <name> [--base-url <url>] [--default-branch <branch>] [--force] [--verify] [--json]
+minicoder repo connect --project <id> --provider <github|gitea|gitlab> --owner <owner> --name <name> [--base-url <url>] [--default-branch <branch>] [--force] [--create] [--verify] [--json]
   # registers (or, with --force, replaces) the one repositories row a project uses for coder/
-  # review/merge-gate/reconciliation SCM calls; --base-url required for gitea/gitlab; --verify
-  # confirms reachability with the configured credential before writing
+  # review/merge-gate/reconciliation SCM calls; --base-url required for gitea/gitlab; --create
+  # creates the repository on the SCM first if it doesn't already exist (idempotent — a plain
+  # REST call per provider, GITHUB_TOKEN/GITEA_TOKEN/GITLAB_TOKEN, not a new ScmClient method;
+  # registers the SCM-reported actual default branch, since GitHub cannot set one at creation
+  # time); --verify confirms reachability with the configured credential before writing
 minicoder repo show --project <id> [--json]  # shows the repository currently connected, if any
 
 # Observability export (issue #67; optional, DB-direct — not the Ink Text UI's API-only surface)
