@@ -34,6 +34,15 @@ function requireToken(provider: ScmProvider): string {
 
 export interface EnsureRepositoryResult {
   created: boolean;
+  /** True when a pre-existing repository was found empty (zero commits — a real, reproduced
+   * failure mode: an empty repo returns 200/`has_pull_requests: true` on a plain existence check,
+   * but 404s on every PR-related route with Gitea's generic "target couldn't be found" message,
+   * since those routes require at least one branch to exist) and was auto-initialized with a
+   * seed commit so it's actually usable. Currently only detected/repaired for Gitea — GitHub's
+   * and GitLab's create-repo calls always request `auto_init`/`initialize_with_readme`, so a repo
+   * *this command created* is never left empty; an already-existing-but-empty GitHub/GitLab repo
+   * (e.g. created manually with no README) is a real gap, just not yet reproduced/fixed here. */
+  initialized: boolean;
   /** The default branch the SCM actually reports after creation/the existence check — may differ
    * from the caller's requested --default-branch. GitHub in particular does not accept a
    * default-branch override at creation time, so its account/org default (typically "main")
@@ -76,6 +85,43 @@ function numberField(body: unknown, field: string): number | null {
   return null;
 }
 
+function booleanField(body: unknown, field: string): boolean | null {
+  if (body && typeof body === 'object' && field in body) {
+    const value = (body as Record<string, unknown>)[field];
+    return typeof value === 'boolean' ? value : null;
+  }
+  return null;
+}
+
+/** Seeds a README commit on `branch` via Gitea's "create file" API — the same recovery an
+ * operator would otherwise have to run by hand. Mirrors the `auto_init: true` a fresh `--create`
+ * would have requested; this is the repair path for a repo that already existed but had no
+ * commits at all. */
+async function initializeEmptyGiteaRepository(
+  baseUrl: string,
+  headers: Record<string, string>,
+  owner: string,
+  name: string,
+  branch: string,
+): Promise<void> {
+  const content = Buffer.from(`# ${name}\n`, 'utf-8').toString('base64');
+  const created = await fetchJson(`${baseUrl}/api/v1/repos/${owner}/${name}/contents/README.md`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      message: 'Initial commit (minicoder repo connect --create)',
+      content,
+      branch,
+    }),
+  });
+  if (created.status !== 201) {
+    throw new Error(
+      `${owner}/${name} exists on Gitea but has no commits, and minicoder could not initialize ` +
+        `it automatically (status ${created.status}): ${JSON.stringify(created.body)}`,
+    );
+  }
+}
+
 async function ensureGiteaRepository(
   baseUrl: string,
   owner: string,
@@ -87,7 +133,15 @@ async function ensureGiteaRepository(
 
   const existing = await fetchJson(`${baseUrl}/api/v1/repos/${owner}/${name}`, { headers });
   if (existing.status === 200) {
-    return { created: false, actualDefaultBranch: stringField(existing.body, 'default_branch') };
+    if (booleanField(existing.body, 'empty') === true) {
+      await initializeEmptyGiteaRepository(baseUrl, headers, owner, name, defaultBranch);
+      return { created: false, initialized: true, actualDefaultBranch: defaultBranch };
+    }
+    return {
+      created: false,
+      initialized: false,
+      actualDefaultBranch: stringField(existing.body, 'default_branch'),
+    };
   }
   if (existing.status !== 404) {
     throw new Error(`Gitea GET /repos/${owner}/${name} failed with status ${existing.status}`);
@@ -112,6 +166,7 @@ async function ensureGiteaRepository(
   if (adminCreate.status === 201) {
     return {
       created: true,
+      initialized: false,
       actualDefaultBranch: stringField(adminCreate.body, 'default_branch') ?? defaultBranch,
     };
   }
@@ -125,6 +180,7 @@ async function ensureGiteaRepository(
   if (fallbackCreate.status === 201) {
     return {
       created: true,
+      initialized: false,
       actualDefaultBranch: stringField(fallbackCreate.body, 'default_branch') ?? defaultBranch,
     };
   }
@@ -150,7 +206,11 @@ async function ensureGithubRepository(
 
   const existing = await fetchJson(`${apiBase}/repos/${owner}/${name}`, { headers });
   if (existing.status === 200) {
-    return { created: false, actualDefaultBranch: stringField(existing.body, 'default_branch') };
+    return {
+      created: false,
+      initialized: false,
+      actualDefaultBranch: stringField(existing.body, 'default_branch'),
+    };
   }
   if (existing.status !== 404) {
     throw new Error(`GitHub GET /repos/${owner}/${name} failed with status ${existing.status}`);
@@ -181,7 +241,7 @@ async function ensureGithubRepository(
         `branch at creation time. Registering the repository with "${actualDefaultBranch}" instead.`,
     );
   }
-  return { created: true, actualDefaultBranch };
+  return { created: true, initialized: false, actualDefaultBranch };
 }
 
 async function ensureGitlabRepository(
@@ -197,7 +257,11 @@ async function ensureGitlabRepository(
 
   const existing = await fetchJson(`${apiBase}/projects/${encodedPath}`, { headers });
   if (existing.status === 200) {
-    return { created: false, actualDefaultBranch: stringField(existing.body, 'default_branch') };
+    return {
+      created: false,
+      initialized: false,
+      actualDefaultBranch: stringField(existing.body, 'default_branch'),
+    };
   }
   if (existing.status !== 404) {
     throw new Error(
@@ -242,6 +306,7 @@ async function ensureGitlabRepository(
   }
   return {
     created: true,
+    initialized: false,
     actualDefaultBranch: stringField(created.body, 'default_branch') ?? defaultBranch,
   };
 }

@@ -137,11 +137,16 @@ export function createRepoCommand(): Command {
           if (ensured.actualDefaultBranch) {
             defaultBranch = ensured.actualDefaultBranch;
           }
-          console.log(
-            ensured.created
-              ? `Created ${fullName} on ${provider}.`
-              : `${fullName} already exists on ${provider} — skipping creation.`,
-          );
+          if (ensured.created) {
+            console.log(`Created ${fullName} on ${provider}.`);
+          } else if (ensured.initialized) {
+            console.log(
+              `${fullName} already existed on ${provider} but had no commits — initialized it ` +
+                `with a seed commit on "${defaultBranch}".`,
+            );
+          } else {
+            console.log(`${fullName} already exists on ${provider} — skipping creation.`);
+          }
         } catch (err) {
           console.error(err instanceof Error ? err.message : String(err));
           process.exitCode = 1;

@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.8
+> Version: 1.2.9
 > Last-updated: 2026-09-06
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -674,7 +674,13 @@ minicoder repo connect --project <id> --provider <github|gitea|gitlab> --owner <
   # creates the repository on the SCM first if it doesn't already exist (idempotent — a plain
   # REST call per provider, GITHUB_TOKEN/GITEA_TOKEN/GITLAB_TOKEN, not a new ScmClient method;
   # registers the SCM-reported actual default branch, since GitHub cannot set one at creation
-  # time); --verify confirms reachability with the configured credential before writing
+  # time). For Gitea specifically, --create also detects and repairs an *existing-but-empty*
+  # repository (zero commits — reproduced live: it 200s/`has_pull_requests: true` on a plain
+  # existence check, but every PR-related route 404s with Gitea's generic "target couldn't be
+  # found" message, since those require at least one real branch) by seeding a README commit — the
+  # same repair GiteaScmClient.request() previously made hard to diagnose by discarding Gitea's
+  # actual error-body `message` field, now included in the thrown error. --verify confirms
+  # reachability with the configured credential before writing
 minicoder repo show --project <id> [--json]  # shows the repository currently connected, if any
 
 # Observability export (issue #67; optional, DB-direct — not the Ink Text UI's API-only surface)

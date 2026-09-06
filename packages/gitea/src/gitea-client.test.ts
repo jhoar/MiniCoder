@@ -256,6 +256,45 @@ describe('GiteaScmClient', () => {
     const result = await client.listPullRequestsForBranch('o', 'r', 'minicoder/fr-1');
     expect(result).toEqual([{ prNumber: 2, state: 'open' }]);
   });
+
+  it("surfaces Gitea's structured error message on a failed request, not just the bare status", async () => {
+    // Reproduces a real live case: an existing-but-empty repository's PR routes 404 with Gitea's
+    // generic {"message": "The target couldn't be found.", ...} body — previously discarded
+    // entirely, leaving only "failed with status 404" to debug from.
+    const client = new GiteaScmClient({
+      ...BASE,
+      fetchImpl: fakeFetch([
+        {
+          method: 'GET',
+          path: '/pulls?state=all',
+          status: 404,
+          body: {
+            errors: null,
+            message: "The target couldn't be found.",
+            url: 'http://x/api/swagger',
+          },
+        },
+      ]),
+    });
+    await expect(client.listPullRequestsForBranch('o', 'r', 'some-branch', 'all')).rejects.toThrow(
+      "Gitea API GET /repos/o/r/pulls?state=all&page=1&limit=50 failed with status 404: The target couldn't be found.",
+    );
+  });
+
+  it('falls back to the bare status when the error body is not valid JSON', async () => {
+    const client = new GiteaScmClient({
+      ...BASE,
+      fetchImpl: (async () =>
+        ({
+          ok: false,
+          status: 502,
+          text: async () => '<html>Bad Gateway</html>',
+        }) as Response) as typeof fetch,
+    });
+    await expect(client.listPullRequestsForBranch('o', 'r', 'some-branch', 'all')).rejects.toThrow(
+      'Gitea API GET /repos/o/r/pulls?state=all&page=1&limit=50 failed with status 502',
+    );
+  });
 });
 
 describe('deriveReviewState', () => {

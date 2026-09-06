@@ -131,13 +131,31 @@ export class GiteaScmClient implements ScmClient {
     });
     if (response.status === 204) return { status: response.status, data: null };
     const text = await response.text();
-    const data = text.length > 0 ? (JSON.parse(text) as T) : null;
     if (!response.ok) {
+      // Gitea's structured error body ({errors, message, url}) explains *why* — e.g. "The target
+      // couldn't be found" for an empty repository's PR routes, vs. a genuinely nonexistent repo —
+      // and was previously discarded entirely, leaving only the bare HTTP status to debug from.
+      let giteaMessage: string | null = null;
+      try {
+        const parsed: unknown = text.length > 0 ? JSON.parse(text) : null;
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          typeof (parsed as { message?: unknown }).message === 'string'
+        ) {
+          giteaMessage = (parsed as { message: string }).message;
+        }
+      } catch {
+        // Non-JSON error body (e.g. an HTML error page from a proxy in front of Gitea) — fall
+        // back to the bare status rather than letting a parse failure mask the real HTTP error.
+      }
       throw new GiteaApiError(
-        `Gitea API ${method} ${path} failed with status ${response.status}`,
+        `Gitea API ${method} ${path} failed with status ${response.status}` +
+          (giteaMessage ? `: ${giteaMessage}` : ''),
         response.status,
       );
     }
+    const data = text.length > 0 ? (JSON.parse(text) as T) : null;
     return { status: response.status, data };
   }
 

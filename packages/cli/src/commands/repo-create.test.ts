@@ -41,8 +41,54 @@ describe('repo-create ensureRepositoryExists', () => {
       'main',
     );
 
-    expect(result).toEqual({ created: false, actualDefaultBranch: 'main' });
+    expect(result).toEqual({ created: false, initialized: false, actualDefaultBranch: 'main' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('gitea: detects an empty pre-existing repository and initializes it with a seed commit', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === '/api/v1/repos/minicoder/demo') {
+        return jsonResponse(200, { default_branch: 'main', empty: true });
+      }
+      if (path === '/api/v1/repos/minicoder/demo/contents/README.md') {
+        expect(init?.method).toBe('POST');
+        const body = JSON.parse(init?.body as string);
+        expect(body.branch).toBe('main');
+        expect(body.message).toMatch(/Initial commit/);
+        return jsonResponse(201, {});
+      }
+      throw new Error(`unexpected fetch to ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const result = await ensureRepositoryExists(
+      'gitea',
+      'http://localhost:3300',
+      'minicoder',
+      'demo',
+      'main',
+    );
+
+    expect(result).toEqual({ created: false, initialized: true, actualDefaultBranch: 'main' });
+  });
+
+  it('gitea: surfaces a clear error when initializing an empty repository fails', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const path = new URL(url).pathname;
+      if (path === '/api/v1/repos/minicoder/demo') {
+        return jsonResponse(200, { default_branch: 'main', empty: true });
+      }
+      if (path === '/api/v1/repos/minicoder/demo/contents/README.md') {
+        return jsonResponse(403, { message: 'insufficient permission' });
+      }
+      throw new Error(`unexpected fetch to ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await expect(
+      ensureRepositoryExists('gitea', 'http://localhost:3300', 'minicoder', 'demo', 'main'),
+    ).rejects.toThrow(/has no commits, and minicoder could not initialize it automatically/);
   });
 
   it('gitea: creates via the admin endpoint when the repository is missing', async () => {
@@ -70,7 +116,7 @@ describe('repo-create ensureRepositoryExists', () => {
       'main',
     );
 
-    expect(result).toEqual({ created: true, actualDefaultBranch: 'main' });
+    expect(result).toEqual({ created: true, initialized: false, actualDefaultBranch: 'main' });
   });
 
   it('gitea: falls back to /user/repos when the admin endpoint fails and owner matches the token user', async () => {
@@ -95,7 +141,7 @@ describe('repo-create ensureRepositoryExists', () => {
       'main',
     );
 
-    expect(result).toEqual({ created: true, actualDefaultBranch: 'main' });
+    expect(result).toEqual({ created: true, initialized: false, actualDefaultBranch: 'main' });
   });
 
   it('gitea: throws a clear error when both the admin and fallback endpoints fail', async () => {
@@ -133,7 +179,7 @@ describe('repo-create ensureRepositoryExists', () => {
 
     const result = await ensureRepositoryExists('github', null, 'minicoder', 'demo', 'main');
 
-    expect(result).toEqual({ created: true, actualDefaultBranch: 'main' });
+    expect(result).toEqual({ created: true, initialized: false, actualDefaultBranch: 'main' });
   });
 
   it('github: creates under /orgs/{owner}/repos when --owner differs from the authenticated user', async () => {
@@ -151,7 +197,7 @@ describe('repo-create ensureRepositoryExists', () => {
 
     const result = await ensureRepositoryExists('github', null, 'my-org', 'demo', 'main');
 
-    expect(result).toEqual({ created: true, actualDefaultBranch: 'main' });
+    expect(result).toEqual({ created: true, initialized: false, actualDefaultBranch: 'main' });
   });
 
   it('github: reports the actual default branch when it differs from the request (GitHub cannot set it at creation)', async () => {
@@ -167,7 +213,7 @@ describe('repo-create ensureRepositoryExists', () => {
 
     const result = await ensureRepositoryExists('github', null, 'minicoder', 'demo', 'main');
 
-    expect(result).toEqual({ created: true, actualDefaultBranch: 'master' });
+    expect(result).toEqual({ created: true, initialized: false, actualDefaultBranch: 'master' });
     expect(errSpy.mock.calls.join(' ')).toMatch(/does not support setting the default branch/);
   });
 
@@ -195,7 +241,7 @@ describe('repo-create ensureRepositoryExists', () => {
       'main',
     );
 
-    expect(result).toEqual({ created: true, actualDefaultBranch: 'main' });
+    expect(result).toEqual({ created: true, initialized: false, actualDefaultBranch: 'main' });
   });
 
   it('gitlab: resolves a group namespace_id when --owner is not the token user', async () => {
@@ -221,7 +267,7 @@ describe('repo-create ensureRepositoryExists', () => {
       'main',
     );
 
-    expect(result).toEqual({ created: true, actualDefaultBranch: 'main' });
+    expect(result).toEqual({ created: true, initialized: false, actualDefaultBranch: 'main' });
   });
 
   it('requires --base-url for gitea/gitlab', async () => {
