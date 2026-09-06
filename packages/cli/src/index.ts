@@ -30,6 +30,7 @@ import { createTasksCommand } from './commands/tasks.js';
 import { createSpecCommand } from './commands/spec.js';
 import { createBudgetCommand } from './commands/budget.js';
 import { createRunCommand } from './commands/run.js';
+import { createRepoCommand } from './commands/repo.js';
 
 const program = new Command();
 
@@ -69,6 +70,7 @@ program.addCommand(createTasksCommand());
 program.addCommand(createSpecCommand());
 program.addCommand(createBudgetCommand());
 program.addCommand(createRunCommand());
+program.addCommand(createRepoCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error('Fatal error:', err);

@@ -2,8 +2,8 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.6
-> Last-updated: 2026-09-05
+> Version: 1.2.7
+> Last-updated: 2026-09-06
 
 This document is the single source of truth for state names, role names, adapter names, and the
 CLI surface. Other canonical documents reference these terms; if a term appears elsewhere it must
@@ -662,6 +662,17 @@ minicoder run coder --project <id> --feature-run <id> --coder-adapter <name>    
 minicoder run review --project <id> --feature-run <id> --reviewer-adapter <name> [--arbiter-adapter <name>]  # operator+; enqueues run-review
 minicoder run fixes --project <id> --feature-run <id> --reviewer-adapter <name>       # operator+; re-enqueues run-review
 minicoder run merge-gate --project <id> --feature-run <id>                            # operator+; enqueues run-merge-gate
+
+# Repository/SCM connection (non-command, DB-direct — closes the "no CLI/API command to register
+# a repositories row" gap documented in CLAUDE.md's Local Quickstart Defaults / USER-MANUAL.md
+# §3.1.2). No state-machine matrix governs `repositories`, so this dispatches no command; it
+# writes the row directly and a `repository.connected`/`repository.reconnected` workflow_events
+# audit row, mirroring `state repair`'s "non-command DB write, CLI-only" posture.
+minicoder repo connect --project <id> --provider <github|gitea|gitlab> --owner <owner> --name <name> [--base-url <url>] [--default-branch <branch>] [--force] [--verify] [--json]
+  # registers (or, with --force, replaces) the one repositories row a project uses for coder/
+  # review/merge-gate/reconciliation SCM calls; --base-url required for gitea/gitlab; --verify
+  # confirms reachability with the configured credential before writing
+minicoder repo show --project <id> [--json]  # shows the repository currently connected, if any
 
 # Observability export (issue #67; optional, DB-direct — not the Ink Text UI's API-only surface)
 minicoder observability export-otel [--cursor-id <id>] [--limit <n>]  # exports workflow_events to
