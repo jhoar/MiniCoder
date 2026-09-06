@@ -32,50 +32,52 @@ signing off on the final design doc — it stops and waits for a human.
 
 ## 1. Quick summary of every command
 
-| Command                                                                            | What it's for                                                                                                                           |
-| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `minicoder db migrate/rollback/status/validate/diff`                               | Manage the database schema.                                                                                                             |
-| `minicoder db reset`                                                               | Wipe and re-migrate the database (guarded, destructive).                                                                                |
-| `minicoder db seed/snapshot/restore`                                               | Dev/test fixture and backup helpers.                                                                                                    |
-| `minicoder tasks worker`                                                           | Run the background worker that executes queued automation tasks.                                                                        |
-| `minicoder tasks drain`                                                            | Wait for the task queue to empty (CI/scripts).                                                                                          |
-| `minicoder trigger list-runs/inspect-run/cancel-run/replay-run/reconcile/validate` | Inspect and manage individual task-queue runs.                                                                                          |
-| `minicoder github serve`                                                           | Run the GitHub webhook receiver.                                                                                                        |
-| `minicoder github simulate-*`                                                      | Fake a GitHub event for local testing (dev/test only).                                                                                  |
-| `minicoder api serve`                                                              | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to.                                                      |
-| `minicoder status`                                                                 | Project dashboard: state, automation, workflow health.                                                                                  |
-| `minicoder plan`                                                                   | View the implementation plan and readiness, or (`--plan <id>`) one plan's full sections.                                                |
-| `minicoder plan import-backlog <file>`                                             | Import a hand-written `backlog.md`.                                                                                                     |
-| `minicoder clarification`                                                          | View clarification questions/answers.                                                                                                   |
-| `minicoder features`                                                               | List the feature backlog, or (`--human-required`) items awaiting a human, or (`--full`) with untruncated descriptions and dependencies. |
-| `minicoder active`                                                                 | Show the one feature currently being worked on and its PR/CI status.                                                                    |
-| `minicoder runs`                                                                   | List agent runs, or (`--timeline`) a merged history for one feature.                                                                    |
-| `minicoder findings`                                                               | List review findings for a feature run.                                                                                                 |
-| `minicoder disagreements`                                                          | List coder/reviewer disagreements.                                                                                                      |
-| `minicoder costs`                                                                  | List spend, or (`--report`) an aggregate budget breakdown.                                                                              |
-| `minicoder artifacts`                                                              | List generated artifacts (plan.md, backlog.md, final-design-document.md).                                                               |
-| `minicoder adapters`                                                               | List registered AI adapters (read-only).                                                                                                |
-| `minicoder design-doc`                                                             | View, generate, regenerate, request revision on, or approve the final design document.                                                  |
-| `minicoder project`                                                                | Mark implementation complete, check acceptance validation, complete the project.                                                        |
-| `minicoder pause` / `minicoder resume`                                             | Stop/restart automated execution for a project.                                                                                         |
-| `minicoder human resolve-disagreement/resume/retry/skip/block/unblock`             | Disposition a feature stuck at `human_required` or `blocked`.                                                                           |
-| `minicoder merge merge-if-ready`                                                   | Approve and execute a merge (the human trigger for merging).                                                                            |
-| `minicoder merge finalize-if-github-merged`                                        | Recovery command if a merge succeeded on GitHub but wasn't recorded.                                                                    |
-| `minicoder spec ingest <file>`                                                     | Ingest a specification file.                                                                                                            |
-| `minicoder clarification answer`                                                   | Answer a clarification question.                                                                                                        |
-| `minicoder clarification start/complete`                                           | Start a new clarification round, or complete the current one.                                                                           |
-| `minicoder plan submit-for-approval/approve/activate`                              | Submit, approve, and activate the implementation plan.                                                                                  |
-| `minicoder plan validate-backlog`                                                  | Validate the current backlog (required before `submit-for-approval` will accept it).                                                    |
-| `minicoder plan resolve-gap`                                                       | Resolve a blocking planning gap (required before `submit-for-approval` will accept it if any are open).                                 |
-| `minicoder plan export/export-backlog`                                             | Render a `plan.md`/`backlog.md`-equivalent artifact export.                                                                             |
-| `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                                                                         |
-| `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.                                                      |
-| `minicoder run readiness/plan-generation/backlog-generation`                       | Enqueue AI-adapter-backed generation of the readiness assessment, implementation plan, or feature backlog.                              |
-| `minicoder run start-next-feature`                                                 | Select and start the next eligible feature (needed to kick off execution after activation, and again after each feature completes).     |
-| `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                                                                    |
-| `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                                                                              |
-| `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                                                                   |
-| `minicoder test unit/integration/system/scenario`                                  | Run the automated test suites.                                                                                                          |
+| Command                                                                            | What it's for                                                                                                                                                           |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `minicoder db migrate/rollback/status/validate/diff`                               | Manage the database schema.                                                                                                                                             |
+| `minicoder db reset`                                                               | Wipe and re-migrate the database (guarded, destructive).                                                                                                                |
+| `minicoder db seed/snapshot/restore`                                               | Dev/test fixture and backup helpers.                                                                                                                                    |
+| `minicoder tasks worker`                                                           | Run the background worker that executes queued automation tasks.                                                                                                        |
+| `minicoder tasks drain`                                                            | Wait for the task queue to empty (CI/scripts).                                                                                                                          |
+| `minicoder inbox worker`                                                           | Run the background worker that drains webhook/simulated `inbox_events` into real state transitions (required for `serve`/`simulate-*` to have any effect — issue #112). |
+| `minicoder inbox drain`                                                            | Wait for `inbox_events` to empty (CI/scripts/one-shot recovery).                                                                                                        |
+| `minicoder trigger list-runs/inspect-run/cancel-run/replay-run/reconcile/validate` | Inspect and manage individual task-queue runs.                                                                                                                          |
+| `minicoder github serve`                                                           | Run the GitHub webhook receiver.                                                                                                                                        |
+| `minicoder github simulate-*`                                                      | Fake a GitHub event for local testing (dev/test only).                                                                                                                  |
+| `minicoder api serve`                                                              | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to.                                                                                      |
+| `minicoder status`                                                                 | Project dashboard: state, automation, workflow health.                                                                                                                  |
+| `minicoder plan`                                                                   | View the implementation plan and readiness, or (`--plan <id>`) one plan's full sections.                                                                                |
+| `minicoder plan import-backlog <file>`                                             | Import a hand-written `backlog.md`.                                                                                                                                     |
+| `minicoder clarification`                                                          | View clarification questions/answers.                                                                                                                                   |
+| `minicoder features`                                                               | List the feature backlog, or (`--human-required`) items awaiting a human, or (`--full`) with untruncated descriptions and dependencies.                                 |
+| `minicoder active`                                                                 | Show the one feature currently being worked on and its PR/CI status.                                                                                                    |
+| `minicoder runs`                                                                   | List agent runs, or (`--timeline`) a merged history for one feature.                                                                                                    |
+| `minicoder findings`                                                               | List review findings for a feature run.                                                                                                                                 |
+| `minicoder disagreements`                                                          | List coder/reviewer disagreements.                                                                                                                                      |
+| `minicoder costs`                                                                  | List spend, or (`--report`) an aggregate budget breakdown.                                                                                                              |
+| `minicoder artifacts`                                                              | List generated artifacts (plan.md, backlog.md, final-design-document.md).                                                                                               |
+| `minicoder adapters`                                                               | List registered AI adapters (read-only).                                                                                                                                |
+| `minicoder design-doc`                                                             | View, generate, regenerate, request revision on, or approve the final design document.                                                                                  |
+| `minicoder project`                                                                | Mark implementation complete, check acceptance validation, complete the project.                                                                                        |
+| `minicoder pause` / `minicoder resume`                                             | Stop/restart automated execution for a project.                                                                                                                         |
+| `minicoder human resolve-disagreement/resume/retry/skip/block/unblock`             | Disposition a feature stuck at `human_required` or `blocked`.                                                                                                           |
+| `minicoder merge merge-if-ready`                                                   | Approve and execute a merge (the human trigger for merging).                                                                                                            |
+| `minicoder merge finalize-if-github-merged`                                        | Recovery command if a merge succeeded on GitHub but wasn't recorded.                                                                                                    |
+| `minicoder spec ingest <file>`                                                     | Ingest a specification file.                                                                                                                                            |
+| `minicoder clarification answer`                                                   | Answer a clarification question.                                                                                                                                        |
+| `minicoder clarification start/complete`                                           | Start a new clarification round, or complete the current one.                                                                                                           |
+| `minicoder plan submit-for-approval/approve/activate`                              | Submit, approve, and activate the implementation plan.                                                                                                                  |
+| `minicoder plan validate-backlog`                                                  | Validate the current backlog (required before `submit-for-approval` will accept it).                                                                                    |
+| `minicoder plan resolve-gap`                                                       | Resolve a blocking planning gap (required before `submit-for-approval` will accept it if any are open).                                                                 |
+| `minicoder plan export/export-backlog`                                             | Render a `plan.md`/`backlog.md`-equivalent artifact export.                                                                                                             |
+| `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                                                                                                         |
+| `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.                                                                                      |
+| `minicoder run readiness/plan-generation/backlog-generation`                       | Enqueue AI-adapter-backed generation of the readiness assessment, implementation plan, or feature backlog.                                                              |
+| `minicoder run start-next-feature`                                                 | Select and start the next eligible feature (needed to kick off execution after activation, and again after each feature completes).                                     |
+| `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                                                                                                    |
+| `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                                                                                                              |
+| `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                                                                                                   |
+| `minicoder test unit/integration/system/scenario`                                  | Run the automated test suites.                                                                                                                                          |
 
 Full details, every flag, and defaults are in [§5](#5-complete-command-reference).
 
@@ -543,6 +545,9 @@ you run all of these (each in its own terminal, container, or service):
 ```bash
 minicoder api serve                 # the Orchestrator API — the UIs and most read commands need this
 minicoder tasks worker              # executes queued automation (coding, review, merge-gate, etc.)
+minicoder inbox worker --project <project>   # drains webhook/simulated SCM events (issue #112) —
+                                              # required for pr_opened/ci_running/under_review to
+                                              # ever happen, whether via a real webhook or `simulate-*`
 ```
 
 **`scripts/start-minicoder.sh` does this for you in one command**, with sensible local-dev
@@ -602,15 +607,41 @@ Configure `GITHUB_WEBHOOK_SECRET` on whichever process receives the webhook, and
 coder/reviewer's `GITHUB_TOKEN` / `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL`.
 
 **Adapter registry bootstrap.** Every adapter invocation (coder, reviewer, arbiter, planner,
-documentation) resolves its adapter name against the `AdapterRegistry` table for provenance —
-there is no CLI or API command to register an adapter (`minicoder adapters` is read-only). Your
-deployment needs its own one-time bootstrap step that calls `AdapterRegistry.register()` directly
-(e.g. a small setup script, run once against the database) for each adapter name you intend to
-reference — including the default `CodexCoderAdapter` / `ClaudeReviewerAdapter` /
-`ClaudeArbiterAdapter` / `GenericLLMPlannerAdapter` / `ClaudeDocumentationAdapter` reference
-implementations. This manual doesn't prescribe that script since it's deployment-specific; without
-it, any command that names an adapter (`design-doc request-run --documentation-adapter ...`, the
-`request-coder-run`/`request-review`/`request-design-doc` API routes) will fail to resolve it.
+documentation) resolves its adapter name against the `AdapterRegistry` table for provenance — you
+must register each adapter name you intend to reference before its first use, via `minicoder
+adapter register` (operator role or above; `minicoder adapters` remains the read-only view):
+
+```bash
+minicoder adapter register --role CoderAgentAdapter --name CodexCoderAdapter \
+  --implementation codex-coder-adapter@1 \
+  --capabilities can_modify_files,can_run_tests,can_commit,can_push_branch,can_open_pull_request,can_report_token_usage,can_report_cost
+
+minicoder adapter register --role ReviewerAgentAdapter --name ClaudeReviewerAdapter \
+  --implementation claude-reviewer-adapter@1 \
+  --capabilities can_review_pull_request,can_return_structured_findings,can_report_token_usage,can_report_cost
+
+minicoder adapter register --role ArbiterAgentAdapter --name ClaudeArbiterAdapter \
+  --implementation claude-arbiter-adapter@1 \
+  --capabilities can_resolve_disagreement,can_report_token_usage,can_report_cost
+
+minicoder adapter register --role DocumentationAgentAdapter --name ClaudeDocumentationAdapter \
+  --implementation claude-documentation-adapter@1 \
+  --capabilities can_generate_design_document,can_report_token_usage,can_report_cost
+
+minicoder adapter register --role PlannerAgentAdapter --name GenericLLMPlannerAdapter \
+  --implementation generic-llm-planner-adapter@1 \
+  --capabilities can_generate_plan,can_generate_clarification_questions,can_report_token_usage,can_report_cost
+```
+
+Capability tokens must come from `docs/03-agent-adapter-architecture.md` §3
+(`AgentCapabilitySchema` — an unrecognized token is rejected with a `400`); the sets above match
+what each reference adapter's own task file (`run-coder.ts`/`run-review.ts`/`run-design-doc.ts`)
+actually reports via `capabilitiesUsed`. Re-running `adapter register` for the same role+name is
+safe and idempotent (it replaces the capability set and bumps `version` rather than erroring).
+Without this, any command that names an adapter (`run coder --coder-adapter ...`, `run review
+--reviewer-adapter ...`, `design-doc request-run --documentation-adapter ...`, the
+`request-coder-run`/`request-review`/`request-design-doc` API routes) fails with
+`UnknownAdapterError`.
 
 #### 3.5.1 Running `scripts/start-minicoder.sh` in production
 
@@ -781,25 +812,37 @@ minicoder active --project <project>       # confirm execution state is now "cod
                                             # "pr_opened" once the PR is linked
 ```
 
-**What happens next depends on whether a real SCM webhook is wired up** (see
-[§3.1.1](#311-generating-github_token-and-github_webhook_secret-more-complex-setup-a-real-github-project)/
-[§3.1.2](#312-connecting-a-gitea-or-gitlab-project)): a real webhook delivery (CI status change,
-review submitted) drives `pr_opened → ci_running → under_review` automatically via the
-webhook-triggered inbox handlers — this is the primary path (docs §3 decision #3), and once it
-fires you don't need to do anything for this hop. If you don't have a real webhook wired (e.g.
-local/dev use without tunneling one in), fake the events instead:
+**A real or simulated webhook event only INSERTs a row into `inbox_events` — nothing processes it
+until something drains that table (issue #112).** `minicoder github/gitea/gitlab serve` (the real
+webhook receivers) and `minicoder {github,gitea,gitlab} simulate-*` (the dev-tooling event
+simulators) both only ever write to `inbox_events`; only `minicoder inbox worker`/`minicoder inbox
+drain` actually reads it and drives `pr_opened → ci_running → under_review` via the
+webhook-triggered inbox handlers. Run one of these alongside whichever webhook receiver/simulator
+you're using:
+
+```bash
+# Long-running (matches a real webhook receiver's lifetime):
+minicoder inbox worker --project <project>
+
+# One-shot (CI/local recovery — drains what's currently queued, then exits):
+minicoder inbox drain --project <project>
+```
+
+(`--provider <github|gitea|gitlab>` works instead of `--project` if the project has no connected
+repository yet.) If you don't have a real webhook wired (e.g. local/dev use without tunneling one
+in), fake the events, then drain them:
 
 ```bash
 minicoder gitea simulate-check-passed --project <project> --pr-number <n>
 minicoder gitea simulate-review-approved --project <project> --pr-number <n>
 # (github/gitlab simulate-* if that's your provider — see §5.3)
+minicoder inbox drain --project <project>
 ```
 
-**Known gap:** the scheduled `github-reconciliation` fallback task (meant to catch up on any
-missed webhook delivery) has no CLI/API trigger of its own today — unlike every other Workflow
-Layer task, there is no `minicoder run ...`/enqueue route for it. If you're not running a real
-webhook receiver and don't want to hand-simulate every event, this is currently a real dead end,
-not a misconfiguration on your end.
+**Remaining known gap:** the scheduled `github-reconciliation` fallback task (meant to catch up on
+any divergence a webhook delivery — now that it's actually drained — still missed) has no CLI/API
+trigger of its own today — unlike every other Workflow Layer task, there is no `minicoder run
+...`/enqueue route for it.
 
 ```bash
 # 3. Once the PR reaches under_review, request an AI review.
@@ -1266,7 +1309,9 @@ k8s CronJob), not run continuously. `--cursor-id <id>` (default `workflow_events
 Run `minicoder status --project <project>` and `minicoder state doctor --project <project>`.
 Check whether automation is `paused_by_operator` (someone paused it — `minicoder resume`) or
 `paused_budget_exceeded`/`waiting_for_budget_approval` (needs an approver's budget override).
-Confirm `minicoder tasks worker` is actually running — nothing advances without it. If
+Confirm `minicoder tasks worker` is actually running — nothing advances without it. Also confirm
+`minicoder inbox worker` is running if you're expecting webhook/simulated SCM events (PR
+opened/CI/review) to advance state on their own — see the `code_pushed`-stuck entry below. If
 `Active feature run` has been `(none)` since activation (or since the last feature merged/skipped),
 that's expected — `start-next-feature` doesn't run on its own; enqueue it:
 `minicoder run start-next-feature --project <project>` (see [§4 Step 4](#step-4--kick-off-execution-and-watch-it-work)).
@@ -1282,6 +1327,14 @@ Both are real preconditions, not bugs: run `minicoder plan validate-backlog --pr
 --plan <planId>` first, and if validation (or an earlier clarification/generation pass) left any
 blocking `planning_gaps` row unresolved, resolve each one with `minicoder plan resolve-gap` before
 retrying `submit-for-approval` — see [§4 Step 3](#step-3--generate-review-and-approve-the-plan).
+
+**A feature run is stuck at `code_pushed` forever, even though a real, open PR exists on the SCM.**
+Confirm with `minicoder runs --timeline <featureRunId>` — if the timeline ends at
+`feature.code_pushed` with nothing after it, `minicoder inbox worker`/`minicoder inbox drain`
+simply isn't running (issue #112): a real webhook delivery or a `minicoder {github,gitea,gitlab}
+simulate-*` call only inserts a row into `inbox_events`, and nothing processes that table without
+this command. Start it (`minicoder inbox worker --project <project>`, or run `minicoder inbox
+drain --project <project>` once to catch up), then re-check the timeline.
 
 **A feature is stuck at `human_required`.**
 That's by design — see [§4 Step 5](#step-5--handle-anything-that-needs-you). Use

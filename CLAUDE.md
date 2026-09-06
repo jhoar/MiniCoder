@@ -379,6 +379,29 @@ before returning to `under_review`. Review and merge never act on un-tested code
 - `InboxProcessor` validates `payload_schema_version === SCHEMA_VERSION` and runs `validateEventPayload()` before calling any handler; mismatches are marked `failed` without invoking the handler.
 - Batch SELECT uses a two-pass strategy: known event types fill the batch first (`IN (...)`), then unknown types fill the remainder (`NOT IN (...)`). Unknown events are never allowed to starve registered handlers.
 - Events with no registered handler are requeued with `next_retry_at = now + maxBackoffMs` (attempts not incremented) so they become eligible once a handler is registered.
+- **Issue #112 (closed): nothing in the shipped CLI/API ever drained `inbox_events` in production
+  before this fix.** `minicoder github/gitea/gitlab serve` (the real webhook receivers) and
+  `minicoder {github,gitea,gitlab} simulate-*` (the dev-tooling event simulators) only ever
+  `INSERT` a row into `inbox_events` — `InboxProcessor` (`@minicoder/workflow`) was, before this
+  fix, exercised only by test fixtures (`packages/testing/src/github-inbox-handlers.test.ts`,
+  `packages/workflow/src/inbox/processor.test.ts`); no CLI command anywhere ever constructed one
+  against a real database. A real webhook delivery, or a simulated one, would sit at
+  `inbox_events.status = 'pending'` forever — directly undermining decision #3's "SCM webhooks are
+  the primary event source" framing, since the primary path itself had no consumer. Found live: a
+  real coder run pushed code and a real PR was created in Gitea, but the feature run stayed stuck
+  at `code_pushed` forever (never `pr_opened`) because nothing ever processed the `pr.opened`
+  inbox event a `minicoder gitea simulate-pr-opened` call (or a real webhook) would produce. Fixed
+  with `minicoder inbox worker`/`minicoder inbox drain`
+  (`packages/cli/src/commands/inbox.ts`), mirroring `minicoder tasks worker`/`tasks drain`'s exact
+  long-running-poll-loop-vs-one-shot-drain shape. `InboxHandler` lookup inside
+  `InboxProcessor.pollAndProcess()` is keyed by bare `event_type` with no `source` disambiguation
+  (the normalized taxonomy is deliberately identical across `@minicoder/github`/`@minicoder/gitea`/
+  `@minicoder/gitlab`), so this command builds exactly one provider's handler map per process —
+  resolved from `--provider` directly, or from a project's `repositories.provider`/`.base_url` via
+  `--project` (the same "one repository per project" assumption this document already documents
+  elsewhere). A deployment mixing SCM providers across projects needs one `inbox worker` process
+  per provider — a real, documented scoping limit, not silently assumed away. `@minicoder/workflow`
+  was added as a direct `packages/cli` dependency (it was previously only reachable transitively).
 
 ## Workflow Package Operational Constraints (`packages/workflow/`)
 

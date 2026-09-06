@@ -179,6 +179,9 @@ importers:
       '@minicoder/tui':
         specifier: workspace:*
         version: link:../tui
+      '@minicoder/workflow':
+        specifier: workspace:*
+        version: link:../workflow
       commander:
         specifier: ^12.1.0
         version: 12.1.0

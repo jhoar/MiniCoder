@@ -2,7 +2,7 @@
 
 > Status: Canonical
 > Supersedes: (new — extracted as the single source of shared vocabulary)
-> Version: 1.2.9
+> Version: 1.2.10
 > Last-updated: 2026-09-06
 
 This document is the single source of truth for state names, role names, adapter names, and the
@@ -532,6 +532,8 @@ minicoder trigger validate
 minicoder trigger reconcile
 minicoder tasks worker [--poll-interval-ms <ms>] [--batch-size <n>] [--stale-claim-ms <ms>]  # long-running: polls task_queue and executes claimed tasks until terminated
 minicoder tasks drain [--timeout-ms <ms>] [--poll-interval-ms <ms>]                          # one-shot: waits for task_queue to empty (CI/test use)
+minicoder inbox worker [--provider <p>|--project <id>] [--base-url <url>] [--poll-interval-ms <ms>]  # long-running: polls inbox_events and drains them into real state transitions (issue #112)
+minicoder inbox drain [--provider <p>|--project <id>] [--base-url <url>] [--timeout-ms <ms>] [--poll-interval-ms <ms>]  # one-shot: waits for inbox_events to empty (CI/test/recovery use)
 
 # Workflow / state lifecycle
 minicoder state inspect

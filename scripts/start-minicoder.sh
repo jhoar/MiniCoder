@@ -2,7 +2,7 @@
 #
 # start-minicoder.sh — start every MiniCoder long-running process with one command.
 #
-# MiniCoder has exactly two long-running processes in normal operation:
+# MiniCoder has up to three long-running processes in normal operation:
 #   1. `minicoder api serve`   — the Orchestrator API. This single process also mounts the
 #                                 GitHub/Gitea/GitLab webhook routes (/webhooks/*), so it is both
 #                                 the API surface AND the webhook receiver (see
@@ -17,6 +17,15 @@
 #                                 same database to increase throughput (CLAUDE.md's "Task Worker
 #                                 Operational Constraints" — there is no separate deployment-tier
 #                                 axis, just "run more `minicoder tasks worker` processes").
+#   3. `minicoder inbox worker` — polls `inbox_events` (populated by /webhooks/* above, and by
+#                                 `minicoder {github,gitea,gitlab} simulate-*`) and drains it into
+#                                 real state transitions (pr_opened -> ci_running -> under_review,
+#                                 etc.). Without this process, a real or simulated webhook event
+#                                 sits at inbox_events.status='pending' forever and nothing in the
+#                                 pipeline ever advances past code_pushed (issue #112 — CLAUDE.md's
+#                                 "Outbox / Inbox Rules"). Only started when SCM_STACK != none,
+#                                 since it needs a connected repository's provider/base_url to
+#                                 resolve an SCM client.
 #
 # Everything else (`minicoder plan`, `minicoder human ...`, `minicoder merge merge-if-ready`,
 # the Text UI read commands, etc.) is one-shot CLI usage against the running API — it doesn't
@@ -40,8 +49,10 @@
 #   4. Runs `minicoder db migrate` so the schema is current before anything else starts.
 #   5. Starts one `minicoder api serve` process.
 #   6. Starts $WORKER_COUNT `minicoder tasks worker` processes (default 1).
-#   7. Optionally starts the Next.js Web UI (`packages/web`) if START_WEB_UI=true.
-#   8. Waits for the API's /healthz to respond, prints a summary, then waits on all children —
+#   7. Unless --scm=none: starts one `minicoder inbox worker` process (issue #112) so
+#      webhook/simulated SCM events actually drain into state transitions.
+#   8. Optionally starts the Next.js Web UI (`packages/web`) if START_WEB_UI=true.
+#   9. Waits for the API's /healthz to respond, prints a summary, then waits on all children —
 #      Ctrl-C (or `kill <pid>`) stops every child cleanly via a trap.
 #
 # Usage:
@@ -445,6 +456,22 @@ for i in $(seq 1 "$WORKER_COUNT"); do
   start_bg "tasks-worker-${i}" $MINICODER tasks worker
 done
 
+# Issue #112: a webhook delivery or `simulate-*` call only INSERTs into inbox_events — nothing
+# processes it without this worker. `--scm=none` has no repository/provider to resolve an SCM
+# client against, so there's nothing for it to do.
+if [ "$SCM_STACK" != "none" ]; then
+  case "$SCM_STACK" in
+    gitea) INBOX_BASE_URL="${GITEA_BASE_URL:-http://localhost:3300}" ;;
+    gitlab) INBOX_BASE_URL="${GITLAB_BASE_URL:-http://localhost:3400}" ;;
+    *) INBOX_BASE_URL="" ;;
+  esac
+  if [ -n "$INBOX_BASE_URL" ]; then
+    start_bg "inbox-worker" $MINICODER inbox worker --provider "$SCM_STACK" --base-url "$INBOX_BASE_URL"
+  else
+    start_bg "inbox-worker" $MINICODER inbox worker --provider "$SCM_STACK"
+  fi
+fi
+
 if [ "$START_WEB_UI" = "true" ]; then
   start_bg "web-ui" pnpm --filter @minicoder/web dev -- -p "$WEB_UI_PORT"
 fi
@@ -468,6 +495,7 @@ cat <<SUMMARY
 MiniCoder is running (APP_ENV=${APP_ENV}, DB_DIALECT=${DB_DIALECT}, SCM_STACK=${SCM_STACK}).
   Orchestrator API : http://localhost:${API_PORT}  (also serves /webhooks/*)
   Task workers     : ${WORKER_COUNT} process(es)
+  Inbox worker     : $( [ "$SCM_STACK" != "none" ] && echo "running (drains webhook/simulated SCM events)" || echo "not started (--scm=none)" )
   Web UI           : $( [ "$START_WEB_UI" = "true" ] && echo "http://localhost:${WEB_UI_PORT}" || echo "not started (START_WEB_UI=true to enable)" )
   SCM              : $(case "$SCM_STACK" in
                           gitea) echo "Gitea at ${GITEA_BASE_URL:-http://localhost:3300} (GITEA_TOKEN $( [ -n "${GITEA_TOKEN:-}" ] && echo set || echo "NOT SET" ))" ;;
