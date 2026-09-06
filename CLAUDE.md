@@ -591,6 +591,21 @@ NULL` on PostgreSQL; the standard SQLite rebuild procedure — create `task_queu
   documented pre-merge-editing convention (see HIGH-1/round 2 above) — fixed at its final shape
   once this PR merges, per that same convention.
 
+**Found by real usage, not a numbered review round: `trigger inspect-run` silently returned
+`{taskQueueRow: null, triggerdevRunRow: null}` for a value copied straight from `trigger
+list-runs`' own output.** `triggerdev_runs` has two differently-shaped id columns — its own
+primary key `id` (generated with a `tdr-...` prefix, `packages/triggerdev/src/metadata.ts`'s
+`generateId()`) and `triggerdev_run_id` (a separate column holding the value that actually equals
+`task_queue.id`, no prefix). `list-runs` prints both under those exact field names; `inspect-run`
+only ever matched `task_queue.id`/`triggerdev_run_id`, so passing the `id` field a reader would
+naturally reach for first (it's literally named "id") silently resolved to nothing on both
+lookups, with no error distinguishing "wrong identifier" from "this run doesn't exist." Fixed by
+having `inspect-run` fall back to `triggerdev_runs WHERE id = ?` (then re-resolving the linked
+`task_queue` row via that row's own `triggerdev_run_id`) when the first two lookups both miss, and
+printing a clear "No run found matching ..." error (exit 1) only when all three checks miss —
+`packages/cli/src/commands/trigger.ts`. Regression-tested in `trigger.test.ts` for both the
+fallback-resolution case and the genuinely-nonexistent-id case.
+
 ## Agent Adapter Operational Constraints (`packages/core/src/adapters/`, `packages/testing/src/conformance/`)
 
 - **`AdapterRegistry.register` uses `INSERT ... ON CONFLICT (role, name) DO NOTHING`, never a

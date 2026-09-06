@@ -82,17 +82,44 @@ export function createTriggerCommand(): Command {
   trigger
     .command('inspect-run')
     .description(
-      'Show detail for a specific run: its task_queue row and linked triggerdev_runs row',
+      'Show detail for a specific run: its task_queue row and linked triggerdev_runs row. ' +
+        'Accepts either identifier that names the same run — task_queue.id (== ' +
+        'triggerdev_runs.triggerdev_run_id) or triggerdev_runs.id (its own, differently-' +
+        'formatted primary key, e.g. "tdr-...") — since `list-runs` prints both and they are ' +
+        'easy to confuse.',
     )
-    .argument('<runId>', 'task_queue row id (also the triggerdev_run_id)')
+    .argument('<runId>', 'task_queue row id, triggerdev_run_id, or triggerdev_runs row id')
     .action(async (runId: string) => {
       const db = await createDbClientFromEnv();
       try {
-        const queueRows = await db.query('SELECT * FROM task_queue WHERE id = ?', [runId]);
-        const statusRows = await db.query(
+        // Try the task_queue/triggerdev_run_id identifier first (the common case), then fall
+        // back to triggerdev_runs' own differently-shaped primary key (`tdr-...`) — a caller who
+        // copied `list-runs`' `id` field instead of its `triggerdev_run_id` field previously got
+        // silent nulls on both lookups with no indication which identifier was wrong.
+        let queueRows = await db.query('SELECT * FROM task_queue WHERE id = ?', [runId]);
+        let statusRows = await db.query(
           'SELECT * FROM triggerdev_runs WHERE triggerdev_run_id = ?',
           [runId],
         );
+        if (queueRows.length === 0 && statusRows.length === 0) {
+          const byOwnId = await db.query('SELECT * FROM triggerdev_runs WHERE id = ?', [runId]);
+          if (byOwnId[0]) {
+            statusRows = byOwnId;
+            const linkedRunId = (byOwnId[0] as { triggerdev_run_id: string }).triggerdev_run_id;
+            queueRows = await db.query('SELECT * FROM task_queue WHERE id = ?', [linkedRunId]);
+          }
+        }
+
+        if (queueRows.length === 0 && statusRows.length === 0) {
+          console.error(
+            `No run found matching "${runId}" — checked task_queue.id, ` +
+              `triggerdev_runs.triggerdev_run_id, and triggerdev_runs.id. Run ` +
+              `"minicoder trigger list-runs" and pass either its "id" or "triggerdev_run_id" field.`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+
         console.log(
           JSON.stringify(
             {

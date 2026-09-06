@@ -48,6 +48,23 @@ function insertTaskQueueRow(
   raw.close();
 }
 
+function insertTriggerdevRunRow(
+  filePath: string,
+  ownId: string,
+  triggerdevRunId: string,
+  taskId: string,
+): void {
+  const raw = new Database(filePath);
+  const now = new Date().toISOString();
+  raw
+    .prepare(
+      `INSERT INTO triggerdev_runs (id, triggerdev_run_id, triggerdev_task_id, triggerdev_status, project_id, last_seen_at, version, created_at, updated_at)
+       VALUES (?, ?, ?, 'running', 'proj-1', ?, 1, ?, ?)`,
+    )
+    .run(ownId, triggerdevRunId, taskId, now, now, now);
+  raw.close();
+}
+
 function queryTaskQueue(filePath: string): Array<Record<string, unknown>> {
   const raw = new Database(filePath);
   const rows = raw.prepare('SELECT * FROM task_queue').all();
@@ -93,6 +110,38 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"id": "tq-1"');
     expect(printed).toContain('"task_id": "run-coder"');
+  });
+
+  it("inspect-run also resolves by triggerdev_runs' own (differently-formatted) id, not just task_queue.id", async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+    insertTaskQueueRow(dbPath, 'tq-3', 'run-coder');
+    insertTriggerdevRunRow(dbPath, 'tdr-1788704481498-wa7gnz', 'tq-3', 'run-coder');
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'inspect-run',
+      'tdr-1788704481498-wa7gnz',
+    ]);
+    const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(printed).toContain('"id": "tq-3"');
+    expect(printed).toContain('"triggerdev_run_id": "tq-3"');
+  });
+
+  it('inspect-run reports a clear error for an id that matches nothing, instead of silent nulls', async () => {
+    dbPath = createMigratedSqliteFile();
+    process.env['DB_DIALECT'] = 'sqlite';
+    process.env['DB_PATH'] = dbPath;
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'inspect-run', 'no-such-id']);
+    expect(process.exitCode).toBe(1);
+    expect(errSpy.mock.calls.join(' ')).toMatch(/No run found matching "no-such-id"/);
+    process.exitCode = 0;
   });
 
   it('cancel-run force-fails a task_queue row so it is no longer retryable', async () => {
