@@ -3689,11 +3689,23 @@ connect`/`minicoder repo show`.** This section originally documented a real gap 
   real finding from the same live session — on Docker Desktop/WSL2, the coder sandbox's isolated
   network has no route to a host-mapped `localhost:<port>` Gitea instance, requiring
   `host.docker.internal` instead for both `GITEA_BASE_URL`/`repositories.base_url` and
-  `SCM_ALLOWED_HOST`. Still real, unautomated future work: a real webhook delivery from the
-  dockerized Gitea/GitLab container back to a host-process `minicoder api serve` needs its own
-  host-networking setup this script does not attempt — local testing without a real webhook still
-  uses the already-documented `minicoder gitea simulate-*`/`minicoder gitlab simulate-*` dev
-  commands.
+  `SCM_ALLOWED_HOST`. **A third real finding, from continuing that same live session into an
+  actual `run-coder` invocation**: `SCM_ALLOWED_HOST` alone is not sufficient for the sandbox to
+  reach Gitea/GitLab at all — `CoderSandbox` (`packages/adapters-coder/src/sandbox.ts`) only sets
+  `HTTPS_PROXY`/`HTTP_PROXY`/lowercase-variant env vars inside the sandbox container when
+  `CODER_SANDBOX_HTTPS_PROXY` is itself configured; left unset (the state after following only the
+  `host.docker.internal`/`SCM_ALLOWED_HOST` guidance above), the container has zero proxy
+  configuration and every git clone/push fails outright with `Could not resolve host: ...` — a
+  fundamentally different failure than an allow-list rejection, since no traffic reaches the proxy
+  at all. `CODER_SANDBOX_HTTPS_PROXY=http://coder-sandbox-egress-proxy:8888` (the compose service
+  name/port `infra/docker-compose.coder-sandbox.yml` already defines) is the fix — USER-MANUAL.md
+  §3.1.3/§3.3 now document it as effectively required for any self-hosted-SCM or self-hosted-LLM
+  deployment, not the "optional, sensible defaults" framing the env-var table previously gave it
+  alongside the genuinely-optional `CODER_SANDBOX_IMAGE`/`NETWORK`/`DOCKER_HOST` trio. Still real,
+  unautomated future work: a real webhook delivery from the dockerized Gitea/GitLab container back
+  to a host-process `minicoder api serve` needs its own host-networking setup this script does not
+  attempt — local testing without a real webhook still uses the already-documented `minicoder
+gitea simulate-*`/`minicoder gitlab simulate-*` dev commands.
 
 ## Security Sandbox Rules (docs/07, §6)
 
