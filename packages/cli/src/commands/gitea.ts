@@ -39,6 +39,17 @@ function isoNow(): string {
 
 type DbClient = Awaited<ReturnType<typeof createDbClientFromEnv>>;
 
+/**
+ * Issue #113: every call site below built `dedupKey` from only `project`/`prNumber`/etc — with
+ * no per-invocation discriminator — while `id` always included `Date.now()`. A second simulate-*
+ * call for the same PR/check-name/reviewer (the exact "let me re-trigger reconciliation" workflow
+ * this dev tooling exists for) hit `inbox_events.dedup_key`'s UNIQUE constraint and crashed the
+ * whole CLI process with a raw, uncaught SqliteError stack trace instead of a clean error.
+ * Unlike the real webhook receiver (`webhook-app.ts`), where `dedup_key` is the actual delivery
+ * GUID and must dedupe retried deliveries, a simulate-* dedup_key serves no real purpose — there
+ * is no "real delivery" to dedupe. Fixed by folding `id` (already unique per call) into the
+ * dedup key here, once, rather than requiring every call site to remember to do it.
+ */
 async function insertInboxEvent(
   db: DbClient,
   id: string,
@@ -47,11 +58,21 @@ async function insertInboxEvent(
   payload: string,
 ): Promise<void> {
   const now = isoNow();
-  await db.execute(
-    `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
-     VALUES (?, ?, 'gitea', ?, ?, ?, 'pending', 1, ?, ?)`,
-    [id, dedupKey, eventType, payload, SCHEMA_VERSION, now, now],
-  );
+  try {
+    await db.execute(
+      `INSERT INTO inbox_events (id, dedup_key, source, event_type, payload, payload_schema_version, status, version, created_at, updated_at)
+       VALUES (?, ?, 'gitea', ?, ?, ?, 'pending', 1, ?, ?)`,
+      [id, `${dedupKey}:${id}`, eventType, payload, SCHEMA_VERSION, now, now],
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/unique/i.test(msg)) {
+      throw new Error(
+        `An identical simulated event was already queued this same millisecond — try again.`,
+      );
+    }
+    throw err;
+  }
 }
 
 export function createGiteaCommand(): Command {

@@ -379,6 +379,43 @@ before returning to `under_review`. Review and merge never act on un-tested code
 - `InboxProcessor` validates `payload_schema_version === SCHEMA_VERSION` and runs `validateEventPayload()` before calling any handler; mismatches are marked `failed` without invoking the handler.
 - Batch SELECT uses a two-pass strategy: known event types fill the batch first (`IN (...)`), then unknown types fill the remainder (`NOT IN (...)`). Unknown events are never allowed to starve registered handlers.
 - Events with no registered handler are requeued with `next_retry_at = now + maxBackoffMs` (attempts not incremented) so they become eligible once a handler is registered.
+- **Issue #112 (closed): nothing in the shipped CLI/API ever drained `inbox_events` in production
+  before this fix.** `minicoder github/gitea/gitlab serve` (the real webhook receivers) and
+  `minicoder {github,gitea,gitlab} simulate-*` (the dev-tooling event simulators) only ever
+  `INSERT` a row into `inbox_events` — `InboxProcessor` (`@minicoder/workflow`) was, before this
+  fix, exercised only by test fixtures (`packages/testing/src/github-inbox-handlers.test.ts`,
+  `packages/workflow/src/inbox/processor.test.ts`); no CLI command anywhere ever constructed one
+  against a real database. A real webhook delivery, or a simulated one, would sit at
+  `inbox_events.status = 'pending'` forever — directly undermining decision #3's "SCM webhooks are
+  the primary event source" framing, since the primary path itself had no consumer. Found live: a
+  real coder run pushed code and a real PR was created in Gitea, but the feature run stayed stuck
+  at `code_pushed` forever (never `pr_opened`) because nothing ever processed the `pr.opened`
+  inbox event a `minicoder gitea simulate-pr-opened` call (or a real webhook) would produce. Fixed
+  with `minicoder inbox worker`/`minicoder inbox drain`
+  (`packages/cli/src/commands/inbox.ts`), mirroring `minicoder tasks worker`/`tasks drain`'s exact
+  long-running-poll-loop-vs-one-shot-drain shape. `InboxHandler` lookup inside
+  `InboxProcessor.pollAndProcess()` is keyed by bare `event_type` with no `source` disambiguation
+  (the normalized taxonomy is deliberately identical across `@minicoder/github`/`@minicoder/gitea`/
+  `@minicoder/gitlab`), so this command builds exactly one provider's handler map per process —
+  resolved from `--provider` directly, or from a project's `repositories.provider`/`.base_url` via
+  `--project` (the same "one repository per project" assumption this document already documents
+  elsewhere). A deployment mixing SCM providers across projects needs one `inbox worker` process
+  per provider — a real, documented scoping limit, not silently assumed away. `@minicoder/workflow`
+  was added as a direct `packages/cli` dependency (it was previously only reachable transitively).
+- **Issue #113 (closed): `gitea/github/gitlab simulate-*` commands crashed with a raw
+  `SqliteError` on any repeat invocation for the same PR/check-name/reviewer.** Found immediately
+  while exercising issue #112's fix: every `simulate-*` subcommand built `inbox_events.id` with a
+  `Date.now()` suffix (unique per call) but built `dedup_key` from only the logical parameters —
+  `gitea:check.passed:{project}:{prNumber}:{checkName}`, no per-invocation discriminator — so a
+  second call for the same PR/check-name hit `dedup_key`'s UNIQUE constraint and crashed the whole
+  CLI with an uncaught exception instead of a clean error. This directly broke the dev-tooling
+  workflow these commands exist for: re-triggering reconciliation for the same PR after fixing
+  something on the SCM side. Unlike the real webhook receiver (`webhook-app.ts`), where `dedup_key`
+  is the actual delivery GUID and genuinely must dedupe retried deliveries, a simulated event has no
+  real delivery to dedupe. Fixed by folding the already-unique `id` into the persisted `dedup_key`
+  (`` `${dedupKey}:${id}` ``) inside each file's shared `insertInboxEvent()` helper — a single
+  choke point per file, not a per-call-site fix — plus a catch converting any residual
+  same-millisecond collision into a clean, actionable error rather than a raw stack trace.
 
 ## Workflow Package Operational Constraints (`packages/workflow/`)
 
@@ -590,6 +627,21 @@ NULL` on PostgreSQL; the standard SQLite rebuild procedure — create `task_queu
 - **Migration 0017 was edited in place three times while unmerged.** Accepted per this repo's own
   documented pre-merge-editing convention (see HIGH-1/round 2 above) — fixed at its final shape
   once this PR merges, per that same convention.
+
+**Found by real usage, not a numbered review round: `trigger inspect-run` silently returned
+`{taskQueueRow: null, triggerdevRunRow: null}` for a value copied straight from `trigger
+list-runs`' own output.** `triggerdev_runs` has two differently-shaped id columns — its own
+primary key `id` (generated with a `tdr-...` prefix, `packages/triggerdev/src/metadata.ts`'s
+`generateId()`) and `triggerdev_run_id` (a separate column holding the value that actually equals
+`task_queue.id`, no prefix). `list-runs` prints both under those exact field names; `inspect-run`
+only ever matched `task_queue.id`/`triggerdev_run_id`, so passing the `id` field a reader would
+naturally reach for first (it's literally named "id") silently resolved to nothing on both
+lookups, with no error distinguishing "wrong identifier" from "this run doesn't exist." Fixed by
+having `inspect-run` fall back to `triggerdev_runs WHERE id = ?` (then re-resolving the linked
+`task_queue` row via that row's own `triggerdev_run_id`) when the first two lookups both miss, and
+printing a clear "No run found matching ..." error (exit 1) only when all three checks miss —
+`packages/cli/src/commands/trigger.ts`. Regression-tested in `trigger.test.ts` for both the
+fallback-resolution case and the genuinely-nonexistent-id case.
 
 ## Agent Adapter Operational Constraints (`packages/core/src/adapters/`, `packages/testing/src/conformance/`)
 
@@ -3403,6 +3455,59 @@ WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never
   `github/gitea/gitlab simulate-*`) has no way to invoke it on demand. Documented as a known,
   open gap in `USER-MANUAL.md` §4 Step 4, not fixed in this pass.
 
+**Full pipeline live-verified end to end against a real Gitea instance (issues #112/#113).**
+A real feature (`FR-001`, project `ons`) was driven through the entire sequence documented
+above — `start-next-feature → run coder → (webhook/simulate + inbox drain) → run review → run
+merge-gate → merge merge-if-ready` — for the first time against a genuinely live, self-hosted
+Gitea 1.22 instance rather than a mock/test fixture, and reached `merged` with a real merge
+commit. This live pass found and fixed the two issues below, both now closed:
+
+- **Issue #112 (closed): nothing in the shipped CLI/API ever drained `inbox_events`.** See this
+  document's Outbox/Inbox Rules section above for the full writeup. Closed by
+  `minicoder inbox worker`/`minicoder inbox drain`.
+- **Issue #113 (closed): `gitea/github/gitlab simulate-*` crashed on any repeat invocation for the
+  same PR/check-name/reviewer.** See the same Outbox/Inbox Rules section. Closed by making
+  `dedup_key` unique per invocation in each provider's `insertInboxEvent()` helper.
+
+**A real, provider-level SCM behavior surfaced during this same pass, not a MiniCoder bug:**
+Gitea (and, per its documented API behavior, GitHub/GitLab identically) rejects a PR review
+submitted by the same account that authored the PR ("approve your own pull is not allowed"). This
+is harmless for the pipeline: `reconcileGithubState()`'s `pr_opened -> ci_running -> under_review`
+hop depends only on `observed.ciStatus`, never `observed.reviewState` — a raw SCM-level review
+approval is not required to reach `under_review` at all; the AI reviewer (`minicoder run review`)
+is the actual review gate, not a human/self SCM approval. A local single-Gitea-user quickstart
+setup should not expect to be able to `simulate-review-approved` meaningfully unless a second,
+non-PR-author Gitea account/token is used to submit a real approval first (`simulate-*` only
+re-triggers a re-fetch of real SCM state, per USER-MANUAL.md §5.3 — it never fabricates the
+approval itself).
+
+**Three further gaps found live and tracked as issues, not fixed in this pass (all genuine
+design questions, not quick patches):**
+
+- **Issue #114 (open): feature-run state-machine transitions are never written back to the SCM.**
+  `workflow_events`/`minicoder runs --timeline` carries the full history, but nothing is ever
+  posted to the actual PR beyond the single, binary `minicoder/review-gate` status check
+  `run-merge-gate.ts` publishes — no comment trail, no visible timeline, on any provider. A human
+  with only SCM access (no MiniCoder CLI/API credentials) has zero visibility into this state
+  machine's history. Needs new `ScmClient` methods (none exist for posting a comment/updating one
+  in place) and a real design pass on which transitions warrant a visible record vs. noise.
+- **Issue #115 (open): AI reviewer findings are never posted back to the PR.** `ReviewerOutput`
+  already carries exactly the structured data (`filePath`/`lineStart`/`lineEnd`/`description`/
+  `severity`) needed for real inline PR review comments, but `run-review.ts` never calls back into
+  the SCM for this — findings live only in `review_findings`, readable only via
+  `minicoder findings`/the Web UI. Distinct from #114 (that's state-machine visibility; this is
+  the reviewer's own comment trail) since the two likely need different `ScmClient` surface and
+  different per-provider inline-comment semantics.
+- **Issue #116 (open): non-blocking findings have no resolution lifecycle at all.** The only
+  mechanism anywhere in this codebase that ever marks a `review_findings` row `resolved` is
+  `RecordCodePushedHandler`'s fix-cycle "optimistic fixed" write, which only runs on a
+  `fixing -> code_pushed` push — i.e. only when a `blocking` finding already triggered a fix
+  cycle. A review producing only `non_blocking`/`nit`/`question`/`out_of_scope` findings (this
+  session's real case: 3 such findings, one a genuine deploy-time fragility bug) never enters a
+  fix cycle at all, so those findings are written once and then permanently orphaned — never
+  re-surfaced, never resolvable by any command, indistinguishable from "nobody ever looked at
+  this."
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
@@ -3637,7 +3742,7 @@ live-scm-matrix.yml`'s `live-gitlab` job already established for GitLab's slow f
 - **Docker unavailable degrades to a warning, never a hard failure.** `have_docker()` checks both
   that the `docker` binary is on `PATH` and that the daemon actually responds (`docker info`); if
   either fails, the script prints which `*_TOKEN`/`*_BASE_URL` to set manually and continues —
-  matching the CODE_GEN_*/adapter-registry-bootstrap precedent elsewhere in this document of
+  matching the CODE*GEN*\*/adapter-registry-bootstrap precedent elsewhere in this document of
   "fail fast only when the feature needing it is actually used," not at process startup.
 - **`infra/docker-compose.postgres.yml` is new** — MiniCoder's own orchestration-database
   PostgreSQL container (`postgres:16-alpine`, user/db `minicoder`/`minicoder`), unrelated to Gitea's
@@ -3650,15 +3755,72 @@ live-scm-matrix.yml`'s `live-gitlab` job already established for GitLab's slow f
   harmless since both are genuinely optional (unset simply leaves that provider's webhook route
   unmounted per `packages/api/src/server.ts`), but keeps the route available immediately if a real
   webhook is wired up later without a second script run.
-- **Still out of scope, deliberately not built here**: there is no CLI/API command to register a
-  `repositories` row (provider/base_url/owner/name) for a real project against the bootstrapped
-  Gitea instance — that gap already existed before this change (USER-MANUAL.md §3.1.2 already
-  documents it: "however your setup tooling/import path does that; there is no separate 'connect a
-  repo' CLI command yet") and remains real, tracked future work, not something this quickstart
-  change silently papers over. Likewise, a real webhook delivery from the dockerized Gitea/GitLab
-  container back to a host-process `minicoder api serve` needs its own host-networking setup this
-  script does not attempt — local testing without a real webhook still uses the already-documented
-  `minicoder gitea simulate-*`/`minicoder gitlab simulate-*` dev commands.
+- **Closed (found by real quickstart usage, not tracked as a numbered issue): `minicoder repo
+connect`/`minicoder repo show`.** This section originally documented a real gap — no CLI/API
+  command existed to register a `repositories` row (provider/base*url/owner/name) for a real
+  project against the bootstrapped Gitea instance, leaving only a hand-written SQL INSERT.
+  `minicoder repo connect --project <id> --provider <github|gitea|gitlab> --owner <owner> --name
+<name> [--base-url <url>] [--default-branch <branch>] [--force] [--create] [--verify] [--json]`
+  (`packages/cli/src/commands/repo.ts`) closes it: a direct DB write (no state machine governs
+  `repositories`, so no `TransactionalCommandExecutor` command is dispatched — the same
+  "non-command DB write, CLI-only, audited via a workflow_events row" posture as `state repair`),
+  enforcing the codebase's existing one-repository-per-project assumption. `--create`
+  (`packages/cli/src/commands/repo-create.ts`) creates the repository on the SCM first via a
+  provider-specific plain-`fetch` REST call (not a new `ScmClient` method — this is a one-off setup
+  action, not a production write-path operation) if it doesn't already exist, idempotently, and for
+  Gitea specifically also detects and repairs an \_existing-but-empty* repository (zero commits) by
+  seeding a README commit — a real, live-reproduced failure mode: an empty repo 200s on a plain
+  existence check but 404s every PR-related route with Gitea's generic "target couldn't be found"
+  message, since those routes require at least one real branch. That same live debugging pass also
+  found `GiteaScmClient.request()` was silently discarding Gitea's actual structured error-body
+  `message` field on any failure, leaving only a bare HTTP status to diagnose from — fixed to
+  include it. `minicoder repo show --project <id>` displays the currently connected repository.
+  USER-MANUAL.md §3.1.2/§3.1.3 and docs/00 §5 are updated to match; §3.1.3 also documents a second
+  real finding from the same live session — on Docker Desktop/WSL2, the coder sandbox's isolated
+  network has no route to a host-mapped `localhost:<port>` Gitea instance, requiring
+  `host.docker.internal` instead for both `GITEA_BASE_URL`/`repositories.base_url` and
+  `SCM_ALLOWED_HOST`. **A third real finding, from continuing that same live session into an
+  actual `run-coder` invocation**: `SCM_ALLOWED_HOST` alone is not sufficient for the sandbox to
+  reach Gitea/GitLab at all — `CoderSandbox` (`packages/adapters-coder/src/sandbox.ts`) only sets
+  `HTTPS_PROXY`/`HTTP_PROXY`/lowercase-variant env vars inside the sandbox container when
+  `CODER_SANDBOX_HTTPS_PROXY` is itself configured; left unset (the state after following only the
+  `host.docker.internal`/`SCM_ALLOWED_HOST` guidance above), the container has zero proxy
+  configuration and every git clone/push fails outright with `Could not resolve host: ...` — a
+  fundamentally different failure than an allow-list rejection, since no traffic reaches the proxy
+  at all. `CODER_SANDBOX_HTTPS_PROXY=http://coder-sandbox-egress-proxy:8888` (the compose service
+  name/port `infra/docker-compose.coder-sandbox.yml` already defines) is the fix — USER-MANUAL.md
+  §3.1.3/§3.3 now document it as effectively required for any self-hosted-SCM or self-hosted-LLM
+  deployment, not the "optional, sensible defaults" framing the env-var table previously gave it
+  alongside the genuinely-optional `CODER_SANDBOX_IMAGE`/`NETWORK`/`DOCKER_HOST` trio. **A fourth
+  real bug, found once the previous three fixes got the same live session's `run-coder` invocation
+  as far as an actual proxied git clone attempt**:
+  `infra/docker/coder-sandbox/egress-proxy/entrypoint.sh` built its `SCM_ALLOWED_HOST`/
+  `CODE_GEN_ALLOWED_HOST` filter.txt regex entries from the env var's literal value including any
+  `:port` suffix — but tinyproxy's own filter always compares against the bare hostname with the
+  port already stripped, confirmed directly from the container's own denial log:
+  `Proxying refused on filtered domain "host.docker.internal"` for a request to
+  `host.docker.internal:3300`, denied despite `filter.txt` containing exactly the anchored entry
+  `^host\.docker\.internal:3300$` this doc's own prior guidance told the operator to configure —
+  a port-including entry can never match a portless comparison string, so every previous mention
+  of `SCM_ALLOWED_HOST` as `host[:port]` in this document and USER-MANUAL.md was itself
+  responsible for a silent, permanent 403 with nothing pointing at the port as the cause. Fixed by
+  adding a `strip_port()` helper to `entrypoint.sh` that removes a trailing `:[0-9]+` before
+  escaping/anchoring either env var's value, so a caller-supplied value works whether or not it
+  includes a port; verified against `host.docker.internal:3300`/`github.com`/`localhost:8080`/an
+  IPv4:port pair, confirming ports are stripped only when actually present. Because
+  `entrypoint.sh` is baked into the `coder-sandbox-egress-proxy` image at build time (not read at
+  container-start from a bind mount), applying this fix to an already-running deployment requires
+  `docker compose up --build --force-recreate coder-sandbox-egress-proxy`, not just
+  `--force-recreate` alone — USER-MANUAL.md §3.1.3 now says so explicitly. The same live session
+  also surfaced a related, easy-to-miss operational trap while chasing this: a shell-exported
+  env var (e.g. a stray `export SCM_ALLOWED_HOST=...` left over from earlier debugging) silently
+  wins over the same key's value in `.env` for Docker Compose's `${VAR}` interpolation, with no
+  warning — USER-MANUAL.md §3.1.3 now recommends always passing `--env-file .env` explicitly and
+  checking `echo "[$VAR]"` before assuming a `.env` edit didn't take effect. Still real,
+  unautomated future work: a real webhook delivery from the dockerized Gitea/GitLab container back
+  to a host-process `minicoder api serve` needs its own host-networking setup this script does not
+  attempt — local testing without a real webhook still uses the already-documented `minicoder
+gitea simulate-*`/`minicoder gitlab simulate-*` dev commands.
 
 ## Security Sandbox Rules (docs/07, §6)
 
