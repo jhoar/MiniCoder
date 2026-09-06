@@ -32,50 +32,50 @@ signing off on the final design doc — it stops and waits for a human.
 
 ## 1. Quick summary of every command
 
-| Command                                                                            | What it's for                                                                          |
-| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `minicoder db migrate/rollback/status/validate/diff`                               | Manage the database schema.                                                            |
-| `minicoder db reset`                                                               | Wipe and re-migrate the database (guarded, destructive).                               |
-| `minicoder db seed/snapshot/restore`                                               | Dev/test fixture and backup helpers.                                                   |
-| `minicoder tasks worker`                                                           | Run the background worker that executes queued automation tasks.                       |
-| `minicoder tasks drain`                                                            | Wait for the task queue to empty (CI/scripts).                                         |
-| `minicoder trigger list-runs/inspect-run/cancel-run/replay-run/reconcile/validate` | Inspect and manage individual task-queue runs.                                         |
-| `minicoder github serve`                                                           | Run the GitHub webhook receiver.                                                       |
-| `minicoder github simulate-*`                                                      | Fake a GitHub event for local testing (dev/test only).                                 |
-| `minicoder api serve`                                                              | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to.     |
-| `minicoder status`                                                                 | Project dashboard: state, automation, workflow health.                                 |
-| `minicoder plan`                                                                   | View the implementation plan and readiness, or (`--plan <id>`) one plan's full sections. |
-| `minicoder plan import-backlog <file>`                                             | Import a hand-written `backlog.md`.                                                    |
-| `minicoder clarification`                                                          | View clarification questions/answers.                                                  |
+| Command                                                                            | What it's for                                                                                                                           |
+| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `minicoder db migrate/rollback/status/validate/diff`                               | Manage the database schema.                                                                                                             |
+| `minicoder db reset`                                                               | Wipe and re-migrate the database (guarded, destructive).                                                                                |
+| `minicoder db seed/snapshot/restore`                                               | Dev/test fixture and backup helpers.                                                                                                    |
+| `minicoder tasks worker`                                                           | Run the background worker that executes queued automation tasks.                                                                        |
+| `minicoder tasks drain`                                                            | Wait for the task queue to empty (CI/scripts).                                                                                          |
+| `minicoder trigger list-runs/inspect-run/cancel-run/replay-run/reconcile/validate` | Inspect and manage individual task-queue runs.                                                                                          |
+| `minicoder github serve`                                                           | Run the GitHub webhook receiver.                                                                                                        |
+| `minicoder github simulate-*`                                                      | Fake a GitHub event for local testing (dev/test only).                                                                                  |
+| `minicoder api serve`                                                              | Run the Orchestrator API — the backend the UIs and most CLI read commands talk to.                                                      |
+| `minicoder status`                                                                 | Project dashboard: state, automation, workflow health.                                                                                  |
+| `minicoder plan`                                                                   | View the implementation plan and readiness, or (`--plan <id>`) one plan's full sections.                                                |
+| `minicoder plan import-backlog <file>`                                             | Import a hand-written `backlog.md`.                                                                                                     |
+| `minicoder clarification`                                                          | View clarification questions/answers.                                                                                                   |
 | `minicoder features`                                                               | List the feature backlog, or (`--human-required`) items awaiting a human, or (`--full`) with untruncated descriptions and dependencies. |
-| `minicoder active`                                                                 | Show the one feature currently being worked on and its PR/CI status.                   |
-| `minicoder runs`                                                                   | List agent runs, or (`--timeline`) a merged history for one feature.                   |
-| `minicoder findings`                                                               | List review findings for a feature run.                                                |
-| `minicoder disagreements`                                                          | List coder/reviewer disagreements.                                                     |
-| `minicoder costs`                                                                  | List spend, or (`--report`) an aggregate budget breakdown.                             |
-| `minicoder artifacts`                                                              | List generated artifacts (plan.md, backlog.md, final-design-document.md).              |
-| `minicoder adapters`                                                               | List registered AI adapters (read-only).                                               |
-| `minicoder design-doc`                                                             | View, generate, regenerate, request revision on, or approve the final design document. |
-| `minicoder project`                                                                | Mark implementation complete, check acceptance validation, complete the project.       |
-| `minicoder pause` / `minicoder resume`                                             | Stop/restart automated execution for a project.                                        |
-| `minicoder human resolve-disagreement/resume/retry/skip/block/unblock`             | Disposition a feature stuck at `human_required` or `blocked`.                          |
-| `minicoder merge merge-if-ready`                                                   | Approve and execute a merge (the human trigger for merging).                           |
-| `minicoder merge finalize-if-github-merged`                                        | Recovery command if a merge succeeded on GitHub but wasn't recorded.                   |
-| `minicoder spec ingest <file>`                                                     | Ingest a specification file.                                                           |
-| `minicoder clarification answer`                                                   | Answer a clarification question.                                                       |
-| `minicoder clarification start/complete`                                           | Start a new clarification round, or complete the current one.                          |
-| `minicoder plan submit-for-approval/approve/activate`                              | Submit, approve, and activate the implementation plan.                                 |
-| `minicoder plan validate-backlog`                                                  | Validate the current backlog (required before `submit-for-approval` will accept it).   |
-| `minicoder plan resolve-gap`                                                       | Resolve a blocking planning gap (required before `submit-for-approval` will accept it if any are open). |
-| `minicoder plan export/export-backlog`                                             | Render a `plan.md`/`backlog.md`-equivalent artifact export.                            |
-| `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                        |
-| `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.     |
-| `minicoder run readiness/plan-generation/backlog-generation`                       | Enqueue AI-adapter-backed generation of the readiness assessment, implementation plan, or feature backlog. |
-| `minicoder run start-next-feature`                                                 | Select and start the next eligible feature (needed to kick off execution after activation, and again after each feature completes). |
-| `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                   |
-| `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                             |
-| `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                  |
-| `minicoder test unit/integration/system/scenario`                                  | Run the automated test suites.                                                         |
+| `minicoder active`                                                                 | Show the one feature currently being worked on and its PR/CI status.                                                                    |
+| `minicoder runs`                                                                   | List agent runs, or (`--timeline`) a merged history for one feature.                                                                    |
+| `minicoder findings`                                                               | List review findings for a feature run.                                                                                                 |
+| `minicoder disagreements`                                                          | List coder/reviewer disagreements.                                                                                                      |
+| `minicoder costs`                                                                  | List spend, or (`--report`) an aggregate budget breakdown.                                                                              |
+| `minicoder artifacts`                                                              | List generated artifacts (plan.md, backlog.md, final-design-document.md).                                                               |
+| `minicoder adapters`                                                               | List registered AI adapters (read-only).                                                                                                |
+| `minicoder design-doc`                                                             | View, generate, regenerate, request revision on, or approve the final design document.                                                  |
+| `minicoder project`                                                                | Mark implementation complete, check acceptance validation, complete the project.                                                        |
+| `minicoder pause` / `minicoder resume`                                             | Stop/restart automated execution for a project.                                                                                         |
+| `minicoder human resolve-disagreement/resume/retry/skip/block/unblock`             | Disposition a feature stuck at `human_required` or `blocked`.                                                                           |
+| `minicoder merge merge-if-ready`                                                   | Approve and execute a merge (the human trigger for merging).                                                                            |
+| `minicoder merge finalize-if-github-merged`                                        | Recovery command if a merge succeeded on GitHub but wasn't recorded.                                                                    |
+| `minicoder spec ingest <file>`                                                     | Ingest a specification file.                                                                                                            |
+| `minicoder clarification answer`                                                   | Answer a clarification question.                                                                                                        |
+| `minicoder clarification start/complete`                                           | Start a new clarification round, or complete the current one.                                                                           |
+| `minicoder plan submit-for-approval/approve/activate`                              | Submit, approve, and activate the implementation plan.                                                                                  |
+| `minicoder plan validate-backlog`                                                  | Validate the current backlog (required before `submit-for-approval` will accept it).                                                    |
+| `minicoder plan resolve-gap`                                                       | Resolve a blocking planning gap (required before `submit-for-approval` will accept it if any are open).                                 |
+| `minicoder plan export/export-backlog`                                             | Render a `plan.md`/`backlog.md`-equivalent artifact export.                                                                             |
+| `minicoder budget approve-override`                                                | Approve a budget override for a paused project.                                                                                         |
+| `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.                                                      |
+| `minicoder run readiness/plan-generation/backlog-generation`                       | Enqueue AI-adapter-backed generation of the readiness assessment, implementation plan, or feature backlog.                              |
+| `minicoder run start-next-feature`                                                 | Select and start the next eligible feature (needed to kick off execution after activation, and again after each feature completes).     |
+| `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                                                                    |
+| `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                                                                              |
+| `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                                                                   |
+| `minicoder test unit/integration/system/scenario`                                  | Run the automated test suites.                                                                                                          |
 
 Full details, every flag, and defaults are in [§5](#5-complete-command-reference).
 
@@ -249,9 +249,20 @@ provider-neutral interface (docs/06 §Phase 18 "Generic SCM Interface") — the 
 gate, and review/fix loop behave identically regardless of which one a project's repository is on.
 The differences are entirely in which repository row and env vars you set up. A project's
 repository is recorded with a `provider` (`github` | `gitea` | `gitlab`) and, for the two
-self-hosted providers, a `base_url` pointing at your instance — set these when you create the
-`repositories` row for the project (however your setup tooling/import path does that; there is no
-separate "connect a repo" CLI command yet — a repository row is created alongside the project).
+self-hosted providers, a `base_url` pointing at your instance:
+
+```bash
+minicoder repo connect --project <id> --provider gitea --owner <owner> --name <name> \
+  --base-url http://localhost:3300 --default-branch main --create --verify
+```
+
+`minicoder repo connect` registers (or, with `--force`, replaces) the one `repositories` row a
+project uses; `--create` creates the repository on the SCM first if it doesn't already exist yet
+(idempotent — safe to re-run), and also repairs a pre-existing-but-empty Gitea repository (zero
+commits) by seeding it with a README commit, since Gitea's PR-related routes 404 with a generic
+"target couldn't be found" error on an empty repo even though it otherwise exists and reports
+`has_pull_requests: true`. `--verify` confirms the configured credential can actually reach it
+before writing. `minicoder repo show --project <id>` displays the currently connected repository.
 
 **If you're using the default `./scripts/start-minicoder.sh` (Gitea, no flags), `GITEA_TOKEN` and
 `GITEA_BASE_URL` are already generated for you** on first run (3.5) — the token-generation steps
@@ -314,6 +325,68 @@ scheduled pass (docs/06 §Phase 18 Stage 5) — `minicoder state doctor --projec
 is, for now, the only automated way to find that class of divergence on those two providers, not
 just an on-demand convenience the way it is for GitHub.
 
+### 3.1.3 The coder sandbox needs its own network path to a self-hosted Gitea/GitLab
+
+`minicoder run coder`'s default `CodexCoderAdapter` always clones/commits/pushes from inside an
+ephemeral, isolated Docker container (`CoderSandbox`, docs/07 §6) — never on the host — attached
+only to the `minicoder-coder-sandbox`/`minicoder-coder-egress` networks defined in
+`infra/docker-compose.coder-sandbox.yml`. Bring that stack up once, and build the sandbox image:
+
+```bash
+docker compose -f infra/docker-compose.coder-sandbox.yml up -d
+docker build -t minicoder/coder-sandbox:latest infra/docker/coder-sandbox
+```
+
+**The sandbox's egress proxy is default-deny.** Set `SCM_ALLOWED_HOST` (a bare `host[:port]`, not a
+full URL — it's regex-anchor-matched against the proxied request's `Host`, per
+`infra/docker/coder-sandbox/egress-proxy/entrypoint.sh`) to your Gitea/GitLab instance's host in
+`.env`, then recreate the proxy so it picks up the new filter rule:
+
+```bash
+echo 'SCM_ALLOWED_HOST=<your-gitea-host>' >> .env
+docker compose -f infra/docker-compose.coder-sandbox.yml up -d --force-recreate coder-sandbox-egress-proxy
+```
+
+**On Docker Desktop (Windows/macOS, including WSL2), `localhost` does not mean what you think it
+means here.** `infra/docker-compose.gitea.yml` has no `networks:` override, so a locally-run Gitea
+container sits on its own default Compose network, port-mapped to the _host_ (e.g., `3300:3000`) —
+that mapping only works from the host's own network namespace. The coder-sandbox container is on
+an entirely separate, isolated network with no route to it: `GITEA_BASE_URL=http://localhost:3300`
+resolves fine from your host shell (where `localhost` means "this machine"), but from _inside_ the
+sandbox container, `localhost` means "this container," not your host.
+
+The fix that works with Docker Desktop's WSL2 integration: use `host.docker.internal` instead of
+`localhost` everywhere — it resolves to the host machine both from containers and (with Docker
+Desktop's WSL integration) directly from your WSL shell too. Confirm both directions before relying
+on it (a genuinely different Docker networking setup, e.g. plain Linux without Docker Desktop, may
+need a different address — see below):
+
+```bash
+# from your WSL/host shell:
+curl -s http://host.docker.internal:3300/api/healthz
+# from a container on the sandbox's egress network:
+docker run --rm --network minicoder-coder-egress curlimages/curl \
+  curl -sf http://host.docker.internal:3300/api/healthz
+```
+
+If both succeed, use `host.docker.internal:<port>` as your **one, universal** address — for
+`GITEA_BASE_URL`, the `repositories.base_url` you pass to `repo connect --base-url`, and
+`SCM_ALLOWED_HOST` — rather than `localhost`:
+
+```bash
+minicoder repo connect --project <id> --provider gitea --owner <owner> --name <name> \
+  --base-url http://host.docker.internal:3300 --default-branch main --force --verify
+```
+
+If `host.docker.internal` doesn't resolve from your host shell (common on plain Linux without
+Docker Desktop, where this hostname isn't automatically wired up), you're in a genuinely harder
+case: host-side tools (`state doctor --check-scm`, `run-review`'s diff fetch, `run-merge-gate`,
+`minicoder merge`) need one address for Gitea/GitLab, and the sandbox needs another (the Docker
+bridge gateway IP, or a shared Docker network with Gitea's container) — `repositories.base_url` has
+no way to express two different addresses for the same repository today. Bridging Gitea's container
+onto `minicoder-coder-egress` and addressing it by container name/internal port is the more portable
+fix in that case; this is real, unautomated setup work, not a one-line config change.
+
 ### 3.2 First-time setup
 
 ```bash
@@ -324,28 +397,30 @@ minicoder db validate        # confirms every expected table/index exists
 
 ### 3.3 Environment variables at a glance
 
-| Concern                      | Variable                                                    | Notes                                                                                                                    |
-| ---------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| SCM stack (start script)     | `SCM_STACK`                                                 | `gitea` (default) \| `gitlab` \| `github` \| `none` — same as `--scm=...`; picks which docker-compose infra 3.5 manages |
-| Database                     | `DB_DIALECT`                                                | `sqlite` (default, quick setup) or `postgres` (more complex setup) — `--db=...` is the equivalent flag                  |
-| Database (SQLite)            | `DB_PATH`                                                   | Defaults to `./minicoder.db`                                                                                             |
-| Database (PostgreSQL)        | `DB_URL`                                                    | Required when `DB_DIALECT=postgres`; auto-filled by `--db=postgres` if a local container is used                        |
-| API auth (server)            | `MINICODER_API_KEYS`                                        | JSON array of `{key, id, role, actorKind, displayName?}`                                                                 |
-| API auth (client/CLI/UI)     | `MINICODER_API_KEY`                                         | One raw key from the array above                                                                                         |
-| API location (client/CLI/UI) | `MINICODER_API_URL`                                         | Defaults to `http://localhost:4000`                                                                                      |
-| Gitea (default SCM)          | `GITEA_TOKEN` / `GITEA_BASE_URL`                            | Used by `state doctor --check-scm` (Gitea-provider repos); auto-generated by the default `./scripts/start-minicoder.sh`  |
-| GitHub                       | `GITHUB_TOKEN`                                              | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-scm` (GitHub-provider repos)                     |
-| GitLab                       | `GITLAB_TOKEN`                                              | Used by `state doctor --check-scm` (GitLab-provider repos)                                                               |
-| GitHub webhooks              | `GITHUB_WEBHOOK_SECRET`                                     | Required by both `minicoder github serve` and `minicoder api serve`                                                      |
-| GitHub webhooks (rotation)   | `GITHUB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
-| Gitea webhooks               | `GITEA_WEBHOOK_SECRET`                                      | Required by `minicoder gitea serve`; optional for `minicoder api serve` (unset leaves `/webhooks/gitea` unmounted)       |
-| Gitea webhooks (rotation)    | `GITEA_WEBHOOK_SECRET_PREVIOUS`                             | Optional, for secret rotation                                                                                            |
-| GitLab webhooks              | `GITLAB_WEBHOOK_SECRET`                                     | Required by `minicoder gitlab serve`; optional for `minicoder api serve` (unset leaves `/webhooks/gitlab` unmounted)     |
-| GitLab webhooks (rotation)   | `GITLAB_WEBHOOK_SECRET_PREVIOUS`                            | Optional, for secret rotation                                                                                            |
-| LLM provider                 | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL` | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters |
-| Planner adapter timeout      | `PLANNER_TIMEOUT_MS`                                        | Milliseconds; defaults to 300000 (5 min). Raise this if `run plan-generation`/`run backlog-generation` fails with `TimeoutError` on a large specification |
-| Observability (optional)     | `OTEL_EXPORTER_OTLP_ENDPOINT`                               | If unset, `observability export-otel` is a no-op                                                                         |
-| Web UI                       | (none new)                                                  | Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` as the CLI                                                        |
+| Concern                      | Variable                                                                                                    | Notes                                                                                                                                                                                                                                                                                                           |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SCM stack (start script)     | `SCM_STACK`                                                                                                 | `gitea` (default) \| `gitlab` \| `github` \| `none` — same as `--scm=...`; picks which docker-compose infra 3.5 manages                                                                                                                                                                                         |
+| Database                     | `DB_DIALECT`                                                                                                | `sqlite` (default, quick setup) or `postgres` (more complex setup) — `--db=...` is the equivalent flag                                                                                                                                                                                                          |
+| Database (SQLite)            | `DB_PATH`                                                                                                   | Defaults to `./minicoder.db`                                                                                                                                                                                                                                                                                    |
+| Database (PostgreSQL)        | `DB_URL`                                                                                                    | Required when `DB_DIALECT=postgres`; auto-filled by `--db=postgres` if a local container is used                                                                                                                                                                                                                |
+| API auth (server)            | `MINICODER_API_KEYS`                                                                                        | JSON array of `{key, id, role, actorKind, displayName?}`                                                                                                                                                                                                                                                        |
+| API auth (client/CLI/UI)     | `MINICODER_API_KEY`                                                                                         | One raw key from the array above                                                                                                                                                                                                                                                                                |
+| API location (client/CLI/UI) | `MINICODER_API_URL`                                                                                         | Defaults to `http://localhost:4000`                                                                                                                                                                                                                                                                             |
+| Gitea (default SCM)          | `GITEA_TOKEN` / `GITEA_BASE_URL`                                                                            | Used by `state doctor --check-scm` (Gitea-provider repos); auto-generated by the default `./scripts/start-minicoder.sh`. On Docker Desktop/WSL2, use `http://host.docker.internal:<port>`, not `localhost` — the coder sandbox runs in an isolated container that can't reach the host via `localhost` (§3.1.3) |
+| GitHub                       | `GITHUB_TOKEN`                                                                                              | Used by the coder/reviewer adapters, `merge`, and `state doctor --check-scm` (GitHub-provider repos)                                                                                                                                                                                                            |
+| GitLab                       | `GITLAB_TOKEN`                                                                                              | Used by `state doctor --check-scm` (GitLab-provider repos)                                                                                                                                                                                                                                                      |
+| Coder sandbox egress         | `SCM_ALLOWED_HOST`                                                                                          | Bare `host[:port]` (no scheme) of your Gitea/GitLab instance, added to the sandbox egress proxy's allow-list; not needed for GitHub (already baked in). See §3.1.3                                                                                                                                              |
+| Coder sandbox (optional)     | `CODER_SANDBOX_IMAGE` / `CODER_SANDBOX_NETWORK` / `CODER_SANDBOX_DOCKER_HOST` / `CODER_SANDBOX_HTTPS_PROXY` | Override the sandbox image/network/Docker-socket-proxy/egress-proxy address; sensible defaults match `infra/docker-compose.coder-sandbox.yml`                                                                                                                                                                   |
+| GitHub webhooks              | `GITHUB_WEBHOOK_SECRET`                                                                                     | Required by both `minicoder github serve` and `minicoder api serve`                                                                                                                                                                                                                                             |
+| GitHub webhooks (rotation)   | `GITHUB_WEBHOOK_SECRET_PREVIOUS`                                                                            | Optional, for secret rotation                                                                                                                                                                                                                                                                                   |
+| Gitea webhooks               | `GITEA_WEBHOOK_SECRET`                                                                                      | Required by `minicoder gitea serve`; optional for `minicoder api serve` (unset leaves `/webhooks/gitea` unmounted)                                                                                                                                                                                              |
+| Gitea webhooks (rotation)    | `GITEA_WEBHOOK_SECRET_PREVIOUS`                                                                             | Optional, for secret rotation                                                                                                                                                                                                                                                                                   |
+| GitLab webhooks              | `GITLAB_WEBHOOK_SECRET`                                                                                     | Required by `minicoder gitlab serve`; optional for `minicoder api serve` (unset leaves `/webhooks/gitlab` unmounted)                                                                                                                                                                                            |
+| GitLab webhooks (rotation)   | `GITLAB_WEBHOOK_SECRET_PREVIOUS`                                                                            | Optional, for secret rotation                                                                                                                                                                                                                                                                                   |
+| LLM provider                 | `CODE_GEN_BASE_URL` / `CODE_GEN_API_KEY` / `CODE_GEN_MODEL`                                                 | Any OpenAI-compatible endpoint; shared by the coder, reviewer, planner, arbiter, and (by default) documentation adapters                                                                                                                                                                                        |
+| Planner adapter timeout      | `PLANNER_TIMEOUT_MS`                                                                                        | Milliseconds; defaults to 300000 (5 min). Raise this if `run plan-generation`/`run backlog-generation` fails with `TimeoutError` on a large specification                                                                                                                                                       |
+| Observability (optional)     | `OTEL_EXPORTER_OTLP_ENDPOINT`                                                                               | If unset, `observability export-otel` is a no-op                                                                                                                                                                                                                                                                |
+| Web UI                       | (none new)                                                                                                  | Reads the same `MINICODER_API_URL`/`MINICODER_API_KEY` as the CLI                                                                                                                                                                                                                                               |
 
 ### 3.4 Getting the `minicoder` binary on your PATH
 
@@ -1039,31 +1114,31 @@ repository), `/webhooks/gitea` (mounted only if `GITEA_WEBHOOK_SECRET` is set), 
 
 ### 5.5 Read/dashboard commands (all API transport, all support `--json`)
 
-| Command                                                | Shows                                                                                           | Key flags                                                                         |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `status --project <id>`                                | Project + automation state, task-queue health, (if your key is operator+) doctor-check summary. | `--project` (required)                                                            |
-| `plan --project <id>`                                  | The implementation plan and readiness assessment.                                               | `--project` (required)                                                            |
-| `plan --project <id> --plan <planId>`                  | One plan's full title/summary/state and every section's full content.                           | `--project` (required), `--plan`                                                  |
-| `clarification --project <id> [--session <id>]`        | Clarification questions/answers, one session or the latest.                                     | `--project` (required), `--session`                                               |
-| `features --project <id> [--human-required] [--full]`  | The feature backlog, or (`--human-required`) only items parked at `human_required`, or (`--full`) untruncated descriptions and `depends_on_fr_ids` instead of the truncated table. | `--project` (required), `--human-required`, `--full`, `--cursor`, `--limit`        |
-| `active --project <id>`                                | The one feature currently in flight and its linked PR/CI status.                                | `--project` (required)                                                            |
-| `runs [--project <id>] [--feature-run <id>]`           | Agent run history.                                                                              | `--project`, `--feature-run`, `--cursor`, `--limit`                               |
-| `runs --timeline <featureRunId>`                       | One feature's full merged chronological history (events, runs, findings, PR, cost, approvals).  | positional-ish `--timeline <id>`                                                  |
-| `findings --feature-run <id>`                          | Review findings for one feature run.                                                            | `--feature-run` (required), `--cursor`, `--limit`                                 |
-| `disagreements [--feature-run <id>] [--state <state>]` | Coder/reviewer disagreements (global if unfiltered).                                            | `--feature-run`, `--state` (`open`/`escalated`/`resolved`), `--cursor`, `--limit` |
-| `costs --project <id>`                                 | Raw cost records + active budget policies.                                                      | `--project` (required)                                                            |
-| `costs --project <id> --report [--window-days <n>]`    | Aggregate spend by scope/feature/provider/model/role.                                           | `--report`, `--window-days`                                                       |
-| `artifacts --project <id>`                             | Generated artifact exports (plan.md, backlog.md, final-design-document.md, ...).                | `--project` (required), `--cursor`, `--limit`                                     |
-| `adapters [--adapter <id>]`                            | Registered AI adapters and their configurations (read-only).                                    | `--adapter`                                                                       |
+| Command                                                | Shows                                                                                                                                                                              | Key flags                                                                         |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `status --project <id>`                                | Project + automation state, task-queue health, (if your key is operator+) doctor-check summary.                                                                                    | `--project` (required)                                                            |
+| `plan --project <id>`                                  | The implementation plan and readiness assessment.                                                                                                                                  | `--project` (required)                                                            |
+| `plan --project <id> --plan <planId>`                  | One plan's full title/summary/state and every section's full content.                                                                                                              | `--project` (required), `--plan`                                                  |
+| `clarification --project <id> [--session <id>]`        | Clarification questions/answers, one session or the latest.                                                                                                                        | `--project` (required), `--session`                                               |
+| `features --project <id> [--human-required] [--full]`  | The feature backlog, or (`--human-required`) only items parked at `human_required`, or (`--full`) untruncated descriptions and `depends_on_fr_ids` instead of the truncated table. | `--project` (required), `--human-required`, `--full`, `--cursor`, `--limit`       |
+| `active --project <id>`                                | The one feature currently in flight and its linked PR/CI status.                                                                                                                   | `--project` (required)                                                            |
+| `runs [--project <id>] [--feature-run <id>]`           | Agent run history.                                                                                                                                                                 | `--project`, `--feature-run`, `--cursor`, `--limit`                               |
+| `runs --timeline <featureRunId>`                       | One feature's full merged chronological history (events, runs, findings, PR, cost, approvals).                                                                                     | positional-ish `--timeline <id>`                                                  |
+| `findings --feature-run <id>`                          | Review findings for one feature run.                                                                                                                                               | `--feature-run` (required), `--cursor`, `--limit`                                 |
+| `disagreements [--feature-run <id>] [--state <state>]` | Coder/reviewer disagreements (global if unfiltered).                                                                                                                               | `--feature-run`, `--state` (`open`/`escalated`/`resolved`), `--cursor`, `--limit` |
+| `costs --project <id>`                                 | Raw cost records + active budget policies.                                                                                                                                         | `--project` (required)                                                            |
+| `costs --project <id> --report [--window-days <n>]`    | Aggregate spend by scope/feature/provider/model/role.                                                                                                                              | `--report`, `--window-days`                                                       |
+| `artifacts --project <id>`                             | Generated artifact exports (plan.md, backlog.md, final-design-document.md, ...).                                                                                                   | `--project` (required), `--cursor`, `--limit`                                     |
+| `adapters [--adapter <id>]`                            | Registered AI adapters and their configurations (read-only).                                                                                                                       | `--adapter`                                                                       |
 
 ### 5.6 Plan and backlog — `minicoder plan ...`
 
-| Subcommand              | Transport | Purpose                                                                                | Key flags                                                                                                                            |
-| ----------------------- | --------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| _(bare)_                | API       | Default view: plan + readiness, or (with `--plan`) one plan's full title/summary/state and section content. | `--project` (required), `--plan`                                                                                                     |
-| `import-backlog <file>` | DB        | Parse, validate, preview, and (unless `--dry-run`) import a hand-written `backlog.md`. | positional file, `--project` (required), `--plan` (required), `--actor` (required), `--actor-role` (default `approver`), `--dry-run` |
-| `validate-backlog`      | DB        | Validate the current backlog against its own current version — required before `submit-for-approval` will accept it. Dispatches as a system actor (bypasses the generic-dispatch route's own system-actorKind restriction). | `--project` (required), `--plan` (required)                                                                                          |
-| `resolve-gap`           | API       | Resolve one blocking `planning_gaps` row (from either clarification or a later plan/backlog generation pass) — required before `submit-for-approval` will accept it if any gap is still unresolved. | `--project` (required), `--assessment <id>` (required), `--gap <id>` (required), `--resolution <text>` (required), `--yes` (required) |
+| Subcommand              | Transport | Purpose                                                                                                                                                                                                                     | Key flags                                                                                                                             |
+| ----------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| _(bare)_                | API       | Default view: plan + readiness, or (with `--plan`) one plan's full title/summary/state and section content.                                                                                                                 | `--project` (required), `--plan`                                                                                                      |
+| `import-backlog <file>` | DB        | Parse, validate, preview, and (unless `--dry-run`) import a hand-written `backlog.md`.                                                                                                                                      | positional file, `--project` (required), `--plan` (required), `--actor` (required), `--actor-role` (default `approver`), `--dry-run`  |
+| `validate-backlog`      | DB        | Validate the current backlog against its own current version — required before `submit-for-approval` will accept it. Dispatches as a system actor (bypasses the generic-dispatch route's own system-actorKind restriction). | `--project` (required), `--plan` (required)                                                                                           |
+| `resolve-gap`           | API       | Resolve one blocking `planning_gaps` row (from either clarification or a later plan/backlog generation pass) — required before `submit-for-approval` will accept it if any gap is still unresolved.                         | `--project` (required), `--assessment <id>` (required), `--gap <id>` (required), `--resolution <text>` (required), `--yes` (required) |
 
 ### 5.7 Design document — `minicoder design-doc ...` (API)
 

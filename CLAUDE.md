@@ -3637,7 +3637,7 @@ live-scm-matrix.yml`'s `live-gitlab` job already established for GitLab's slow f
 - **Docker unavailable degrades to a warning, never a hard failure.** `have_docker()` checks both
   that the `docker` binary is on `PATH` and that the daemon actually responds (`docker info`); if
   either fails, the script prints which `*_TOKEN`/`*_BASE_URL` to set manually and continues —
-  matching the CODE_GEN_*/adapter-registry-bootstrap precedent elsewhere in this document of
+  matching the CODE*GEN*\*/adapter-registry-bootstrap precedent elsewhere in this document of
   "fail fast only when the feature needing it is actually used," not at process startup.
 - **`infra/docker-compose.postgres.yml` is new** — MiniCoder's own orchestration-database
   PostgreSQL container (`postgres:16-alpine`, user/db `minicoder`/`minicoder`), unrelated to Gitea's
@@ -3650,15 +3650,35 @@ live-scm-matrix.yml`'s `live-gitlab` job already established for GitLab's slow f
   harmless since both are genuinely optional (unset simply leaves that provider's webhook route
   unmounted per `packages/api/src/server.ts`), but keeps the route available immediately if a real
   webhook is wired up later without a second script run.
-- **Still out of scope, deliberately not built here**: there is no CLI/API command to register a
-  `repositories` row (provider/base_url/owner/name) for a real project against the bootstrapped
-  Gitea instance — that gap already existed before this change (USER-MANUAL.md §3.1.2 already
-  documents it: "however your setup tooling/import path does that; there is no separate 'connect a
-  repo' CLI command yet") and remains real, tracked future work, not something this quickstart
-  change silently papers over. Likewise, a real webhook delivery from the dockerized Gitea/GitLab
-  container back to a host-process `minicoder api serve` needs its own host-networking setup this
-  script does not attempt — local testing without a real webhook still uses the already-documented
-  `minicoder gitea simulate-*`/`minicoder gitlab simulate-*` dev commands.
+- **Closed (found by real quickstart usage, not tracked as a numbered issue): `minicoder repo
+connect`/`minicoder repo show`.** This section originally documented a real gap — no CLI/API
+  command existed to register a `repositories` row (provider/base*url/owner/name) for a real
+  project against the bootstrapped Gitea instance, leaving only a hand-written SQL INSERT.
+  `minicoder repo connect --project <id> --provider <github|gitea|gitlab> --owner <owner> --name
+<name> [--base-url <url>] [--default-branch <branch>] [--force] [--create] [--verify] [--json]`
+  (`packages/cli/src/commands/repo.ts`) closes it: a direct DB write (no state machine governs
+  `repositories`, so no `TransactionalCommandExecutor` command is dispatched — the same
+  "non-command DB write, CLI-only, audited via a workflow_events row" posture as `state repair`),
+  enforcing the codebase's existing one-repository-per-project assumption. `--create`
+  (`packages/cli/src/commands/repo-create.ts`) creates the repository on the SCM first via a
+  provider-specific plain-`fetch` REST call (not a new `ScmClient` method — this is a one-off setup
+  action, not a production write-path operation) if it doesn't already exist, idempotently, and for
+  Gitea specifically also detects and repairs an \_existing-but-empty* repository (zero commits) by
+  seeding a README commit — a real, live-reproduced failure mode: an empty repo 200s on a plain
+  existence check but 404s every PR-related route with Gitea's generic "target couldn't be found"
+  message, since those routes require at least one real branch. That same live debugging pass also
+  found `GiteaScmClient.request()` was silently discarding Gitea's actual structured error-body
+  `message` field on any failure, leaving only a bare HTTP status to diagnose from — fixed to
+  include it. `minicoder repo show --project <id>` displays the currently connected repository.
+  USER-MANUAL.md §3.1.2/§3.1.3 and docs/00 §5 are updated to match; §3.1.3 also documents a second
+  real finding from the same live session — on Docker Desktop/WSL2, the coder sandbox's isolated
+  network has no route to a host-mapped `localhost:<port>` Gitea instance, requiring
+  `host.docker.internal` instead for both `GITEA_BASE_URL`/`repositories.base_url` and
+  `SCM_ALLOWED_HOST`. Still real, unautomated future work: a real webhook delivery from the
+  dockerized Gitea/GitLab container back to a host-process `minicoder api serve` needs its own
+  host-networking setup this script does not attempt — local testing without a real webhook still
+  uses the already-documented `minicoder gitea simulate-*`/`minicoder gitlab simulate-*` dev
+  commands.
 
 ## Security Sandbox Rules (docs/07, §6)
 
