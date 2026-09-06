@@ -771,4 +771,21 @@ export class ApiClient {
       idempotencyKey,
     );
   }
+
+  /** Enqueues `github-reconciliation` — the scheduled fallback task (pr_opened -> ci_running ->
+   * under_review, ci_failed/changes_requested follow-ups, irreconcilable-PR-closure escalation).
+   * Omit `featureRunId` to reconcile every eligible candidate for the project; pass one to scope
+   * the pass to a single feature run. Safe to invoke repeatedly — a feature run not at a
+   * reconcilable state is already a documented no-op. */
+  requestReconciliation(
+    projectId: string,
+    featureRunId: string | undefined,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-reconciliation',
+      { projectId, featureRunId },
+      idempotencyKey,
+    );
+  }
 }

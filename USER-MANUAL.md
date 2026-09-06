@@ -74,6 +74,7 @@ signing off on the final design doc — it stops and waits for a human.
 | `minicoder run coder/review/fixes/merge-gate`                                      | Enqueue an ad hoc coder run, reviewer run, fix re-review, or merge-gate recompute.                                                                                      |
 | `minicoder run readiness/plan-generation/backlog-generation`                       | Enqueue AI-adapter-backed generation of the readiness assessment, implementation plan, or feature backlog.                                                              |
 | `minicoder run start-next-feature`                                                 | Select and start the next eligible feature (needed to kick off execution after activation, and again after each feature completes).                                     |
+| `minicoder run reconciliation`                                                     | On-demand catch-up pass (issue #119) for a missed, delayed, or unreachable webhook delivery — safe to invoke repeatedly.                                                |
 | `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                                                                                                    |
 | `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                                                                                                              |
 | `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                                                                                                   |
@@ -839,10 +840,19 @@ minicoder gitea simulate-review-approved --project <project> --pr-number <n>
 minicoder inbox drain --project <project>
 ```
 
-**Remaining known gap:** the scheduled `github-reconciliation` fallback task (meant to catch up on
-any divergence a webhook delivery — now that it's actually drained — still missed) has no CLI/API
-trigger of its own today — unlike every other Workflow Layer task, there is no `minicoder run
-...`/enqueue route for it.
+**On-demand catch-up (issue #119, closed):** if a webhook delivery was missed, delayed, or
+structurally unreachable (e.g. a local Gitea-in-Docker setup with no tunnel back to the host),
+force a `github-reconciliation` pass directly instead of hand-simulating the specific event that
+would have triggered it:
+
+```bash
+minicoder run reconciliation --project <project>
+# or, to scope the pass to one feature run:
+minicoder run reconciliation --project <project> --feature-run <featureRunId>
+```
+
+Safe to invoke repeatedly — a feature run not at a reconcilable state is already a documented
+no-op.
 
 ```bash
 # 3. Once the PR reaches under_review, request an AI review.
@@ -850,8 +860,16 @@ minicoder run review --project <project> --feature-run <featureRunId> \
   --reviewer-adapter ClaudeReviewerAdapter
 minicoder status --project <project>       # poll until run-review succeeds
 minicoder active --project <project>       # blocking findings -> "changes_requested"/"fixing"
-                                            # (loop back to step 2's `run coder` once fixed);
                                             # clean review -> stays at "under_review"
+
+# 3a. If the review requested changes, nothing re-invokes the coder adapter automatically
+#     (issue #118) — re-run the exact same `run coder` command from step 2 once the feature run
+#     reaches "fixing"; run-coder.ts already knows how to address open findings for a fix cycle,
+#     it just isn't triggered for you:
+minicoder run coder --project <project> --feature-run <featureRunId> --coder-adapter CodexCoderAdapter
+minicoder status --project <project>       # poll until run-coder succeeds
+minicoder active --project <project>       # confirm execution state is back at "code_pushed",
+                                            # then loop back to step 3 (`run review`) once CI passes
 
 # 4. Once under_review with no blocking findings, recompute the merge gate.
 minicoder run merge-gate --project <project> --feature-run <featureRunId>

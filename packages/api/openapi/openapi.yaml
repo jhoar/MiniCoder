@@ -249,6 +249,13 @@ paths:
       requestBody:
         content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
       responses: { '202': { description: Enqueued } }
+  /commands/request-reconciliation:
+    post:
+      operationId: requestReconciliation
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
   /commands/validate:
     post:
       operationId: diagnosticsValidate

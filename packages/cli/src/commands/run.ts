@@ -143,7 +143,12 @@ export function createRunCommand(): Command {
 
   cmd
     .command('coder')
-    .description('Enqueues run-coder for a feature run')
+    .description(
+      'Enqueues run-coder for a feature run. Also the fix-cycle trigger (issue #118): ' +
+        'run-coder.ts already branches on coding-vs-fixing internally, so re-running this exact ' +
+        'command against a feature run currently at `fixing` re-invokes the coder adapter to ' +
+        'address open findings — nothing does this automatically yet.',
+    )
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--feature-run <id>', 'Feature run ID')
     .requiredOption('--coder-adapter <name>', 'CoderAgentAdapter registry name')
@@ -306,6 +311,41 @@ export function createRunCommand(): Command {
           (data) =>
             renderCommandResultView({
               command: 'request-start-next-feature',
+              projectId: opts.project,
+              resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
+            }),
+        );
+      },
+    );
+
+  cmd
+    .command('reconciliation')
+    .description(
+      'Enqueues github-reconciliation on demand — a catch-up pass for a missed/delayed/' +
+        'unreachable webhook delivery (issue #119). Omit --feature-run to reconcile every ' +
+        'eligible candidate for the project; pass it to scope the pass to a single feature run. ' +
+        'Safe to invoke repeatedly.',
+    )
+    .requiredOption('--project <id>', 'Project ID')
+    .option('--feature-run <id>', 'Feature run ID (optional — scopes the pass to one run)')
+    .option(...IDEMPOTENCY_KEY_OPTION)
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(
+      async (
+        opts: { project: string; featureRun?: string } & IdempotencyKeyOption & JsonOption,
+      ) => {
+        const client = buildApiClient();
+        await renderOrJson(
+          opts,
+          () =>
+            client.requestReconciliation(
+              opts.project,
+              opts.featureRun,
+              resolveIdempotencyKey(`request-reconciliation:${opts.project}`, opts),
+            ),
+          (data) =>
+            renderCommandResultView({
+              command: 'request-reconciliation',
               projectId: opts.project,
               resultingState: data.accepted ? `enqueued:${data.triggerdevRunId}` : 'not_accepted',
             }),

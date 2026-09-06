@@ -3454,6 +3454,28 @@ WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never
   a deployment without a real webhook wired (and unwilling to hand-simulate every event via
   `github/gitea/gitlab simulate-*`) has no way to invoke it on demand. Documented as a known,
   open gap in `USER-MANUAL.md` §4 Step 4, not fixed in this pass.
+  **Closed by issue #119:** `POST /commands/request-reconciliation`
+  (`packages/api/src/commands/task-trigger-routes.ts`, operator-role-gated via `requireRole()`)
+  and `minicoder run reconciliation --project <id> [--feature-run <id>]` — the tenth enqueue
+  route/CLI wrapper this codebase has added the same way (mirroring
+  `request-start-next-feature`'s exact shape: `featureRunId` optional, `GithubReconciliationPayload`
+  already carried this contract since its original Phase 7 definition). `github-reconciliation.ts`'s
+  `runImpl` needed no changes — it was already safe to invoke repeatedly; the only gap was that
+  nothing outside a real scheduled/webhook-triggered path, or a test, ever called it.
+- **Issue #118 (open, partially addressed): nothing re-invokes the coder adapter when a feature
+  run enters `fixing`.** `run-coder.ts`'s `runImpl` already branches on `coding` vs `fixing`
+  internally (`isFixCycle`) and handles both correctly once invoked — confirmed by reading the
+  guard directly (`current_execution_state !== CODING && !== FIXING` is the only state check). The
+  real gap is purely the trigger: `minicoder run coder`/`request-coder-run` already work
+  unmodified against a `fixing`-state feature run (no state restriction anywhere in the CLI/API
+  path), but this was undocumented, and nothing automatically re-invokes it. Closed the
+  documentation half: `USER-MANUAL.md` §4 Step 3a now walks through manually re-running the exact
+  same `run coder` command once a feature reaches `fixing`, and `minicoder run coder`'s CLI
+  description now says so directly. Left open, per the issue's own framing: whether this should
+  become an automatic watcher is a real architectural question against this codebase's "never
+  inline, always separate scheduled/triggered task" convention and its "no scheduling/cron
+  construct exists or is needed" decision (§ Task Worker Operational Constraints above) — not a
+  small patch, and not decided in this pass.
 
 **Full pipeline live-verified end to end against a real Gitea instance (issues #112/#113).**
 A real feature (`FR-001`, project `ons`) was driven through the entire sequence documented

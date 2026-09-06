@@ -208,6 +208,11 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
       correlationId: 'c',
       idempotencyKey: 'k4',
     });
+    await client.triggerGithubReconciliation({
+      projectId: 'p',
+      correlationId: 'c',
+      idempotencyKey: 'k5',
+    });
 
     const rows = queryTaskQueue(dbPath).sort((a, b) =>
       a.idempotency_key.localeCompare(b.idempotency_key),
@@ -217,6 +222,7 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
       'run-merge-gate',
       'run-design-doc',
       'start-next-feature',
+      'github-reconciliation',
     ]);
   });
 
@@ -259,6 +265,11 @@ describe('resolveDefaultTaskTriggerClient (Trigger.dev replacement)', () => {
       projectId: 'p',
       correlationId: 'c',
       idempotencyKey: 'k4',
+    });
+    await client.triggerGithubReconciliation({
+      projectId: 'p',
+      correlationId: 'c',
+      idempotencyKey: 'k5',
     });
 
     const usedTaskIds = queryTaskQueue(dbPath).map((r) => r.task_id);

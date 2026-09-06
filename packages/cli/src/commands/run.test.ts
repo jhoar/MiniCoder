@@ -283,6 +283,52 @@ describe('CLI run command', () => {
     expect(bodyOf(fetchImpl)).toEqual({ projectId: 'proj1', featureRunId: 'fr1' });
   });
 
+  it('run reconciliation enqueues request-reconciliation with no --feature-run (project-wide pass)', async () => {
+    const fetchImpl = fakeFetch('/commands/request-reconciliation', {
+      triggerdevRunId: 'run-9',
+      accepted: true,
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'run',
+      'reconciliation',
+      '--project',
+      'proj1',
+      '--json',
+    ]);
+
+    const printed = logSpy.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('"triggerdevRunId": "run-9"');
+    expect(bodyOf(fetchImpl)).toEqual({ projectId: 'proj1' });
+  });
+
+  it('run reconciliation passes --feature-run through when supplied (scoped pass)', async () => {
+    const fetchImpl = fakeFetch('/commands/request-reconciliation', {
+      triggerdevRunId: 'run-10',
+      accepted: true,
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'run',
+      'reconciliation',
+      '--project',
+      'proj1',
+      '--feature-run',
+      'fr1',
+      '--json',
+    ]);
+
+    expect(bodyOf(fetchImpl)).toEqual({ projectId: 'proj1', featureRunId: 'fr1' });
+  });
+
   it('honors a caller-supplied --idempotency-key instead of minting a new one', async () => {
     const fetchImpl = fakeFetch('/commands/request-coder-run', {
       triggerdevRunId: 'run-1',

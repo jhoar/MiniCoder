@@ -92,6 +92,12 @@ export interface TaskTriggerClient {
     correlationId: string;
     idempotencyKey: string;
   }): Promise<TriggeredRun>;
+  triggerGithubReconciliation(payload: {
+    projectId: string;
+    featureRunId?: string;
+    correlationId: string;
+    idempotencyKey: string;
+  }): Promise<TriggeredRun>;
 }
 
 export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
@@ -111,6 +117,7 @@ export function unconfiguredTaskTriggerClient(): TaskTriggerClient {
     triggerPlanGeneration: () => fail('request-plan-generation'),
     triggerBacklogGeneration: () => fail('request-backlog-generation'),
     triggerStartNextFeature: () => fail('request-start-next-feature'),
+    triggerGithubReconciliation: () => fail('request-reconciliation'),
   };
 }
 
@@ -349,6 +356,36 @@ export function registerTaskTriggerRoutes(app: FastifyInstance, deps: TaskTrigge
       }
       const idempotencyKey = readIdempotencyKey(request.headers['idempotency-key']);
       const run = await deps.taskTriggerClient.triggerStartNextFeature({
+        projectId,
+        featureRunId,
+        correlationId: request.actor!.correlationId,
+        idempotencyKey,
+      });
+      return reply.code(202).send({ triggerdevRunId: run.triggerdevRunId, accepted: true });
+    },
+  );
+
+  // Enqueues `github-reconciliation` — the scheduled fallback task (pr_opened -> ci_running ->
+  // under_review, ci_failed/changes_requested follow-ups, irreconcilable-PR-closure escalation,
+  // and discoverMissingPullRequests()'s auto-discovery pre-pass) had no on-demand trigger of its
+  // own before this (issue #119): a deployment whose webhook delivery was missed, delayed, or
+  // structurally unreachable (e.g. a local Gitea-in-Docker setup) had no way to force a catch-up
+  // pass short of hand-simulating the specific SCM event that would have driven the same logic via
+  // the inbox-handler path. `runImpl` itself needs no changes — it is already safe to invoke
+  // repeatedly (a feature run not at a reconcilable state is already a documented no-op); this
+  // route is only the missing trigger. `featureRunId` is optional, mirroring
+  // `GithubReconciliationPayload`'s own contract: omitted, the task reconciles every eligible
+  // candidate for the project; supplied, it scopes the pass to one feature run.
+  app.post<{ Body: { projectId?: string; featureRunId?: string } }>(
+    '/commands/request-reconciliation',
+    async (request, reply) => {
+      requireRole(request, UserRole.OPERATOR, 'request-reconciliation');
+      const { projectId, featureRunId } = request.body ?? {};
+      if (!projectId) {
+        throw new RequestValidationError('projectId is required');
+      }
+      const idempotencyKey = readIdempotencyKey(request.headers['idempotency-key']);
+      const run = await deps.taskTriggerClient.triggerGithubReconciliation({
         projectId,
         featureRunId,
         correlationId: request.actor!.correlationId,
