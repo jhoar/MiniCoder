@@ -1204,6 +1204,14 @@ Re-running the same `simulate-*` command for the same PR/check-name/reviewer is 
 (issue #113) — each invocation always queues a fresh event regardless of whether an identical one
 was queued before.
 
+**A single-account Gitea/GitHub/GitLab setup cannot submit a real review approval to test
+`simulate-review-approved` against.** All three providers reject a PR review submitted by the
+same account that authored the PR ("approve your own pull is not allowed"). Since (per above)
+reaching `under_review` never actually requires a real review approval anyway, this is rarely
+worth working around — but if you do want to exercise the review-approval path specifically, you
+need a second, non-PR-author account/token to submit the real approval before running
+`simulate-review-approved`.
+
 ### 5.4 Orchestrator API — `minicoder api serve` (process)
 
 Starts the Fastify API everything else in this table depends on. `--port` (default 4000),

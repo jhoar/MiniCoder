@@ -3455,6 +3455,59 @@ WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never
   `github/gitea/gitlab simulate-*`) has no way to invoke it on demand. Documented as a known,
   open gap in `USER-MANUAL.md` §4 Step 4, not fixed in this pass.
 
+**Full pipeline live-verified end to end against a real Gitea instance (issues #112/#113).**
+A real feature (`FR-001`, project `ons`) was driven through the entire sequence documented
+above — `start-next-feature → run coder → (webhook/simulate + inbox drain) → run review → run
+merge-gate → merge merge-if-ready` — for the first time against a genuinely live, self-hosted
+Gitea 1.22 instance rather than a mock/test fixture, and reached `merged` with a real merge
+commit. This live pass found and fixed the two issues below, both now closed:
+
+- **Issue #112 (closed): nothing in the shipped CLI/API ever drained `inbox_events`.** See this
+  document's Outbox/Inbox Rules section above for the full writeup. Closed by
+  `minicoder inbox worker`/`minicoder inbox drain`.
+- **Issue #113 (closed): `gitea/github/gitlab simulate-*` crashed on any repeat invocation for the
+  same PR/check-name/reviewer.** See the same Outbox/Inbox Rules section. Closed by making
+  `dedup_key` unique per invocation in each provider's `insertInboxEvent()` helper.
+
+**A real, provider-level SCM behavior surfaced during this same pass, not a MiniCoder bug:**
+Gitea (and, per its documented API behavior, GitHub/GitLab identically) rejects a PR review
+submitted by the same account that authored the PR ("approve your own pull is not allowed"). This
+is harmless for the pipeline: `reconcileGithubState()`'s `pr_opened -> ci_running -> under_review`
+hop depends only on `observed.ciStatus`, never `observed.reviewState` — a raw SCM-level review
+approval is not required to reach `under_review` at all; the AI reviewer (`minicoder run review`)
+is the actual review gate, not a human/self SCM approval. A local single-Gitea-user quickstart
+setup should not expect to be able to `simulate-review-approved` meaningfully unless a second,
+non-PR-author Gitea account/token is used to submit a real approval first (`simulate-*` only
+re-triggers a re-fetch of real SCM state, per USER-MANUAL.md §5.3 — it never fabricates the
+approval itself).
+
+**Three further gaps found live and tracked as issues, not fixed in this pass (all genuine
+design questions, not quick patches):**
+
+- **Issue #114 (open): feature-run state-machine transitions are never written back to the SCM.**
+  `workflow_events`/`minicoder runs --timeline` carries the full history, but nothing is ever
+  posted to the actual PR beyond the single, binary `minicoder/review-gate` status check
+  `run-merge-gate.ts` publishes — no comment trail, no visible timeline, on any provider. A human
+  with only SCM access (no MiniCoder CLI/API credentials) has zero visibility into this state
+  machine's history. Needs new `ScmClient` methods (none exist for posting a comment/updating one
+  in place) and a real design pass on which transitions warrant a visible record vs. noise.
+- **Issue #115 (open): AI reviewer findings are never posted back to the PR.** `ReviewerOutput`
+  already carries exactly the structured data (`filePath`/`lineStart`/`lineEnd`/`description`/
+  `severity`) needed for real inline PR review comments, but `run-review.ts` never calls back into
+  the SCM for this — findings live only in `review_findings`, readable only via
+  `minicoder findings`/the Web UI. Distinct from #114 (that's state-machine visibility; this is
+  the reviewer's own comment trail) since the two likely need different `ScmClient` surface and
+  different per-provider inline-comment semantics.
+- **Issue #116 (open): non-blocking findings have no resolution lifecycle at all.** The only
+  mechanism anywhere in this codebase that ever marks a `review_findings` row `resolved` is
+  `RecordCodePushedHandler`'s fix-cycle "optimistic fixed" write, which only runs on a
+  `fixing -> code_pushed` push — i.e. only when a `blocking` finding already triggered a fix
+  cycle. A review producing only `non_blocking`/`nit`/`question`/`out_of_scope` findings (this
+  session's real case: 3 such findings, one a genuine deploy-time fragility bug) never enters a
+  fix cycle at all, so those findings are written once and then permanently orphaned — never
+  re-surfaced, never resolvable by any command, indistinguishable from "nobody ever looked at
+  this."
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
