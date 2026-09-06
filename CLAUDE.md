@@ -3701,7 +3701,32 @@ connect`/`minicoder repo show`.** This section originally documented a real gap 
   name/port `infra/docker-compose.coder-sandbox.yml` already defines) is the fix — USER-MANUAL.md
   §3.1.3/§3.3 now document it as effectively required for any self-hosted-SCM or self-hosted-LLM
   deployment, not the "optional, sensible defaults" framing the env-var table previously gave it
-  alongside the genuinely-optional `CODER_SANDBOX_IMAGE`/`NETWORK`/`DOCKER_HOST` trio. Still real,
+  alongside the genuinely-optional `CODER_SANDBOX_IMAGE`/`NETWORK`/`DOCKER_HOST` trio. **A fourth
+  real bug, found once the previous three fixes got the same live session's `run-coder` invocation
+  as far as an actual proxied git clone attempt**:
+  `infra/docker/coder-sandbox/egress-proxy/entrypoint.sh` built its `SCM_ALLOWED_HOST`/
+  `CODE_GEN_ALLOWED_HOST` filter.txt regex entries from the env var's literal value including any
+  `:port` suffix — but tinyproxy's own filter always compares against the bare hostname with the
+  port already stripped, confirmed directly from the container's own denial log:
+  `Proxying refused on filtered domain "host.docker.internal"` for a request to
+  `host.docker.internal:3300`, denied despite `filter.txt` containing exactly the anchored entry
+  `^host\.docker\.internal:3300$` this doc's own prior guidance told the operator to configure —
+  a port-including entry can never match a portless comparison string, so every previous mention
+  of `SCM_ALLOWED_HOST` as `host[:port]` in this document and USER-MANUAL.md was itself
+  responsible for a silent, permanent 403 with nothing pointing at the port as the cause. Fixed by
+  adding a `strip_port()` helper to `entrypoint.sh` that removes a trailing `:[0-9]+` before
+  escaping/anchoring either env var's value, so a caller-supplied value works whether or not it
+  includes a port; verified against `host.docker.internal:3300`/`github.com`/`localhost:8080`/an
+  IPv4:port pair, confirming ports are stripped only when actually present. Because
+  `entrypoint.sh` is baked into the `coder-sandbox-egress-proxy` image at build time (not read at
+  container-start from a bind mount), applying this fix to an already-running deployment requires
+  `docker compose up --build --force-recreate coder-sandbox-egress-proxy`, not just
+  `--force-recreate` alone — USER-MANUAL.md §3.1.3 now says so explicitly. The same live session
+  also surfaced a related, easy-to-miss operational trap while chasing this: a shell-exported
+  env var (e.g. a stray `export SCM_ALLOWED_HOST=...` left over from earlier debugging) silently
+  wins over the same key's value in `.env` for Docker Compose's `${VAR}` interpolation, with no
+  warning — USER-MANUAL.md §3.1.3 now recommends always passing `--env-file .env` explicitly and
+  checking `echo "[$VAR]"` before assuming a `.env` edit didn't take effect. Still real,
   unautomated future work: a real webhook delivery from the dockerized Gitea/GitLab container back
   to a host-process `minicoder api serve` needs its own host-networking setup this script does not
   attempt — local testing without a real webhook still uses the already-documented `minicoder
