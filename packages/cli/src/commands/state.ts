@@ -9,6 +9,7 @@ import {
   checkPrDiscoveryDivergence,
   reconcileState,
   exportDiagnostics,
+  listWorkflowLocks,
 } from '@minicoder/api';
 import { requireNonBlankEnvVar } from '@minicoder/triggerdev';
 import type { ScmClient } from '@minicoder/core';
@@ -288,6 +289,41 @@ export function createStateCommand(): Command {
         if (!healthy) {
           process.exit(1);
         }
+      } finally {
+        await db.close();
+      }
+    });
+
+  state
+    .command('locks')
+    .description(
+      'Inspect workflow_locks in detail (resource_key/holder_id/fence/acquired_at) — read-only ' +
+        "(issue #109). Distinguishes a stale-but-cleanly-released lock (released's expires_at===" +
+        'updated_at) from a genuinely orphaned one, which `doctor`\'s stale_locks count alone ' +
+        'cannot.',
+    )
+    .option('--project <id>', 'Project ID')
+    .option('--all', 'List every project\'s locks (default: stale-only across all projects)')
+    .action(async (opts: { project?: string; all?: boolean }) => {
+      const db = await createDbClientFromEnv();
+      try {
+        const locks = await listWorkflowLocks(db, {
+          projectId: opts.project,
+          staleOnly: !opts.all,
+        });
+        console.log(
+          JSON.stringify(
+            {
+              command: 'state locks',
+              projectId: opts.project ?? null,
+              count: locks.length,
+              locks,
+              timestamp: isoNow(),
+            },
+            null,
+            2,
+          ),
+        );
       } finally {
         await db.close();
       }

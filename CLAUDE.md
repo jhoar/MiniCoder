@@ -3709,6 +3709,51 @@ findings --feature-run <id>` still lists findings via the hidden `view` subcomma
   findings" dashboard view. This fix closes the "no resolution mechanism exists at all" gap; those
   are separate, real future-work items the original issue also named.
 
+## Workflow Lock Inspection and a Real `stale_locks` Bug (issue #109)
+
+- **`minicoder state locks [--project <id>] [--all]`** (`packages/api/src/read-models/
+diagnostics.ts`'s `listWorkflowLocks()`) is the new read-only inspection command the issue asked
+  for — `state doctor`'s `stale_locks` check only ever reported `id`/`expires_at`, not what a lock
+  is for (`resource_key`) or who was holding it (`holder_id`/`fence`/`acquired_at`), and there was
+  no ad hoc SQL escape hatch in the CLI. Defaults to stale-only across every project; `--project`
+  scopes it, `--all` lists every lock regardless of staleness. Never mutates anything (unlike
+  `state reconcile`, which clears stale rows) — a plain read, the same "CLI and API share one
+  implementation of this SQL" precedent `state doctor`/`reconcile`/`export-diagnostics` already
+  establish.
+- **`stale_locks` no longer conflates "cleanly released" with "orphaned."**
+  `WorkflowLockManager.release()` sets `expires_at`/`updated_at` to the exact same `now` value (a
+  released lock is supposed to be immediately re-acquirable), so a cleanly-released row permanently
+  satisfied the old `expires_at < <now>` check identically to a genuinely orphaned lock whose TTL
+  expired because its holder crashed. `acquire()` computes `expires_at`/`updated_at` independently
+  (`expires_at` is roughly `ttlMs` after `updated_at`), so `expires_at === updated_at` is a
+  reliable signal a row was released cleanly. `runDoctorChecks()`'s `stale_locks` check and
+  `listWorkflowLocks()`'s `releasedCleanly` field both use this now; only non-cleanly-released
+  (genuinely orphaned) rows count toward `stale_locks`' `severity: 'error'`. `state reconcile`'s
+  clearing behavior is unchanged (re-stamping a lock to look freshly-released is harmless either
+  way, exactly as the issue itself proposed).
+- **A real, previously-undiscovered bug surfaced while writing this fix's regression tests, not
+  just the issue's own ask: `stale_locks`/`state reconcile` compared `workflow_locks.expires_at`
+  against the SQL keyword `CURRENT_TIMESTAMP`, which is broken on SQLite for same-UTC-day
+  comparisons.** `WorkflowLockManager` always writes `expires_at`/`updated_at` in `isoNow()`'s
+  `'YYYY-MM-DDTHH:MM:SS.sssZ'` shape, but SQLite's `CURRENT_TIMESTAMP` keyword produces
+  `'YYYY-MM-DD HH:MM:SS'` (a space separator, no fractional seconds, no `Z`) — a different text
+  shape. Since SQLite compares TEXT columns lexically and the space character (`0x20`) sorts
+  before `'T'` (`0x54`), any `expires_at < CURRENT_TIMESTAMP` comparison where both values fall on
+  the same calendar day evaluates **false** regardless of the actual times involved — confirmed
+  empirically (a test lock that expired 30 minutes earlier the same day was silently never flagged
+  as stale). This is the identical class of bug CLAUDE.md's Observability section already
+  documents fixing for `state repair --apply`'s writes (PR #73 round 3, MEDIUM-1) — this is the
+  same bug in a different, previously-unexercised code path (nothing had ever written a test that
+  seeded a same-day expired lock and asserted the doctor check actually caught it). Fixed by
+  binding a single `isoNow()` value for every `workflow_locks` comparison and write in
+  `runDoctorChecks()`, `listWorkflowLocks()`, and `reconcileState()` instead of using the SQL
+  keyword — harmless on PostgreSQL either way (`TIMESTAMPTZ` compares as a real timestamp
+  regardless of the literal used to write it), so this was a SQLite-only correctness gap, exactly
+  like the earlier `state repair` fix. `reconcileState()`'s outbox/inbox `updated_at =
+CURRENT_TIMESTAMP` writes were left as-is — confirmed by grep that neither column is ever used in
+  a lexical `<`/`>` comparison elsewhere, so there is no proven bug there, only the same class of
+  latent stylistic inconsistency; not fixed in this pass since there's no regression to point at.
+
 ## Task Result Persistence (issue #122)
 
 - **`runRegisteredTask()`/`MockTriggerRunner.run()` previously discarded every task's structured

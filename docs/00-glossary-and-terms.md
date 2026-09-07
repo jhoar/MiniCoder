@@ -543,6 +543,7 @@ minicoder state reconcile --all                        # global (stale locks + s
 minicoder state doctor
 minicoder state doctor --check-scm                     # opt-in; requires a provider credential (GITHUB_TOKEN/GITEA_TOKEN/GITLAB_TOKEN) (issue #35, generalized in Stage 5)
 minicoder state doctor --check-github                  # deprecated alias for --check-scm, kept for backward compatibility
+minicoder state locks [--project <id>] [--all]          # issue #109: workflow_locks detail (resource_key/holder_id/fence); read-only, default stale-only across all projects
 minicoder state export-diagnostics
 minicoder state repair --project <id> --dry-run        # preview only (non-destructive; --project required)
 minicoder state repair --project <id> --apply --confirmation <token>  # guarded destructive apply
