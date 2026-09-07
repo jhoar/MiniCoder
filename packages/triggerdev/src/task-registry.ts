@@ -21,6 +21,7 @@
  */
 import { z } from 'zod';
 import type { DbClient } from '@minicoder/core';
+import { defaultRedactor } from '@minicoder/core';
 import { linkRunToDb, updateRunStatus } from './metadata.js';
 import { resolveDefaultPlannerAdapter } from './tasks/planner-adapter.js';
 import type { TaskId } from './task-ids.js';
@@ -120,6 +121,23 @@ export const TASK_REGISTRY: ReadonlyMap<TaskId, TaskDefinition<unknown, unknown>
   def('run-design-doc', 5, RunDesignDocSchema, runRunDesignDoc),
 ]);
 
+const MAX_RESULT_LENGTH = 2000;
+
+/**
+ * Issue #122: `runImpl()`'s structured return value (e.g. `run-review.ts`'s `reviewed`/`decision`,
+ * distinguishing a real reviewer invocation from every short-circuit no-op path) was previously
+ * discarded once this function returned — `trigger inspect-run` could only ever show
+ * `status: 'succeeded'`, `error: null`, identical for "ran and did nothing" and "did real work".
+ * Redacted the same way `task-worker.ts`'s `summarizeError()` redacts a failure message (a task
+ * result could in principle carry a sensitive field depending on what a future task returns) and
+ * length-capped the same way, since this is stored in the same style of TEXT/JSONB column.
+ */
+export function summarizeResult(result: unknown): string {
+  const redacted = defaultRedactor.redactObject(result);
+  const json = JSON.stringify(redacted);
+  return json.length > MAX_RESULT_LENGTH ? json.slice(0, MAX_RESULT_LENGTH) : json;
+}
+
 /**
  * Runs one registered task against an already-connected `db` — unlike the old
  * `makeTaskRunner`/`triggerdev-tasks.ts`, this does NOT create or close its own `DbClient`. Each
@@ -151,7 +169,7 @@ export async function runRegisteredTask(
   });
   try {
     const result = await definition.impl(payload, db);
-    await updateRunStatus(db, runId, 'succeeded');
+    await updateRunStatus(db, runId, 'succeeded', summarizeResult(result));
     return result;
   } catch (err) {
     await updateRunStatus(db, runId, 'failed');

@@ -20,6 +20,10 @@ import {
   claimIdempotencyKey,
   fulfillIdempotencyKey,
 } from '../../helpers.js';
+import { computePlannerCostUsd, resolvePlannerPromptTemplateVersion } from '../../../cost/planner-pricing.js';
+import { EnvConfigBackend } from '../../../config/config.js';
+
+const envConfig = new EnvConfigBackend();
 
 export const AssessPlanningReadinessPayloadSchema = z.object({
   projectId: z.string(),
@@ -78,6 +82,25 @@ export class AssessPlanningReadinessHandler implements CommandHandler<
         projectId,
         input: { projectId, specificationContent, correlationId: envelope.correlationId },
         capabilitiesUsed: ['can_generate_plan'],
+        promptTemplateVersion: resolvePlannerPromptTemplateVersion(),
+        // Issue #100: every planning-readiness-assessment run previously recorded no cost/token
+        // usage at all, leaving evaluateBudget()/forecastBudget()/GET /budget-report blind to
+        // planning-phase spend. Mirrors run-coder.ts's costExtractor shape exactly.
+        costExtractor: (outcome) => {
+          if (!outcome.ok) return null;
+          const out = outcome.output as { tokensUsed?: { input: number; output: number } };
+          if (!out.tokensUsed) return null;
+          return {
+            inputTokens: out.tokensUsed.input,
+            outputTokens: out.tokensUsed.output,
+            costUsd: computePlannerCostUsd(out.tokensUsed.input, out.tokensUsed.output),
+            // A different generic fallback label than run-coder.ts's (packages/triggerdev) —
+            // core's no-provider-imports fitness test bans a certain vendor-name substring
+            // anywhere in core/src, which that other package's literal fallback contains.
+            provider: envConfig.get('CODE_GEN_PROVIDER_NAME') ?? 'generic-llm-http',
+            model: envConfig.get('CODE_GEN_MODEL'),
+          };
+        },
       },
       () =>
         this.planner.run({

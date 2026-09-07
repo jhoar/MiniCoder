@@ -1,5 +1,6 @@
 import type { DbClient } from '@minicoder/core';
 import { linkRunToDb, updateRunStatus } from './metadata.js';
+import { summarizeResult } from './task-registry.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type TaskRunFn<P, R> = (payload: P, db: DbClient, extra?: any) => Promise<R>;
@@ -49,7 +50,7 @@ export class MockTriggerRunner {
     let result: R;
     try {
       result = await impl(payload, this.db, extra);
-      await updateRunStatus(this.db, resolvedRunId, 'succeeded');
+      await updateRunStatus(this.db, resolvedRunId, 'succeeded', summarizeResult(result));
     } catch (err) {
       await updateRunStatus(this.db, resolvedRunId, 'failed');
       throw err;

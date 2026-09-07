@@ -3454,6 +3454,41 @@ WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never
   a deployment without a real webhook wired (and unwilling to hand-simulate every event via
   `github/gitea/gitlab simulate-*`) has no way to invoke it on demand. Documented as a known,
   open gap in `USER-MANUAL.md` §4 Step 4, not fixed in this pass.
+  **Closed by issue #119:** `POST /commands/request-reconciliation`
+  (`packages/api/src/commands/task-trigger-routes.ts`, operator-role-gated via `requireRole()`)
+  and `minicoder run reconciliation --project <id> [--feature-run <id>]` — the tenth enqueue
+  route/CLI wrapper this codebase has added the same way (mirroring
+  `request-start-next-feature`'s exact shape: `featureRunId` optional, `GithubReconciliationPayload`
+  already carried this contract since its original Phase 7 definition). `github-reconciliation.ts`'s
+  `runImpl` needed no changes — it was already safe to invoke repeatedly; the only gap was that
+  nothing outside a real scheduled/webhook-triggered path, or a test, ever called it.
+- **Issue #118 (open, partially addressed): nothing re-invokes the coder adapter when a feature
+  run enters `fixing`.** `run-coder.ts`'s `runImpl` already branches on `coding` vs `fixing`
+  internally (`isFixCycle`) and handles both correctly once invoked — confirmed by reading the
+  guard directly (`current_execution_state !== CODING && !== FIXING` is the only state check). The
+  real gap is purely the trigger: `minicoder run coder`/`request-coder-run` already work
+  unmodified against a `fixing`-state feature run (no state restriction anywhere in the CLI/API
+  path), but this was undocumented, and nothing automatically re-invokes it. Closed the
+  documentation half: `USER-MANUAL.md` §4 Step 3a now walks through manually re-running the exact
+  same `run coder` command once a feature reaches `fixing`, and `minicoder run coder`'s CLI
+  description now says so directly. Left open, per the issue's own framing: whether this should
+  become an automatic watcher is a real architectural question against this codebase's "never
+  inline, always separate scheduled/triggered task" convention and its "no scheduling/cron
+  construct exists or is needed" decision (§ Task Worker Operational Constraints above) — not a
+  small patch, and not decided in this pass.
+  **Resolved by issue #123, not a backend change:** a backend auto-chain was deliberately rejected
+  — nothing in this codebase auto-chains any Workflow Layer task, not even the initial `coding`
+  invocation (`start-next-feature.ts` dispatches `StartCodingCommand` but never enqueues
+  `run-coder` itself), and there is no "default adapter for this role" concept anywhere
+  (`AdapterRegistry` is keyed by name, not "the coder adapter for project X") that an automatic
+  enqueue could use to supply the required `coderAdapterName` without inventing new,
+  unplanned scope. Making the fix-cycle hop uniquely automatic while every other hop (including
+  the very first one) stays manual would also be a real inconsistency, not a small patch. Instead,
+  `minicoder run feature --watch` (issue #123, `packages/cli/src/commands/run.ts`) is the resolving
+  mechanism: a human-launched CLI poll loop that carries the adapter names for its whole lifetime
+  (the same information a human already had to remember across manual steps) and re-invokes
+  `run coder` whenever it observes the feature run at `fixing` — using the exact same
+  already-correct `run-coder.ts` `isFixCycle` branch, no backend changes needed.
 
 **Full pipeline live-verified end to end against a real Gitea instance (issues #112/#113).**
 A real feature (`FR-001`, project `ons`) was driven through the entire sequence documented
@@ -3507,6 +3542,284 @@ design questions, not quick patches):**
   fix cycle at all, so those findings are written once and then permanently orphaned — never
   re-surfaced, never resolvable by any command, indistinguishable from "nobody ever looked at
   this."
+
+## CLI-Level "Drive One Feature to Completion" Loop (`packages/cli/src/commands/run.ts`, issue #123)
+
+- **`minicoder run feature --watch` is a CLI-level poll loop, not a new Workflow Layer task or a
+  backend auto-chain.** It resolves issue #118 (see the Planner Generation Wiring section's
+  updated bullet above for why a backend fix was rejected) by being the thing that actually
+  re-issues each hop: it polls `GET /feature-runs/:id` (a new `ApiClient.getFeatureRun()` method —
+  the route already existed, unwrapped, since Phase 15) and calls the matching existing enqueue
+  route for the observed `current_execution_state`, exactly mirroring the manual sequence
+  USER-MANUAL.md §4 Step 4 already documents. It requires `--watch` explicitly (no accidental
+  invocation of a long-running foreground command) and assumes `minicoder tasks worker` is already
+  running elsewhere — like every other enqueue route/CLI wrapper in this codebase, this command
+  only enqueues; it never executes a task itself.
+- **State-to-action table, and why some states re-issue their action every tick while others only
+  act once per newly-observed state:** `approved_pending_execution`/`selected` →
+  `request-start-next-feature` (targeted — this is the same call that also recovers a run stranded
+  at `selected`); `coding`/`fixing` → `request-coder-run` (the `fixing` case is #118's actual
+  resolution); `code_pushed`/`pr_opened`/`ci_running`/`changes_requested`/`ci_failed`/
+  `merge_failed` → `request-reconciliation`; `under_review` → **both** `request-review` and
+  `recompute-merge-gate` (see below); `approved_by_policy` → `merge-if-ready`. The first three
+  groups act once when the state is first observed, then only re-issue if stuck in the same state
+  longer than `--stuck-retry-ms` (default 60s — covers a task that silently failed, or no worker
+  having been running yet when the first enqueue happened). `under_review` and
+  `approved_by_policy` are deliberately re-issued on **every** tick instead: a clean review leaves
+  the feature run at `under_review` with **no state change at all** (CLAUDE.md's Reference
+  Reviewer Adapter Operational Constraints — "Phase 12's Merge Gate owns that transition," not
+  `run-review.ts`), so waiting for a state change before reacting again would hang forever. Both
+  calls are safe/idempotent to repeat (`request-review` short-circuits via the
+  `review_occurrence_markers` check if the current PR head was already reviewed;
+  `recompute-merge-gate` is documented as "safe to invoke repeatedly... a feature run not at
+  `under_review` is a clean no-op").
+- **`merge_ready` observed as the *current* state (not transiently, mid-call) is treated as stuck
+  and the loop stops** — `POST /commands/merge-if-ready` itself advances `approved_by_policy` all
+  the way to `merged` (or a clean `409`) inside one HTTP request; the only way to observe a feature
+  run sitting at `merge_ready` on a later poll is a crash between `MergeIfReadyCommand`'s
+  transition and the real GitHub merge call. That exact window's recovery is
+  `minicoder merge finalize-if-github-merged`'s job (issue #56), not this loop's, so the loop
+  reports it and exits (code 2) rather than guessing.
+- **`ApiClient.mergeIfReady()` (`packages/tui/src/client/api-client.ts`) is a new method wrapping
+  the pre-existing `POST /commands/merge-if-ready` route, which had no typed client before this —
+  every prior caller of that route was `packages/cli/src/commands/merge.ts`'s DB-direct
+  implementation, not an HTTP client.** Its `409` response (`{merged:false, reasons:[...]}` for a
+  blocked gate, or `{merged:false, reason, autoClearable, resolution}` for a merge rejection) is a
+  normal, expected outcome per that route's own doc comment — not an RFC 9457 problem document —
+  so wrapping it in the shared `request()`/`post()` helpers (which throw `ApiError` on any non-2xx)
+  would have silently discarded the structured body. Added `postExpecting()`, a sibling to
+  `post()` that takes an explicit list of non-2xx statuses to return as data instead of throwing;
+  any other status (e.g. a `403` from an insufficient-role key) still throws `ApiError` exactly
+  like every other method. `MergeIfReadyResult` is exported from `@minicoder/tui/client`'s barrel
+  alongside the client itself.
+- **Fail-safe exit codes, not a single pass/fail bit:** `0` = reached `merged`/`skipped`; `1` =
+  stopped at `human_required`/`blocked`/`failed`/`system_failed` (needs a human, via
+  `minicoder human ...`) or hit an unexpected error; `2` = reached a state that needs a *different*
+  follow-up the loop won't attempt itself (`--no-merge` stopping at `approved_by_policy`, a `403`
+  from an insufficient-role key, or a stuck `merge_ready`); `3` = `--timeout-ms` elapsed. The loop
+  never guesses past a state that needs a human decision — the exact fail-safe framing issue #123
+  itself specified.
+- **Deliberately does not attempt to automate the no-CI `simulate-*` workaround** — per issue
+  #123's own scoping, that would just be automating a human's stand-in for real CI, not real
+  automation. The loop assumes a real CI signal (or #120's future self-attested-sandbox fallback)
+  is already wired up and simply waits on it like any other state transition (via the
+  `request-reconciliation` catch-up call, same as every other "waiting on the SCM" state). #120/
+  #121 remain the actual fix for a project with no CI at all.
+
+## Planner Cost Tracking and Blocking-Gap Visibility (issues #100, #105)
+
+- **Issue #100 (closed): `AssessPlanningReadinessHandler` previously wired no `costExtractor` at
+  all, so every planning-readiness-assessment run recorded zero cost regardless of real token
+  usage** — leaving `evaluateBudget()`/`forecastBudget()`/`GET /budget-report` blind to
+  planning-phase spend, the same gap Phase 9 closed for the Coder role and Phase 17 closed for the
+  Documentation role. `PlannerOutput` gained an optional `tokensUsed: { input, output }` field
+  (additive — every existing caller/mock that doesn't set it keeps compiling);
+  `GenericLLMPlannerAdapter.run()` passes it through from `PlanProvider.assessReadiness()`'s
+  result. `AssessPlanningReadinessHandler` now passes `promptTemplateVersion` and a `costExtractor`
+  to `recorder.record()`, mirroring `run-coder.ts`'s shape. **Cost-pricing logic could not simply
+  reuse `packages/triggerdev/src/tasks/planner-cost.ts`'s existing helper — this handler lives in
+  `packages/core`, which cannot depend on `packages/triggerdev`.** Fixed with a small, deliberately
+  duplicated `packages/core/src/cost/planner-pricing.ts` (`resolvePlannerPromptTemplateVersion()`/
+  `computePlannerCostUsd()`), reading the exact same `PLANNER_PROMPT_TEMPLATE_VERSION`/
+  `PLANNER_PRICE_PER_1K_{INPUT,OUTPUT}_TOKENS` env vars as the triggerdev version (via
+  `EnvConfigBackend`, never bare `process.env`, per core's `no-restricted-syntax` rule) so operator
+  configuration is consistent regardless of which call site is active — not a shared module,
+  because core cannot import from triggerdev and triggerdev's version already has its own tests.
+  The `costExtractor`'s fallback provider label is `'generic-llm-http'`, not `run-coder.ts`'s
+  literal fallback string — core's `no-provider-imports` fitness test does a plain substring scan
+  across `core/src` file content (not import-statement parsing) for a certain banned vendor-name
+  substring, which that other package's literal fallback contains; this is a different, equally
+  generic label chosen specifically to avoid it, not an accidental drift between the two.
+  Regression coverage: `generic-llm-planner-adapter.test.ts` (passthrough), `mock-planner.ts`
+  gained a settable `tokensUsed` field (unset by default — every existing scenario is unaffected),
+  and the `planning-basic` scenario asserts a real `cost_records` row (`scope='project'`,
+  `amount > 0`) appears after a readiness-assessment run with `tokensUsed` set.
+- **Issue #105 (resolved, not closed as "fixed a bug" — a genuine design decision, documented
+  here): should `generate-implementation-plan`/`generate-feature-backlog` hard-gate on unresolved
+  blocking `planning_gaps`?** Rejected a hard gate: `SubmitPlanForApprovalHandler` is already the
+  real blocking-gap gate (docs/02 §9), and gating plan/backlog *generation* itself would add
+  friction to iterative drafting — an operator should be able to draft a plan against a
+  known-incomplete assessment and resolve gaps before submitting for approval, not be blocked from
+  drafting at all. Also rejected adding a `warnings` field to `CommandResult`: these two commands
+  run asynchronously via the task queue, so the enqueue-time HTTP response returns before
+  generation even executes, and `toCommandEnvelopeResponse()`
+  (`packages/api/src/commands/command-response.ts`) whitelists exactly four fields
+  (`command_id`/`accepted`/`resulting_state`/`emitted_event_ids`) with no room for one anyway.
+  **Resolution: a visible, durable `workflow_events` warning row, not a hard gate.**
+  `GenerateImplementationPlanHandler`/`GenerateFeatureBacklogHandler` now query
+  `planning_gaps WHERE assessment_id = ? AND severity = 'blocking' AND resolved_at IS NULL`
+  (`GenerateFeatureBacklogHandler`'s plan-lookup query was extended to also select
+  `assessment_id`, since it previously only selected `id`) immediately after their existing
+  `plan.generated`/`backlog.generated` event writes, and — only if any unresolved blocking gap
+  exists — writes a second event in the same transaction
+  (`plan.generated_with_unresolved_blocking_gaps` / `backlog.generated_with_unresolved_blocking_gaps`)
+  carrying `{planId, assessmentId, unresolvedBlockingGapCount, gapIds}` in its `payload`. This is
+  queryable via the already-existing `GET /workflow-events` route with no new endpoint — an
+  operator (or the Web UI, in future work) can see it without polling a new surface.
+  **This required extending `writeWorkflowEvent()` (`packages/core/src/commands/helpers.ts`) with
+  a new, optional `payload?: unknown` parameter** — `workflow_events.payload` (migration 0001)
+  existed unwritten by this shared helper since the initial schema; every prior caller relied on
+  `writeOutboxEvent()`'s own payload for structured detail instead. JSON-serialized when present,
+  left `NULL` when omitted (unchanged behavior for every one of this helper's many existing
+  callers, since the new parameter is optional and appended, not inserted, into the params list).
+  Regression coverage: the `planning-basic` scenario seeds a blocking `planning_gaps` row directly
+  (the `sufficient` `MockPlannerAdapter` behavior reports no gaps on its own, simulating one raised
+  during an earlier clarification round and left unresolved), drives both
+  `generate-implementation-plan`/`generate-feature-backlog` against it, asserts both warning events
+  and their payloads, then resolves the gap and regenerates the plan again, asserting the warning
+  event count does *not* increase — proving the check is live against current gap state, not a
+  one-shot flag.
+
+## Non-Blocking Finding Resolution Lifecycle (issue #116)
+
+- **`review_findings` had exactly one mechanism anywhere in this codebase that could ever mark a
+  row `resolved` — `RecordCodePushedHandler`'s fix-cycle "optimistic fixed" write, which only runs
+  on a `fixing -> code_pushed` push (i.e. only when a `blocking` finding already triggered a fix
+  cycle).** A review producing only `non_blocking`/`nit`/`question`/`out_of_scope` findings never
+  enters a fix cycle at all, so those findings were written once and then permanently orphaned:
+  never resolvable by any command, indistinguishable from "nobody ever looked at this."
+- **Resolution: `resolveReviewFinding()` (`packages/api/src/read-models/review-finding-
+resolution.ts`), a lightweight human-disposition action — not a `CommandHandler`**, since
+  `review_findings` carries no `StateTransitionValidator` matrix (`resolved` is a plain boolean
+  column, no `CHECK` constraint). Reuses `human_approvals` (via the existing `insertHumanApproval()`
+  helper) for the disposition audit trail rather than inventing new columns: `--dismiss` records
+  `decision: 'approved'` ("looked at, not worth fixing") and also flips `review_findings.resolved`
+  to `TRUE`; omitting it records `decision: 'deferred'` ("looked at, still wants it addressed") and
+  leaves `resolved` unchanged. This lets a caller distinguish three states that previously all
+  looked identical (`resolved = FALSE`): never looked at (no `human_approvals` row for this
+  finding), looked at and still open (`deferred`, `resolved = FALSE`), and looked at and dismissed
+  (`approved`, `resolved = TRUE`). Also writes a `review_finding.disposition_recorded`
+  `workflow_events` row (feature-run-scoped) for audit visibility, mirroring `state repair`'s
+  mutation-plus-event-insert-in-one-transaction convention.
+- **`POST /commands/resolve-review-finding`** (`packages/api/src/commands/resolve-review-finding-
+route.ts`) is a dedicated, non-generic-dispatch route — the same "non-command DB-write action,
+  `requireRole()` explicitly, no `Idempotency-Key` needed since the underlying write is naturally
+  idempotent" posture `repair-design-document-binding-route.ts`/`finalize-if-github-merged-
+route.ts` already establish. `operator`-role floor. `minicoder findings resolve --finding-id <id>
+[--dismiss] [--note <text>]` is the CLI wrapper; `findings.ts` moved to the `isDefault`/`hidden`
+  sibling-subcommand shape `plan.ts`/`design-doc.ts` already established (a bare `minicoder
+findings --feature-run <id>` still lists findings via the hidden `view` subcommand).
+  `renderCommandResultView()` (`packages/tui/src/views.tsx`) gained an optional `projectId` — this
+  is the first caller with no natural project id to display (a `review_findings` row has no
+  `project_id` column of its own).
+- **Not addressed by this fix, tracked separately**: whether a non-blocking finding should be
+  re-surfaced/re-evaluated on a subsequent review cycle of the same feature run (today a clean
+  review of an unchanged head SHA still short-circuits before the adapter is invoked again, per
+  the `review_occurrence_markers` check — issue #46), and an aggregate "N unresolved non-blocking
+  findings" dashboard view. This fix closes the "no resolution mechanism exists at all" gap; those
+  are separate, real future-work items the original issue also named.
+
+## Workflow Lock Inspection and a Real `stale_locks` Bug (issue #109)
+
+- **`minicoder state locks [--project <id>] [--all]`** (`packages/api/src/read-models/
+diagnostics.ts`'s `listWorkflowLocks()`) is the new read-only inspection command the issue asked
+  for — `state doctor`'s `stale_locks` check only ever reported `id`/`expires_at`, not what a lock
+  is for (`resource_key`) or who was holding it (`holder_id`/`fence`/`acquired_at`), and there was
+  no ad hoc SQL escape hatch in the CLI. Defaults to stale-only across every project; `--project`
+  scopes it, `--all` lists every lock regardless of staleness. Never mutates anything (unlike
+  `state reconcile`, which clears stale rows) — a plain read, the same "CLI and API share one
+  implementation of this SQL" precedent `state doctor`/`reconcile`/`export-diagnostics` already
+  establish.
+- **`stale_locks` no longer conflates "cleanly released" with "orphaned."**
+  `WorkflowLockManager.release()` sets `expires_at`/`updated_at` to the exact same `now` value (a
+  released lock is supposed to be immediately re-acquirable), so a cleanly-released row permanently
+  satisfied the old `expires_at < <now>` check identically to a genuinely orphaned lock whose TTL
+  expired because its holder crashed. `acquire()` computes `expires_at`/`updated_at` independently
+  (`expires_at` is roughly `ttlMs` after `updated_at`), so `expires_at === updated_at` is a
+  reliable signal a row was released cleanly. `runDoctorChecks()`'s `stale_locks` check and
+  `listWorkflowLocks()`'s `releasedCleanly` field both use this now; only non-cleanly-released
+  (genuinely orphaned) rows count toward `stale_locks`' `severity: 'error'`. `state reconcile`'s
+  clearing behavior is unchanged (re-stamping a lock to look freshly-released is harmless either
+  way, exactly as the issue itself proposed).
+- **A real, previously-undiscovered bug surfaced while writing this fix's regression tests, not
+  just the issue's own ask: `stale_locks`/`state reconcile` compared `workflow_locks.expires_at`
+  against the SQL keyword `CURRENT_TIMESTAMP`, which is broken on SQLite for same-UTC-day
+  comparisons.** `WorkflowLockManager` always writes `expires_at`/`updated_at` in `isoNow()`'s
+  `'YYYY-MM-DDTHH:MM:SS.sssZ'` shape, but SQLite's `CURRENT_TIMESTAMP` keyword produces
+  `'YYYY-MM-DD HH:MM:SS'` (a space separator, no fractional seconds, no `Z`) — a different text
+  shape. Since SQLite compares TEXT columns lexically and the space character (`0x20`) sorts
+  before `'T'` (`0x54`), any `expires_at < CURRENT_TIMESTAMP` comparison where both values fall on
+  the same calendar day evaluates **false** regardless of the actual times involved — confirmed
+  empirically (a test lock that expired 30 minutes earlier the same day was silently never flagged
+  as stale). This is the identical class of bug CLAUDE.md's Observability section already
+  documents fixing for `state repair --apply`'s writes (PR #73 round 3, MEDIUM-1) — this is the
+  same bug in a different, previously-unexercised code path (nothing had ever written a test that
+  seeded a same-day expired lock and asserted the doctor check actually caught it). Fixed by
+  binding a single `isoNow()` value for every `workflow_locks` comparison and write in
+  `runDoctorChecks()`, `listWorkflowLocks()`, and `reconcileState()` instead of using the SQL
+  keyword — harmless on PostgreSQL either way (`TIMESTAMPTZ` compares as a real timestamp
+  regardless of the literal used to write it), so this was a SQLite-only correctness gap, exactly
+  like the earlier `state repair` fix. `reconcileState()`'s outbox/inbox `updated_at =
+CURRENT_TIMESTAMP` writes were left as-is — confirmed by grep that neither column is ever used in
+  a lexical `<`/`>` comparison elsewhere, so there is no proven bug there, only the same class of
+  latent stylistic inconsistency; not fixed in this pass since there's no regression to point at.
+
+## `trigger`/`plan validate-backlog`/`import-backlog` Adopt renderOrJson (issues #104, #110)
+
+- **Every `minicoder trigger ...` subcommand (`deploy`/`list-runs`/`inspect-run`/`cancel-run`/
+  `replay-run`/`drain-queue`/`reset-dev`/`validate`/`reconcile`) and `minicoder plan
+{validate-backlog,import-backlog}` now go through the shared `renderOrJson()` helper**, matching
+  every other CLI command group's default-rendered/`--json`-escape-hatch convention. Previously
+  these always printed raw `console.log(JSON.stringify(...))` with no `--json` flag at all — the
+  one command shape in this CLI that didn't follow the established render-by-default pattern.
+  Under `--json`, every field name/shape is byte-for-byte unchanged from before this fix; only a
+  default human-readable rendering layer was added on top.
+- **Two new generic `@minicoder/tui/views` functions**, not one bespoke Ink view per subcommand —
+  these DB-direct commands' results have no fixed shape the way e.g. `renderCommandResultView()`'s
+  `{command, projectId, resultingState}` callers do:
+  - `renderGenericSummaryView(data: Record<string, unknown>)` — a `KeyValue` list generic over any
+    flat-ish object; array/object field values are `JSON.stringify`'d inline rather than recursed
+    into (meant for command-acknowledgement-shaped results — ids, counts, flags, a short list —
+    not a general-purpose object browser).
+  - `renderGenericRowsView(rows: Record<string, unknown>[])` — a `Table` with columns inferred from
+    the first row's own keys, for `trigger list-runs`'/`reconcile`'s untyped DB row arrays. Falls
+    back to a plain "(none)" for an empty array, since there are no keys to build columns from.
+  - `renderCommandResultView()`'s `projectId` field was widened to optional (issue #116 already
+    needed this for `findings resolve`, which has no natural project id — reused here for
+    `plan validate-backlog`, which does have one and keeps passing it, so no behavior change for
+    existing callers).
+- **A pre-flight validation failure (missing flags, an unsafe `--env`) still exits via a plain
+  `console.error` + non-zero `process.exitCode` before either the JSON or the Ink path runs** —
+  those were never JSON output to begin with (e.g. `trigger reset-dev`'s multi-step env-safety
+  guard), so this fix doesn't touch them. A result-dependent exit code (e.g. `cancel-run` exiting
+  1 when nothing was cancelled, `validate` exiting 1 on a `TASK_REGISTRY` mismatch) is set as a
+  side effect inside the `fetchData` closure passed to `renderOrJson`, before it returns — this
+  works identically whether the JSON or the Ink branch ultimately executes, since `process.exitCode`
+  is a global and `renderOrJson` doesn't need to inspect it itself.
+- Existing `trigger.test.ts` assertions were updated to pass `--json` explicitly (the previous
+  default-and-only behavior), matching how every other CLI test file in this repo already tests
+  its JSON path; a new `plan-backlog-commands.test.ts` covers `validate-backlog`'s `--json` output
+  shape and confirms the default (non-JSON) path renders via Ink without throwing.
+
+## Task Result Persistence (issue #122)
+
+- **`runRegisteredTask()`/`MockTriggerRunner.run()` previously discarded every task's structured
+  return value once the in-process call returned** — `updateRunStatus()` wrote only
+  `triggerdev_status`/`last_seen_at`/`updated_at`, so `minicoder trigger inspect-run` could only
+  ever show `status: 'succeeded'`, `error: null` for both "ran and did nothing" (a short-circuit
+  no-op guard, e.g. `run-review.ts`'s `reviewed: false`) and "did real work" — both looked
+  identical. Found directly while investigating issue #111 (a `run-review` invocation with no
+  resulting `agent_runs` row), which could only be explained by reading source and reconstructing
+  the live session's timeline after the fact — a queryable result would have made it a one-command
+  check.
+- **`triggerdev_runs.result` (migration 0020, additive) now stores the task's JSON-encoded
+  result**, redacted and length-capped (2000 chars) the same way `task_queue.error` already is via
+  `summarizeError()`/`defaultRedactor` — a task result could in principle carry a sensitive field
+  depending on what a future task returns. `task-registry.ts`'s new `summarizeResult()` (exported,
+  reused by `mock-runner.ts` for parity in scenario tests) does this; `updateRunStatus()` gained an
+  optional `result` parameter, `COALESCE`d against the existing value so a failure update (which
+  has no structured result) never clobbers a prior success's result. Surfaced automatically via
+  `trigger inspect-run`'s existing `SELECT * FROM triggerdev_runs ...` — no query change needed.
+- **Deliberately did not populate `linked_agent_run_id`** (the issue's second suggested fix,
+  closing a separate, adjacent gap in the same table). None of the existing task result interfaces
+  (`RunReviewResult`, `RunCoderResult`, `RunDesignDocResult`) actually expose the `agentRunId` an
+  invocation's `AgentRunRecorder.record()` call produced — closing this would require adding that
+  field to each result type and its call sites, a more invasive change than this fix's primary
+  goal (making the result queryable at all) justifies. Tracked as real, deliberately deferred
+  follow-up work, not silently dropped.
+- **`minicoder trigger inspect-run`'s raw-JSON-only output (issue #110) was left as-is** — this
+  fix only adds a new column to what that command's existing `SELECT *` already returns; the
+  Ink/`renderOrJson` rendering-convention gap #110 documents is a separate, orthogonal UX issue.
 
 ## Cross-Dialect Testing (Mandatory)
 

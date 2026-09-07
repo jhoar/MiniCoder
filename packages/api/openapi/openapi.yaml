@@ -175,6 +175,16 @@ paths:
         '400': { description: 'Validation error, or the artifact is already bound to a different document' }
         '403': { description: Not authorized }
         '404': { description: Artifact export or design document not found }
+  /commands/resolve-review-finding:
+    post:
+      operationId: resolveReviewFinding
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses:
+        '200': { description: 'Disposition recorded (and resolved flipped to true if dismissed)' }
+        '400': { description: Validation error }
+        '403': { description: Not authorized }
+        '404': { description: Review finding not found }
   /commands/register-adapter:
     post:
       operationId: registerAdapter
@@ -245,6 +255,13 @@ paths:
   /commands/request-start-next-feature:
     post:
       operationId: requestStartNextFeature
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }
+      responses: { '202': { description: Enqueued } }
+  /commands/request-reconciliation:
+    post:
+      operationId: requestReconciliation
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
       requestBody:
         content: { application/json: { schema: { $ref: '#/components/schemas/CommandPayload' } } }

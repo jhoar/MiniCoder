@@ -73,5 +73,7 @@ export function resolveDefaultTaskTriggerClient(): TaskTriggerClient {
       enqueueTask('generate-feature-backlog', payload, payload.idempotencyKey),
     triggerStartNextFeature: (payload) =>
       enqueueTask('start-next-feature', payload, payload.idempotencyKey),
+    triggerGithubReconciliation: (payload) =>
+      enqueueTask('github-reconciliation', payload, payload.idempotencyKey),
   };
 }

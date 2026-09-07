@@ -95,14 +95,21 @@ export async function writeWorkflowEvent(
     toState: string;
     actorId: string;
     correlationId: string;
+    /** Issue #105: `workflow_events.payload` (migration 0001) existed unwritten by this helper
+     * since the initial schema — every caller relied on `writeOutboxEvent()`'s own payload for
+     * structured detail instead. Additive/optional so no existing caller needs to change;
+     * JSON-serialized when present, left `NULL` when omitted (unchanged prior behavior).
+     * Queryable via `GET /workflow-events` for a non-transition, audit-visible detail a caller
+     * wants attached to an event without inventing a new table. */
+    payload?: unknown;
   },
 ): Promise<string> {
   const id = generateId();
   const now = isoNow();
   // Schema columns: actor (not actor_id); no correlation_id column in workflow_events
   await tx.execute(
-    `INSERT INTO workflow_events (id, feature_run_id, project_id, event_type, from_state, to_state, actor, payload_schema_version, occurred_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO workflow_events (id, feature_run_id, project_id, event_type, from_state, to_state, actor, payload, payload_schema_version, occurred_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       opts.featureRunId ?? null,
@@ -111,6 +118,7 @@ export async function writeWorkflowEvent(
       opts.fromState,
       opts.toState,
       opts.actorId,
+      opts.payload !== undefined ? JSON.stringify(opts.payload) : null,
       SCHEMA_VERSION,
       now,
       now,

@@ -38,6 +38,10 @@ function fakeTaskTriggerClient(): TaskTriggerClient & { calls: unknown[] } {
       calls.push({ task: 'start-next-feature', payload });
       return { triggerdevRunId: 'start-next-feature-1' };
     },
+    triggerGithubReconciliation: async (payload) => {
+      calls.push({ task: 'github-reconciliation', payload });
+      return { triggerdevRunId: 'github-reconciliation-1' };
+    },
   };
 }
 
@@ -236,6 +240,70 @@ describe('task-trigger enqueue routes', () => {
     });
   });
 
+  it('POST /commands/request-reconciliation calls the injected client with no featureRunId (project-wide pass)', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-reconciliation',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-reconciliation-1',
+      },
+      payload: { projectId: 'proj-1' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body)).toMatchObject({
+      triggerdevRunId: 'github-reconciliation-1',
+      accepted: true,
+    });
+    expect(client.calls[0]).toMatchObject({
+      task: 'github-reconciliation',
+      payload: { projectId: 'proj-1', featureRunId: undefined },
+    });
+  });
+
+  it('POST /commands/request-reconciliation passes featureRunId through when supplied (scoped pass)', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-reconciliation',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-reconciliation-2',
+      },
+      payload: { projectId: 'proj-1', featureRunId: 'run-1' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(client.calls[0]).toMatchObject({
+      task: 'github-reconciliation',
+      payload: { projectId: 'proj-1', featureRunId: 'run-1' },
+    });
+  });
+
+  it('POST /commands/request-reconciliation requires projectId', async () => {
+    const client = fakeTaskTriggerClient();
+    const { app } = await buildTestApp({ taskTriggerClient: client });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/commands/request-reconciliation',
+      headers: {
+        authorization: `Bearer ${TEST_OPERATOR_KEY}`,
+        'idempotency-key': 'request-reconciliation-3',
+      },
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(client.calls).toHaveLength(0);
+  });
+
   it('POST /commands/request-readiness-assessment looks up the most recent specification_inputs row and calls the injected client', async () => {
     const client = fakeTaskTriggerClient();
     const { app, db } = await buildTestApp({ taskTriggerClient: client });
@@ -307,6 +375,7 @@ describe('task-trigger enqueue routes', () => {
       { planId: 'plan-1', plannerAdapterName: 'GenericLLMPlannerAdapter' },
     ],
     ['request-start-next-feature', {}],
+    ['request-reconciliation', {}],
   ])(
     'rejects a viewer-role key from calling POST /commands/%s (finding 2)',
     async (route, extraFields) => {

@@ -55,13 +55,19 @@ export async function updateRunStatus(
   db: DbClient,
   triggerdevRunId: string,
   status: string,
+  /** Issue #122: the task's own structured result (JSON-encoded, redacted, length-capped the
+   * same way `task_queue.error` already is), so `trigger inspect-run` can distinguish "ran and
+   * did nothing" (a short-circuit no-op guard) from "did real work" — both previously looked
+   * identical (`status: 'succeeded'`, `error: null`). Omitted (left `NULL`) on a failure update,
+   * since a thrown error has no structured result to record. */
+  result?: string,
 ): Promise<void> {
   const now = new Date().toISOString();
   await db.execute(
     `UPDATE triggerdev_runs
-     SET triggerdev_status = ?, last_seen_at = ?, updated_at = ?
+     SET triggerdev_status = ?, last_seen_at = ?, updated_at = ?, result = COALESCE(?, result)
      WHERE triggerdev_run_id = ?`,
-    [status, now, now, triggerdevRunId],
+    [status, now, now, result ?? null, triggerdevRunId],
   );
 }
 

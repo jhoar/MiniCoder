@@ -147,6 +147,44 @@ export class ApiClient {
     return this.request<T>('POST', path, { body, idempotencyKey });
   }
 
+  /** Like `post()`, but a response whose status is in `expectedStatuses` is returned as data
+   * rather than thrown as an `ApiError` — needed for `POST /commands/merge-if-ready`, whose 409
+   * responses (`{merged:false, reasons/reason, resolution}`) are a normal, expected "not ready
+   * yet"/"rejected" outcome, not an error condition, and are sent as a raw body rather than an
+   * RFC 9457 problem document. Any other status still throws `ApiError`, same as `post()`. */
+  private async postExpecting<T>(
+    path: string,
+    body: unknown,
+    idempotencyKey: string,
+    expectedStatuses: readonly number[],
+  ): Promise<{ status: number; data: T }> {
+    const url = new URL(path, this.options.baseUrl);
+    const response = await this.fetchImpl(url.toString(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.options.apiKey}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    const rawBody: unknown = await response.json().catch(() => null);
+    if (!response.ok && !expectedStatuses.includes(response.status)) {
+      const problem: ProblemDetail =
+        rawBody && typeof rawBody === 'object' && 'type' in rawBody
+          ? (rawBody as ProblemDetail)
+          : {
+              type: 'unknown-error',
+              title: 'Unknown error',
+              status: response.status,
+              detail: `HTTP ${response.status}`,
+            };
+      throw new ApiError(response.status, problem);
+    }
+    return { status: response.status, data: rawBody as T };
+  }
+
   getWhoami(): Promise<WhoamiResponse> {
     return this.get<WhoamiResponse>('/whoami');
   }
@@ -215,6 +253,13 @@ export class ApiClient {
     query?: { cursor?: string; limit?: string },
   ): Promise<CursorPage<HumanRequiredItemRow>> {
     return this.get('/human-required-items', { projectId, ...query });
+  }
+
+  /** `GET /feature-runs/:id` — a single feature run's current state, for polling loops (e.g.
+   * `minicoder run feature --watch`, issue #123) that need to react to `current_execution_state`
+   * directly rather than via the project-wide "active feature" pointer. */
+  getFeatureRun(featureRunId: string): Promise<FeatureRunRow> {
+    return this.get(`/feature-runs/${encodeURIComponent(featureRunId)}`);
   }
 
   getActiveFeature(
@@ -454,6 +499,17 @@ export class ApiClient {
       artifactExportId,
       designDocumentId,
     });
+  }
+
+  /** Issue #116: human disposition for a non-blocking review finding — `dismiss: true` records
+   * "looked at, not worth fixing" and flips `resolved` to true; `dismiss: false` (the default)
+   * records "looked at, still wants it addressed" without touching `resolved`. */
+  resolveReviewFinding(
+    findingId: string,
+    dismiss: boolean,
+    note?: string,
+  ): Promise<{ findingId: string; dismissed: boolean; alreadyResolved: boolean }> {
+    return this.post('/commands/resolve-review-finding', { findingId, dismiss, note });
   }
 
   /** Enqueues the `run-design-doc` Trigger.dev task (drafts sections, exports
@@ -771,4 +827,54 @@ export class ApiClient {
       idempotencyKey,
     );
   }
+
+  /** Enqueues `github-reconciliation` — the scheduled fallback task (pr_opened -> ci_running ->
+   * under_review, ci_failed/changes_requested follow-ups, irreconcilable-PR-closure escalation).
+   * Omit `featureRunId` to reconcile every eligible candidate for the project; pass one to scope
+   * the pass to a single feature run. Safe to invoke repeatedly — a feature run not at a
+   * reconcilable state is already a documented no-op. */
+  requestReconciliation(
+    projectId: string,
+    featureRunId: string | undefined,
+    idempotencyKey: string,
+  ): Promise<{ triggerdevRunId: string; accepted: boolean }> {
+    return this.post(
+      '/commands/request-reconciliation',
+      { projectId, featureRunId },
+      idempotencyKey,
+    );
+  }
+
+  /** `POST /commands/merge-if-ready` — re-gates `approved_by_policy -> merge_ready` and, on
+   * success, performs the real SCM merge in the same call (`merged: true`). Requires an
+   * `approver`-or-above API key. A `409` is a normal, expected "not ready"/"rejected" outcome
+   * (`merged: false`, with `reasons` for a blocked gate or `reason`/`autoClearable`/`resolution`
+   * for a merge rejection) — not an `ApiError` — since `packages/api`'s route sends it as a raw
+   * body rather than an RFC 9457 problem document; any other non-2xx (e.g. a `403` from an
+   * insufficient-role key) still throws `ApiError`, same as every other method here. */
+  mergeIfReady(
+    projectId: string,
+    featureRunId: string,
+    idempotencyKey: string,
+    mergeMethod?: 'merge' | 'squash' | 'rebase',
+  ): Promise<MergeIfReadyResult> {
+    return this.postExpecting<MergeIfReadyResult>(
+      '/commands/merge-if-ready',
+      { projectId, featureRunId, mergeMethod },
+      idempotencyKey,
+      [409],
+    ).then((r) => r.data);
+  }
 }
+
+/** `POST /commands/merge-if-ready`'s response shape — see `mergeIfReady()`'s doc comment for why
+ * `merged: false` (a blocked gate or merge rejection) is a normal result, not a thrown error. */
+export type MergeIfReadyResult =
+  | { merged: true; mergeSha: string }
+  | { merged: false; reasons: string[] }
+  | {
+      merged: false;
+      reason: string;
+      autoClearable: boolean;
+      resolution: 'under_review' | 'human_required';
+    };

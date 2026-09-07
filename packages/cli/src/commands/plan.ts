@@ -11,7 +11,11 @@ import {
 } from '@minicoder/core';
 import type { CommandEnvelope } from '@minicoder/core';
 import { humanActor, systemActor } from '@minicoder/triggerdev';
-import { renderPlanView, renderCommandResultView } from '@minicoder/tui/views';
+import {
+  renderPlanView,
+  renderCommandResultView,
+  renderGenericSummaryView,
+} from '@minicoder/tui/views';
 import {
   buildApiClient,
   renderOrJson,
@@ -59,31 +63,29 @@ export function createPlanCommand(): Command {
     )
     .option('--plan <id>', 'Show title/summary/sections for a specific implementation plan')
     .option('--json', 'Print raw JSON instead of rendering')
-    .action(
-      async (opts: { project: string; assessment?: string; plan?: string } & JsonOption) => {
-        const client = buildApiClient();
-        await renderOrJson(
-          opts,
-          async () => {
-            const [plans, readiness, detail, planDetail] = await Promise.all([
-              client.listImplementationPlans(opts.project),
-              client.listPlanningReadinessAssessments(opts.project),
-              opts.assessment
-                ? client.getPlanningReadinessAssessment(opts.assessment)
-                : Promise.resolve(undefined),
-              opts.plan
-                ? Promise.all([
-                    client.getImplementationPlan(opts.plan),
-                    client.getPlanSections(opts.plan),
-                  ]).then(([plan, { sections }]) => ({ plan, sections }))
-                : Promise.resolve(undefined),
-            ]);
-            return { plans, readiness, detail, planDetail };
-          },
-          (data) => renderPlanView(data),
-        );
-      },
-    );
+    .action(async (opts: { project: string; assessment?: string; plan?: string } & JsonOption) => {
+      const client = buildApiClient();
+      await renderOrJson(
+        opts,
+        async () => {
+          const [plans, readiness, detail, planDetail] = await Promise.all([
+            client.listImplementationPlans(opts.project),
+            client.listPlanningReadinessAssessments(opts.project),
+            opts.assessment
+              ? client.getPlanningReadinessAssessment(opts.assessment)
+              : Promise.resolve(undefined),
+            opts.plan
+              ? Promise.all([
+                  client.getImplementationPlan(opts.plan),
+                  client.getPlanSections(opts.plan),
+                ]).then(([plan, { sections }]) => ({ plan, sections }))
+              : Promise.resolve(undefined),
+          ]);
+          return { plans, readiness, detail, planDetail };
+        },
+        (data) => renderPlanView(data),
+      );
+    });
 
   plan
     .command('import-backlog <file>')
@@ -98,10 +100,17 @@ export function createPlanCommand(): Command {
       '--dry-run',
       'Preview only — validates and reports what would be imported, without writing',
     )
+    .option('--json', 'Print raw JSON instead of rendering')
     .action(
       async (
         file: string,
-        opts: { project: string; plan: string; actor: string; actorRole: string; dryRun?: boolean },
+        opts: {
+          project: string;
+          plan: string;
+          actor: string;
+          actorRole: string;
+          dryRun?: boolean;
+        } & JsonOption,
       ) => {
         const markdown = fs.readFileSync(file, 'utf-8');
 
@@ -116,103 +125,104 @@ export function createPlanCommand(): Command {
           throw err;
         }
 
-        const db = await createDbClientFromEnv();
-        try {
-          const correlationId = generateId();
-          const executor = new TransactionalCommandExecutor(db);
-          const envelope: CommandEnvelope<{
-            projectId: string;
-            planId: string;
-            features: typeof features;
-            dryRun: boolean;
-          }> = {
-            commandId: generateId(),
-            idempotencyKey: `import-backlog-cli:${opts.plan}:${file}`,
-            payload: {
-              projectId: opts.project,
-              planId: opts.plan,
-              features,
-              dryRun: opts.dryRun ?? false,
-            },
-            actor: humanActor({
-              actorId: opts.actor,
-              actorRole: opts.actorRole,
-              correlationId,
-            }),
-            correlationId,
-          };
+        await renderOrJson(
+          opts,
+          async () => {
+            const db = await createDbClientFromEnv();
+            try {
+              const correlationId = generateId();
+              const executor = new TransactionalCommandExecutor(db);
+              const envelope: CommandEnvelope<{
+                projectId: string;
+                planId: string;
+                features: typeof features;
+                dryRun: boolean;
+              }> = {
+                commandId: generateId(),
+                idempotencyKey: `import-backlog-cli:${opts.plan}:${file}`,
+                payload: {
+                  projectId: opts.project,
+                  planId: opts.plan,
+                  features,
+                  dryRun: opts.dryRun ?? false,
+                },
+                actor: humanActor({
+                  actorId: opts.actor,
+                  actorRole: opts.actorRole,
+                  correlationId,
+                }),
+                correlationId,
+              };
 
-          const result = await executor.execute(handler, envelope);
-          console.log(
-            JSON.stringify(
-              {
+              const result = await executor.execute(handler, envelope);
+              return {
                 command: 'plan import-backlog',
                 file,
                 projectId: opts.project,
                 planId: opts.plan,
                 featureCount: features.length,
                 resultingState: result.resultingState,
-              },
-              null,
-              2,
-            ),
-          );
-        } finally {
-          await db.close();
-        }
+              };
+            } finally {
+              await db.close();
+            }
+          },
+          (data) => renderGenericSummaryView(data),
+        );
       },
     );
 
   plan
     .command('validate-backlog')
     .description(
-      'Validates a plan\'s current backlog (system-actorKind-only ValidateBacklogCommand — ' +
+      "Validates a plan's current backlog (system-actorKind-only ValidateBacklogCommand — " +
         'no MINICODER_API_KEYS system key needed, dispatches directly like import-backlog); ' +
         'required before submit-for-approval',
     )
     .requiredOption('--project <id>', 'Project ID')
     .requiredOption('--plan <id>', 'Implementation plan ID')
-    .action(async (opts: { project: string; plan: string }) => {
-      const db = await createDbClientFromEnv();
-      try {
-        // A fixed key would replay a stale cached result after a backlog regeneration (which
-        // resets `backlog_validated_state` and bumps `backlog_version`) — the same
-        // per-occurrence-discriminator requirement CLAUDE.md documents for every repeatable
-        // command's idempotency key. `backlog_version` is that discriminator here.
-        const planRows = await db.query<{ backlog_version: number }>(
-          `SELECT backlog_version FROM implementation_plans WHERE id = ? AND project_id = ?`,
-          [opts.plan, opts.project],
-        );
-        const backlogVersion = planRows[0]?.backlog_version;
-        if (backlogVersion === undefined) {
-          throw new Error(`Plan ${opts.plan} not found in project ${opts.project}`);
-        }
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { project: string; plan: string } & JsonOption) => {
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          try {
+            // A fixed key would replay a stale cached result after a backlog regeneration (which
+            // resets `backlog_validated_state` and bumps `backlog_version`) — the same
+            // per-occurrence-discriminator requirement CLAUDE.md documents for every repeatable
+            // command's idempotency key. `backlog_version` is that discriminator here.
+            const planRows = await db.query<{ backlog_version: number }>(
+              `SELECT backlog_version FROM implementation_plans WHERE id = ? AND project_id = ?`,
+              [opts.plan, opts.project],
+            );
+            const backlogVersion = planRows[0]?.backlog_version;
+            if (backlogVersion === undefined) {
+              throw new Error(`Plan ${opts.plan} not found in project ${opts.project}`);
+            }
 
-        const correlationId = generateId();
-        const executor = new TransactionalCommandExecutor(db);
-        const envelope: CommandEnvelope<{ projectId: string; planId: string }> = {
-          commandId: generateId(),
-          idempotencyKey: `validate-backlog-cli:${opts.plan}:${backlogVersion}`,
-          payload: { projectId: opts.project, planId: opts.plan },
-          actor: systemActor(correlationId),
-          correlationId,
-        };
-        const result = await executor.execute(new ValidateBacklogHandler(), envelope);
-        console.log(
-          JSON.stringify(
-            {
+            const correlationId = generateId();
+            const executor = new TransactionalCommandExecutor(db);
+            const envelope: CommandEnvelope<{ projectId: string; planId: string }> = {
+              commandId: generateId(),
+              idempotencyKey: `validate-backlog-cli:${opts.plan}:${backlogVersion}`,
+              payload: { projectId: opts.project, planId: opts.plan },
+              actor: systemActor(correlationId),
+              correlationId,
+            };
+            const result = await executor.execute(new ValidateBacklogHandler(), envelope);
+            return {
               command: 'plan validate-backlog',
               projectId: opts.project,
               planId: opts.plan,
               resultingState: result.resultingState,
-            },
-            null,
-            2,
-          ),
-        );
-      } finally {
-        await db.close();
-      }
+            };
+          } finally {
+            await db.close();
+          }
+        },
+        (data) => renderGenericSummaryView(data),
+      );
     });
 
   plan

@@ -45,6 +45,7 @@ export class GenericLLMPlannerAdapter implements PlannerAgentAdapter {
         confidence: a.confidence,
       })),
       gaps: result.gaps.map((g) => ({ description: g.description, severity: g.severity })),
+      tokensUsed: result.tokensUsed,
     };
   }
 

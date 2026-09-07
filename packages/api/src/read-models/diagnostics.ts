@@ -119,16 +119,39 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
   const projectFilter = projectId ? `AND project_id = ?` : '';
   const projectParams = projectId ? [projectId] : [];
 
-  const staleLocks = await db.query<{ id: string; expires_at: string }>(
-    `SELECT id, expires_at FROM workflow_locks WHERE expires_at < CURRENT_TIMESTAMP ${projectFilter}`,
-    projectParams,
+  // Issue #109: `WorkflowLockManager.release()` sets `expires_at`/`updated_at` to the exact same
+  // `now` value, so a cleanly-released lock permanently satisfies `expires_at < <now>` —
+  // identically to a genuinely orphaned lock whose TTL simply expired because its holder
+  // crashed without calling `release()`. `acquire()` computes `expires_at`/`updated_at`
+  // independently (an `isoExpiry(ttlMs)` roughly `ttlMs` after `updated_at`), so
+  // `expires_at === updated_at` is a reliable signal a row was released cleanly, not orphaned.
+  // Only non-cleanly-released rows count toward this check's severity — a cleanly-released lock
+  // needs no reconciliation and should not train operators to ignore a health check that is
+  // sometimes reporting a real problem.
+  //
+  // A bound `isoNow()` value is used here, not the SQL keyword `CURRENT_TIMESTAMP`, for the same
+  // reason `state repair --apply`'s fix elsewhere in this codebase does: `workflow_locks.expires_at`
+  // is always written in `isoNow()`'s `'YYYY-MM-DDTHH:MM:SS.sssZ'` shape by `WorkflowLockManager`,
+  // but SQLite's `CURRENT_TIMESTAMP` keyword produces `'YYYY-MM-DD HH:MM:SS'` (a space separator,
+  // no fractional seconds, no `Z`) — a different text shape. Since SQLite compares TEXT columns
+  // lexically and the space character (`0x20`) sorts before `'T'` (`0x54`), any same-UTC-day
+  // `expires_at < CURRENT_TIMESTAMP` comparison evaluates false regardless of the actual times
+  // involved (confirmed empirically, not just inferred — a lock that expired 30 minutes ago on
+  // the same calendar day was silently never flagged as stale until the date rolled over).
+  // Harmless on PostgreSQL either way (`TIMESTAMPTZ` compares as a real timestamp regardless of
+  // the literal used), so this fix applies uniformly to both dialects.
+  const now = isoNow();
+  const staleLocks = await db.query<{ id: string; expires_at: string; updated_at: string }>(
+    `SELECT id, expires_at, updated_at FROM workflow_locks WHERE expires_at < ? ${projectFilter}`,
+    [now, ...projectParams],
   );
+  const orphanedLocks = staleLocks.filter((l) => l.expires_at !== l.updated_at);
   checks.push({
     name: 'stale_locks',
-    severity: staleLocks.length > 0 ? 'error' : 'ok',
+    severity: orphanedLocks.length > 0 ? 'error' : 'ok',
     autoClearable: true,
-    count: staleLocks.length,
-    details: staleLocks.map((l) => ({ id: l.id, expiresAt: l.expires_at })),
+    count: orphanedLocks.length,
+    details: orphanedLocks.map((l) => ({ id: l.id, expiresAt: l.expires_at })),
   });
 
   const stuckOutbox = await db.query<{ id: string; event_type: string; attempts: number }>(
@@ -367,6 +390,73 @@ export async function runDoctorChecks(db: DbClient, projectId?: string): Promise
   return { healthy: !hasErrors, checks };
 }
 
+export interface WorkflowLockRow {
+  id: string;
+  project_id: string;
+  resource_key: string;
+  holder_id: string;
+  fence: number;
+  acquired_at: string;
+  expires_at: string | null;
+  updated_at: string;
+  /** Computed, not a real column: `expires_at !== null && expires_at < now`. */
+  stale: boolean;
+  /** Computed, not a real column (issue #109): `WorkflowLockManager.release()` sets `expires_at`
+   * and `updated_at` to the exact same value, so a stale-and-cleanly-released row is expected,
+   * harmless traffic, not an orphaned lock from a crashed holder — see this module's
+   * `stale_locks` doctor-check comment for the full rationale. Only meaningful when `stale` is
+   * true; `false` for a still-live lock. */
+  releasedCleanly: boolean;
+}
+
+/**
+ * Issue #109: `state doctor`'s `stale_locks` check only ever reported `id`/`expires_at` — enough
+ * to know a lock is stale, but not what it's for (`resource_key`) or who was holding it
+ * (`holder_id`), and with no way to distinguish a routine, already-released lock from a
+ * genuinely orphaned one. This is the read-only inspection command for that detail; it never
+ * mutates anything (unlike `state reconcile`, which clears stale rows).
+ */
+export async function listWorkflowLocks(
+  db: DbClient,
+  opts: { projectId?: string; staleOnly?: boolean } = {},
+): Promise<WorkflowLockRow[]> {
+  const now = isoNow();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts.projectId) {
+    conditions.push('project_id = ?');
+    params.push(opts.projectId);
+  }
+  if (opts.staleOnly) {
+    // See `runDoctorChecks()`'s `stale_locks` comment above for why this must be a bound
+    // `isoNow()` value, not the SQL keyword `CURRENT_TIMESTAMP`.
+    conditions.push('expires_at < ?');
+    params.push(now);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const rows = await db.query<{
+    id: string;
+    project_id: string;
+    resource_key: string;
+    holder_id: string;
+    fence: number;
+    acquired_at: string;
+    expires_at: string | null;
+    updated_at: string;
+  }>(
+    `SELECT id, project_id, resource_key, holder_id, fence, acquired_at, expires_at, updated_at
+     FROM workflow_locks ${where} ORDER BY acquired_at DESC`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...r,
+    stale: r.expires_at !== null && r.expires_at < now,
+    releasedCleanly: r.expires_at !== null && r.expires_at === r.updated_at,
+  }));
+}
+
 export interface PrDiscoveryDivergence {
   featureRunId: string;
   branchName: string;
@@ -472,15 +562,22 @@ export async function reconcileState(
   const projectFilter = opts.projectId ? `AND project_id = ?` : '';
   const projectParams = opts.projectId ? [opts.projectId] : [];
 
+  // Issue #109: bound `isoNow()` values, not the SQL keyword `CURRENT_TIMESTAMP` — see
+  // `runDoctorChecks()`'s `stale_locks` comment above for why comparing/writing `workflow_locks`
+  // timestamps with the SQL keyword is broken on SQLite (a text-format mismatch against the
+  // `isoNow()`-shaped values `WorkflowLockManager` itself writes). Using the same bound value for
+  // both the SELECT and the UPDATE also keeps every reconciled row's `expires_at`/`updated_at`
+  // in the same `isoNow()` shape a later `stale_locks`/`listWorkflowLocks()` read expects.
+  const reconcileNow = isoNow();
   const staleLockIds = await db.query<{ id: string }>(
-    `SELECT id FROM workflow_locks WHERE expires_at < CURRENT_TIMESTAMP ${projectFilter}`,
-    projectParams,
+    `SELECT id FROM workflow_locks WHERE expires_at < ? ${projectFilter}`,
+    [reconcileNow, ...projectParams],
   );
   if (staleLockIds.length > 0) {
     await db.execute(
-      `UPDATE workflow_locks SET expires_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE expires_at < CURRENT_TIMESTAMP ${projectFilter}`,
-      projectParams,
+      `UPDATE workflow_locks SET expires_at = ?, updated_at = ?
+       WHERE expires_at < ? ${projectFilter}`,
+      [reconcileNow, reconcileNow, reconcileNow, ...projectParams],
     );
     cleared.push({ type: 'stale_locks', count: staleLockIds.length });
   }
