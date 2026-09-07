@@ -93,7 +93,7 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
 
   it('validate reports ok when every ALL_TASK_IDS entry is registered', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'validate']);
+    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'validate', '--json']);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"status": "ok"');
     expect(printed).toContain('"taskCount": 19');
@@ -106,7 +106,14 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     insertTaskQueueRow(dbPath, 'tq-1', 'run-coder');
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'inspect-run', 'tq-1']);
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'inspect-run',
+      'tq-1',
+      '--json',
+    ]);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"id": "tq-1"');
     expect(printed).toContain('"task_id": "run-coder"');
@@ -126,6 +133,7 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
       'trigger',
       'inspect-run',
       'tdr-1788704481498-wa7gnz',
+      '--json',
     ]);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"id": "tq-3"');
@@ -138,7 +146,14 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     process.env['DB_PATH'] = dbPath;
 
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'inspect-run', 'no-such-id']);
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'inspect-run',
+      'no-such-id',
+      '--json',
+    ]);
     expect(process.exitCode).toBe(1);
     expect(errSpy.mock.calls.join(' ')).toMatch(/No run found matching "no-such-id"/);
     process.exitCode = 0;
@@ -151,7 +166,14 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     insertTaskQueueRow(dbPath, 'tq-2', 'run-coder', { status: 'processing' });
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'cancel-run', 'tq-2']);
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'cancel-run',
+      'tq-2',
+      '--json',
+    ]);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"cancelled": true');
 
@@ -172,6 +194,7 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
       'trigger',
       'cancel-run',
       'does-not-exist',
+      '--json',
     ]);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"cancelled": false');
@@ -186,7 +209,14 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     insertTaskQueueRow(dbPath, 'tq-3', 'run-review', { status: 'failed', attempts: 3 });
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'replay-run', 'tq-3']);
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'replay-run',
+      'tq-3',
+      '--json',
+    ]);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"taskId": "run-review"');
 
@@ -207,7 +237,14 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     insertTaskQueueRow(dbPath, 'tq-3b', 'run-review', { status: 'failed', attempts: 3 });
 
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'replay-run', 'tq-3b']);
+    await makeProgram().parseAsync([
+      'node',
+      'minicoder',
+      'trigger',
+      'replay-run',
+      'tq-3b',
+      '--json',
+    ]);
 
     const rows = queryTaskQueue(dbPath);
     const replayed = rows.find((r) => r.id !== 'tq-3b')!;
@@ -236,6 +273,7 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
       '--yes',
       '--env',
       'test',
+      '--json',
     ]);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"deleted": 1');
@@ -374,7 +412,7 @@ describe('CLI trigger command (Trigger.dev replacement)', () => {
     insertTaskQueueRow(dbPath, 'tq-5', 'run-coder', { status: 'succeeded' });
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'reconcile']);
+    await makeProgram().parseAsync(['node', 'minicoder', 'trigger', 'reconcile', '--json']);
     const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(printed).toContain('"driftDetected": true');
     expect(printed).toContain('"id": "tq-5"');

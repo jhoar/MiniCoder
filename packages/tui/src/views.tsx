@@ -177,7 +177,11 @@ export function renderPlanView(props: {
           <Section title={`Questions for assessment ${props.detail.assessment.id}`}>
             <DescriptionList
               items={props.detail.questions.map((q) => ({
-                label: <Text dimColor>{`Round ${q.round}${q.answered_at ? ' (answered)' : ' (unanswered)'}`}</Text>,
+                label: (
+                  <Text
+                    dimColor
+                  >{`Round ${q.round}${q.answered_at ? ' (answered)' : ' (unanswered)'}`}</Text>
+                ),
                 text: q.question,
               }))}
             />
@@ -645,6 +649,48 @@ export function renderDesignDocView(props: {
 // pause / resume confirmation
 // ---------------------------------------------------------------------------
 
+/** Renders a flat-ish JSON summary as a KeyValue list, generic over any shape — for commands
+ * (issue #104/#110) whose result object isn't the fixed `{command, projectId, resultingState}`
+ * shape `renderCommandResultView()` targets. Array/object field values are `JSON.stringify`'d
+ * inline (Ink's `wrap="truncate-end"` handles anything over-length) rather than recursed into —
+ * this is meant for command-acknowledgement-shaped results (ids, counts, flags, a short list),
+ * not a general-purpose object browser. */
+export function renderGenericSummaryView(data: Record<string, unknown>): React.ReactElement {
+  const fields: Field[] = Object.entries(data).map(([key, value]) => ({
+    label: key,
+    value:
+      value === null || value === undefined
+        ? '(none)'
+        : typeof value === 'string'
+          ? value
+          : typeof value === 'number' || typeof value === 'boolean'
+            ? String(value)
+            : JSON.stringify(value),
+  }));
+  return <KeyValue fields={fields} />;
+}
+
+/** Renders an array of plain rows as a table, columns inferred from the first row's own keys
+ * (issue #104/#110) — for DB-direct commands (`trigger list-runs`/`reconcile`) whose row shape
+ * isn't one of this file's own typed read-model rows. Falls back to a plain "(none)" message for
+ * an empty array, since there are no keys to build columns from. */
+export function renderGenericRowsView(rows: Record<string, unknown>[]): React.ReactElement {
+  if (rows.length === 0) {
+    return <Text dimColor>(none)</Text>;
+  }
+  const keys = Object.keys(rows[0]!);
+  const columns: Column<Record<string, unknown>>[] = keys.map((key) => ({
+    header: key,
+    width: Math.max(key.length, 12),
+    render: (row) => {
+      const value = row[key];
+      if (value === null || value === undefined) return '';
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    },
+  }));
+  return <Table columns={columns} rows={rows} />;
+}
+
 export function renderCommandResultView(props: {
   command: string;
   /** Optional (issue #116): not every command result has a natural project id to display —
@@ -656,9 +702,7 @@ export function renderCommandResultView(props: {
     <KeyValue
       fields={[
         { label: 'Command', value: props.command },
-        ...(props.projectId !== undefined
-          ? [{ label: 'Project', value: props.projectId }]
-          : []),
+        ...(props.projectId !== undefined ? [{ label: 'Project', value: props.projectId }] : []),
         { label: 'Resulting state', value: <StatusBadge state={props.resultingState} /> },
       ]}
     />

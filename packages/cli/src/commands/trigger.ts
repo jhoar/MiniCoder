@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import { generateId } from '@minicoder/core';
 import { ALL_TASK_IDS, TASK_REGISTRY, TaskQueueDispatcher } from '@minicoder/triggerdev';
+import { renderGenericSummaryView, renderGenericRowsView } from '@minicoder/tui/views';
 import { createDbClientFromEnv } from '../db-client.js';
+import { renderOrJson, type JsonOption } from '../tui-client.js';
 
 function isoNow(): string {
   return new Date().toISOString();
@@ -13,6 +15,17 @@ function isoNow(): string {
  * to anymore) is now real, DB-backed functionality, closing the permanent-stub posture this
  * command group carried while `TRIGGERDEV_API_URL`/`TRIGGERDEV_API_KEY` (Trigger.dev's own
  * management API) remained out of scope.
+ *
+ * Issue #104/#110: every subcommand now goes through the shared `renderOrJson()` helper, matching
+ * every other CLI command group's default-rendered/`--json`-escape-hatch convention — previously
+ * this file always printed raw JSON with no `--json` flag at all. The JSON shape under `--json`
+ * is byte-for-byte unchanged from before this fix; only a default human-readable rendering layer
+ * was added on top, via two new generic `@minicoder/tui/views` functions
+ * (`renderGenericSummaryView`/`renderGenericRowsView`) rather than one bespoke view per
+ * subcommand, since these results have no fixed shape the way e.g. `renderCommandResultView()`'s
+ * callers do. A pre-flight validation failure (missing flags, an unsafe env) still exits via a
+ * plain `console.error` + non-zero `process.exitCode` before either path runs, exactly as before
+ * — those were never JSON output to begin with.
  */
 export function createTriggerCommand(): Command {
   const trigger = new Command('trigger').description(
@@ -22,22 +35,21 @@ export function createTriggerCommand(): Command {
   trigger
     .command('deploy')
     .description('No-op: task registration is compiled into the worker binary, nothing to deploy')
-    .action(() => {
-      console.log(
-        JSON.stringify(
-          {
-            command: 'trigger deploy',
-            note:
-              'There is no external Workflow Layer deployment step anymore — TASK_REGISTRY ' +
-              '(packages/triggerdev/src/task-registry.ts) is compiled into whatever process runs ' +
-              '`minicoder tasks worker`. Ship a new task by shipping a new build/release of that ' +
-              'process.',
-            taskIds: ALL_TASK_IDS,
-            timestamp: isoNow(),
-          },
-          null,
-          2,
-        ),
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: JsonOption) => {
+      await renderOrJson(
+        opts,
+        async () => ({
+          command: 'trigger deploy',
+          note:
+            'There is no external Workflow Layer deployment step anymore — TASK_REGISTRY ' +
+            '(packages/triggerdev/src/task-registry.ts) is compiled into whatever process runs ' +
+            '`minicoder tasks worker`. Ship a new task by shipping a new build/release of that ' +
+            'process.',
+          taskIds: ALL_TASK_IDS,
+          timestamp: isoNow(),
+        }),
+        (data) => renderGenericSummaryView(data),
       );
     });
 
@@ -46,37 +58,38 @@ export function createTriggerCommand(): Command {
     .description('List recent task_queue/triggerdev_runs entries')
     .option('--task <id>', 'Filter by task ID')
     .option('--limit <n>', 'Maximum rows to return', '20')
-    .action(async (opts: { task?: string; limit: string }) => {
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { task?: string; limit: string } & JsonOption) => {
       const limit = parseInt(opts.limit, 10);
-      const db = await createDbClientFromEnv();
-      try {
-        const rows = opts.task
-          ? await db.query(
-              `SELECT id, triggerdev_run_id, triggerdev_task_id, triggerdev_status, project_id, last_seen_at
-               FROM triggerdev_runs WHERE triggerdev_task_id = ? ORDER BY last_seen_at DESC LIMIT ?`,
-              [opts.task, limit],
-            )
-          : await db.query(
-              `SELECT id, triggerdev_run_id, triggerdev_task_id, triggerdev_status, project_id, last_seen_at
-               FROM triggerdev_runs ORDER BY last_seen_at DESC LIMIT ?`,
-              [limit],
-            );
-        console.log(
-          JSON.stringify(
-            {
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          try {
+            const rows = opts.task
+              ? await db.query(
+                  `SELECT id, triggerdev_run_id, triggerdev_task_id, triggerdev_status, project_id, last_seen_at
+                   FROM triggerdev_runs WHERE triggerdev_task_id = ? ORDER BY last_seen_at DESC LIMIT ?`,
+                  [opts.task, limit],
+                )
+              : await db.query(
+                  `SELECT id, triggerdev_run_id, triggerdev_task_id, triggerdev_status, project_id, last_seen_at
+                   FROM triggerdev_runs ORDER BY last_seen_at DESC LIMIT ?`,
+                  [limit],
+                );
+            return {
               command: 'trigger list-runs',
               taskId: opts.task ?? null,
               limit,
-              runs: rows,
+              runs: rows as Record<string, unknown>[],
               timestamp: isoNow(),
-            },
-            null,
-            2,
-          ),
-        );
-      } finally {
-        await db.close();
-      }
+            };
+          } finally {
+            await db.close();
+          }
+        },
+        (data) => renderGenericRowsView(data.runs),
+      );
     });
 
   trigger
@@ -89,80 +102,88 @@ export function createTriggerCommand(): Command {
         'easy to confuse.',
     )
     .argument('<runId>', 'task_queue row id, triggerdev_run_id, or triggerdev_runs row id')
-    .action(async (runId: string) => {
-      const db = await createDbClientFromEnv();
-      try {
-        // Try the task_queue/triggerdev_run_id identifier first (the common case), then fall
-        // back to triggerdev_runs' own differently-shaped primary key (`tdr-...`) — a caller who
-        // copied `list-runs`' `id` field instead of its `triggerdev_run_id` field previously got
-        // silent nulls on both lookups with no indication which identifier was wrong.
-        let queueRows = await db.query('SELECT * FROM task_queue WHERE id = ?', [runId]);
-        let statusRows = await db.query(
-          'SELECT * FROM triggerdev_runs WHERE triggerdev_run_id = ?',
-          [runId],
-        );
-        if (queueRows.length === 0 && statusRows.length === 0) {
-          const byOwnId = await db.query('SELECT * FROM triggerdev_runs WHERE id = ?', [runId]);
-          if (byOwnId[0]) {
-            statusRows = byOwnId;
-            const linkedRunId = (byOwnId[0] as { triggerdev_run_id: string }).triggerdev_run_id;
-            queueRows = await db.query('SELECT * FROM task_queue WHERE id = ?', [linkedRunId]);
-          }
-        }
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (runId: string, opts: JsonOption) => {
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          try {
+            // Try the task_queue/triggerdev_run_id identifier first (the common case), then fall
+            // back to triggerdev_runs' own differently-shaped primary key (`tdr-...`) — a caller
+            // who copied `list-runs`' `id` field instead of its `triggerdev_run_id` field
+            // previously got silent nulls on both lookups with no indication which identifier was
+            // wrong.
+            let queueRows = await db.query('SELECT * FROM task_queue WHERE id = ?', [runId]);
+            let statusRows = await db.query(
+              'SELECT * FROM triggerdev_runs WHERE triggerdev_run_id = ?',
+              [runId],
+            );
+            if (queueRows.length === 0 && statusRows.length === 0) {
+              const byOwnId = await db.query('SELECT * FROM triggerdev_runs WHERE id = ?', [runId]);
+              if (byOwnId[0]) {
+                statusRows = byOwnId;
+                const linkedRunId = (byOwnId[0] as { triggerdev_run_id: string }).triggerdev_run_id;
+                queueRows = await db.query('SELECT * FROM task_queue WHERE id = ?', [linkedRunId]);
+              }
+            }
 
-        if (queueRows.length === 0 && statusRows.length === 0) {
-          console.error(
-            `No run found matching "${runId}" — checked task_queue.id, ` +
-              `triggerdev_runs.triggerdev_run_id, and triggerdev_runs.id. Run ` +
-              `"minicoder trigger list-runs" and pass either its "id" or "triggerdev_run_id" field.`,
-          );
-          process.exitCode = 1;
-          return;
-        }
+            if (queueRows.length === 0 && statusRows.length === 0) {
+              process.exitCode = 1;
+              throw new Error(
+                `No run found matching "${runId}" — checked task_queue.id, ` +
+                  `triggerdev_runs.triggerdev_run_id, and triggerdev_runs.id. Run ` +
+                  `"minicoder trigger list-runs" and pass either its "id" or "triggerdev_run_id" field.`,
+              );
+            }
 
-        console.log(
-          JSON.stringify(
-            {
+            return {
               command: 'trigger inspect-run',
               runId,
-              taskQueueRow: queueRows[0] ?? null,
-              triggerdevRunRow: statusRows[0] ?? null,
+              taskQueueRow: (queueRows[0] ?? null) as Record<string, unknown> | null,
+              triggerdevRunRow: (statusRows[0] ?? null) as Record<string, unknown> | null,
               timestamp: isoNow(),
-            },
-            null,
-            2,
-          ),
-        );
-      } finally {
-        await db.close();
-      }
+            };
+          } finally {
+            await db.close();
+          }
+        },
+        (data) => renderGenericSummaryView(data),
+      );
     });
 
   trigger
     .command('cancel-run')
     .description('Force-fail a stuck or unwanted task_queue row so the worker stops retrying it')
     .argument('<runId>', 'task_queue row id')
-    .action(async (runId: string) => {
-      const db = await createDbClientFromEnv();
-      try {
-        // A large sentinel attempts count, not a specific maxAttempts value — the worker's
-        // retry-eligibility guard (`attempts < maxAttempts`) must exclude this row regardless of
-        // whatever maxAttempts a given `minicoder tasks worker` instance is configured with.
-        const affected = await db.executeAffected(
-          `UPDATE task_queue SET status = 'failed', attempts = 1000000, version = version + 1, updated_at = ? WHERE id = ?`,
-          [isoNow(), runId],
-        );
-        console.log(
-          JSON.stringify(
-            { command: 'trigger cancel-run', runId, cancelled: affected > 0, timestamp: isoNow() },
-            null,
-            2,
-          ),
-        );
-        if (affected === 0) process.exitCode = 1;
-      } finally {
-        await db.close();
-      }
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (runId: string, opts: JsonOption) => {
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          try {
+            // A large sentinel attempts count, not a specific maxAttempts value — the worker's
+            // retry-eligibility guard (`attempts < maxAttempts`) must exclude this row regardless
+            // of whatever maxAttempts a given `minicoder tasks worker` instance is configured
+            // with.
+            const affected = await db.executeAffected(
+              `UPDATE task_queue SET status = 'failed', attempts = 1000000, version = version + 1, updated_at = ? WHERE id = ?`,
+              [isoNow(), runId],
+            );
+            if (affected === 0) process.exitCode = 1;
+            return {
+              command: 'trigger cancel-run',
+              runId,
+              cancelled: affected > 0,
+              timestamp: isoNow(),
+            };
+          } finally {
+            await db.close();
+          }
+        },
+        (data) => renderGenericSummaryView(data),
+      );
     });
 
   trigger
@@ -171,55 +192,55 @@ export function createTriggerCommand(): Command {
       'Re-enqueue a task_queue row with the same task/payload and a fresh idempotency key',
     )
     .argument('<runId>', 'task_queue row id to replay')
-    .action(async (runId: string) => {
-      const db = await createDbClientFromEnv();
-      try {
-        const rows = await db.query<{
-          task_id: string;
-          payload: string;
-          project_id: string;
-        }>('SELECT task_id, payload, project_id FROM task_queue WHERE id = ?', [runId]);
-        const source = rows[0];
-        if (!source) {
-          console.error(`Error: no task_queue row found for id '${runId}'`);
-          process.exitCode = 1;
-          return;
-        }
-        const newId = generateId();
-        const now = isoNow();
-        // PR #75 review fix (round-2 MEDIUM-1): the original replay INSERT omitted project_id
-        // entirely, so a replayed row lost its project-scoping metadata — invisible to
-        // `trigger reconcile --project`/diagnostics that filter by it, even though the source row
-        // it was replayed from had one.
-        await db.execute(
-          `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'pending', 0, ?, 1, ?, ?)`,
-          [
-            newId,
-            source.task_id,
-            source.payload,
-            `replay-${runId}-${newId}`,
-            source.project_id,
-            now,
-            now,
-          ],
-        );
-        console.log(
-          JSON.stringify(
-            {
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (runId: string, opts: JsonOption) => {
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          try {
+            const rows = await db.query<{
+              task_id: string;
+              payload: string;
+              project_id: string;
+            }>('SELECT task_id, payload, project_id FROM task_queue WHERE id = ?', [runId]);
+            const source = rows[0];
+            if (!source) {
+              process.exitCode = 1;
+              throw new Error(`No task_queue row found for id '${runId}'`);
+            }
+            const newId = generateId();
+            const now = isoNow();
+            // PR #75 review fix (round-2 MEDIUM-1): the original replay INSERT omitted
+            // project_id entirely, so a replayed row lost its project-scoping metadata —
+            // invisible to `trigger reconcile --project`/diagnostics that filter by it, even
+            // though the source row it was replayed from had one.
+            await db.execute(
+              `INSERT INTO task_queue (id, task_id, payload, idempotency_key, status, attempts, project_id, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', 0, ?, 1, ?, ?)`,
+              [
+                newId,
+                source.task_id,
+                source.payload,
+                `replay-${runId}-${newId}`,
+                source.project_id,
+                now,
+                now,
+              ],
+            );
+            return {
               command: 'trigger replay-run',
               sourceRunId: runId,
               newRunId: newId,
               taskId: source.task_id,
               timestamp: now,
-            },
-            null,
-            2,
-          ),
-        );
-      } finally {
-        await db.close();
-      }
+            };
+          } finally {
+            await db.close();
+          }
+        },
+        (data) => renderGenericSummaryView(data),
+      );
     });
 
   trigger
@@ -227,34 +248,34 @@ export function createTriggerCommand(): Command {
     .description('Wait for the task queue to empty (dev/CI use)')
     .option('--timeout-ms <ms>', 'Maximum wait in milliseconds', '60000')
     .option('--poll-interval-ms <ms>', 'Milliseconds between poll ticks', '500')
-    .action(async (opts: { timeoutMs: string; pollIntervalMs: string }) => {
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { timeoutMs: string; pollIntervalMs: string } & JsonOption) => {
       const timeoutMs = parseInt(opts.timeoutMs, 10);
       const pollIntervalMs = parseInt(opts.pollIntervalMs, 10);
-      const db = await createDbClientFromEnv();
-      const dispatcher = new TaskQueueDispatcher(db);
-      const deadline = Date.now() + timeoutMs;
-      try {
-        while (Date.now() < deadline) {
-          await dispatcher.pollAndDispatch();
-          if (await dispatcher.isEmpty()) {
-            console.log(
-              JSON.stringify(
-                { command: 'trigger drain-queue', drained: true, timestamp: isoNow() },
-                null,
-                2,
-              ),
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          const dispatcher = new TaskQueueDispatcher(db);
+          const deadline = Date.now() + timeoutMs;
+          try {
+            while (Date.now() < deadline) {
+              await dispatcher.pollAndDispatch();
+              if (await dispatcher.isEmpty()) {
+                return { command: 'trigger drain-queue', drained: true, timestamp: isoNow() };
+              }
+              await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+            }
+            process.exitCode = 1;
+            throw new Error(
+              `trigger drain-queue timed out after ${timeoutMs}ms with work remaining`,
             );
-            return;
+          } finally {
+            await db.close();
           }
-          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-        }
-        console.error(
-          `Error: trigger drain-queue timed out after ${timeoutMs}ms with work remaining`,
-        );
-        process.exitCode = 1;
-      } finally {
-        await db.close();
-      }
+        },
+        (data) => renderGenericSummaryView(data),
+      );
     });
 
   trigger
@@ -262,7 +283,8 @@ export function createTriggerCommand(): Command {
     .description('Clear all task_queue rows (dev/CI only)')
     .option('--yes', 'Confirm the destructive reset operation')
     .option('--env <environment>', 'Target environment — must be development, test, or ci')
-    .action(async (opts: { yes?: boolean; env?: string }) => {
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { yes?: boolean; env?: string } & JsonOption) => {
       if (!opts.yes || !opts.env) {
         console.error(
           'Error: --yes and --env <environment> flags are required.\nExample: minicoder trigger reset-dev --yes --env development',
@@ -327,91 +349,93 @@ export function createTriggerCommand(): Command {
         process.exitCode = 1;
         return;
       }
-      const db = await createDbClientFromEnv();
-      try {
-        const deleted = await db.executeAffected('DELETE FROM task_queue');
-        console.log(
-          JSON.stringify(
-            {
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          try {
+            const deleted = await db.executeAffected('DELETE FROM task_queue');
+            return {
               command: 'trigger reset-dev',
-              environment: opts.env,
+              environment: opts.env as string,
               systemEnv,
               deleted,
               timestamp: isoNow(),
-            },
-            null,
-            2,
-          ),
-        );
-      } finally {
-        await db.close();
-      }
+            };
+          } finally {
+            await db.close();
+          }
+        },
+        (data) => renderGenericSummaryView(data),
+      );
     });
 
   trigger
     .command('validate')
     .description('Check that every canonical task ID has a TASK_REGISTRY entry')
-    .action(() => {
-      const missing = ALL_TASK_IDS.filter((id) => !TASK_REGISTRY.has(id));
-      console.log(
-        JSON.stringify(
-          {
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: JsonOption) => {
+      await renderOrJson(
+        opts,
+        async () => {
+          const missing = ALL_TASK_IDS.filter((id) => !TASK_REGISTRY.has(id));
+          if (missing.length > 0) process.exitCode = 1;
+          return {
             command: 'trigger validate',
             taskIds: ALL_TASK_IDS,
             taskCount: ALL_TASK_IDS.length,
             status: missing.length === 0 ? 'ok' : 'mismatch',
             missing,
             timestamp: isoNow(),
-          },
-          null,
-          2,
-        ),
+          };
+        },
+        (data) => renderGenericSummaryView(data),
       );
-      if (missing.length > 0) process.exitCode = 1;
     });
 
   trigger
     .command('reconcile')
     .description('Compare task_queue against triggerdev_runs and flag drift')
     .option('--project <id>', 'Project ID')
-    .action(async (opts: { project?: string }) => {
-      const db = await createDbClientFromEnv();
-      try {
-        // A task_queue row past 'pending'/'processing' with no matching triggerdev_runs row at
-        // all means the worker never linked it — either it was force-cancelled before ever being
-        // claimed (expected, not drift) or a worker crashed before its first linkRunToDb() write
-        // (real drift worth flagging).
-        const orphanedQueueRows = opts.project
-          ? await db.query(
-              `SELECT tq.id, tq.task_id, tq.status, tq.attempts
-               FROM task_queue tq
-               WHERE tq.status IN ('processing', 'succeeded')
-                 AND tq.project_id = ?
-                 AND NOT EXISTS (SELECT 1 FROM triggerdev_runs tr WHERE tr.triggerdev_run_id = tq.id)`,
-              [opts.project],
-            )
-          : await db.query(
-              `SELECT tq.id, tq.task_id, tq.status, tq.attempts
-               FROM task_queue tq
-               WHERE tq.status IN ('processing', 'succeeded')
-                 AND NOT EXISTS (SELECT 1 FROM triggerdev_runs tr WHERE tr.triggerdev_run_id = tq.id)`,
-            );
-        console.log(
-          JSON.stringify(
-            {
+    .option('--json', 'Print raw JSON instead of rendering')
+    .action(async (opts: { project?: string } & JsonOption) => {
+      await renderOrJson(
+        opts,
+        async () => {
+          const db = await createDbClientFromEnv();
+          try {
+            // A task_queue row past 'pending'/'processing' with no matching triggerdev_runs row
+            // at all means the worker never linked it — either it was force-cancelled before ever
+            // being claimed (expected, not drift) or a worker crashed before its first
+            // linkRunToDb() write (real drift worth flagging).
+            const orphanedQueueRows = opts.project
+              ? await db.query(
+                  `SELECT tq.id, tq.task_id, tq.status, tq.attempts
+                   FROM task_queue tq
+                   WHERE tq.status IN ('processing', 'succeeded')
+                     AND tq.project_id = ?
+                     AND NOT EXISTS (SELECT 1 FROM triggerdev_runs tr WHERE tr.triggerdev_run_id = tq.id)`,
+                  [opts.project],
+                )
+              : await db.query(
+                  `SELECT tq.id, tq.task_id, tq.status, tq.attempts
+                   FROM task_queue tq
+                   WHERE tq.status IN ('processing', 'succeeded')
+                     AND NOT EXISTS (SELECT 1 FROM triggerdev_runs tr WHERE tr.triggerdev_run_id = tq.id)`,
+                );
+            return {
               command: 'trigger reconcile',
               projectId: opts.project ?? null,
-              orphanedQueueRows,
+              orphanedQueueRows: orphanedQueueRows as Record<string, unknown>[],
               driftDetected: orphanedQueueRows.length > 0,
               timestamp: isoNow(),
-            },
-            null,
-            2,
-          ),
-        );
-      } finally {
-        await db.close();
-      }
+            };
+          } finally {
+            await db.close();
+          }
+        },
+        (data) => renderGenericRowsView(data.orphanedQueueRows),
+      );
     });
 
   return trigger;

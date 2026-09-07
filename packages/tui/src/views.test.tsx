@@ -8,6 +8,8 @@ import {
   renderCommandResultView,
   renderRunsView,
   renderPlanView,
+  renderGenericSummaryView,
+  renderGenericRowsView,
 } from './views.js';
 
 describe('views', () => {
@@ -280,5 +282,50 @@ describe('views', () => {
     const frame = lastFrame();
     expect(frame).toContain('pause-automation');
     expect(frame).toContain('paused_by_operator');
+  });
+
+  it('renderCommandResultView omits the Project row when projectId is not supplied (issue #116)', () => {
+    const { lastFrame } = render(
+      renderCommandResultView({ command: 'findings resolve', resultingState: 'dismissed' }),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('findings resolve');
+    expect(frame).not.toContain('Project:');
+  });
+
+  it('renderGenericSummaryView (issue #104/#110) shows every field, stringifying non-primitives', () => {
+    const { lastFrame } = render(
+      renderGenericSummaryView({
+        command: 'trigger cancel-run',
+        runId: 'tq-1',
+        cancelled: true,
+        missing: [],
+        timestamp: '2026-01-01T00:00:00Z',
+      }),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('trigger cancel-run');
+    expect(frame).toContain('tq-1');
+    expect(frame).toContain('true');
+    expect(frame).toContain('[]');
+  });
+
+  it('renderGenericRowsView (issue #104/#110) renders a table with columns inferred from the first row', () => {
+    const { lastFrame } = render(
+      renderGenericRowsView([
+        { id: 'tq-1', task_id: 'run-coder', status: 'pending' },
+        { id: 'tq-2', task_id: 'run-review', status: 'succeeded' },
+      ]),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('tq-1');
+    expect(frame).toContain('run-coder');
+    expect(frame).toContain('tq-2');
+    expect(frame).toContain('run-review');
+  });
+
+  it('renderGenericRowsView shows "(none)" for an empty array', () => {
+    const { lastFrame } = render(renderGenericRowsView([]));
+    expect(lastFrame()).toContain('(none)');
   });
 });

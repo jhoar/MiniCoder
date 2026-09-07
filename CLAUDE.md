@@ -3754,6 +3754,43 @@ CURRENT_TIMESTAMP` writes were left as-is — confirmed by grep that neither col
   a lexical `<`/`>` comparison elsewhere, so there is no proven bug there, only the same class of
   latent stylistic inconsistency; not fixed in this pass since there's no regression to point at.
 
+## `trigger`/`plan validate-backlog`/`import-backlog` Adopt renderOrJson (issues #104, #110)
+
+- **Every `minicoder trigger ...` subcommand (`deploy`/`list-runs`/`inspect-run`/`cancel-run`/
+  `replay-run`/`drain-queue`/`reset-dev`/`validate`/`reconcile`) and `minicoder plan
+{validate-backlog,import-backlog}` now go through the shared `renderOrJson()` helper**, matching
+  every other CLI command group's default-rendered/`--json`-escape-hatch convention. Previously
+  these always printed raw `console.log(JSON.stringify(...))` with no `--json` flag at all — the
+  one command shape in this CLI that didn't follow the established render-by-default pattern.
+  Under `--json`, every field name/shape is byte-for-byte unchanged from before this fix; only a
+  default human-readable rendering layer was added on top.
+- **Two new generic `@minicoder/tui/views` functions**, not one bespoke Ink view per subcommand —
+  these DB-direct commands' results have no fixed shape the way e.g. `renderCommandResultView()`'s
+  `{command, projectId, resultingState}` callers do:
+  - `renderGenericSummaryView(data: Record<string, unknown>)` — a `KeyValue` list generic over any
+    flat-ish object; array/object field values are `JSON.stringify`'d inline rather than recursed
+    into (meant for command-acknowledgement-shaped results — ids, counts, flags, a short list —
+    not a general-purpose object browser).
+  - `renderGenericRowsView(rows: Record<string, unknown>[])` — a `Table` with columns inferred from
+    the first row's own keys, for `trigger list-runs`'/`reconcile`'s untyped DB row arrays. Falls
+    back to a plain "(none)" for an empty array, since there are no keys to build columns from.
+  - `renderCommandResultView()`'s `projectId` field was widened to optional (issue #116 already
+    needed this for `findings resolve`, which has no natural project id — reused here for
+    `plan validate-backlog`, which does have one and keeps passing it, so no behavior change for
+    existing callers).
+- **A pre-flight validation failure (missing flags, an unsafe `--env`) still exits via a plain
+  `console.error` + non-zero `process.exitCode` before either the JSON or the Ink path runs** —
+  those were never JSON output to begin with (e.g. `trigger reset-dev`'s multi-step env-safety
+  guard), so this fix doesn't touch them. A result-dependent exit code (e.g. `cancel-run` exiting
+  1 when nothing was cancelled, `validate` exiting 1 on a `TASK_REGISTRY` mismatch) is set as a
+  side effect inside the `fetchData` closure passed to `renderOrJson`, before it returns — this
+  works identically whether the JSON or the Ink branch ultimately executes, since `process.exitCode`
+  is a global and `renderOrJson` doesn't need to inspect it itself.
+- Existing `trigger.test.ts` assertions were updated to pass `--json` explicitly (the previous
+  default-and-only behavior), matching how every other CLI test file in this repo already tests
+  its JSON path; a new `plan-backlog-commands.test.ts` covers `validate-backlog`'s `--json` output
+  shape and confirms the default (non-JSON) path renders via Ink without throwing.
+
 ## Task Result Persistence (issue #122)
 
 - **`runRegisteredTask()`/`MockTriggerRunner.run()` previously discarded every task's structured
