@@ -18,6 +18,7 @@ import {
 } from './commands/task-trigger-routes.js';
 import { registerDiagnosticsRoutes } from './commands/diagnostics-routes.js';
 import { registerRepairDesignDocumentBindingRoute } from './commands/repair-design-document-binding-route.js';
+import { registerResolveReviewFindingRoute } from './commands/resolve-review-finding-route.js';
 import { registerRegisterAdapterRoute } from './commands/register-adapter-route.js';
 import type { ScmClientResolver } from '@minicoder/triggerdev';
 
@@ -69,6 +70,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
   registerDiagnosticsRoutes(app, { db: opts.db });
   registerRepairDesignDocumentBindingRoute(app, { db: opts.db });
+  registerResolveReviewFindingRoute(app, { db: opts.db });
   registerRegisterAdapterRoute(app, { db: opts.db });
 
   return app;

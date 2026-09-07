@@ -620,6 +620,7 @@ minicoder active --project <id>
 minicoder runs [--project <id>] [--feature-run <id>] [--cursor <c>] [--limit <n>]
 minicoder runs --timeline <featureRunId>                # Phase 16: merged workflow-history view
 minicoder findings --feature-run <id> [--cursor <c>] [--limit <n>]
+minicoder findings resolve --finding-id <id> [--dismiss] [--note <text>]  # issue #116: human disposition for a non-blocking finding; operator+
 minicoder disagreements [--feature-run <id>] [--state <state>] [--cursor <c>] [--limit <n>]
 minicoder costs --project <id>
 minicoder costs --project <id> --report [--window-days <n>]  # Phase 16: aggregate spend breakdown

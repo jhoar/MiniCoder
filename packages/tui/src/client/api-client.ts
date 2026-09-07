@@ -501,6 +501,17 @@ export class ApiClient {
     });
   }
 
+  /** Issue #116: human disposition for a non-blocking review finding — `dismiss: true` records
+   * "looked at, not worth fixing" and flips `resolved` to true; `dismiss: false` (the default)
+   * records "looked at, still wants it addressed" without touching `resolved`. */
+  resolveReviewFinding(
+    findingId: string,
+    dismiss: boolean,
+    note?: string,
+  ): Promise<{ findingId: string; dismissed: boolean; alreadyResolved: boolean }> {
+    return this.post('/commands/resolve-review-finding', { findingId, dismiss, note });
+  }
+
   /** Enqueues the `run-design-doc` Trigger.dev task (drafts sections, exports
    * final-design-document.md, records the document ready). */
   requestDesignDoc(

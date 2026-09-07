@@ -647,14 +647,18 @@ export function renderDesignDocView(props: {
 
 export function renderCommandResultView(props: {
   command: string;
-  projectId: string;
+  /** Optional (issue #116): not every command result has a natural project id to display —
+   * e.g. `findings resolve` operates on a `review_findings` row, not a project directly. */
+  projectId?: string;
   resultingState: string;
 }): React.ReactElement {
   return (
     <KeyValue
       fields={[
         { label: 'Command', value: props.command },
-        { label: 'Project', value: props.projectId },
+        ...(props.projectId !== undefined
+          ? [{ label: 'Project', value: props.projectId }]
+          : []),
         { label: 'Resulting state', value: <StatusBadge state={props.resultingState} /> },
       ]}
     />

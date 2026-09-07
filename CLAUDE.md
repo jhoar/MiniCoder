@@ -3670,6 +3670,45 @@ design questions, not quick patches):**
   event count does *not* increase — proving the check is live against current gap state, not a
   one-shot flag.
 
+## Non-Blocking Finding Resolution Lifecycle (issue #116)
+
+- **`review_findings` had exactly one mechanism anywhere in this codebase that could ever mark a
+  row `resolved` — `RecordCodePushedHandler`'s fix-cycle "optimistic fixed" write, which only runs
+  on a `fixing -> code_pushed` push (i.e. only when a `blocking` finding already triggered a fix
+  cycle).** A review producing only `non_blocking`/`nit`/`question`/`out_of_scope` findings never
+  enters a fix cycle at all, so those findings were written once and then permanently orphaned:
+  never resolvable by any command, indistinguishable from "nobody ever looked at this."
+- **Resolution: `resolveReviewFinding()` (`packages/api/src/read-models/review-finding-
+resolution.ts`), a lightweight human-disposition action — not a `CommandHandler`**, since
+  `review_findings` carries no `StateTransitionValidator` matrix (`resolved` is a plain boolean
+  column, no `CHECK` constraint). Reuses `human_approvals` (via the existing `insertHumanApproval()`
+  helper) for the disposition audit trail rather than inventing new columns: `--dismiss` records
+  `decision: 'approved'` ("looked at, not worth fixing") and also flips `review_findings.resolved`
+  to `TRUE`; omitting it records `decision: 'deferred'` ("looked at, still wants it addressed") and
+  leaves `resolved` unchanged. This lets a caller distinguish three states that previously all
+  looked identical (`resolved = FALSE`): never looked at (no `human_approvals` row for this
+  finding), looked at and still open (`deferred`, `resolved = FALSE`), and looked at and dismissed
+  (`approved`, `resolved = TRUE`). Also writes a `review_finding.disposition_recorded`
+  `workflow_events` row (feature-run-scoped) for audit visibility, mirroring `state repair`'s
+  mutation-plus-event-insert-in-one-transaction convention.
+- **`POST /commands/resolve-review-finding`** (`packages/api/src/commands/resolve-review-finding-
+route.ts`) is a dedicated, non-generic-dispatch route — the same "non-command DB-write action,
+  `requireRole()` explicitly, no `Idempotency-Key` needed since the underlying write is naturally
+  idempotent" posture `repair-design-document-binding-route.ts`/`finalize-if-github-merged-
+route.ts` already establish. `operator`-role floor. `minicoder findings resolve --finding-id <id>
+[--dismiss] [--note <text>]` is the CLI wrapper; `findings.ts` moved to the `isDefault`/`hidden`
+  sibling-subcommand shape `plan.ts`/`design-doc.ts` already established (a bare `minicoder
+findings --feature-run <id>` still lists findings via the hidden `view` subcommand).
+  `renderCommandResultView()` (`packages/tui/src/views.tsx`) gained an optional `projectId` — this
+  is the first caller with no natural project id to display (a `review_findings` row has no
+  `project_id` column of its own).
+- **Not addressed by this fix, tracked separately**: whether a non-blocking finding should be
+  re-surfaced/re-evaluated on a subsequent review cycle of the same feature run (today a clean
+  review of an unchanged head SHA still short-circuits before the adapter is invoked again, per
+  the `review_occurrence_markers` check — issue #46), and an aggregate "N unresolved non-blocking
+  findings" dashboard view. This fix closes the "no resolution mechanism exists at all" gap; those
+  are separate, real future-work items the original issue also named.
+
 ## Task Result Persistence (issue #122)
 
 - **`runRegisteredTask()`/`MockTriggerRunner.run()` previously discarded every task's structured
