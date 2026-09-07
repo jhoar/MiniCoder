@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   ClarificationStatus,
+  GapSeverity,
   PlanState,
   ReadinessStatus,
   UserRole,
@@ -150,6 +151,31 @@ export class GenerateImplementationPlanHandler implements CommandHandler<
         eventType: 'plan.generated',
         payload: { projectId, planId, assessmentId },
       });
+
+      // Issue #105: no hard gate here (submit-for-approval is already the real blocking-gap
+      // gate, and gating this early would add friction to iterative drafting) — instead, a
+      // visible, durable warning event so an operator drafting against a known-incomplete
+      // assessment isn't left to discover unresolved blocking gaps only at submission time.
+      const unresolvedBlockingGaps = await tx.query<{ id: string }>(
+        `SELECT id FROM planning_gaps WHERE assessment_id = ? AND severity = ? AND resolved_at IS NULL`,
+        [assessmentId, GapSeverity.BLOCKING],
+      );
+      if (unresolvedBlockingGaps.length > 0) {
+        await writeWorkflowEvent(tx, {
+          projectId,
+          eventType: 'plan.generated_with_unresolved_blocking_gaps',
+          fromState: PlanState.DRAFT,
+          toState: PlanState.DRAFT,
+          actorId: envelope.actor.id,
+          correlationId: envelope.correlationId,
+          payload: {
+            planId,
+            assessmentId,
+            unresolvedBlockingGapCount: unresolvedBlockingGaps.length,
+            gapIds: unresolvedBlockingGaps.map((g) => g.id),
+          },
+        });
+      }
 
       const result: CommandResult<PlanState> = {
         commandId: envelope.commandId,

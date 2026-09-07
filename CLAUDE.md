@@ -3606,6 +3606,70 @@ design questions, not quick patches):**
   `request-reconciliation` catch-up call, same as every other "waiting on the SCM" state). #120/
   #121 remain the actual fix for a project with no CI at all.
 
+## Planner Cost Tracking and Blocking-Gap Visibility (issues #100, #105)
+
+- **Issue #100 (closed): `AssessPlanningReadinessHandler` previously wired no `costExtractor` at
+  all, so every planning-readiness-assessment run recorded zero cost regardless of real token
+  usage** — leaving `evaluateBudget()`/`forecastBudget()`/`GET /budget-report` blind to
+  planning-phase spend, the same gap Phase 9 closed for the Coder role and Phase 17 closed for the
+  Documentation role. `PlannerOutput` gained an optional `tokensUsed: { input, output }` field
+  (additive — every existing caller/mock that doesn't set it keeps compiling);
+  `GenericLLMPlannerAdapter.run()` passes it through from `PlanProvider.assessReadiness()`'s
+  result. `AssessPlanningReadinessHandler` now passes `promptTemplateVersion` and a `costExtractor`
+  to `recorder.record()`, mirroring `run-coder.ts`'s shape. **Cost-pricing logic could not simply
+  reuse `packages/triggerdev/src/tasks/planner-cost.ts`'s existing helper — this handler lives in
+  `packages/core`, which cannot depend on `packages/triggerdev`.** Fixed with a small, deliberately
+  duplicated `packages/core/src/cost/planner-pricing.ts` (`resolvePlannerPromptTemplateVersion()`/
+  `computePlannerCostUsd()`), reading the exact same `PLANNER_PROMPT_TEMPLATE_VERSION`/
+  `PLANNER_PRICE_PER_1K_{INPUT,OUTPUT}_TOKENS` env vars as the triggerdev version (via
+  `EnvConfigBackend`, never bare `process.env`, per core's `no-restricted-syntax` rule) so operator
+  configuration is consistent regardless of which call site is active — not a shared module,
+  because core cannot import from triggerdev and triggerdev's version already has its own tests.
+  The `costExtractor`'s fallback provider label is `'generic-llm-http'`, not `run-coder.ts`'s
+  literal fallback string — core's `no-provider-imports` fitness test does a plain substring scan
+  across `core/src` file content (not import-statement parsing) for a certain banned vendor-name
+  substring, which that other package's literal fallback contains; this is a different, equally
+  generic label chosen specifically to avoid it, not an accidental drift between the two.
+  Regression coverage: `generic-llm-planner-adapter.test.ts` (passthrough), `mock-planner.ts`
+  gained a settable `tokensUsed` field (unset by default — every existing scenario is unaffected),
+  and the `planning-basic` scenario asserts a real `cost_records` row (`scope='project'`,
+  `amount > 0`) appears after a readiness-assessment run with `tokensUsed` set.
+- **Issue #105 (resolved, not closed as "fixed a bug" — a genuine design decision, documented
+  here): should `generate-implementation-plan`/`generate-feature-backlog` hard-gate on unresolved
+  blocking `planning_gaps`?** Rejected a hard gate: `SubmitPlanForApprovalHandler` is already the
+  real blocking-gap gate (docs/02 §9), and gating plan/backlog *generation* itself would add
+  friction to iterative drafting — an operator should be able to draft a plan against a
+  known-incomplete assessment and resolve gaps before submitting for approval, not be blocked from
+  drafting at all. Also rejected adding a `warnings` field to `CommandResult`: these two commands
+  run asynchronously via the task queue, so the enqueue-time HTTP response returns before
+  generation even executes, and `toCommandEnvelopeResponse()`
+  (`packages/api/src/commands/command-response.ts`) whitelists exactly four fields
+  (`command_id`/`accepted`/`resulting_state`/`emitted_event_ids`) with no room for one anyway.
+  **Resolution: a visible, durable `workflow_events` warning row, not a hard gate.**
+  `GenerateImplementationPlanHandler`/`GenerateFeatureBacklogHandler` now query
+  `planning_gaps WHERE assessment_id = ? AND severity = 'blocking' AND resolved_at IS NULL`
+  (`GenerateFeatureBacklogHandler`'s plan-lookup query was extended to also select
+  `assessment_id`, since it previously only selected `id`) immediately after their existing
+  `plan.generated`/`backlog.generated` event writes, and — only if any unresolved blocking gap
+  exists — writes a second event in the same transaction
+  (`plan.generated_with_unresolved_blocking_gaps` / `backlog.generated_with_unresolved_blocking_gaps`)
+  carrying `{planId, assessmentId, unresolvedBlockingGapCount, gapIds}` in its `payload`. This is
+  queryable via the already-existing `GET /workflow-events` route with no new endpoint — an
+  operator (or the Web UI, in future work) can see it without polling a new surface.
+  **This required extending `writeWorkflowEvent()` (`packages/core/src/commands/helpers.ts`) with
+  a new, optional `payload?: unknown` parameter** — `workflow_events.payload` (migration 0001)
+  existed unwritten by this shared helper since the initial schema; every prior caller relied on
+  `writeOutboxEvent()`'s own payload for structured detail instead. JSON-serialized when present,
+  left `NULL` when omitted (unchanged behavior for every one of this helper's many existing
+  callers, since the new parameter is optional and appended, not inserted, into the params list).
+  Regression coverage: the `planning-basic` scenario seeds a blocking `planning_gaps` row directly
+  (the `sufficient` `MockPlannerAdapter` behavior reports no gaps on its own, simulating one raised
+  during an earlier clarification round and left unresolved), drives both
+  `generate-implementation-plan`/`generate-feature-backlog` against it, asserts both warning events
+  and their payloads, then resolves the gap and regenerates the plan again, asserting the warning
+  event count does *not* increase — proving the check is live against current gap state, not a
+  one-shot flag.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL

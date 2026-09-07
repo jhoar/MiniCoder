@@ -14,6 +14,12 @@ export class MockPlannerAdapter implements PlannerAgentAdapter {
   readonly role = 'PlannerAgentAdapter' as const;
   readonly calls: AdapterCall<PlannerInput, PlannerOutput>[] = [];
 
+  /** Issue #100 regression coverage: unset by default (every existing scenario stays unaffected
+   * — `PlannerOutput.tokensUsed` is optional and omitted when this is undefined), settable by a
+   * scenario before calling `run()` to exercise `AssessPlanningReadinessHandler`'s
+   * `costExtractor` wiring against a real `cost_records` write. */
+  public tokensUsed?: { input: number; output: number };
+
   constructor(public behavior: PlannerBehavior = 'sufficient') {}
 
   async run(input: PlannerInput): Promise<PlannerOutput> {
@@ -65,6 +71,7 @@ export class MockPlannerAdapter implements PlannerAgentAdapter {
         break;
     }
 
+    if (this.tokensUsed) output = { ...output, tokensUsed: this.tokensUsed };
     this.calls.push({ input, output, calledAt: new Date().toISOString() });
     return output;
   }

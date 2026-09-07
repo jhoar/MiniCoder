@@ -11,6 +11,11 @@ export interface PlannerOutput {
   questions: Array<{ question: string; round: number }>;
   assumptions: Array<{ description: string; confidence: 'high' | 'medium' | 'low' }>;
   gaps: Array<{ description: string; severity: 'blocking' | 'non_blocking' }>;
+  /** Issue #100: additive, backward-compatible — `MockPlannerAdapter` and any other
+   * implementation that doesn't report usage simply omits it. Lets
+   * `AssessPlanningReadinessHandler` wire a `costExtractor` the same way `run-coder.ts` already
+   * does for the Coder role, instead of every readiness assessment silently recording zero cost. */
+  tokensUsed?: { input: number; output: number };
 }
 
 /**

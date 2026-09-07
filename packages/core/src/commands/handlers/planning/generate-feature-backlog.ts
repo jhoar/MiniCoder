@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { FeatureExecutionState, FeatureKind, UserRole } from '../../../domain/states.js';
+import {
+  FeatureExecutionState,
+  FeatureKind,
+  GapSeverity,
+  UserRole,
+} from '../../../domain/states.js';
 import { CommandError } from '../../types.js';
 import type { CommandHandler, CommandEnvelope, CommandResult } from '../../types.js';
 import type { DbClient } from '../../../persistence/types.js';
@@ -72,11 +77,12 @@ export class GenerateFeatureBacklogHandler implements CommandHandler<
       );
       if (!claim.owned) return claim.result;
 
-      const planRows = await tx.query<{ id: string }>(
-        `SELECT id FROM implementation_plans WHERE id = ? AND project_id = ?`,
+      const planRows = await tx.query<{ id: string; assessment_id: string | null }>(
+        `SELECT id, assessment_id FROM implementation_plans WHERE id = ? AND project_id = ?`,
         [planId, projectId],
       );
-      if (!planRows[0]) {
+      const plan = planRows[0];
+      if (!plan) {
         throw new CommandError({
           type: 'not-found',
           title: 'Implementation plan not found',
@@ -172,6 +178,31 @@ export class GenerateFeatureBacklogHandler implements CommandHandler<
         eventType: 'backlog.generated',
         payload: { projectId, planId, featureCount: features.length },
       });
+
+      // Issue #105: same visible-warning posture as GenerateImplementationPlanHandler — no hard
+      // gate (submit-for-approval already gates on this), just a durable, queryable signal.
+      if (plan.assessment_id) {
+        const unresolvedBlockingGaps = await tx.query<{ id: string }>(
+          `SELECT id FROM planning_gaps WHERE assessment_id = ? AND severity = ? AND resolved_at IS NULL`,
+          [plan.assessment_id, GapSeverity.BLOCKING],
+        );
+        if (unresolvedBlockingGaps.length > 0) {
+          await writeWorkflowEvent(tx, {
+            projectId,
+            eventType: 'backlog.generated_with_unresolved_blocking_gaps',
+            fromState: 'generated',
+            toState: 'generated',
+            actorId: envelope.actor.id,
+            correlationId: envelope.correlationId,
+            payload: {
+              planId,
+              assessmentId: plan.assessment_id,
+              unresolvedBlockingGapCount: unresolvedBlockingGaps.length,
+              gapIds: unresolvedBlockingGaps.map((g) => g.id),
+            },
+          });
+        }
+      }
 
       const result: CommandResult<GenerateFeatureBacklogResultState> = {
         commandId: envelope.commandId,

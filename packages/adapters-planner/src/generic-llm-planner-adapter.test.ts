@@ -43,6 +43,36 @@ describe('GenericLLMPlannerAdapter', () => {
     expect(result.readinessResult).toBe('sufficient');
   });
 
+  it('run() passes through tokensUsed from the provider (issue #100)', async () => {
+    const adapter = new GenericLLMPlannerAdapter({
+      planProvider: stubProvider({
+        assessReadiness: async () => ({
+          readinessResult: 'sufficient',
+          questions: [],
+          assumptions: [],
+          gaps: [],
+          tokensUsed: { input: 120, output: 45 },
+        }),
+      }),
+    });
+    const result = await adapter.run({
+      projectId: 'proj-1',
+      specificationContent: 'Build a widget.',
+      correlationId: 'corr-1',
+    });
+    expect(result.tokensUsed).toEqual({ input: 120, output: 45 });
+  });
+
+  it('run() leaves tokensUsed undefined when the provider reports none', async () => {
+    const adapter = new GenericLLMPlannerAdapter({ planProvider: stubProvider() });
+    const result = await adapter.run({
+      projectId: 'proj-1',
+      specificationContent: 'Build a widget.',
+      correlationId: 'corr-1',
+    });
+    expect(result.tokensUsed).toBeUndefined();
+  });
+
   it('generatePlanSections() delegates to PlanProvider.generatePlanSections', async () => {
     const adapter = new GenericLLMPlannerAdapter({ planProvider: stubProvider() });
     const result = await adapter.generatePlanSections({
