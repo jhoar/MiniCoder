@@ -665,6 +665,7 @@ minicoder run review --project <id> --feature-run <id> --reviewer-adapter <name>
 minicoder run fixes --project <id> --feature-run <id> --reviewer-adapter <name>       # operator+; re-enqueues run-review
 minicoder run merge-gate --project <id> --feature-run <id>                            # operator+; enqueues run-merge-gate
 minicoder run reconciliation --project <id> [--feature-run <id>] [--idempotency-key <key>]  # operator+; enqueues github-reconciliation on demand (issue #119) — a catch-up pass for a missed/delayed/unreachable webhook delivery; safe to invoke repeatedly
+minicoder run feature --project <id> [--feature-run <id>] --coder-adapter <name> --reviewer-adapter <name> [--arbiter-adapter <name>] [--merge-method <merge|squash|rebase>] [--no-merge] --watch [--poll-interval-ms <ms>] [--stuck-retry-ms <ms>] [--timeout-ms <ms>]  # operator+ (approver+ to actually merge); issue #123 — CLI-level poll loop driving one feature run to completion unattended, stopping fail-safe on merged/skipped/human_required/blocked/a terminal failure. Assumes `minicoder tasks worker` is already running elsewhere — it only enqueues, never executes, work itself
 
 # Repository/SCM connection (non-command, DB-direct — closes the "no CLI/API command to register
 # a repositories row" gap documented in CLAUDE.md's Local Quickstart Defaults / USER-MANUAL.md

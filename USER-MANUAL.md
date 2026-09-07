@@ -75,6 +75,7 @@ signing off on the final design doc — it stops and waits for a human.
 | `minicoder run readiness/plan-generation/backlog-generation`                       | Enqueue AI-adapter-backed generation of the readiness assessment, implementation plan, or feature backlog.                                                              |
 | `minicoder run start-next-feature`                                                 | Select and start the next eligible feature (needed to kick off execution after activation, and again after each feature completes).                                     |
 | `minicoder run reconciliation`                                                     | On-demand catch-up pass (issue #119) for a missed, delayed, or unreachable webhook delivery — safe to invoke repeatedly.                                                |
+| `minicoder run feature --watch`                                                    | Drives one feature run through the entire manual sequence below unattended (issue #123) — stops fail-safe on `merged`/`skipped`/`human_required`/`blocked`.             |
 | `minicoder state inspect/validate/doctor/reconcile/export-diagnostics`             | Diagnose and repair workflow health.                                                                                                                                    |
 | `minicoder state repair`                                                           | Guarded, two-step repair of orphaned runs.                                                                                                                              |
 | `minicoder observability export-otel`                                              | Export workflow events to an OpenTelemetry collector.                                                                                                                   |
@@ -799,6 +800,17 @@ in this codebase automatically enqueues the next one when the previous one finis
 either something you (or your own external scheduler/cron) trigger explicitly, or something a real
 SCM webhook delivery triggers automatically (see below). Plan on driving one feature at a time
 through this sequence:
+
+**Unattended alternative (issue #123):** `minicoder run feature --project <project> --coder-adapter
+<name> --reviewer-adapter <name> --watch` drives one feature run through the entire sequence below
+for you — it's a CLI-level poll loop (not a new backend task), assumes `minicoder tasks worker` is
+already running elsewhere, and stops fail-safe on `merged`/`skipped`/`human_required`/`blocked`/a
+terminal failure rather than guessing past a blocker. Omit `--feature-run` to auto-discover the
+next eligible feature. Pass `--no-merge` if your API key is operator-only (not approver) — it will
+stop at `approved_by_policy` instead of attempting the real merge. See `minicoder run feature
+--help` for the full flag list (poll interval, stuck-state retry, and overall timeout). The manual,
+one-command-at-a-time walkthrough below is still the reference for what it's actually doing, and
+the fallback if you want to drive a step yourself.
 
 ```bash
 # 1. Select the next eligible feature (dependency order, one-feature-at-a-time) and start coding.

@@ -3476,6 +3476,19 @@ WHERE automation_state = 'running' AND active_feature_run_id IS NULL`) can never
   inline, always separate scheduled/triggered task" convention and its "no scheduling/cron
   construct exists or is needed" decision (§ Task Worker Operational Constraints above) — not a
   small patch, and not decided in this pass.
+  **Resolved by issue #123, not a backend change:** a backend auto-chain was deliberately rejected
+  — nothing in this codebase auto-chains any Workflow Layer task, not even the initial `coding`
+  invocation (`start-next-feature.ts` dispatches `StartCodingCommand` but never enqueues
+  `run-coder` itself), and there is no "default adapter for this role" concept anywhere
+  (`AdapterRegistry` is keyed by name, not "the coder adapter for project X") that an automatic
+  enqueue could use to supply the required `coderAdapterName` without inventing new,
+  unplanned scope. Making the fix-cycle hop uniquely automatic while every other hop (including
+  the very first one) stays manual would also be a real inconsistency, not a small patch. Instead,
+  `minicoder run feature --watch` (issue #123, `packages/cli/src/commands/run.ts`) is the resolving
+  mechanism: a human-launched CLI poll loop that carries the adapter names for its whole lifetime
+  (the same information a human already had to remember across manual steps) and re-invokes
+  `run coder` whenever it observes the feature run at `fixing` — using the exact same
+  already-correct `run-coder.ts` `isFixCycle` branch, no backend changes needed.
 
 **Full pipeline live-verified end to end against a real Gitea instance (issues #112/#113).**
 A real feature (`FR-001`, project `ons`) was driven through the entire sequence documented
@@ -3529,6 +3542,69 @@ design questions, not quick patches):**
   fix cycle at all, so those findings are written once and then permanently orphaned — never
   re-surfaced, never resolvable by any command, indistinguishable from "nobody ever looked at
   this."
+
+## CLI-Level "Drive One Feature to Completion" Loop (`packages/cli/src/commands/run.ts`, issue #123)
+
+- **`minicoder run feature --watch` is a CLI-level poll loop, not a new Workflow Layer task or a
+  backend auto-chain.** It resolves issue #118 (see the Planner Generation Wiring section's
+  updated bullet above for why a backend fix was rejected) by being the thing that actually
+  re-issues each hop: it polls `GET /feature-runs/:id` (a new `ApiClient.getFeatureRun()` method —
+  the route already existed, unwrapped, since Phase 15) and calls the matching existing enqueue
+  route for the observed `current_execution_state`, exactly mirroring the manual sequence
+  USER-MANUAL.md §4 Step 4 already documents. It requires `--watch` explicitly (no accidental
+  invocation of a long-running foreground command) and assumes `minicoder tasks worker` is already
+  running elsewhere — like every other enqueue route/CLI wrapper in this codebase, this command
+  only enqueues; it never executes a task itself.
+- **State-to-action table, and why some states re-issue their action every tick while others only
+  act once per newly-observed state:** `approved_pending_execution`/`selected` →
+  `request-start-next-feature` (targeted — this is the same call that also recovers a run stranded
+  at `selected`); `coding`/`fixing` → `request-coder-run` (the `fixing` case is #118's actual
+  resolution); `code_pushed`/`pr_opened`/`ci_running`/`changes_requested`/`ci_failed`/
+  `merge_failed` → `request-reconciliation`; `under_review` → **both** `request-review` and
+  `recompute-merge-gate` (see below); `approved_by_policy` → `merge-if-ready`. The first three
+  groups act once when the state is first observed, then only re-issue if stuck in the same state
+  longer than `--stuck-retry-ms` (default 60s — covers a task that silently failed, or no worker
+  having been running yet when the first enqueue happened). `under_review` and
+  `approved_by_policy` are deliberately re-issued on **every** tick instead: a clean review leaves
+  the feature run at `under_review` with **no state change at all** (CLAUDE.md's Reference
+  Reviewer Adapter Operational Constraints — "Phase 12's Merge Gate owns that transition," not
+  `run-review.ts`), so waiting for a state change before reacting again would hang forever. Both
+  calls are safe/idempotent to repeat (`request-review` short-circuits via the
+  `review_occurrence_markers` check if the current PR head was already reviewed;
+  `recompute-merge-gate` is documented as "safe to invoke repeatedly... a feature run not at
+  `under_review` is a clean no-op").
+- **`merge_ready` observed as the *current* state (not transiently, mid-call) is treated as stuck
+  and the loop stops** — `POST /commands/merge-if-ready` itself advances `approved_by_policy` all
+  the way to `merged` (or a clean `409`) inside one HTTP request; the only way to observe a feature
+  run sitting at `merge_ready` on a later poll is a crash between `MergeIfReadyCommand`'s
+  transition and the real GitHub merge call. That exact window's recovery is
+  `minicoder merge finalize-if-github-merged`'s job (issue #56), not this loop's, so the loop
+  reports it and exits (code 2) rather than guessing.
+- **`ApiClient.mergeIfReady()` (`packages/tui/src/client/api-client.ts`) is a new method wrapping
+  the pre-existing `POST /commands/merge-if-ready` route, which had no typed client before this —
+  every prior caller of that route was `packages/cli/src/commands/merge.ts`'s DB-direct
+  implementation, not an HTTP client.** Its `409` response (`{merged:false, reasons:[...]}` for a
+  blocked gate, or `{merged:false, reason, autoClearable, resolution}` for a merge rejection) is a
+  normal, expected outcome per that route's own doc comment — not an RFC 9457 problem document —
+  so wrapping it in the shared `request()`/`post()` helpers (which throw `ApiError` on any non-2xx)
+  would have silently discarded the structured body. Added `postExpecting()`, a sibling to
+  `post()` that takes an explicit list of non-2xx statuses to return as data instead of throwing;
+  any other status (e.g. a `403` from an insufficient-role key) still throws `ApiError` exactly
+  like every other method. `MergeIfReadyResult` is exported from `@minicoder/tui/client`'s barrel
+  alongside the client itself.
+- **Fail-safe exit codes, not a single pass/fail bit:** `0` = reached `merged`/`skipped`; `1` =
+  stopped at `human_required`/`blocked`/`failed`/`system_failed` (needs a human, via
+  `minicoder human ...`) or hit an unexpected error; `2` = reached a state that needs a *different*
+  follow-up the loop won't attempt itself (`--no-merge` stopping at `approved_by_policy`, a `403`
+  from an insufficient-role key, or a stuck `merge_ready`); `3` = `--timeout-ms` elapsed. The loop
+  never guesses past a state that needs a human decision — the exact fail-safe framing issue #123
+  itself specified.
+- **Deliberately does not attempt to automate the no-CI `simulate-*` workaround** — per issue
+  #123's own scoping, that would just be automating a human's stand-in for real CI, not real
+  automation. The loop assumes a real CI signal (or #120's future self-attested-sandbox fallback)
+  is already wired up and simply waits on it like any other state transition (via the
+  `request-reconciliation` catch-up call, same as every other "waiting on the SCM" state). #120/
+  #121 remain the actual fix for a project with no CI at all.
 
 ## Cross-Dialect Testing (Mandatory)
 

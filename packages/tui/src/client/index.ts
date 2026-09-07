@@ -14,5 +14,6 @@ export {
   type WhoamiResponse,
   type ProjectStatus,
   type CommandEnvelopeResponse,
+  type MergeIfReadyResult,
 } from './api-client.js';
 export { resolveApiConfig, type ApiConfig } from '../config.js';
