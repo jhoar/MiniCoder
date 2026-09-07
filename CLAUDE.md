@@ -3670,6 +3670,36 @@ design questions, not quick patches):**
   event count does *not* increase — proving the check is live against current gap state, not a
   one-shot flag.
 
+## Task Result Persistence (issue #122)
+
+- **`runRegisteredTask()`/`MockTriggerRunner.run()` previously discarded every task's structured
+  return value once the in-process call returned** — `updateRunStatus()` wrote only
+  `triggerdev_status`/`last_seen_at`/`updated_at`, so `minicoder trigger inspect-run` could only
+  ever show `status: 'succeeded'`, `error: null` for both "ran and did nothing" (a short-circuit
+  no-op guard, e.g. `run-review.ts`'s `reviewed: false`) and "did real work" — both looked
+  identical. Found directly while investigating issue #111 (a `run-review` invocation with no
+  resulting `agent_runs` row), which could only be explained by reading source and reconstructing
+  the live session's timeline after the fact — a queryable result would have made it a one-command
+  check.
+- **`triggerdev_runs.result` (migration 0020, additive) now stores the task's JSON-encoded
+  result**, redacted and length-capped (2000 chars) the same way `task_queue.error` already is via
+  `summarizeError()`/`defaultRedactor` — a task result could in principle carry a sensitive field
+  depending on what a future task returns. `task-registry.ts`'s new `summarizeResult()` (exported,
+  reused by `mock-runner.ts` for parity in scenario tests) does this; `updateRunStatus()` gained an
+  optional `result` parameter, `COALESCE`d against the existing value so a failure update (which
+  has no structured result) never clobbers a prior success's result. Surfaced automatically via
+  `trigger inspect-run`'s existing `SELECT * FROM triggerdev_runs ...` — no query change needed.
+- **Deliberately did not populate `linked_agent_run_id`** (the issue's second suggested fix,
+  closing a separate, adjacent gap in the same table). None of the existing task result interfaces
+  (`RunReviewResult`, `RunCoderResult`, `RunDesignDocResult`) actually expose the `agentRunId` an
+  invocation's `AgentRunRecorder.record()` call produced — closing this would require adding that
+  field to each result type and its call sites, a more invasive change than this fix's primary
+  goal (making the result queryable at all) justifies. Tracked as real, deliberately deferred
+  follow-up work, not silently dropped.
+- **`minicoder trigger inspect-run`'s raw-JSON-only output (issue #110) was left as-is** — this
+  fix only adds a new column to what that command's existing `SELECT *` already returns; the
+  Ink/`renderOrJson` rendering-convention gap #110 documents is a separate, orthogonal UX issue.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
