@@ -3821,6 +3821,63 @@ CURRENT_TIMESTAMP` writes were left as-is — confirmed by grep that neither col
   fix only adds a new column to what that command's existing `SELECT *` already returns; the
   Ink/`renderOrJson` rendering-convention gap #110 documents is a separate, orthogonal UX issue.
 
+## Cross-Feature Backlog Impact (issue #124, open — not fixed)
+
+**A real, previously-undocumented gap, not a numbered implementation-plan phase**: nothing in this
+codebase re-evaluates the *content* of remaining backlog items after a feature actually ships.
+`feature_dependencies`/`SelectFeatureHandler`'s dependency guard already handle the case declared
+*upfront*, at backlog-generation time ("FR-007 cannot start until FR-003 merges"). They do not
+handle the case discovered only *after* FR-003 ships — FR-003's implementation changed an API
+shape FR-007 was planned against, or made FR-012 redundant, or invalidated an assumption another
+feature's description relied on. `feature_requests.state` is a static label set once at backlog
+generation and never updated by transitions (CLAUDE.md's Bootstrap Planner Operational
+Constraints); there is no mechanism anywhere that revisits a `feature_requests` row's *content*
+in light of what a later-merged sibling feature actually did.
+
+- **Closest existing precedent, and why it doesn't cover this**: the `skipped` cascade
+  (issues #52/#53) proves the system already reacts when one feature's *outcome* changes another's
+  *eligibility* — a dependent of a `skipped` feature is blocked, and unblocking re-checks the
+  dependency guard rather than trusting a stale state. But that is scoped entirely to declared
+  dependency edges and terminal execution states (`merged`/`skipped`), not to backlog *content*
+  drift with no declared edge between the two features at all. Issue #105's
+  `plan.generated_with_unresolved_blocking_gaps` warning-event pattern is the closest shape for
+  "flag something advisory without hard-blocking," but fires only once, at generation time, never
+  again as later features actually merge.
+- **Why this should not become a hard gate or a full backlog re-plan on every merge.** Both would
+  fight decisions already locked elsewhere in this document: "sequential execution is a policy
+  setting, not a schema limitation" (decision #2) and the "never inline, always a separate
+  scheduled/triggered task" convention this document applies to every GitHub-facing/execution
+  task. A mandatory full-backlog LLM re-evaluation after every single merge would also be
+  expensive and non-deterministic for a check whose payoff is occasional, not per-merge.
+- **Proposed shape, not yet built — deliberately advisory, reusing existing mechanisms rather than
+  inventing new state:**
+  1. A new, separately-triggered, opt-in task (`run-backlog-impact` or similar — never inlined
+     into `run-coder`/`run-merge-gate`, matching the established "never inline" rule) invoked after
+     `RecordMergedCommand` succeeds, scoped to the merged feature's diff/PR summary plus the
+     remaining `approved_pending_execution` feature requests only — not the whole backlog, and not
+     already-`merged`/`skipped` rows.
+  2. It would call the existing `PlannerAgentAdapter`'s `generateFeatureBacklog()`-shaped
+     capability (issue #32, already shipped) to ask whether any remaining feature needs revision —
+     no new adapter role, no new provider seam.
+  3. Findings are written as evidence, never as a mutation of `feature_requests` content (which
+     this document already establishes is a static label — Bootstrap Planner Operational
+     Constraints). Mirror `plan.generated_with_unresolved_blocking_gaps`: either a
+     `feature.impact_flagged` `workflow_events` row, or a small new table analogous to
+     `planning_gaps` (e.g. `backlog_impact_notes`), carrying `{featureRequestId,
+     causingFeatureRunId, reason, severity}`.
+  4. Gating stays optional and additive: `SelectFeatureHandler` already gates on declared
+     dependencies; it could optionally also refuse to select a feature carrying an unresolved
+     *blocking*-severity impact note, escalating via the existing `EscalateToHumanCommand` — the
+     same circuit-breaker pattern already used for fix-attempt limits and disagreements, not a new
+     transition.
+  5. Resolution reuses the existing `human_required` exit commands (`RetryFeatureCommand`/
+     `SkipFeatureCommand`/`BlockFeatureCommand`) or a new `ResolveBacklogImpactCommand` mirroring
+     `ResolvePlanningGapCommand`'s exact shape (approver-gated CAS update + `human_approvals` audit
+     row + `workflow_events` row) — no new state-machine states, matching "no new term without
+     updating the glossary first."
+- **Not built in this pass.** Recorded here, per this document's own established posture, as a
+  real, tracked design gap rather than silently assumed out of scope or silently worked around.
+
 ## Cross-Dialect Testing (Mandatory)
 
 The integration test suite and migration validation **must** run against both SQLite and PostgreSQL
